@@ -8,6 +8,7 @@ import 'tool.dart';
 import 'tool_registry.dart';
 
 typedef AgentObserver = void Function(AgentEvent event);
+typedef AgentTextObserver = void Function(String delta);
 
 sealed class AgentEvent {
   const AgentEvent();
@@ -30,8 +31,14 @@ class AgentLoop {
   final LlmClient _llm;
   final ToolRegistry _registry;
   final AgentObserver? _onEvent;
+  final AgentTextObserver? onTextDelta;
 
-  AgentLoop({required this._llm, required this._registry, this._onEvent});
+  AgentLoop({
+    required this._llm,
+    required this._registry,
+    this._onEvent,
+    this.onTextDelta,
+  });
 
   Future<String> run(Conversation conversation) async {
     final messages = <Map<String, dynamic>>[
@@ -41,7 +48,14 @@ class AgentLoop {
     ];
 
     for (var turn = 0; turn < maxTurns; turn++) {
-      final message = await _llm.chat(messages: messages, tools: _registry.all);
+      final textObserver = onTextDelta;
+      final message = textObserver == null
+          ? await _llm.chat(messages: messages, tools: _registry.all)
+          : await _llm.chatStream(
+              messages: messages,
+              tools: _registry.all,
+              onTextDelta: textObserver,
+            );
       _onEvent?.call(AgentTurn(message));
 
       if (!message.hasToolCalls) {

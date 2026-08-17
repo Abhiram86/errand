@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -87,6 +88,11 @@ class _ChatScreenState extends State<ChatScreen> {
     ),
   ];
   bool _busy = false;
+  String? _workingMessageId;
+  final _workingText = StringBuffer();
+  Timer? _workingFlushTimer;
+  bool _scrollPending = false;
+  LlmClient? _activeLlm;
   String? _workspaceLabel;
   // This remains mutable so future directory navigation can update it.
   // ignore: prefer_final_fields
@@ -101,6 +107,8 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
+    _workingFlushTimer?.cancel();
+    _activeLlm?.close();
     _controller.dispose();
     _scroll.dispose();
     super.dispose();
@@ -133,14 +141,24 @@ class _ChatScreenState extends State<ChatScreen> {
 
   bool get _canSend => !_busy && _controller.text.trim().isNotEmpty;
 
-  void _scrollToBottom() {
+  void _scrollToBottom({bool animated = true}) {
+    if (_scrollPending) return;
+    _scrollPending = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scrollPending = false;
       if (!_scroll.hasClients) return;
-      _scroll.animateTo(
-        _scroll.position.maxScrollExtent,
-        duration: const Duration(milliseconds: 200),
-        curve: Curves.easeOut,
-      );
+      final distance =
+          _scroll.position.maxScrollExtent - _scroll.position.pixels;
+      if (!animated && distance > 160) return;
+      if (animated) {
+        _scroll.animateTo(
+          _scroll.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeOut,
+        );
+      } else {
+        _scroll.jumpTo(_scroll.position.maxScrollExtent);
+      }
     });
   }
 
@@ -148,6 +166,9 @@ class _ChatScreenState extends State<ChatScreen> {
     final text = _controller.text.trim();
     if (text.isEmpty || _busy) return;
     _controller.clear();
+    final workingId = 'working-${DateTime.now().microsecondsSinceEpoch}';
+    _workingMessageId = workingId;
+    _workingText.clear();
     setState(() {
       _messages.add(
         UserMessage(
@@ -155,16 +176,12 @@ class _ChatScreenState extends State<ChatScreen> {
           text: text,
         ),
       );
-      _messages.add(
-        AssistantMessage(
-          id: 'working-${DateTime.now().millisecondsSinceEpoch}',
-          text: '…working',
-        ),
-      );
+      _messages.add(AssistantMessage(id: workingId, text: '…working'));
       _busy = true;
     });
     _scrollToBottom();
 
+    LlmClient? llm;
     try {
       if (kApiKey.isEmpty) {
         _replaceWorking(
@@ -178,10 +195,7 @@ class _ChatScreenState extends State<ChatScreen> {
         id: 'main',
         localSystemPrompt: kSystemPrompt,
         messages: _messages
-            .where(
-              (message) =>
-                  !(message is AssistantMessage && message.text == '…working'),
-            )
+            .where((message) => message.id != _workingMessageId)
             .toList(growable: false),
         tools: const [],
         currentDir: _currentDir,
@@ -189,23 +203,27 @@ class _ChatScreenState extends State<ChatScreen> {
         updatedAt: DateTime.now(),
       );
 
-      final llm = LlmClient(
+      llm = LlmClient(
         config: LlmConfig(
           baseUrl: kBaseUrl.isEmpty ? 'https://openrouter.ai/api/v1' : kBaseUrl,
           apiKey: kApiKey,
           model: kModel,
         ),
       );
+      _activeLlm = llm;
       final loop = AgentLoop(
         llm: llm,
         registry: ToolRegistry.defaults(currentDir: conversation.currentDir),
         onEvent: _handleEvent,
+        onTextDelta: _handleTextDelta,
       );
       final answer = await loop.run(conversation);
-      llm.close();
       _replaceWorking(answer);
     } catch (e) {
       _replaceWorking('Error: $e');
+    } finally {
+      llm?.close();
+      if (identical(_activeLlm, llm)) _activeLlm = null;
     }
   }
 
@@ -215,7 +233,7 @@ class _ChatScreenState extends State<ChatScreen> {
         final text =
             '${call.name} → ${result.ok ? result.output.split('\n').take(3).join('\n') : result.errorMessage}';
 
-        _append(
+        _appendToolMessage(
           ToolMessage(
             id: call.id,
             text: text,
@@ -228,23 +246,99 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  void _append(Message message) {
-    setState(() => _messages.add(message));
+  void _appendToolMessage(ToolMessage message) {
+    if (!mounted) return;
+    _workingFlushTimer?.cancel();
+    _workingFlushTimer = null;
+
+    setState(() {
+      final workingId = _workingMessageId;
+      final workingIndex = workingId == null
+          ? -1
+          : _messages.indexWhere((current) => current.id == workingId);
+
+      if (workingIndex == -1) {
+        _messages.add(message);
+        return;
+      }
+
+      final currentText = _workingText.toString();
+      _workingText.clear();
+
+      // Finalize any streamed assistant text before inserting the tool that
+      // followed it. Then create a fresh working bubble for the next agent
+      // turn, preserving sequences such as tool1 → msg1 → tool2 → msg2.
+      _messages.removeAt(workingIndex);
+      var nextWorkingIndex = workingIndex;
+      if (currentText.isNotEmpty) {
+        _messages.insert(
+          nextWorkingIndex,
+          AssistantMessage(id: workingId!, text: currentText),
+        );
+        nextWorkingIndex++;
+      }
+      _messages.insert(nextWorkingIndex, message);
+      nextWorkingIndex++;
+
+      final nextWorkingId = 'working-${DateTime.now().microsecondsSinceEpoch}';
+      _workingMessageId = nextWorkingId;
+      _messages.insert(
+        nextWorkingIndex,
+        AssistantMessage(id: nextWorkingId, text: '…working'),
+      );
+    });
     _scrollToBottom();
   }
 
-  void _replaceWorking(String text) {
+  void _handleTextDelta(String delta) {
+    if (!mounted || _workingMessageId == null) return;
+    _workingText.write(delta);
+    if (_workingFlushTimer?.isActive ?? false) return;
+    _workingFlushTimer = Timer(
+      const Duration(milliseconds: 40),
+      _flushWorkingText,
+    );
+  }
+
+  void _flushWorkingText() {
+    _workingFlushTimer = null;
+    if (!mounted || _workingMessageId == null || _workingText.length == 0) {
+      return;
+    }
+    final index = _messages.indexWhere(
+      (message) => message.id == _workingMessageId,
+    );
+    if (index == -1) return;
     setState(() {
-      _messages.removeWhere(
-        (message) => message is AssistantMessage && message.text == '…working',
+      _messages[index] = AssistantMessage(
+        id: _workingMessageId!,
+        text: _workingText.toString(),
       );
-      _messages.add(
-        AssistantMessage(
-          id: 'agent-${DateTime.now().millisecondsSinceEpoch}',
-          text: text,
-        ),
+    });
+    _scrollToBottom(animated: false);
+  }
+
+  void _replaceWorking(String text) {
+    _workingFlushTimer?.cancel();
+    _workingFlushTimer = null;
+    final id = _workingMessageId;
+    _workingText.clear();
+    if (!mounted) return;
+    setState(() {
+      final index = id == null
+          ? -1
+          : _messages.indexWhere((message) => message.id == id);
+      final message = AssistantMessage(
+        id: id ?? 'agent-${DateTime.now().millisecondsSinceEpoch}',
+        text: text,
       );
+      if (index == -1) {
+        _messages.add(message);
+      } else {
+        _messages[index] = message;
+      }
       _busy = false;
+      _workingMessageId = null;
     });
     _scrollToBottom();
   }
@@ -295,7 +389,7 @@ class _ChatScreenState extends State<ChatScreen> {
             message: message,
           );
         }
-        return _MessageBubble(message: message);
+        return _MessageBubble(key: ValueKey(message.id), message: message);
       },
     );
   }
@@ -462,7 +556,7 @@ class _ToolMessageBubble extends StatelessWidget {
 class _MessageBubble extends StatelessWidget {
   final Message message;
 
-  const _MessageBubble({required this.message});
+  const _MessageBubble({super.key, required this.message});
 
   @override
   Widget build(BuildContext context) {
