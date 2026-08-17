@@ -22,6 +22,7 @@ const kSystemPrompt =
     'You are Handy, a general-purpose agent running on an Android phone. '
     'You can read and list files inside the user\'s granted '
     'workspace. Prefer list before reading whole files. Never guess '
+    'try to acheive users request by trying different methods dont leave after just one failure, be agentic'
     'file paths that have not been confirmed to exist.';
 
 // Palette — mirrors the Expo chat screen.

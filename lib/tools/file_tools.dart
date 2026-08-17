@@ -5,6 +5,7 @@ import 'dart:math';
 import '../agent/tool.dart';
 // import '../services/workspace.dart';
 import '../types/tool.dart';
+import '../internal/document_reading/document_reader.dart';
 
 import 'package:path/path.dart' as path;
 
@@ -15,9 +16,12 @@ const kMaxGrepMatches = 200;
 Tool readTool() => Tool(
   name: 'read',
   description:
-      'Reads a chunk of a text file inside the granted workspace. '
-      'Path may be relative to the workspace root or a full content:// URI. '
-      'Use offset and length for paginated reading.',
+      'Reads a chunk of a file inside the granted workspace. Supports text '
+      'files plus PDF, DOCX, XLSX, and PPTX extraction. For text files, '
+      'offset and length are byte-based. For structured files, offset is a '
+      'logical page/slide/section offset and length is a character budget; '
+      'structured pages overlap between reads. Path may be relative to the '
+      'workspace root or a full content:// URI.',
   parameters: {
     'type': 'object',
     'properties': {
@@ -27,12 +31,16 @@ Tool readTool() => Tool(
       },
       'offset': {
         'type': 'integer',
-        'description': 'Byte offset to start reading from',
+        'description':
+            'Byte offset for text files, or logical page/slide/section offset '
+            'for structured files',
         'default': 0,
       },
       'length': {
         'type': 'integer',
-        'description': 'Maximum number of bytes to read',
+        'description':
+            'Maximum bytes for text files, or maximum extracted characters '
+            'for structured files',
         'default': 512,
       },
     },
@@ -91,6 +99,19 @@ Tool readTool() => Tool(
     }
 
     try {
+      final structured = await readStructuredFile(
+        file,
+        offset: offset,
+        length: length,
+      );
+      if (structured != null) {
+        return ToolCallResult(
+          id: call.id,
+          ok: true,
+          output: structured.toToolOutput(file.path),
+        );
+      }
+
       final totalBytes = await file.length();
 
       if (offset >= totalBytes) {
@@ -186,6 +207,8 @@ Tool listTool(Directory workspace) => Tool(
     }
 
     final results = <String>[];
+    results.add("current directory: ${workspace.path}");
+    results.add("temp");
 
     try {
       if (!await target.exists()) {
@@ -220,13 +243,9 @@ Tool listTool(Directory workspace) => Tool(
       );
     }
 
-    return ToolCallResult(
-      id: call.id,
-      ok: true,
-      output: results.isEmpty
-          ? 'No matching files found in ${target.path}.'
-          : results.join('\n'),
-    );
+    results[1] = "found ${results.length - 2} file(s)";
+
+    return ToolCallResult(id: call.id, ok: true, output: results.join('\n'));
   },
 );
 
