@@ -30,9 +30,7 @@ class Tool {
   };
 }
 
-/// A tool call as emitted by the LLM (`tool_calls[].function`). This is the
-/// LLM wire shape, distinct from the neutral `ToolCallRequest` in
-/// `types/tool.dart`.
+/// A tool call as emitted by the LLM (`tool_calls[].function`).
 class ToolCall {
   final String id;
   final String name;
@@ -54,12 +52,4 @@ class ToolCall {
       'arguments': jsonEncode(arguments),
     },
   };
-
-  /// Converts to the shared contract shape (`types/tool.dart`).
-  ToolCallRequest toRequest({String? workspaceUri}) => ToolCallRequest(
-    id: id,
-    name: name,
-    arguments: arguments,
-    workspaceUri: workspaceUri,
-  );
 }

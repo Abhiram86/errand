@@ -10,133 +10,124 @@ import '../internal/document_reading/document_reader.dart';
 import 'package:path/path.dart' as path;
 
 const kMaxReadBytes = 512 * 1024;
-const kMaxGrepFileBytes = 256 * 1024;
-const kMaxGrepMatches = 200;
 
-Tool readTool() => Tool(
-  name: 'read',
-  description:
-      'Reads a chunk of a file inside the granted workspace. Supports text '
-      'files plus PDF, DOCX, XLSX, and PPTX extraction. For text files, '
-      'offset and length are byte-based. For structured files, offset is a '
-      'logical page/slide/section offset and length is a character budget; '
-      'structured pages overlap between reads. Path may be relative to the '
-      'workspace root or a full content:// URI.',
-  parameters: {
-    'type': 'object',
-    'properties': {
-      'path': {
-        'type': 'string',
-        'description': 'Relative path or content:// URI of the file',
+Tool readTool(Directory workspace) {
+  final structuredDocuments = <String, Future<LogicalDocument?>>{};
+
+  return Tool(
+    name: 'read',
+    description:
+        'Reads a chunk of a file inside the granted workspace. Supports text '
+        'files plus PDF, DOCX, XLSX, and PPTX extraction. For text files, '
+        'offset and length are byte-based. For structured files, offset is a '
+        'logical page/slide/section offset and length is a character budget; '
+        'structured pages overlap between reads. Path is relative to the '
+        'workspace or an absolute path inside it.',
+    parameters: {
+      'type': 'object',
+      'properties': {
+        'path': {
+          'type': 'string',
+          'description': 'Relative path or absolute path inside the workspace',
+        },
+        'offset': {
+          'type': 'integer',
+          'description':
+              'Byte offset for text files, or logical page/slide/section offset '
+              'for structured files',
+          'default': 0,
+        },
+        'length': {
+          'type': 'integer',
+          'description':
+              'Maximum bytes for text files, or maximum extracted characters '
+              'for structured files',
+          'default': 512,
+        },
       },
-      'offset': {
-        'type': 'integer',
-        'description':
-            'Byte offset for text files, or logical page/slide/section offset '
-            'for structured files',
-        'default': 0,
-      },
-      'length': {
-        'type': 'integer',
-        'description':
-            'Maximum bytes for text files, or maximum extracted characters '
-            'for structured files',
-        'default': 512,
-      },
+      'required': ['path'],
     },
-    'required': ['path'],
-  },
-  handler: (call) async {
-    final rawPath = call.arguments['path'] as String;
-    final offset = (call.arguments['offset'] as int?) ?? 0;
-    final length = (call.arguments['length'] as int?) ?? 512;
+    handler: (call) async {
+      final rawPath = call.arguments['path'] as String;
+      final offset = (call.arguments['offset'] as int?) ?? 0;
+      final length = (call.arguments['length'] as int?) ?? 512;
 
-    // Validate arguments.
-    if (rawPath.trim().isEmpty) {
-      return ToolCallResult.failure(
-        call.id,
-        'Invalid path: path cannot be empty.',
-      );
-    }
-
-    if (offset < 0) {
-      return ToolCallResult.failure(
-        call.id,
-        'Invalid offset: offset must be >= 0.',
-      );
-    }
-
-    if (length <= 0) {
-      return ToolCallResult.failure(
-        call.id,
-        'Invalid length: length must be > 0.',
-      );
-    }
-
-    // Resolve the file, including fallback path.
-    File? file;
-
-    final candidates = <String>[
-      rawPath,
-      if (!rawPath.startsWith('/')) '/storage/emulated/0/$rawPath',
-      if (rawPath.startsWith('/')) '/storage/emulated/0$rawPath',
-    ];
-
-    for (final candidate in candidates) {
-      final candidateFile = File(candidate);
-
-      if (await candidateFile.exists()) {
-        file = candidateFile;
-        break;
-      }
-    }
-
-    if (file == null) {
-      return ToolCallResult.failure(
-        call.id,
-        'File not found. Tried: ${candidates.join(', ')}',
-      );
-    }
-
-    try {
-      final structured = await readStructuredFile(
-        file,
-        offset: offset,
-        length: length,
-      );
-      if (structured != null) {
-        return ToolCallResult(
-          id: call.id,
-          ok: true,
-          output: structured.toToolOutput(file.path),
-        );
-      }
-
-      final totalBytes = await file.length();
-
-      if (offset >= totalBytes) {
+      // Validate arguments.
+      if (rawPath.trim().isEmpty) {
         return ToolCallResult.failure(
           call.id,
-          'Offset $offset is beyond the end of the file '
-          '(file size: $totalBytes bytes).',
+          'Invalid path: path cannot be empty.',
         );
       }
 
-      final end = min(offset + length, totalBytes);
+      if (offset < 0) {
+        return ToolCallResult.failure(
+          call.id,
+          'Invalid offset: offset must be >= 0.',
+        );
+      }
 
-      // Read only the requested range.
-      final raf = await file.open();
+      if (length <= 0) {
+        return ToolCallResult.failure(
+          call.id,
+          'Invalid length: length must be > 0.',
+        );
+      }
+
+      if (length > kMaxReadBytes) {
+        return ToolCallResult.failure(
+          call.id,
+          'Invalid length: maximum readable range is $kMaxReadBytes bytes.',
+        );
+      }
+
+      final file = _resolveWorkspaceFile(workspace, rawPath);
+      if (file == null || !await file.exists()) {
+        return ToolCallResult.failure(
+          call.id,
+          'File not found or outside the workspace: $rawPath',
+        );
+      }
+
       try {
-        await raf.setPosition(offset);
-        final bytes = await raf.read(end - offset);
+        final document = await structuredDocuments.putIfAbsent(
+          file.path,
+          () => readStructuredDocument(file),
+        );
+        final structured = document?.read(offset: offset, length: length);
+        if (structured != null) {
+          return ToolCallResult(
+            id: call.id,
+            ok: true,
+            output: structured.toToolOutput(file.path),
+          );
+        }
 
-        final text = utf8.decode(bytes, allowMalformed: true);
+        final totalBytes = await file.length();
 
-        final nextOffset = offset + bytes.length;
-        final hasMore = nextOffset < totalBytes;
+        if (offset >= totalBytes) {
+          return ToolCallResult.failure(
+            call.id,
+            'Offset $offset is beyond the end of the file '
+            '(file size: $totalBytes bytes).',
+          );
+        }
 
-        final formatted =
-            '''
+        final end = min(offset + length, totalBytes);
+
+        // Read only the requested range.
+        final raf = await file.open();
+        try {
+          await raf.setPosition(offset);
+          final bytes = await raf.read(end - offset);
+
+          final text = utf8.decode(bytes, allowMalformed: true);
+
+          final nextOffset = offset + bytes.length;
+          final hasMore = nextOffset < totalBytes;
+
+          final formatted =
+              '''
           File: ${file.path}
           Total size: $totalBytes bytes
           Reading bytes $offset–$nextOffset (${bytes.length} bytes)
@@ -145,18 +136,19 @@ Tool readTool() => Tool(
           $text
         ''';
 
-        return ToolCallResult(id: call.id, ok: true, output: formatted);
-      } finally {
-        await raf.close();
+          return ToolCallResult(id: call.id, ok: true, output: formatted);
+        } finally {
+          await raf.close();
+        }
+      } catch (e) {
+        return ToolCallResult.failure(
+          call.id,
+          'Failed to read "${file.path}": $e',
+        );
       }
-    } catch (e) {
-      return ToolCallResult.failure(
-        call.id,
-        'Failed to read "${file.path}": $e',
-      );
-    }
-  },
-);
+    },
+  );
+}
 
 Tool listTool(Directory workspace) => Tool(
   name: 'list',
@@ -207,8 +199,6 @@ Tool listTool(Directory workspace) => Tool(
     }
 
     final results = <String>[];
-    results.add("current directory: ${workspace.path}");
-    results.add("temp");
 
     try {
       if (!await target.exists()) {
@@ -243,11 +233,29 @@ Tool listTool(Directory workspace) => Tool(
       );
     }
 
-    results[1] = "found ${results.length - 2} file(s)";
-
-    return ToolCallResult(id: call.id, ok: true, output: results.join('\n'));
+    final header = [
+      'current directory: ${target.path}',
+      'found ${results.length} file(s)',
+    ];
+    return ToolCallResult(
+      id: call.id,
+      ok: true,
+      output: [...header, ...results].join('\n'),
+    );
   },
 );
+
+File? _resolveWorkspaceFile(Directory workspace, String rawPath) {
+  final workspacePath = path.normalize(workspace.absolute.path);
+  final targetPath = path.isAbsolute(rawPath)
+      ? path.normalize(rawPath)
+      : path.normalize(path.join(workspacePath, rawPath));
+  final relative = path.relative(targetPath, from: workspacePath);
+  if (relative == '..' || relative.startsWith('..${path.separator}')) {
+    return null;
+  }
+  return File(targetPath);
+}
 
 Directory? _resolveListDirectory(Directory workspace, String? rawPath) {
   final workspacePath = path.normalize(workspace.absolute.path);

@@ -33,13 +33,11 @@ workspace (lib/services/workspace.dart) ──▶ Android MethodChannel
 
 ## Conversation and messages
 
-`lib/types/conversation.dart` is the session container. It carries:
+`lib/types/conversation.dart` is the runtime session container. It carries:
 
-- the conversation ID and timestamps;
 - the optional system prompt;
 - the complete `List<Message>` history;
-- the current `Directory`, defaulting to `/storage/emulated/0`;
-- tool invocation metadata.
+- the current `Directory`, defaulting to `/storage/emulated/0`.
 
 `lib/types/message.dart` models the UI and conversation history with typed
 messages:
@@ -51,8 +49,8 @@ messages:
 - `ErrorMessage` — an application error surfaced in the conversation.
 
 The UI stores a short tool preview for rendering, while the complete tool
-result is retained for future LLM requests. `Conversation.toJson()` persists
-the current directory as its path.
+result is retained for future LLM requests. Conversation persistence is not
+implemented yet.
 
 ## The agent — `lib/agent/`
 
@@ -91,8 +89,7 @@ The `.env` file is local-only and is ignored by Git.
 The current registry contains two tools:
 
 - **`read`** reads a bounded byte range from a file. Relative paths resolve
-  against `/storage/emulated/0`; absolute paths are also accepted by the
-  current implementation.
+  against the injected workspace; absolute paths must remain inside it.
 - **`list`** lists immediate files and directories. With no `path`, it lists
   the app-provided current directory. A relative `path` is resolved from that
   directory, while an absolute path must remain inside the workspace root.
@@ -129,7 +126,7 @@ controller, busy state, and scroll state.
 - Tool calls render as compact, plain textual `ExpansionTile` rows. Tool names
   and arguments are truncated in the header, and output is truncated only for
   display; the full result remains available to the LLM.
-- The folder button checks or requests Android all-files access.
+- Storage permission is checked when the screen starts and resumes.
 
 ## Reading order
 

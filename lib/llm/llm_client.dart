@@ -31,13 +31,6 @@ class LlmConfig {
     required this.apiKey,
     required this.model,
   });
-
-  factory LlmConfig.openRouter({required String apiKey, String? model}) =>
-      LlmConfig(
-        baseUrl: 'https://openrouter.ai/api/v1',
-        apiKey: apiKey,
-        model: model ?? 'poolside/laguna-xs-2.1:free',
-      );
 }
 
 class LlmClient {

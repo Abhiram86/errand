@@ -5,7 +5,7 @@ import 'dart:typed_data';
 import 'package:archive/archive.dart';
 import 'package:xml/xml.dart';
 
-import 'document_reader.dart';
+import 'document_models.dart';
 
 const _maxPackageBytes = 64 * 1024 * 1024;
 const _maxPackageEntries = 2000;

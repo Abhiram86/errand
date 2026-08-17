@@ -14,11 +14,6 @@ sealed class AgentEvent {
   const AgentEvent();
 }
 
-class AgentTurn extends AgentEvent {
-  final LlmMessage message;
-  const AgentTurn(this.message);
-}
-
 class AgentToolCall extends AgentEvent {
   final ToolCall call;
   final ToolCallResult result;
@@ -56,8 +51,6 @@ class AgentLoop {
               tools: _registry.all,
               onTextDelta: textObserver,
             );
-      _onEvent?.call(AgentTurn(message));
-
       if (!message.hasToolCalls) {
         return message.content ?? '';
       }
@@ -82,81 +75,49 @@ class AgentLoop {
 
     for (var index = 0; index < history.length; index++) {
       final message = history[index];
-      if (message is! ToolMessage) {
-        messages.addAll(_toLlmMessages(message));
-        continue;
-      }
+      switch (message) {
+        case UserMessage():
+          messages.add({'role': 'user', 'content': message.text});
+        case AssistantMessage():
+          messages.add({'role': 'assistant', 'content': message.text});
+        case ErrorMessage():
+          messages.add({
+            'role': 'user',
+            'content': 'Previous app error: ${message.error}',
+          });
+        case ToolMessage():
+          final toolMessages = <ToolMessage>[message];
+          while (index + 1 < history.length &&
+              history[index + 1] is ToolMessage) {
+            index++;
+            toolMessages.add(history[index] as ToolMessage);
+          }
 
-      final toolMessages = <ToolMessage>[message];
-      while (index + 1 < history.length && history[index + 1] is ToolMessage) {
-        index++;
-        toolMessages.add(history[index] as ToolMessage);
-      }
-
-      messages.add({
-        'role': 'assistant',
-        'tool_calls': [
-          for (final toolMessage in toolMessages)
-            {
-              'id': toolMessage.id,
-              'type': 'function',
-              'function': {
-                'name': toolMessage.tool.name,
-                'arguments': jsonEncode(toolMessage.tool.args),
+          messages.add({
+            'role': 'assistant',
+            'tool_calls': [
+              for (final toolMessage in toolMessages)
+                {
+                  'id': toolMessage.id,
+                  'type': 'function',
+                  'function': {
+                    'name': toolMessage.tool.name,
+                    'arguments': jsonEncode(toolMessage.tool.args),
+                  },
+                },
+            ],
+          });
+          messages.addAll([
+            for (final toolMessage in toolMessages)
+              {
+                'role': 'tool',
+                'tool_call_id': toolMessage.id,
+                'content': toolMessage.result,
               },
-            },
-        ],
-      });
-      messages.addAll([
-        for (final toolMessage in toolMessages)
-          {
-            'role': 'tool',
-            'tool_call_id': toolMessage.id,
-            'content': toolMessage.result,
-          },
-      ]);
+          ]);
+      }
     }
 
     return messages;
-  }
-
-  /// Converts app messages into the OpenAI-compatible chat history format.
-  /// Tool messages expand into the assistant tool call and its matching result.
-  List<Map<String, dynamic>> _toLlmMessages(Message message) {
-    switch (message) {
-      case UserMessage():
-        return [
-          {'role': 'user', 'content': message.text},
-        ];
-      case AssistantMessage():
-        return [
-          {'role': 'assistant', 'content': message.text},
-        ];
-      case ToolMessage():
-        return [
-          {
-            'role': 'assistant',
-            'tool_calls': [
-              {
-                'id': message.id,
-                'type': 'function',
-                'function': {
-                  'name': message.tool.name,
-                  'arguments': jsonEncode(message.tool.args),
-                },
-              },
-            ],
-          },
-          {
-            'role': 'tool',
-            'tool_call_id': message.id,
-            'content': message.result,
-          },
-        ];
-      case ErrorMessage():
-        return [
-          {'role': 'user', 'content': 'Previous app error: ${message.error}'},
-        ];
-    }
   }
 }

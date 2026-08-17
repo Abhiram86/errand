@@ -76,15 +76,14 @@ class ChatScreen extends StatefulWidget {
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
-class _ChatScreenState extends State<ChatScreen> {
+class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   final _controller = TextEditingController();
   final _scroll = ScrollController();
+  late final LlmClient _llm;
   final List<Message> _messages = [
     const AssistantMessage(
       id: 'init',
-      text:
-          'Hi! Tap the folder icon and grant a folder, then ask me to read '
-          'or list files.',
+      text: 'Hi! Ask me to read or list files in shared storage.',
     ),
   ];
   bool _busy = false;
@@ -92,54 +91,87 @@ class _ChatScreenState extends State<ChatScreen> {
   final _workingText = StringBuffer();
   Timer? _workingFlushTimer;
   bool _scrollPending = false;
-  LlmClient? _activeLlm;
-  String? _workspaceLabel;
-  // This remains mutable so future directory navigation can update it.
-  // ignore: prefer_final_fields
-  Directory _currentDir = Workspace.instance.root;
-  final _conversationCreatedAt = DateTime.now();
+  bool _permissionDialogOpen = false;
+  final Directory _currentDir = Workspace.instance.root;
 
   @override
   void initState() {
     super.initState();
-    _restoreWorkspace();
+    _llm = LlmClient(
+      config: LlmConfig(
+        baseUrl: kBaseUrl.isEmpty ? 'https://openrouter.ai/api/v1' : kBaseUrl,
+        apiKey: kApiKey,
+        model: kModel,
+      ),
+    );
+    WidgetsBinding.instance.addObserver(this);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _checkStoragePermission(promptIfMissing: true);
+    });
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _workingFlushTimer?.cancel();
-    _activeLlm?.close();
+    _llm.close();
     _controller.dispose();
     _scroll.dispose();
     super.dispose();
   }
 
-  Future<void> _restoreWorkspace() async {
-    final permitted = await Workspace.instance.hasPermission();
-    if (!mounted || !permitted) return;
-    setState(() => _workspaceLabel = _shorten(Workspace.instance.root.path));
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _checkStoragePermission(promptIfMissing: true);
+    }
   }
 
-  Future<void> _grantFolder() async {
-    if (!await Workspace.instance.hasPermission()) {
-      await Workspace.instance.requestPermission();
-    }
-
+  Future<void> _checkStoragePermission({required bool promptIfMissing}) async {
     final permitted = await Workspace.instance.hasPermission();
     if (!mounted) return;
-    setState(() {
-      _workspaceLabel = permitted
-          ? _shorten(Workspace.instance.root.path)
-          : null;
-    });
+    if (!permitted && promptIfMissing) {
+      await _showStoragePermissionDialog();
+    }
   }
 
-  String _shorten(String uri) {
-    final idx = uri.lastIndexOf(':');
-    return idx == -1 ? uri : uri.substring(0, idx.clamp(0, 40));
+  Future<void> _showStoragePermissionDialog() async {
+    if (!mounted || _permissionDialogOpen) return;
+    _permissionDialogOpen = true;
+    try {
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Storage access needed'),
+          content: const Text(
+            'Handy needs access to shared storage so it can read and list '
+            'files. Android will open Settings where you can grant access.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Not now'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                Navigator.of(dialogContext).pop();
+                await Workspace.instance.requestPermission();
+              },
+              child: const Text('Open settings'),
+            ),
+          ],
+        ),
+      );
+    } finally {
+      _permissionDialogOpen = false;
+    }
   }
 
-  bool get _canSend => !_busy && _controller.text.trim().isNotEmpty;
+  void _showMoreActions() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('More actions are coming soon.')),
+    );
+  }
 
   void _scrollToBottom({bool animated = true}) {
     if (_scrollPending) return;
@@ -181,7 +213,6 @@ class _ChatScreenState extends State<ChatScreen> {
     });
     _scrollToBottom();
 
-    LlmClient? llm;
     try {
       if (kApiKey.isEmpty) {
         _replaceWorking(
@@ -192,27 +223,15 @@ class _ChatScreenState extends State<ChatScreen> {
       }
 
       final conversation = Conversation(
-        id: 'main',
         localSystemPrompt: kSystemPrompt,
         messages: _messages
             .where((message) => message.id != _workingMessageId)
             .toList(growable: false),
-        tools: const [],
         currentDir: _currentDir,
-        createdAt: _conversationCreatedAt,
-        updatedAt: DateTime.now(),
       );
 
-      llm = LlmClient(
-        config: LlmConfig(
-          baseUrl: kBaseUrl.isEmpty ? 'https://openrouter.ai/api/v1' : kBaseUrl,
-          apiKey: kApiKey,
-          model: kModel,
-        ),
-      );
-      _activeLlm = llm;
       final loop = AgentLoop(
-        llm: llm,
+        llm: _llm,
         registry: ToolRegistry.defaults(currentDir: conversation.currentDir),
         onEvent: _handleEvent,
         onTextDelta: _handleTextDelta,
@@ -221,9 +240,6 @@ class _ChatScreenState extends State<ChatScreen> {
       _replaceWorking(answer);
     } catch (e) {
       _replaceWorking('Error: $e');
-    } finally {
-      llm?.close();
-      if (identical(_activeLlm, llm)) _activeLlm = null;
     }
   }
 
@@ -241,8 +257,6 @@ class _ChatScreenState extends State<ChatScreen> {
             result: result.toText(),
           ),
         );
-      case AgentTurn():
-        break;
     }
   }
 
@@ -350,16 +364,6 @@ class _ChatScreenState extends State<ChatScreen> {
       body: SafeArea(
         child: Column(
           children: [
-            if (_workspaceLabel != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 6),
-                child: Text(
-                  'workspace: $_workspaceLabel',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(color: kMuted, fontSize: 11),
-                ),
-              ),
             Expanded(child: _buildMessageList()),
             _buildComposer(),
           ],
@@ -369,14 +373,6 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Widget _buildMessageList() {
-    if (_messages.isEmpty) {
-      return Center(
-        child: Text(
-          'Ask Handy to read, find, or do something…',
-          style: const TextStyle(color: kMuted, fontSize: 14),
-        ),
-      );
-    }
     return ListView.builder(
       controller: _scroll,
       padding: const EdgeInsets.all(16),
@@ -402,7 +398,7 @@ class _ChatScreenState extends State<ChatScreen> {
         border: Border(top: BorderSide(color: kBorder, width: 0.5)),
       ),
       child: Container(
-        padding: const EdgeInsets.only(left: 4, right: 6),
+        padding: const EdgeInsets.only(left: 8, right: 6),
         decoration: BoxDecoration(
           color: kInputBg,
           borderRadius: BorderRadius.circular(24),
@@ -411,22 +407,34 @@ class _ChatScreenState extends State<ChatScreen> {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            IconButton(
-              onPressed: _busy ? null : _grantFolder,
-              tooltip: 'Grant workspace folder',
-              icon: Icon(
-                Icons.folder_open,
-                color: _workspaceLabel != null ? kBubbleUser : kMuted,
-                size: 22,
+            SizedBox(
+              width: 32,
+              height: 32,
+              child: Transform.translate(
+                offset: const Offset(0, -1),
+                child: IconButton(
+                  onPressed: _busy ? null : _showMoreActions,
+                  tooltip: 'More actions',
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints.tightFor(
+                    width: 32,
+                    height: 32,
+                  ),
+                  icon: Icon(
+                    Icons.add,
+                    color: _busy ? kMuted : kText,
+                    size: 22,
+                  ),
+                ),
               ),
             ),
+            const SizedBox(width: 4),
             Expanded(
               child: TextField(
                 controller: _controller,
                 enabled: !_busy,
                 minLines: 1,
                 maxLines: 4,
-                onChanged: (_) => setState(() {}),
                 textInputAction: TextInputAction.send,
                 onSubmitted: (_) => _send(),
                 style: const TextStyle(color: kText, fontSize: 15),
@@ -440,7 +448,13 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
             ),
             const SizedBox(width: 4),
-            _SendButton(canSend: _canSend, onPressed: _send),
+            ValueListenableBuilder<TextEditingValue>(
+              valueListenable: _controller,
+              builder: (context, value, child) => _SendButton(
+                canSend: !_busy && value.text.trim().isNotEmpty,
+                onPressed: _send,
+              ),
+            ),
           ],
         ),
       ),
@@ -561,7 +575,6 @@ class _MessageBubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isUser = message is UserMessage;
-    final isTool = message is ToolMessage;
 
     return Align(
       alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
@@ -582,12 +595,7 @@ class _MessageBubble extends StatelessWidget {
         ),
         child: SelectableText(
           message.text,
-          style: TextStyle(
-            color: kText,
-            fontFamily: isTool ? 'monospace' : null,
-            fontSize: isTool ? 12 : 15,
-            height: 20 / 15,
-          ),
+          style: const TextStyle(color: kText, fontSize: 15, height: 20 / 15),
         ),
       ),
     );

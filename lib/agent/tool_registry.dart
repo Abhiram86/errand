@@ -16,7 +16,7 @@ class ToolRegistry {
   }
 
   factory ToolRegistry.defaults({required Directory currentDir}) =>
-      ToolRegistry([readTool(), listTool(currentDir)]);
+      ToolRegistry([readTool(currentDir), listTool(currentDir)]);
 
   List<Tool> get all => _tools.values.toList();
 

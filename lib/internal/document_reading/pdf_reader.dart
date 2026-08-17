@@ -2,7 +2,7 @@ import 'dart:io';
 
 import 'package:read_pdf_text/read_pdf_text.dart';
 
-import 'document_reader.dart';
+import 'document_models.dart';
 
 Future<LogicalDocument> readPdfDocument(File file) async {
   final pages = await ReadPdfText.getPDFtextPaginated(file.path);

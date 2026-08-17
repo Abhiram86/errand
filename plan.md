@@ -31,13 +31,12 @@ them), Termux dependence, root/Shizuku at first.
 
 ---
 
-## Stack (verified on pub.dev, Jul–Aug 2026)
+## Stack and current prototype
 
 | Concern | Package / mechanism | Notes |
 |---|---|---|
-| SAF file access | **`saf` v2** (ivehement/saf) | `pickDirectory()` persisted grant; `walk()`; streamed read/write; `openFileDescriptor()` → live `/proc/self/fd/` path (feeds path-based tools) |
+| File access (current prototype) | Android `MANAGE_EXTERNAL_STORAGE` + `dart:io` | direct `/storage/emulated/0` paths; `read` and `list` are currently implemented |
 | Real files / processes | `dart:io` `File`·`Directory`·`Process` | bundled `busybox` in app dir; no Kotlin |
-| App workspace dir | `path_provider` | `getApplicationDocumentsDirectory()` |
 | LLM client | OpenAI-compatible over `http` (`dart_openai` / `open_responses` style) | `baseUrl` → OpenRouter or Cloudflare AI Gateway; custom simple loop preferred |
 | Rich agent harness (optional) | `dart_agent_core` / `flutter_ai_sdk` ToolRunner | only if custom loop outgrows |
 | a11y (Phase 2) | `flutter_accessibility_service` | click/setText/dispatchGesture/screenshot |
@@ -45,9 +44,9 @@ them), Termux dependence, root/Shizuku at first.
 | Local session store | `sqflite` (or `drift`) | active transcript + offline queue |
 | Cloud data layer | Worker (D1 + KV) via `http` | JSON API; KV optional cache |
 
-**SAF reality (Android 11+):** no app — not even Termux — can read arbitrary storage without
-consent. Our answer: one persisted SAF tree grant + app-private workspace + `openFileDescriptor`
-bridging, exactly like the previous RN plan but with `dart:io` instead of Kotlin modules.
+The current prototype uses Android's all-files permission so the agent can operate on a shared
+storage root. SAF remains a possible future replacement if Play distribution or narrower user
+grants become requirements.
 
 ---
 

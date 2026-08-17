@@ -1,10 +1,8 @@
-# handy_flutter
+# Handy Flutter
 
-A new Flutter project.
-
-## Getting Started
-
-This project is a starting point for a Flutter application.
+Handy is a Flutter chat client with a small on-device agent loop. The current
+runtime supports two file tools: `list` and bounded `read` for text, PDF, DOCX,
+XLSX, and PPTX files.
 
 ## Run with local environment
 
@@ -14,14 +12,23 @@ Flutter does not load `.env` files automatically. Start the app with:
 flutter run --dart-define-from-file=.env
 ```
 
-The `.env` file should define `OPENROUTER_API_KEY`.
+The local `.env` file should define:
 
-A few resources to get you started if this is your first Flutter project:
+```text
+OPENROUTER_API_KEY=...
+HANDY_BASE_URL=https://openrouter.ai/api/v1
+HANDY_MODEL=openai/gpt-4o-mini
+```
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+`HANDY_BASE_URL` and `HANDY_MODEL` are optional. The app defaults to OpenRouter
+and `openai/gpt-4o-mini`.
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+On Android, the app currently requests all-files access and reads paths under
+`/storage/emulated/0`. The agent refuses absolute paths outside its injected
+workspace.
+
+Run the test suite with:
+
+```bash
+flutter test
+```
