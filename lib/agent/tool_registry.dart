@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'tool.dart';
 import '../tools/file_tools.dart';
+import '../tools/web_tools.dart';
 import '../types/tool.dart';
 
 /// Registry of available tools, keyed by name, plus a safe `execute` that
@@ -15,8 +16,20 @@ class ToolRegistry {
     }
   }
 
-  factory ToolRegistry.defaults({required Directory currentDir}) =>
-      ToolRegistry([readTool(currentDir), listTool(currentDir)]);
+  factory ToolRegistry.defaults({
+    required Directory currentDir,
+    WorkingDirectory? workingDirectory,
+  }) {
+    final directory = workingDirectory ?? WorkingDirectory(currentDir);
+    return ToolRegistry([
+      readTool(directory),
+      listTool(directory),
+      findTool(directory),
+      cdTool(directory),
+      webSearchTavilyTool(),
+      webFetchTool(),
+    ]);
+  }
 
   List<Tool> get all => _tools.values.toList();
 

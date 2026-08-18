@@ -10,6 +10,7 @@ import 'llm/llm_client.dart';
 import 'models/model_option.dart';
 import 'services/model_catalog.dart';
 import 'services/workspace.dart';
+import 'tools/file_tools.dart';
 import 'theme/app_colors.dart';
 import 'types/conversation.dart';
 import 'types/message.dart';
@@ -23,8 +24,12 @@ const kSystemPrompt =
     'You are Handy, a general-purpose agent running on an Android phone. '
     'You can read and list files inside the user\'s granted '
     'workspace. Prefer list before reading whole files. Never guess '
-    'try to acheive users request by trying different methods dont leave after just one failure, be agentic'
-    'file paths that have not been confirmed to exist.';
+    'file paths that have not been confirmed to exist. '
+    'Try different methods when appropriate and do not stop after one failure. '
+    'Use cd to change directories, then use relative paths from the new location.';
+
+String _systemPromptFor(Directory currentDir) =>
+    '$kSystemPrompt\nCurrent working directory: ${currentDir.path}';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -85,7 +90,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   Timer? _workingFlushTimer;
   bool _scrollPending = false;
   bool _permissionDialogOpen = false;
-  final Directory _currentDir = Workspace.instance.root;
+  final WorkingDirectory _workingDirectory = WorkingDirectory(
+    Workspace.instance.root,
+  );
 
   @override
   void initState() {
@@ -256,16 +263,20 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       }
 
       final conversation = Conversation(
-        localSystemPrompt: kSystemPrompt,
+        localSystemPrompt: _systemPromptFor(_workingDirectory.current),
         messages: _messages
             .where((message) => message.id != _workingMessageId)
             .toList(growable: false),
-        currentDir: _currentDir,
+        currentDir: _workingDirectory.current,
       );
 
       final loop = AgentLoop(
         llm: _llm,
-        registry: ToolRegistry.defaults(currentDir: conversation.currentDir),
+        registry: ToolRegistry.defaults(
+          currentDir: _workingDirectory.root,
+          workingDirectory: _workingDirectory,
+        ),
+        systemPromptBuilder: () => _systemPromptFor(_workingDirectory.current),
         onEvent: _handleEvent,
         onTextDelta: _handleTextDelta,
         onReasoningDelta: _handleReasoningDelta,

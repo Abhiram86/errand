@@ -34,6 +34,7 @@ class AgentLoop {
 
   final LlmClient _llm;
   final ToolRegistry _registry;
+  final String Function()? systemPromptBuilder;
   final AgentObserver? _onEvent;
   final AgentTextObserver? onTextDelta;
   final AgentReasoningObserver? onReasoningDelta;
@@ -41,6 +42,7 @@ class AgentLoop {
   AgentLoop({
     required this._llm,
     required this._registry,
+    this.systemPromptBuilder,
     this._onEvent,
     this.onTextDelta,
     this.onReasoningDelta,
@@ -54,6 +56,11 @@ class AgentLoop {
     ];
 
     for (var turn = 0; turn < maxTurns; turn++) {
+      final systemPromptBuilder = this.systemPromptBuilder;
+      if (systemPromptBuilder != null && messages.isNotEmpty) {
+        messages[0] = {'role': 'system', 'content': systemPromptBuilder()};
+      }
+
       final textObserver = onTextDelta;
       final message = textObserver == null
           ? await _llm.chat(messages: messages, tools: _registry.all)

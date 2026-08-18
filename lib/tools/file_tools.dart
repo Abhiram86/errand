@@ -11,7 +11,14 @@ import 'package:path/path.dart' as path;
 
 const kMaxReadBytes = 512 * 1024;
 
-Tool readTool(Directory workspace) {
+class WorkingDirectory {
+  final Directory root;
+  Directory current;
+
+  WorkingDirectory(this.root, {Directory? current}) : current = current ?? root;
+}
+
+Tool readTool(WorkingDirectory workspace) {
   final structuredDocuments = <String, Future<LogicalDocument?>>{};
 
   return Tool(
@@ -150,7 +157,7 @@ Tool readTool(Directory workspace) {
   );
 }
 
-Tool listTool(Directory workspace) => Tool(
+Tool listTool(WorkingDirectory workspace) => Tool(
   name: 'list',
   description:
       'Lists files and directories. Without path, lists the current directory. '
@@ -218,7 +225,10 @@ Tool listTool(Directory workspace) => Tool(
       }
 
       await for (final entity in target.list()) {
-        final relativePath = path.relative(entity.path, from: workspace.path);
+        final relativePath = path.relative(
+          entity.path,
+          from: workspace.current.path,
+        );
 
         if (re != null && !re.hasMatch(relativePath)) {
           continue;
@@ -245,11 +255,12 @@ Tool listTool(Directory workspace) => Tool(
   },
 );
 
-File? _resolveWorkspaceFile(Directory workspace, String rawPath) {
-  final workspacePath = path.normalize(workspace.absolute.path);
+File? _resolveWorkspaceFile(WorkingDirectory workspace, String rawPath) {
+  final workspacePath = path.normalize(workspace.root.absolute.path);
+  final currentPath = path.normalize(workspace.current.absolute.path);
   final targetPath = path.isAbsolute(rawPath)
       ? path.normalize(rawPath)
-      : path.normalize(path.join(workspacePath, rawPath));
+      : path.normalize(path.join(currentPath, rawPath));
   final relative = path.relative(targetPath, from: workspacePath);
   if (relative == '..' || relative.startsWith('..${path.separator}')) {
     return null;
@@ -257,13 +268,14 @@ File? _resolveWorkspaceFile(Directory workspace, String rawPath) {
   return File(targetPath);
 }
 
-Directory? _resolveListDirectory(Directory workspace, String? rawPath) {
-  final workspacePath = path.normalize(workspace.absolute.path);
+Directory? _resolveListDirectory(WorkingDirectory workspace, String? rawPath) {
+  final workspacePath = path.normalize(workspace.root.absolute.path);
+  final currentPath = path.normalize(workspace.current.absolute.path);
   final targetPath = rawPath == null || rawPath.isEmpty
-      ? workspacePath
+      ? currentPath
       : path.isAbsolute(rawPath)
       ? path.normalize(rawPath)
-      : path.normalize(path.join(workspacePath, rawPath));
+      : path.normalize(path.join(currentPath, rawPath));
 
   final relative = path.relative(targetPath, from: workspacePath);
   if (relative == '..' || relative.startsWith('..${path.separator}')) {
@@ -305,42 +317,277 @@ Directory? _resolveListDirectory(Directory workspace, String? rawPath) {
 //       },
 //     );
 
-// Tool findTool() => Tool(
-//       name: 'find',
-//       description:
-//           'Lists files inside the granted workspace whose name matches a '
-//           'substring or RegExp pattern. Returns relative paths.',
-//       parameters: {
-//         'type': 'object',
-//         'properties': {
-//           'pattern': {
-//             'type': 'string',
-//             'description': 'Substring or RegExp to match against file names',
-//           },
-//         },
-//         'required': ['pattern'],
-//       },
-//       handler: (call) async {
-//         final root = Workspace.instance.grantedUri;
-//         if (root == null) return ToolCallResult.failure(call.id, 'No workspace granted');
-//         final pattern = call.arguments['pattern'] as String;
-//         final re = RegExp(pattern);
-//         final results = <String>[];
-//         await for (final entry in Workspace.instance.saf.walk(root)) {
-//           if (entry.file.isDir) continue;
-//           if (re.hasMatch(entry.file.name)) {
-//             results.add(entry.relativePath);
-//           }
-//         }
-//         return ToolCallResult(
-//           id: call.id,
-//           ok: true,
-//           output: results.isEmpty
-//               ? 'No matches'
-//               : '${results.length} match(es):\n${results.join('\n')}',
-//         );
-//       },
-//     );
+const kMaxFindResults = 500;
+
+Tool findTool(WorkingDirectory workspace) => Tool(
+  name: 'find',
+  description:
+      'Recursively finds files or directories below a path. Use path like '
+      '"." and a shell-style glob pattern like "*.pdf". The type flag is '
+      '"file" by default or "dir" for directories. Relative paths start at '
+      'the current working directory; absolute paths must stay inside the '
+      'granted workspace root.',
+  parameters: {
+    'type': 'object',
+    'properties': {
+      'path': {
+        'type': 'string',
+        'description':
+            'Directory or file to search below; use "." for the current '
+            'working directory.',
+      },
+      'pattern': {
+        'type': 'string',
+        'description':
+            'Shell-style name pattern, for example "*.pdf" or "report-??.txt".',
+      },
+      'type': {
+        'type': 'string',
+        'enum': ['file', 'dir'],
+        'description': 'Match regular files or directories. Defaults to file.',
+        'default': 'file',
+      },
+      'max_depth': {
+        'type': 'integer',
+        'description':
+            'Maximum search depth relative to path. 0 checks only path, 1 '
+            'checks its direct children, and so on. Defaults to 3.',
+        'default': 3,
+        'minimum': 0,
+      },
+    },
+    'required': ['path', 'pattern'],
+  },
+  handler: (call) async {
+    final rawPath = (call.arguments['path'] as String?)?.trim();
+    final pattern = (call.arguments['pattern'] as String?)?.trim();
+    final type = (call.arguments['type'] as String?) ?? 'file';
+    final maxDepth = (call.arguments['max_depth'] as int?) ?? 3;
+
+    if (rawPath == null || rawPath.isEmpty) {
+      return ToolCallResult.failure(call.id, 'Invalid path: path is required.');
+    }
+    if (pattern == null || pattern.isEmpty) {
+      return ToolCallResult.failure(
+        call.id,
+        'Invalid pattern: pattern is required.',
+      );
+    }
+    if (type != 'file' && type != 'dir') {
+      return ToolCallResult.failure(
+        call.id,
+        'Invalid type "$type": expected "file" or "dir".',
+      );
+    }
+    if (maxDepth < 0 || maxDepth > 32) {
+      return ToolCallResult.failure(
+        call.id,
+        'Invalid max_depth "$maxDepth": expected a value from 0 to 32.',
+      );
+    }
+
+    final target = _resolveListDirectory(workspace, rawPath);
+    if (target == null) {
+      return ToolCallResult.failure(
+        call.id,
+        'Invalid path: it must stay inside the workspace root.',
+      );
+    }
+
+    final matcher = _globRegExp(pattern);
+    final results = <String>[];
+    try {
+      if (!await target.exists()) {
+        return ToolCallResult.failure(
+          call.id,
+          'Path not found: ${target.path}',
+        );
+      }
+
+      await _collectFindMatches(
+        target: target,
+        currentDirectory: workspace.current,
+        matcher: matcher,
+        type: type,
+        maxDepth: maxDepth,
+        results: results,
+      );
+    } catch (e) {
+      return ToolCallResult.failure(
+        call.id,
+        'Failed to find below "${target.path}": $e',
+      );
+    }
+
+    final truncated = results.length >= kMaxFindResults;
+    final header = [
+      'current directory: ${workspace.current.path}',
+      'find path: ${target.path}',
+      'type: $type',
+      'pattern: $pattern',
+      'max depth: $maxDepth',
+      'found ${results.length}${truncated ? '+' : ''} match(es)',
+    ];
+    return ToolCallResult(
+      id: call.id,
+      ok: true,
+      output: [...header, ...results].join('\n'),
+    );
+  },
+);
+
+Future<void> _collectFindMatches({
+  required FileSystemEntity target,
+  required Directory currentDirectory,
+  required RegExp matcher,
+  required String type,
+  required int maxDepth,
+  required List<String> results,
+}) async {
+  if (results.length >= kMaxFindResults) return;
+
+  final targetStat = await target.stat();
+  final targetMatches = type == 'file'
+      ? targetStat.type == FileSystemEntityType.file
+      : targetStat.type == FileSystemEntityType.directory;
+  if (targetMatches && matcher.hasMatch(path.basename(target.path))) {
+    results.add(path.relative(target.path, from: currentDirectory.path));
+  }
+
+  if (targetStat.type != FileSystemEntityType.directory || maxDepth == 0) {
+    return;
+  }
+
+  await _walkFindDirectory(
+    directory: Directory(target.path),
+    currentDirectory: currentDirectory,
+    matcher: matcher,
+    type: type,
+    depth: 0,
+    maxDepth: maxDepth,
+    results: results,
+  );
+}
+
+Future<void> _walkFindDirectory({
+  required Directory directory,
+  required Directory currentDirectory,
+  required RegExp matcher,
+  required String type,
+  required int depth,
+  required int maxDepth,
+  required List<String> results,
+}) async {
+  if (depth >= maxDepth || results.length >= kMaxFindResults) return;
+
+  await for (final entity in directory.list(
+    recursive: false,
+    followLinks: false,
+  )) {
+    if (results.length >= kMaxFindResults) return;
+
+    final childDepth = depth + 1;
+    final stat = await entity.stat();
+    final isMatchType = type == 'file'
+        ? stat.type == FileSystemEntityType.file
+        : stat.type == FileSystemEntityType.directory;
+    if (isMatchType && matcher.hasMatch(path.basename(entity.path))) {
+      results.add(path.relative(entity.path, from: currentDirectory.path));
+    }
+
+    if (stat.type == FileSystemEntityType.directory && childDepth < maxDepth) {
+      await _walkFindDirectory(
+        directory: Directory(entity.path),
+        currentDirectory: currentDirectory,
+        matcher: matcher,
+        type: type,
+        depth: childDepth,
+        maxDepth: maxDepth,
+        results: results,
+      );
+    }
+  }
+}
+
+Tool cdTool(WorkingDirectory workspace) => Tool(
+  name: 'cd',
+  description:
+      'Changes the current working directory inside the granted workspace. '
+      'Relative paths are resolved from the current working directory. Use '
+      '".." to move to the parent directory, but never outside the granted '
+      'workspace root.',
+  parameters: {
+    'type': 'object',
+    'properties': {
+      'path': {
+        'type': 'string',
+        'description': 'Relative or absolute directory path.',
+      },
+    },
+    'required': ['path'],
+  },
+  handler: (call) async {
+    final rawPath = (call.arguments['path'] as String?)?.trim();
+    if (rawPath == null || rawPath.isEmpty) {
+      return ToolCallResult.failure(call.id, 'Invalid path: path is required.');
+    }
+
+    final target = _resolveListDirectory(workspace, rawPath);
+    if (target == null) {
+      return ToolCallResult.failure(
+        call.id,
+        'Invalid path: it must stay inside the workspace root.',
+      );
+    }
+
+    try {
+      if (!await target.exists()) {
+        return ToolCallResult.failure(
+          call.id,
+          'Directory not found: ${target.path}',
+        );
+      }
+      final stat = await target.stat();
+      if (stat.type != FileSystemEntityType.directory) {
+        return ToolCallResult.failure(
+          call.id,
+          'Not a directory: ${target.path}',
+        );
+      }
+
+      final previous = workspace.current.path;
+      workspace.current = Directory(target.absolute.path);
+      return ToolCallResult(
+        id: call.id,
+        ok: true,
+        output:
+            'Changed current directory from $previous to ${workspace.current.path}',
+      );
+    } catch (e) {
+      return ToolCallResult.failure(
+        call.id,
+        'Failed to change directory to "${target.path}": $e',
+      );
+    }
+  },
+);
+
+RegExp _globRegExp(String pattern) {
+  final buffer = StringBuffer('^');
+  for (var index = 0; index < pattern.length; index++) {
+    final character = pattern[index];
+    switch (character) {
+      case '*':
+        buffer.write('.*');
+      case '?':
+        buffer.write('.');
+      default:
+        buffer.write(RegExp.escape(character));
+    }
+  }
+  buffer.write(r'$');
+  return RegExp(buffer.toString(), caseSensitive: false);
+}
 
 // Tool grepTool() => Tool(
 //       name: 'grep',
