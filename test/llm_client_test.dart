@@ -29,6 +29,42 @@ void main() {
         _sseEvent({
           'choices': [
             {
+              'delta': {
+                'reasoning': 'thinking',
+                'reasoning_details': [
+                  {
+                    'type': 'reasoning.text',
+                    'id': 'reasoning_1',
+                    'text': 'Think ',
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+      ),
+      utf8.encode(
+        _sseEvent({
+          'choices': [
+            {
+              'delta': {
+                'reasoning': ' more',
+                'reasoning_details': [
+                  {
+                    'type': 'reasoning.text',
+                    'id': 'reasoning_1',
+                    'text': 'more carefully.',
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+      ),
+      utf8.encode(
+        _sseEvent({
+          'choices': [
+            {
               'delta': {'content': 'Hello'},
             },
           ],
@@ -92,15 +128,20 @@ void main() {
     );
 
     final deltas = <String>[];
+    var reasoningSignals = 0;
     final result = await client.chatStream(
       messages: const [
         {'role': 'user', 'content': 'Hello'},
       ],
       onTextDelta: deltas.add,
+      onReasoningDelta: () => reasoningSignals++,
     );
     client.close();
 
     expect(deltas, ['Hello']);
+    expect(reasoningSignals, 2);
+    expect(result.reasoning, 'thinking more');
+    expect(result.reasoningDetails.single['text'], 'Think more carefully.');
     expect(result.content, 'Hello');
     expect(result.toolCalls, hasLength(1));
     expect(result.toolCalls.single.id, 'call_1');

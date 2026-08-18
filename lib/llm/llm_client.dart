@@ -9,14 +9,23 @@ import '../agent/tool.dart';
 class LlmMessage {
   final String? content;
   final List<ToolCall> toolCalls;
+  final String? reasoning;
+  final List<Map<String, dynamic>> reasoningDetails;
 
-  const LlmMessage({this.content, this.toolCalls = const []});
+  const LlmMessage({
+    this.content,
+    this.toolCalls = const [],
+    this.reasoning,
+    this.reasoningDetails = const [],
+  });
 
   bool get hasToolCalls => toolCalls.isNotEmpty;
 
   Map<String, dynamic> toJson() => {
     'role': 'assistant',
     if (content != null && content!.isNotEmpty) 'content': content,
+    if (reasoning != null && reasoning!.isNotEmpty) 'reasoning': reasoning,
+    if (reasoningDetails.isNotEmpty) 'reasoning_details': reasoningDetails,
     if (hasToolCalls) 'tool_calls': toolCalls.map((t) => t.toJson()).toList(),
   };
 }
@@ -70,6 +79,8 @@ class LlmClient {
     return LlmMessage(
       content: message['content'] as String?,
       toolCalls: toolCalls,
+      reasoning: _readReasoning(message),
+      reasoningDetails: _parseReasoningDetails(message['reasoning_details']),
     );
   }
 
@@ -83,6 +94,7 @@ class LlmClient {
     required List<Map<String, dynamic>> messages,
     List<Tool> tools = const [],
     required void Function(String delta) onTextDelta,
+    void Function()? onReasoningDelta,
   }) async {
     final request =
         http.Request('POST', Uri.parse('${config.baseUrl}/chat/completions'))
@@ -101,6 +113,8 @@ class LlmClient {
     }
 
     final content = StringBuffer();
+    final reasoning = StringBuffer();
+    final reasoningDetails = <Map<String, dynamic>>[];
     final streamedToolCalls = <int, _StreamToolCall>{};
 
     await for (final event in _sseDataEvents(response.stream)) {
@@ -116,6 +130,19 @@ class LlmClient {
       if (choices.isEmpty) continue;
       final choice = choices.first as Map<String, dynamic>;
       final delta = choice['delta'] as Map<String, dynamic>? ?? const {};
+
+      final reasoningDelta = _readReasoning(delta);
+      final reasoningDetailDelta = _parseReasoningDetails(
+        delta['reasoning_details'],
+      );
+      if (reasoningDelta != null && reasoningDelta.isNotEmpty) {
+        reasoning.write(reasoningDelta);
+      }
+      if ((reasoningDelta != null && reasoningDelta.isNotEmpty) ||
+          reasoningDetailDelta.isNotEmpty) {
+        onReasoningDelta?.call();
+      }
+      _appendReasoningDetails(reasoningDetails, reasoningDetailDelta);
 
       final text = delta['content'];
       if (text is String && text.isNotEmpty) {
@@ -144,6 +171,8 @@ class LlmClient {
 
     return LlmMessage(
       content: content.length == 0 ? null : content.toString(),
+      reasoning: reasoning.length == 0 ? null : reasoning.toString(),
+      reasoningDetails: reasoningDetails,
       toolCalls: [
         for (final entry in streamedToolCalls.entries)
           entry.value.toToolCall(index: entry.key),
@@ -160,6 +189,52 @@ class LlmClient {
     'tools': tools.map((t) => t.toJson()).toList(),
     'tool_choice': 'auto',
   };
+
+  String? _readReasoning(Map<String, dynamic> message) {
+    final value = message['reasoning'] ?? message['reasoning_content'];
+    return value is String ? value : null;
+  }
+
+  List<Map<String, dynamic>> _parseReasoningDetails(dynamic raw) {
+    if (raw is! List) return const [];
+    return [
+      for (final detail in raw)
+        if (detail is Map) Map<String, dynamic>.from(detail),
+    ];
+  }
+
+  void _appendReasoningDetails(
+    List<Map<String, dynamic>> target,
+    List<Map<String, dynamic>> incoming,
+  ) {
+    for (final detail in incoming) {
+      final key = detail['id'] ?? detail['index'];
+      final existingIndex = key == null
+          ? -1
+          : target.indexWhere(
+              (current) =>
+                  (current['id'] ?? current['index']) == key &&
+                  current['type'] == detail['type'],
+            );
+
+      if (existingIndex == -1) {
+        target.add(detail);
+        continue;
+      }
+
+      final existing = target[existingIndex];
+      for (final field in const ['text', 'summary', 'data']) {
+        final next = detail[field];
+        if (next is String && next.isNotEmpty) {
+          final previous = existing[field];
+          existing[field] = '${previous is String ? previous : ''}$next';
+        }
+      }
+      for (final entry in detail.entries) {
+        existing.putIfAbsent(entry.key, () => entry.value);
+      }
+    }
+  }
 
   List<ToolCall> _parseToolCalls(List<dynamic> rawCalls) => [
     for (final raw in rawCalls) _parseToolCall(raw as Map<String, dynamic>),

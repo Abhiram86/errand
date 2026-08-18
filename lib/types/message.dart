@@ -23,12 +23,16 @@ class AssistantMessage extends Message {
 class ToolMessage extends Message {
   final ToolInvocation tool;
   final String result;
+  final String? reasoning;
+  final List<Map<String, dynamic>> reasoningDetails;
 
   const ToolMessage({
     required super.id,
     required super.text,
     required this.tool,
     required this.result,
+    this.reasoning,
+    this.reasoningDetails = const [],
   });
 }
 

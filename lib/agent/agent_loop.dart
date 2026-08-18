@@ -9,6 +9,7 @@ import 'tool_registry.dart';
 
 typedef AgentObserver = void Function(AgentEvent event);
 typedef AgentTextObserver = void Function(String delta);
+typedef AgentReasoningObserver = void Function();
 
 sealed class AgentEvent {
   const AgentEvent();
@@ -17,7 +18,15 @@ sealed class AgentEvent {
 class AgentToolCall extends AgentEvent {
   final ToolCall call;
   final ToolCallResult result;
-  const AgentToolCall(this.call, this.result);
+  final String? reasoning;
+  final List<Map<String, dynamic>> reasoningDetails;
+
+  const AgentToolCall(
+    this.call,
+    this.result, {
+    this.reasoning,
+    this.reasoningDetails = const [],
+  });
 }
 
 class AgentLoop {
@@ -27,12 +36,14 @@ class AgentLoop {
   final ToolRegistry _registry;
   final AgentObserver? _onEvent;
   final AgentTextObserver? onTextDelta;
+  final AgentReasoningObserver? onReasoningDelta;
 
   AgentLoop({
     required this._llm,
     required this._registry,
     this._onEvent,
     this.onTextDelta,
+    this.onReasoningDelta,
   });
 
   Future<String> run(Conversation conversation) async {
@@ -50,6 +61,7 @@ class AgentLoop {
               messages: messages,
               tools: _registry.all,
               onTextDelta: textObserver,
+              onReasoningDelta: onReasoningDelta,
             );
       if (!message.hasToolCalls) {
         return message.content ?? '';
@@ -58,7 +70,14 @@ class AgentLoop {
       messages.add(message.toJson());
       for (final call in message.toolCalls) {
         final result = await _registry.execute(call);
-        _onEvent?.call(AgentToolCall(call, result));
+        _onEvent?.call(
+          AgentToolCall(
+            call,
+            result,
+            reasoning: message.reasoning,
+            reasoningDetails: message.reasoningDetails,
+          ),
+        );
         messages.add({
           'role': 'tool',
           'tool_call_id': call.id,
@@ -95,6 +114,11 @@ class AgentLoop {
 
           messages.add({
             'role': 'assistant',
+            if (toolMessages.first.reasoning != null &&
+                toolMessages.first.reasoning!.isNotEmpty)
+              'reasoning': toolMessages.first.reasoning,
+            if (toolMessages.first.reasoningDetails.isNotEmpty)
+              'reasoning_details': toolMessages.first.reasoningDetails,
             'tool_calls': [
               for (final toolMessage in toolMessages)
                 {
