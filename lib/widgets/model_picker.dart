@@ -10,6 +10,7 @@ class ModelPicker extends StatelessWidget {
   final List<ModelOption> models;
   final ValueChanged<String> onChanged;
   final bool enabled;
+  final bool expand;
 
   const ModelPicker({
     super.key,
@@ -17,6 +18,7 @@ class ModelPicker extends StatelessWidget {
     required this.models,
     required this.onChanged,
     this.enabled = true,
+    this.expand = false,
   });
 
   @override
@@ -35,19 +37,13 @@ class ModelPicker extends StatelessWidget {
       child: GestureDetector(
         onTap: enabled ? () => _openModelDialog(context, options) : null,
         child: SizedBox(
-          width: math.min(maxWidth, 280),
+          width: expand ? double.infinity : math.min(maxWidth, 280),
           child: Row(
             children: [
               Expanded(
-                child: Text(
-                  selected.name,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: enabled ? kText : kMuted,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                  ),
+                child: _ScrollingModelName(
+                  name: selected.name,
+                  color: enabled ? kText : kMuted,
                 ),
               ),
               const SizedBox(width: 2),
@@ -84,6 +80,89 @@ class ModelPicker extends StatelessWidget {
       id: selectedModel,
       name: selectedModel,
       provider: 'Configured model',
+    );
+  }
+}
+
+class _ScrollingModelName extends StatefulWidget {
+  final String name;
+  final Color color;
+
+  const _ScrollingModelName({required this.name, required this.color});
+
+  @override
+  State<_ScrollingModelName> createState() => _ScrollingModelNameState();
+}
+
+class _ScrollingModelNameState extends State<_ScrollingModelName>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 9),
+    );
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ScrollingModelName oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.name != widget.name) {
+      _controller
+        ..reset()
+        ..stop();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final style = TextStyle(
+      color: widget.color,
+      fontSize: 14,
+      fontWeight: FontWeight.w600,
+    );
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final painter = TextPainter(
+          text: TextSpan(text: widget.name, style: style),
+          maxLines: 1,
+          textDirection: Directionality.of(context),
+        )..layout();
+        final overflow = painter.width - constraints.maxWidth;
+
+        if (overflow <= 0 || constraints.maxWidth <= 0) {
+          _controller.stop();
+          return Text(widget.name, maxLines: 1, style: style);
+        }
+
+        if (!_controller.isAnimating) _controller.repeat(reverse: true);
+        return ClipRect(
+          child: AnimatedBuilder(
+            animation: CurvedAnimation(
+              parent: _controller,
+              curve: Curves.easeInOut,
+            ),
+            builder: (context, child) {
+              final offset = overflow * _controller.value;
+              return Transform.translate(
+                offset: Offset(-offset, 0),
+                child: SizedBox(width: painter.width, child: child),
+              );
+            },
+            child: Text(widget.name, maxLines: 1, style: style),
+          ),
+        );
+      },
     );
   }
 }

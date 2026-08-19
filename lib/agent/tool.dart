@@ -13,11 +13,20 @@ class Tool {
   final Map<String, dynamic> parameters;
   final ToolHandler handler;
 
+  /// Whether execution must pass an application-level validation or approval
+  /// step before the handler is allowed to run.
+  ///
+  /// This is deliberately internal metadata and is not sent to the model as
+  /// part of the function schema. Read-only tools can leave it false;
+  /// mutation tools should set it true when they are added.
+  final bool requiresValidation;
+
   const Tool({
     required this.name,
     required this.description,
     required this.parameters,
     required this.handler,
+    this.requiresValidation = false,
   });
 
   Map<String, dynamic> toJson() => {

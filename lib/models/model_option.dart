@@ -10,7 +10,8 @@ class ModelOption {
   });
 }
 
-const kDefaultModelId = 'nvidia/nemotron-3-ultra-550b-a55b:free';
+// const kDefaultModelId = 'nvidia/nemotron-3-ultra-550b-a55b:free';
+const kDefaultModelId = 'Qwen/Qwen3.8-27B';
 
 // Used immediately on launch and whenever the model endpoint is unavailable.
 // The live catalog normally replaces this list after startup.

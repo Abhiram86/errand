@@ -333,8 +333,10 @@ Tool findTool(WorkingDirectory workspace) => Tool(
       'path': {
         'type': 'string',
         'description':
-            'Directory or file to search below; use "." for the current '
-            'working directory.',
+            'Optional directory or file to search below; use "." for the current '
+            'working directory.'
+            'default: "."',
+        'default': '.',
       },
       'pattern': {
         'type': 'string',
@@ -359,14 +361,11 @@ Tool findTool(WorkingDirectory workspace) => Tool(
     'required': ['path', 'pattern'],
   },
   handler: (call) async {
-    final rawPath = (call.arguments['path'] as String?)?.trim();
+    final rawPath = (call.arguments['path'] as String?)?.trim() ?? '.';
     final pattern = (call.arguments['pattern'] as String?)?.trim();
     final type = (call.arguments['type'] as String?) ?? 'file';
     final maxDepth = (call.arguments['max_depth'] as int?) ?? 3;
 
-    if (rawPath == null || rawPath.isEmpty) {
-      return ToolCallResult.failure(call.id, 'Invalid path: path is required.');
-    }
     if (pattern == null || pattern.isEmpty) {
       return ToolCallResult.failure(
         call.id,
@@ -396,6 +395,7 @@ Tool findTool(WorkingDirectory workspace) => Tool(
 
     final matcher = _globRegExp(pattern);
     final results = <String>[];
+    final skippedPaths = <String>[];
     try {
       if (!await target.exists()) {
         return ToolCallResult.failure(
@@ -411,6 +411,7 @@ Tool findTool(WorkingDirectory workspace) => Tool(
         type: type,
         maxDepth: maxDepth,
         results: results,
+        skippedPaths: skippedPaths,
       );
     } catch (e) {
       return ToolCallResult.failure(
@@ -427,6 +428,8 @@ Tool findTool(WorkingDirectory workspace) => Tool(
       'pattern: $pattern',
       'max depth: $maxDepth',
       'found ${results.length}${truncated ? '+' : ''} match(es)',
+      if (skippedPaths.isNotEmpty)
+        'skipped ${skippedPaths.length} inaccessible path(s); results may be partial',
     ];
     return ToolCallResult(
       id: call.id,
@@ -443,10 +446,17 @@ Future<void> _collectFindMatches({
   required String type,
   required int maxDepth,
   required List<String> results,
+  required List<String> skippedPaths,
 }) async {
   if (results.length >= kMaxFindResults) return;
 
-  final targetStat = await target.stat();
+  late final FileStat targetStat;
+  try {
+    targetStat = await target.stat();
+  } on FileSystemException {
+    skippedPaths.add(target.path);
+    return;
+  }
   final targetMatches = type == 'file'
       ? targetStat.type == FileSystemEntityType.file
       : targetStat.type == FileSystemEntityType.directory;
@@ -466,6 +476,7 @@ Future<void> _collectFindMatches({
     depth: 0,
     maxDepth: maxDepth,
     results: results,
+    skippedPaths: skippedPaths,
   );
 }
 
@@ -477,35 +488,51 @@ Future<void> _walkFindDirectory({
   required int depth,
   required int maxDepth,
   required List<String> results,
+  required List<String> skippedPaths,
 }) async {
   if (depth >= maxDepth || results.length >= kMaxFindResults) return;
 
-  await for (final entity in directory.list(
-    recursive: false,
-    followLinks: false,
-  )) {
-    if (results.length >= kMaxFindResults) return;
+  try {
+    await for (final entity in directory.list(
+      recursive: false,
+      followLinks: false,
+    )) {
+      if (results.length >= kMaxFindResults) return;
 
-    final childDepth = depth + 1;
-    final stat = await entity.stat();
-    final isMatchType = type == 'file'
-        ? stat.type == FileSystemEntityType.file
-        : stat.type == FileSystemEntityType.directory;
-    if (isMatchType && matcher.hasMatch(path.basename(entity.path))) {
-      results.add(path.relative(entity.path, from: currentDirectory.path));
-    }
+      final childDepth = depth + 1;
+      late final FileStat stat;
+      try {
+        stat = await entity.stat();
+      } on FileSystemException {
+        skippedPaths.add(entity.path);
+        continue;
+      }
 
-    if (stat.type == FileSystemEntityType.directory && childDepth < maxDepth) {
-      await _walkFindDirectory(
-        directory: Directory(entity.path),
-        currentDirectory: currentDirectory,
-        matcher: matcher,
-        type: type,
-        depth: childDepth,
-        maxDepth: maxDepth,
-        results: results,
-      );
+      final isMatchType = type == 'file'
+          ? stat.type == FileSystemEntityType.file
+          : stat.type == FileSystemEntityType.directory;
+      if (isMatchType && matcher.hasMatch(path.basename(entity.path))) {
+        results.add(path.relative(entity.path, from: currentDirectory.path));
+      }
+
+      if (stat.type == FileSystemEntityType.directory &&
+          childDepth < maxDepth) {
+        await _walkFindDirectory(
+          directory: Directory(entity.path),
+          currentDirectory: currentDirectory,
+          matcher: matcher,
+          type: type,
+          depth: childDepth,
+          maxDepth: maxDepth,
+          results: results,
+          skippedPaths: skippedPaths,
+        );
+      }
     }
+  } on FileSystemException {
+    // Shared storage often contains provider-owned directories that can be
+    // stat'ed but not listed. A blocked branch should not fail the search.
+    skippedPaths.add(directory.path);
   }
 }
 

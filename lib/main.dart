@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:uuid/uuid.dart';
 
 import 'agent/agent_loop.dart';
 import 'agent/tool_registry.dart';
@@ -15,6 +17,7 @@ import 'theme/app_colors.dart';
 import 'types/conversation.dart';
 import 'types/message.dart';
 import 'widgets/chat_composer.dart';
+import 'widgets/chat_sidebar.dart';
 import 'widgets/message_bubbles.dart';
 import 'widgets/model_picker.dart';
 
@@ -22,7 +25,7 @@ const kApiKey = String.fromEnvironment('OPENROUTER_API_KEY');
 const kBaseUrl = String.fromEnvironment('HANDY_BASE_URL');
 const kSystemPrompt =
     'You are Handy, a general-purpose agent running on an Android phone. '
-    'You can read and list files inside the user\'s granted '
+    'You can navigate, inspect, and read files inside the user\'s granted '
     'workspace. Prefer list before reading whole files. Never guess '
     'file paths that have not been confirmed to exist. '
     'Try different methods when appropriate and do not stop after one failure. '
@@ -75,21 +78,20 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   final _controller = TextEditingController();
   final _scroll = ScrollController();
   final _modelCatalog = ModelCatalogService();
+  final _uuid = const Uuid();
   late LlmClient _llm;
   String _selectedModel = kConfiguredModel;
   List<ModelOption> _models = kFallbackModels;
-  final List<Message> _messages = [
-    const AssistantMessage(
-      id: 'init',
-      text: 'Hi! Ask me to read or list files in shared storage.',
-    ),
-  ];
+  List<Message> _messages = _welcomeMessages();
+  late Conversation _activeConversation;
+  final List<Conversation> _conversations = [];
   bool _busy = false;
   String? _workingMessageId;
   final _workingText = StringBuffer();
   Timer? _workingFlushTimer;
   bool _scrollPending = false;
   bool _permissionDialogOpen = false;
+  bool _sidebarOpen = false;
   final WorkingDirectory _workingDirectory = WorkingDirectory(
     Workspace.instance.root,
   );
@@ -97,6 +99,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    _activeConversation = _newDraftConversation();
     _llm = _createLlmClient(_selectedModel);
     unawaited(_loadModelCatalog());
     WidgetsBinding.instance.addObserver(this);
@@ -108,7 +111,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   LlmClient _createLlmClient(String model) {
     return LlmClient(
       config: LlmConfig(
-        baseUrl: kBaseUrl.isEmpty ? 'https://openrouter.ai/api/v1' : kBaseUrl,
+        // baseUrl: kBaseUrl.isEmpty ? 'https://openrouter.ai/api/v1' : kBaseUrl,
+        baseUrl: kBaseUrl.isEmpty
+            ? 'https://g9hnto0u7lvbu837.us-east-2.aws.endpoints.huggingface.cloud/v1'
+            : kBaseUrl,
         apiKey: kApiKey,
         model: model,
       ),
@@ -119,7 +125,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     if (_busy || model == _selectedModel) return;
     _llm.close();
     _llm = _createLlmClient(model);
-    setState(() => _selectedModel = model);
+    setState(() {
+      _selectedModel = model;
+      _activeConversation.model = model;
+      _activeConversation.provider = _providerForModel(model);
+      _touchConversation();
+    });
   }
 
   @override
@@ -213,6 +224,95 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     );
   }
 
+  static List<Message> _welcomeMessages() => [
+    const AssistantMessage(
+      id: 'init',
+      text: 'Hi! Ask me to read or list files in shared storage.',
+    ),
+  ];
+
+  Conversation _newDraftConversation() {
+    return Conversation(
+      messages: _messages,
+      currentDir: _workingDirectory.current,
+      model: _selectedModel,
+      provider: _providerForModel(_selectedModel),
+    );
+  }
+
+  String? _providerForModel(String model) {
+    for (final option in _models) {
+      if (option.id == model) return option.provider;
+    }
+    return null;
+  }
+
+  void _touchConversation() {
+    if (_activeConversation.id != null) {
+      _activeConversation.updatedAt = DateTime.now();
+    }
+  }
+
+  void _startConversation(String firstMessage) {
+    if (_activeConversation.id != null) {
+      _touchConversation();
+      return;
+    }
+
+    _activeConversation
+      ..id = _uuid.v4()
+      ..title = _conversationTitle(firstMessage)
+      ..model = _selectedModel
+      ..provider = _providerForModel(_selectedModel);
+    _touchConversation();
+    _conversations.add(_activeConversation);
+  }
+
+  String _conversationTitle(String message) {
+    final singleLine = message.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (singleLine.length <= 42) return singleLine;
+    return '${singleLine.substring(0, 39)}...';
+  }
+
+  List<Conversation> get _sortedConversations {
+    final sorted = [..._conversations];
+    sorted.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    return sorted;
+  }
+
+  void _startNewChat() {
+    if (_busy) return;
+    _workingFlushTimer?.cancel();
+    _workingFlushTimer = null;
+    _controller.clear();
+    setState(() {
+      _messages = _welcomeMessages();
+      _activeConversation = _newDraftConversation();
+      _workingMessageId = null;
+      _workingText.clear();
+    });
+    _closeSidebar();
+    _scrollToBottom(animated: false);
+  }
+
+  void _selectConversation(Conversation conversation) {
+    if (_busy || conversation.id == _activeConversation.id) {
+      _closeSidebar();
+      return;
+    }
+    setState(() {
+      _activeConversation = conversation;
+      _messages = conversation.messages;
+      _selectedModel = conversation.model ?? kConfiguredModel;
+      _llm.close();
+      _llm = _createLlmClient(_selectedModel);
+      _workingMessageId = null;
+      _workingText.clear();
+    });
+    _closeSidebar();
+    _scrollToBottom(animated: false);
+  }
+
   void _scrollToBottom({bool animated = true}) {
     if (_scrollPending) return;
     _scrollPending = true;
@@ -238,6 +338,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     final text = _controller.text.trim();
     if (text.isEmpty || _busy) return;
     _controller.clear();
+    _startConversation(text);
     final workingId = 'working-${DateTime.now().microsecondsSinceEpoch}';
     _workingMessageId = workingId;
     _workingText.clear();
@@ -263,11 +364,19 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       }
 
       final conversation = Conversation(
+        id: _activeConversation.id,
         localSystemPrompt: _systemPromptFor(_workingDirectory.current),
         messages: _messages
             .where((message) => message.id != _workingMessageId)
             .toList(growable: false),
         currentDir: _workingDirectory.current,
+        attachedFileUris: _activeConversation.attachedFileUris,
+        title: _activeConversation.title,
+        provider: _activeConversation.provider,
+        model: _activeConversation.model,
+        isPinned: _activeConversation.isPinned,
+        createdAt: _activeConversation.createdAt,
+        updatedAt: _activeConversation.updatedAt,
       );
 
       final loop = AgentLoop(
@@ -325,6 +434,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
       if (workingIndex == -1) {
         _messages.add(message);
+        _touchConversation();
         return;
       }
 
@@ -352,6 +462,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         nextWorkingIndex,
         AssistantMessage(id: nextWorkingId, text: '…working'),
       );
+      _touchConversation();
     });
     _scrollToBottom();
   }
@@ -379,6 +490,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         id: _workingMessageId!,
         text: '…thinking',
       );
+      _touchConversation();
     });
   }
 
@@ -396,6 +508,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         id: _workingMessageId!,
         text: _workingText.toString(),
       );
+      _touchConversation();
     });
     _scrollToBottom(animated: false);
   }
@@ -419,6 +532,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       } else {
         _messages[index] = message;
       }
+      _touchConversation();
       _busy = false;
       _workingMessageId = null;
     });
@@ -429,29 +543,111 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: kDarkBg,
-      body: SafeArea(
-        child: Column(
-          children: [
-            _buildHeader(),
-            Expanded(child: _buildMessageList()),
-            _buildComposer(),
-          ],
-        ),
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          final sidebarWidth = _sidebarWidth(constraints.maxWidth);
+
+          return Stack(
+            fit: StackFit.expand,
+            children: [
+              SafeArea(
+                child: Column(
+                  children: [
+                    _buildHeader(),
+                    Expanded(child: _buildMessageList()),
+                    _buildComposer(),
+                  ],
+                ),
+              ),
+              Positioned.fill(
+                child: IgnorePointer(
+                  ignoring: !_sidebarOpen,
+                  child: AnimatedOpacity(
+                    opacity: _sidebarOpen ? 1 : 0,
+                    duration: const Duration(milliseconds: 220),
+                    child: GestureDetector(
+                      onTap: _closeSidebar,
+                      child: ColoredBox(
+                        color: Colors.black.withValues(alpha: 0.52),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              AnimatedPositioned(
+                duration: const Duration(milliseconds: 280),
+                curve: Curves.easeOutCubic,
+                top: 0,
+                bottom: 0,
+                left: _sidebarOpen ? 0 : -sidebarWidth,
+                width: sidebarWidth,
+                child: ChatSidebar(
+                  conversations: _sortedConversations,
+                  activeConversationId: _activeConversation.id,
+                  onClose: _closeSidebar,
+                  onSelectConversation: _selectConversation,
+                ),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
 
+  double _sidebarWidth(double screenWidth) {
+    if (screenWidth <= 0) return 0;
+    return math.min(
+      screenWidth,
+      math.max(248, math.min(420, screenWidth * 0.8)),
+    );
+  }
+
+  void _openSidebar() {
+    if (!mounted) return;
+    setState(() => _sidebarOpen = true);
+  }
+
+  void _closeSidebar() {
+    if (!mounted) return;
+    setState(() => _sidebarOpen = false);
+  }
+
   Widget _buildHeader() {
-    return Align(
-      alignment: Alignment.centerLeft,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
-        child: ModelPicker(
-          selectedModel: _selectedModel,
-          models: _models,
-          enabled: !_busy,
-          onChanged: _selectModel,
-        ),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(8, 10, 16, 6),
+      child: Row(
+        children: [
+          IconButton(
+            onPressed: _openSidebar,
+            tooltip: 'Open sidebar',
+            icon: const Icon(Icons.menu_rounded),
+            color: kText,
+          ),
+          const SizedBox(width: 4),
+          Expanded(
+            child: ModelPicker(
+              selectedModel: _selectedModel,
+              models: _models,
+              enabled: !_busy,
+              expand: true,
+              onChanged: _selectModel,
+            ),
+          ),
+          const SizedBox(width: 4),
+          TextButton.icon(
+            onPressed: _busy ? null : _startNewChat,
+            icon: const Icon(Icons.add_rounded, size: 18),
+            label: const Text('New'),
+            style: TextButton.styleFrom(
+              foregroundColor: kText,
+              disabledForegroundColor: kMuted,
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              minimumSize: const Size(0, 40),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+          ),
+        ],
       ),
     );
   }

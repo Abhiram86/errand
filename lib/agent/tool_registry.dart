@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'tool.dart';
 import '../tools/file_tools.dart';
+import '../tools/workspace_tool.dart';
 import '../tools/web_tools.dart';
 import '../types/tool.dart';
 
@@ -23,9 +24,7 @@ class ToolRegistry {
     final directory = workingDirectory ?? WorkingDirectory(currentDir);
     return ToolRegistry([
       readTool(directory),
-      listTool(directory),
-      findTool(directory),
-      cdTool(directory),
+      workspaceTool(directory),
       webSearchTavilyTool(),
       webFetchTool(),
     ]);

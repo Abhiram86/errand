@@ -4,15 +4,13 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:handy_flutter/agent/tool.dart';
 import 'package:handy_flutter/agent/tool_registry.dart';
 import 'package:handy_flutter/tools/file_tools.dart';
+import 'package:handy_flutter/types/tool.dart';
 
 void main() {
   test('default registry exposes the core file tools', () {
     final registry = ToolRegistry.defaults(currentDir: Directory('/'));
     final names = registry.all.map((t) => t.name).toList();
-    expect(
-      names,
-      containsAll(['read', 'list', 'find', 'cd', 'websearch', 'webfetch']),
-    );
+    expect(names, containsAll(['read', 'workspace', 'websearch', 'webfetch']));
   });
 
   test('unknown tool returns a failure result', () async {
@@ -32,6 +30,21 @@ void main() {
 
     final function = call.toJson()['function'] as Map<String, dynamic>;
     expect(function['arguments'], '{"path":"README.md"}');
+  });
+
+  test('tool validation metadata stays outside the model schema', () {
+    final tool = Tool(
+      name: 'mutate',
+      description: 'Test mutation tool',
+      parameters: const {'type': 'object'},
+      requiresValidation: true,
+      handler: (call) async =>
+          ToolCallResult(id: call.id, ok: true, output: 'ok'),
+    );
+
+    expect(tool.requiresValidation, isTrue);
+    final function = tool.toJson()['function'] as Map<String, dynamic>;
+    expect(function.containsKey('requiresValidation'), isFalse);
   });
 
   test('read rejects paths outside the workspace and oversized ranges', () async {
@@ -79,15 +92,25 @@ void main() {
     final files = await registry.execute(
       const ToolCall(
         id: 'find-files',
-        name: 'find',
-        arguments: {'path': '.', 'pattern': '*.pdf', 'type': 'file'},
+        name: 'workspace',
+        arguments: {
+          'action': 'find',
+          'path': '.',
+          'pattern': '*.pdf',
+          'type': 'file',
+        },
       ),
     );
     final dirs = await registry.execute(
       const ToolCall(
         id: 'find-dirs',
-        name: 'find',
-        arguments: {'path': '.', 'pattern': 'nest*', 'type': 'dir'},
+        name: 'workspace',
+        arguments: {
+          'action': 'find',
+          'path': '.',
+          'pattern': 'nest*',
+          'type': 'dir',
+        },
       ),
     );
 
@@ -112,8 +135,13 @@ void main() {
     final result = await registry.execute(
       const ToolCall(
         id: 'depth',
-        name: 'find',
-        arguments: {'path': '.', 'pattern': '*.pdf', 'max_depth': 2},
+        name: 'workspace',
+        arguments: {
+          'action': 'find',
+          'path': '.',
+          'pattern': '*.pdf',
+          'max_depth': 2,
+        },
       ),
     );
 
@@ -131,13 +159,17 @@ void main() {
 
     final registry = ToolRegistry.defaults(currentDir: workspace);
     final changed = await registry.execute(
-      const ToolCall(id: 'cd', name: 'cd', arguments: {'path': 'nested'}),
+      const ToolCall(
+        id: 'cd',
+        name: 'workspace',
+        arguments: {'action': 'cd', 'path': 'nested'},
+      ),
     );
     final found = await registry.execute(
       const ToolCall(
         id: 'find-after-cd',
-        name: 'find',
-        arguments: {'path': '.', 'pattern': '*.pdf'},
+        name: 'workspace',
+        arguments: {'action': 'find', 'path': '.', 'pattern': '*.pdf'},
       ),
     );
 
