@@ -1,6 +1,6 @@
 # Next Plan — Status & Roadmap
 
-> **Updated Aug 21 2026.** P0 (DIY Intent tool) is **shipped** — see "P0 shipped" below for what landed vs the original design. P1 (OPT-07 truncation) is next, design frozen. P2 (AccessibilityService) queued after P1 + stability pass.
+> **Updated Aug 21 2026.** P0 (DIY Intent tool) and P1 (OPT-07 truncation) are **shipped** — see below for what landed vs the original designs. P2 (AccessibilityService) queued after a stability pass.
 
 ---
 
@@ -36,10 +36,12 @@ Plus a **generic escape hatch**: `action:"intent"` accepts raw `android_action` 
 
 ## ✅ P1 — OPT-07 Context & History Truncation (SHIPPED)
 
-> Landed Aug 21 2026. One deviation from the frozen design: **no schema v2** —
-> `currentContextSize`/`messageOffset` columns were dropped because truncation
-> is recomputed per turn from in-memory history and window state is derived
-> from row counts at query time. No migration needed.
+> Landed Aug 21 2026. Deviations from the frozen design: **no
+> `currentContextSize`/`messageOffset` columns** — truncation is recomputed
+> per turn from in-memory history and window state is derived from row counts
+> at query time. A **schema v2 migration was still added** (review follow-up):
+> UNIQUE index on `(conversation_id, message_id)` + `(conversation_id,
+> sort_order)` lookup index, with a dedupe pass for pre-v2 rows.
 
 1. **Truncation** (`lib/agent/context_budget.dart`, pure + unit-tested):
    assumed 256K char window; truncation triggers above 200K soft limit and
@@ -64,6 +66,25 @@ Plus a **generic escape hatch**: `action:"intent"` accepts raw `android_action` 
    window survive saves. `_failWorking` now explicitly deletes a persisted
    working bubble. Attachments still rewrite (small, composer-derived).
 6. **Debug footer** (kDebugMode only): `ctx ~NK / 200K · N msgs loaded`.
+
+---
+
+## ✅ UI polish (markdown, intent reopen, empty-bubble handling)
+
+- **Markdown rendering**: assistant turns render via `gpt_markdown` (bold,
+  tables, code, LaTeX); user turns stay plain `SelectableText`. The message
+  list is wrapped in a `SelectionArea` for copy-anywhere selection.
+- **Intent reopen buttons**: successful open-style intent tool bubbles
+  (`open_url`, `open_app`, `open_maps`, `search`, `dial`, `media_play`,
+  `email`, `share`, `wallpaper`, `settings`, `settings_panel`) show an Open
+  button that re-fires the persisted args through the same
+  `handleIntentAction` path as the agent — identical URL safety and error
+  mapping. Side-effect actions (alarm/timer/calendar, system toggle,
+  uninstall, raw `intent`) stay button-less. Derived entirely from persisted
+  data; works for conversations stored before the feature existed.
+- **Empty-bubble suppression**: whitespace-only streaming deltas no longer
+  blank the …working placeholder; empty final answers drop the bubble (and
+  delete its persisted row) instead of rendering an empty turn.
 
 ---
 

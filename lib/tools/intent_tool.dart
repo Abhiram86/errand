@@ -1,6 +1,7 @@
 import 'package:flutter/services.dart';
 import 'package:handy_flutter/agent/tool.dart';
 import 'package:handy_flutter/services/intent_service.dart';
+import 'package:handy_flutter/types/message.dart';
 import 'package:handy_flutter/types/tool.dart';
 
 Tool intentTool({IntentService? service}) {
@@ -113,50 +114,109 @@ Tool intentTool({IntentService? service}) {
     },
     handler: (call) async {
       try {
-        final action = call.arguments['action'] as String;
-
-        switch (action) {
-          case 'open_url':
-            return await _openUrl(call, svc);
-          case 'search':
-            return await _search(call, svc);
-          case 'open_app':
-            return await _openApp(call, svc);
-          case 'open_maps':
-            return await _openMaps(call, svc);
-          case 'dial':
-            return await _dial(call, svc);
-          case 'email':
-            return await _email(call, svc);
-          case 'alarm':
-          case 'timer':
-          case 'calendar_event':
-          case 'media_play':
-          case 'share':
-          case 'wallpaper':
-          case 'uninstall':
-          case 'settings_panel':
-          case 'intent':
-            return await _genericIntent(call, svc);
-          case 'settings':
-            return await _openSettingsPage(
-              call,
-              svc,
-              (call.arguments['page'] as String?) ??
-                  (call.arguments['query'] as String?) ??
-                  'main',
-            );
-          case 'system':
-            return await _systemAction(call, svc);
-          default:
-            return ToolCallResult.failure(
-                call.id, 'Unknown intent action "$action"');
-        }
+        return await handleIntentAction(call, svc);
       } catch (e) {
         return ToolCallResult.failure(call.id, 'Intent failed: $e');
       }
     },
   );
+}
+
+/// Routes one intent [call] through the curated-action switch. Shared by
+/// the tool handler and UI replay ([replayIntentAction]) so reopen gets
+/// identical URL-safety, extras parsing and error mapping.
+Future<ToolCallResult> handleIntentAction(
+  ToolCall call,
+  IntentService svc,
+) async {
+  final action = call.arguments['action'] as String;
+
+  switch (action) {
+    case 'open_url':
+      return await _openUrl(call, svc);
+    case 'search':
+      return await _search(call, svc);
+    case 'open_app':
+      return await _openApp(call, svc);
+    case 'open_maps':
+      return await _openMaps(call, svc);
+    case 'dial':
+      return await _dial(call, svc);
+    case 'email':
+      return await _email(call, svc);
+    case 'alarm':
+    case 'timer':
+    case 'calendar_event':
+    case 'media_play':
+    case 'share':
+    case 'wallpaper':
+    case 'uninstall':
+    case 'settings_panel':
+    case 'intent':
+      return await _genericIntent(call, svc);
+    case 'settings':
+      return await _openSettingsPage(
+        call,
+        svc,
+        (call.arguments['page'] as String?) ??
+            (call.arguments['query'] as String?) ??
+            'main',
+      );
+    case 'system':
+      return await _systemAction(call, svc);
+    default:
+      return ToolCallResult.failure(
+          call.id, 'Unknown intent action "$action"');
+  }
+}
+
+/// Intent actions that are safe to re-launch from the chat UI: everything
+/// that merely OPENS a surface (URL, app, page, panel, composer, sheet)
+/// can be re-tapped freely. Excludes only actions with side effects:
+/// alarm/timer/calendar_event (re-tap creates duplicates), system (toggles
+/// state), uninstall (destructive prompt), and the raw `intent` escape
+/// hatch (unknown semantics).
+const _reopenableActions = {
+  'open_url',
+  'open_app',
+  'open_maps',
+  'search',
+  'dial',
+  'media_play',
+  'email',
+  'share',
+  'wallpaper',
+  'settings',
+  'settings_panel',
+};
+
+/// Whether a persisted tool message can be re-launched via the UI's
+/// reopen button: an intent tool success on a reopenable action.
+///
+/// Derives everything from already-persisted data (tool name + args +
+/// result text), so it works for conversations stored before this
+/// feature existed — no schema change.
+bool isReopenable(ToolMessage message) =>
+    message.tool.name == 'intent' &&
+    _reopenableActions.contains(message.tool.args['action']) &&
+    !message.result.startsWith('ERROR');
+
+/// Re-launches a previously successful intent action from the chat UI
+/// ("Reopen" button). Returns the human-readable outcome; never throws —
+/// every failure (bad persisted args, MissingPluginException, …) comes
+/// back as "ERROR: ..." text so the button's SnackBar path handles it.
+Future<String> replayIntentAction(Map<String, dynamic> args) async {
+  try {
+    final call = ToolCall(
+      id: 'reopen-${DateTime.now().millisecondsSinceEpoch}',
+      name: 'intent',
+      arguments: args,
+    );
+    final result = await handleIntentAction(call, IntentService());
+    return result.toText();
+  } catch (e) {
+    return 'ERROR: $e';
+  }
 }
 
 // --- Safe map parser ---

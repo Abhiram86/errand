@@ -812,7 +812,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   void _flushWorkingText() {
     _workingFlushTimer = null;
-    if (!mounted || _workingMessageId == null || _workingText.length == 0) {
+    // Whitespace-only deltas (some models open with "\n") must not blank
+    // out the …working placeholder.
+    if (!mounted ||
+        _workingMessageId == null ||
+        _workingText.toString().trim().isEmpty) {
       return;
     }
     final index = _messages.indexWhere(
@@ -836,23 +840,37 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     final id = _workingMessageId;
     _workingText.clear();
     if (!mounted) return;
+    // Some models return an empty/whitespace final answer (content-only
+    // tool turns, stray "\n"). Trim it; if nothing is left, drop the
+    // bubble instead of rendering an empty one.
+    final trimmed = text.trim();
     setState(() {
       final index = id == null
           ? -1
           : _messages.indexWhere((message) => message.id == id);
-      final message = AssistantMessage(
-        id: id ?? 'agent-${DateTime.now().millisecondsSinceEpoch}',
-        text: text,
-      );
-      if (index == -1) {
-        _messages.add(message);
+      if (trimmed.isEmpty) {
+        if (index != -1) _messages.removeAt(index);
       } else {
-        _messages[index] = message;
+        final message = AssistantMessage(
+          id: id ?? 'agent-${DateTime.now().millisecondsSinceEpoch}',
+          text: trimmed,
+        );
+        if (index == -1) {
+          _messages.add(message);
+        } else {
+          _messages[index] = message;
+        }
       }
       _touchConversation();
       _busy = false;
       _workingMessageId = null;
     });
+    // Merge-based saves keep rows not in memory — a dropped bubble that
+    // was persisted mid-stream must be removed explicitly.
+    final conversationId = _activeConversation.id;
+    if (trimmed.isEmpty && conversationId != null && id != null) {
+      unawaited(database.deleteMessage(conversationId, id));
+    }
     _persistNow();
     _scrollToBottom();
   }
@@ -1012,7 +1030,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   Widget _buildMessageList() {
-    return NotificationListener<ScrollNotification>(
+    return SelectionArea(
+      child: NotificationListener<ScrollNotification>(
       onNotification: (notification) {
         if (notification.depth == 0 &&
             !_busy &&
@@ -1038,6 +1057,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           }
           return MessageBubble(key: ValueKey(message.id), message: message);
         },
+      ),
       ),
     );
   }

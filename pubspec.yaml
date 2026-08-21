@@ -43,6 +43,7 @@ dependencies:
   drift: ^2.34.3
   drift_flutter: ^0.3.1
   meta: ^1.18.3
+  gpt_markdown: ^1.1.8
 
 dev_dependencies:
   flutter_test:

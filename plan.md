@@ -83,10 +83,12 @@ class ToolCallResult { final String id; final bool ok; final String output; fina
 5. ✅ Local conversation store — Drift (conversations/messages/attachments), pin/recent ordering, debounced saves, watch streams.
 6. ✅ Web augmentation — Tavily `websearch`/`webfetch` tools (Markdown extract, focused query).
 7. ✅ Model freedom — catalog fetch + searchable `ModelPicker` + per-conversation model/provider + fallback list.
-8. **Next — Safe editing** — structured `edit_file` ops, diff preview, undo snapshots (blocked on path-write policy decision).
-9. **Next — Local retrieval** — embeddings + FTS over recent docs for context budgeting (keep context bounded — see audit OPT-07).
-10. **Phase 2:** a11y `ui_read`/`ui_click`/`ui_type`/`ui_swipe`, `launch_app`, `open_url`/`notify`; notification reading.
-11. **Phase 3:** bundled `busybox` shell via `dart:io Process` in app-private workspace.
+8. ✅ Android intent tool — 17 curated actions + raw `android_action` escape hatch, settings panels, dark-mode toggle, UI reopen buttons (see `next_plan.md` §P0).
+9. ✅ Context budgeting (OPT-07) — history truncation + message windowing + sidebar pagination + merge-based saves (see `next_plan.md` §P1).
+10. **Next — Safe editing** — structured `edit_file` ops, diff preview, undo snapshots (blocked on path-write policy decision).
+11. **Next — Local retrieval** — embeddings + FTS over recent docs for context budgeting.
+12. **Phase 2:** a11y `ui_read`/`ui_click`/`ui_type`/`ui_swipe`, `launch_app`, `open_url`/`notify`; notification reading.
+13. **Phase 3:** bundled `busybox` shell via `dart:io Process` in app-private workspace.
 
 ## Cut-lines
 
