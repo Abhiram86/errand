@@ -1,5 +1,9 @@
 # Errand (Flutter)
 
+<p align="center">
+  <img src="demo/demo.gif" alt="Errand demo" width="320">
+</p>
+
 Errand is an on-device AI agent for Android: a streaming chat client with a
 small custom agent loop that can read and navigate the shared storage, search
 the web, understand structured documents, and drive Android apps/system
