@@ -1,6 +1,6 @@
-# Handy Flutter
+# Errand (Flutter)
 
-Handy is an on-device AI agent for Android: a streaming chat client with a
+Errand is an on-device AI agent for Android: a streaming chat client with a
 small custom agent loop that can read and navigate the shared storage, search
 the web, understand structured documents, and drive Android apps/system
 surfaces via intents. Everything except the LLM and web search runs on-device;
@@ -42,11 +42,11 @@ The local `.env` file should define:
 ```text
 OPENROUTER_API_KEY=...
 TAVILY_API_KEY=...
-HANDY_BASE_URL=https://openrouter.ai/api/v1
-HANDY_MODEL=openai/gpt-4o-mini
+ERRAND_BASE_URL=https://openrouter.ai/api/v1
+ERRAND_MODEL=openai/gpt-4o-mini
 ```
 
-`HANDY_BASE_URL`, `HANDY_MODEL`, and `TAVILY_API_KEY` are optional; the app
+`ERRAND_BASE_URL`, `ERRAND_MODEL`, and `TAVILY_API_KEY` are optional; the app
 defaults to OpenRouter and falls back to a built-in model list. Web tools are
 disabled without a Tavily key.
 
@@ -55,7 +55,7 @@ On Android, the app requests all-files access and operates under
 workspace. The system dark-mode toggle works best with a one-time grant:
 
 ```bash
-adb shell pm grant com.handy.handy_flutter android.permission.WRITE_SECURE_SETTINGS
+adb shell pm grant com.errand.errand android.permission.WRITE_SECURE_SETTINGS
 ```
 
 Run the test suite with:

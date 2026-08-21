@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-import 'package:handy_flutter/llm/llm_client.dart';
+import 'package:errand/llm/llm_client.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter_test/flutter_test.dart';
 

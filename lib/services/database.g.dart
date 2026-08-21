@@ -1550,9 +1550,9 @@ class ConversationAttachmentsCompanion
   }
 }
 
-abstract class _$HandyDatabase extends GeneratedDatabase {
-  _$HandyDatabase(QueryExecutor e) : super(e);
-  $HandyDatabaseManager get managers => $HandyDatabaseManager(this);
+abstract class _$ErrandDatabase extends GeneratedDatabase {
+  _$ErrandDatabase(QueryExecutor e) : super(e);
+  $ErrandDatabaseManager get managers => $ErrandDatabaseManager(this);
   late final $ConversationsTable conversations = $ConversationsTable(this);
   late final $ConversationMessagesTable conversationMessages =
       $ConversationMessagesTable(this);
@@ -1598,7 +1598,7 @@ typedef $$ConversationsTableUpdateCompanionBuilder =
 
 final class $$ConversationsTableReferences
     extends
-        BaseReferences<_$HandyDatabase, $ConversationsTable, ConversationRow> {
+        BaseReferences<_$ErrandDatabase, $ConversationsTable, ConversationRow> {
   $$ConversationsTableReferences(
     super.$_db,
     super.$_table,
@@ -1609,7 +1609,7 @@ final class $$ConversationsTableReferences
     $ConversationMessagesTable,
     List<ConversationMessageRow>
   >
-  _conversationMessagesRefsTable(_$HandyDatabase db) =>
+  _conversationMessagesRefsTable(_$ErrandDatabase db) =>
       MultiTypedResultKey.fromTable(
         db.conversationMessages,
         aliasName: 'conversations__id__conversation_messages__conversation_id',
@@ -1634,7 +1634,7 @@ final class $$ConversationsTableReferences
     $ConversationAttachmentsTable,
     List<ConversationAttachmentRow>
   >
-  _conversationAttachmentsRefsTable(_$HandyDatabase db) =>
+  _conversationAttachmentsRefsTable(_$ErrandDatabase db) =>
       MultiTypedResultKey.fromTable(
         db.conversationAttachments,
         aliasName:
@@ -1658,7 +1658,7 @@ final class $$ConversationsTableReferences
 }
 
 class $$ConversationsTableFilterComposer
-    extends Composer<_$HandyDatabase, $ConversationsTable> {
+    extends Composer<_$ErrandDatabase, $ConversationsTable> {
   $$ConversationsTableFilterComposer({
     required super.$db,
     required super.$table,
@@ -1764,7 +1764,7 @@ class $$ConversationsTableFilterComposer
 }
 
 class $$ConversationsTableOrderingComposer
-    extends Composer<_$HandyDatabase, $ConversationsTable> {
+    extends Composer<_$ErrandDatabase, $ConversationsTable> {
   $$ConversationsTableOrderingComposer({
     required super.$db,
     required super.$table,
@@ -1819,7 +1819,7 @@ class $$ConversationsTableOrderingComposer
 }
 
 class $$ConversationsTableAnnotationComposer
-    extends Composer<_$HandyDatabase, $ConversationsTable> {
+    extends Composer<_$ErrandDatabase, $ConversationsTable> {
   $$ConversationsTableAnnotationComposer({
     required super.$db,
     required super.$table,
@@ -1915,7 +1915,7 @@ class $$ConversationsTableAnnotationComposer
 class $$ConversationsTableTableManager
     extends
         RootTableManager<
-          _$HandyDatabase,
+          _$ErrandDatabase,
           $ConversationsTable,
           ConversationRow,
           $$ConversationsTableFilterComposer,
@@ -1931,7 +1931,7 @@ class $$ConversationsTableTableManager
           })
         > {
   $$ConversationsTableTableManager(
-    _$HandyDatabase db,
+    _$ErrandDatabase db,
     $ConversationsTable table,
   ) : super(
         TableManagerState(
@@ -2065,7 +2065,7 @@ class $$ConversationsTableTableManager
 
 typedef $$ConversationsTableProcessedTableManager =
     ProcessedTableManager<
-      _$HandyDatabase,
+      _$ErrandDatabase,
       $ConversationsTable,
       ConversationRow,
       $$ConversationsTableFilterComposer,
@@ -2114,7 +2114,7 @@ typedef $$ConversationMessagesTableUpdateCompanionBuilder =
 final class $$ConversationMessagesTableReferences
     extends
         BaseReferences<
-          _$HandyDatabase,
+          _$ErrandDatabase,
           $ConversationMessagesTable,
           ConversationMessageRow
         > {
@@ -2124,7 +2124,7 @@ final class $$ConversationMessagesTableReferences
     super.$_typedResult,
   );
 
-  static $ConversationsTable _conversationIdTable(_$HandyDatabase db) => db
+  static $ConversationsTable _conversationIdTable(_$ErrandDatabase db) => db
       .conversations
       .createAlias('conversation_messages__conversation_id__conversations__id');
 
@@ -2144,7 +2144,7 @@ final class $$ConversationMessagesTableReferences
 }
 
 class $$ConversationMessagesTableFilterComposer
-    extends Composer<_$HandyDatabase, $ConversationMessagesTable> {
+    extends Composer<_$ErrandDatabase, $ConversationMessagesTable> {
   $$ConversationMessagesTableFilterComposer({
     required super.$db,
     required super.$table,
@@ -2232,7 +2232,7 @@ class $$ConversationMessagesTableFilterComposer
 }
 
 class $$ConversationMessagesTableOrderingComposer
-    extends Composer<_$HandyDatabase, $ConversationMessagesTable> {
+    extends Composer<_$ErrandDatabase, $ConversationMessagesTable> {
   $$ConversationMessagesTableOrderingComposer({
     required super.$db,
     required super.$table,
@@ -2320,7 +2320,7 @@ class $$ConversationMessagesTableOrderingComposer
 }
 
 class $$ConversationMessagesTableAnnotationComposer
-    extends Composer<_$HandyDatabase, $ConversationMessagesTable> {
+    extends Composer<_$ErrandDatabase, $ConversationMessagesTable> {
   $$ConversationMessagesTableAnnotationComposer({
     required super.$db,
     required super.$table,
@@ -2396,7 +2396,7 @@ class $$ConversationMessagesTableAnnotationComposer
 class $$ConversationMessagesTableTableManager
     extends
         RootTableManager<
-          _$HandyDatabase,
+          _$ErrandDatabase,
           $ConversationMessagesTable,
           ConversationMessageRow,
           $$ConversationMessagesTableFilterComposer,
@@ -2409,7 +2409,7 @@ class $$ConversationMessagesTableTableManager
           PrefetchHooks Function({bool conversationId})
         > {
   $$ConversationMessagesTableTableManager(
-    _$HandyDatabase db,
+    _$ErrandDatabase db,
     $ConversationMessagesTable table,
   ) : super(
         TableManagerState(
@@ -2536,7 +2536,7 @@ class $$ConversationMessagesTableTableManager
 
 typedef $$ConversationMessagesTableProcessedTableManager =
     ProcessedTableManager<
-      _$HandyDatabase,
+      _$ErrandDatabase,
       $ConversationMessagesTable,
       ConversationMessageRow,
       $$ConversationMessagesTableFilterComposer,
@@ -2564,7 +2564,7 @@ typedef $$ConversationAttachmentsTableUpdateCompanionBuilder =
 final class $$ConversationAttachmentsTableReferences
     extends
         BaseReferences<
-          _$HandyDatabase,
+          _$ErrandDatabase,
           $ConversationAttachmentsTable,
           ConversationAttachmentRow
         > {
@@ -2574,7 +2574,7 @@ final class $$ConversationAttachmentsTableReferences
     super.$_typedResult,
   );
 
-  static $ConversationsTable _conversationIdTable(_$HandyDatabase db) =>
+  static $ConversationsTable _conversationIdTable(_$ErrandDatabase db) =>
       db.conversations.createAlias(
         'conversation_attachments__conversation_id__conversations__id',
       );
@@ -2595,7 +2595,7 @@ final class $$ConversationAttachmentsTableReferences
 }
 
 class $$ConversationAttachmentsTableFilterComposer
-    extends Composer<_$HandyDatabase, $ConversationAttachmentsTable> {
+    extends Composer<_$ErrandDatabase, $ConversationAttachmentsTable> {
   $$ConversationAttachmentsTableFilterComposer({
     required super.$db,
     required super.$table,
@@ -2633,7 +2633,7 @@ class $$ConversationAttachmentsTableFilterComposer
 }
 
 class $$ConversationAttachmentsTableOrderingComposer
-    extends Composer<_$HandyDatabase, $ConversationAttachmentsTable> {
+    extends Composer<_$ErrandDatabase, $ConversationAttachmentsTable> {
   $$ConversationAttachmentsTableOrderingComposer({
     required super.$db,
     required super.$table,
@@ -2671,7 +2671,7 @@ class $$ConversationAttachmentsTableOrderingComposer
 }
 
 class $$ConversationAttachmentsTableAnnotationComposer
-    extends Composer<_$HandyDatabase, $ConversationAttachmentsTable> {
+    extends Composer<_$ErrandDatabase, $ConversationAttachmentsTable> {
   $$ConversationAttachmentsTableAnnotationComposer({
     required super.$db,
     required super.$table,
@@ -2709,7 +2709,7 @@ class $$ConversationAttachmentsTableAnnotationComposer
 class $$ConversationAttachmentsTableTableManager
     extends
         RootTableManager<
-          _$HandyDatabase,
+          _$ErrandDatabase,
           $ConversationAttachmentsTable,
           ConversationAttachmentRow,
           $$ConversationAttachmentsTableFilterComposer,
@@ -2722,7 +2722,7 @@ class $$ConversationAttachmentsTableTableManager
           PrefetchHooks Function({bool conversationId})
         > {
   $$ConversationAttachmentsTableTableManager(
-    _$HandyDatabase db,
+    _$ErrandDatabase db,
     $ConversationAttachmentsTable table,
   ) : super(
         TableManagerState(
@@ -2818,7 +2818,7 @@ class $$ConversationAttachmentsTableTableManager
 
 typedef $$ConversationAttachmentsTableProcessedTableManager =
     ProcessedTableManager<
-      _$HandyDatabase,
+      _$ErrandDatabase,
       $ConversationAttachmentsTable,
       ConversationAttachmentRow,
       $$ConversationAttachmentsTableFilterComposer,
@@ -2831,9 +2831,9 @@ typedef $$ConversationAttachmentsTableProcessedTableManager =
       PrefetchHooks Function({bool conversationId})
     >;
 
-class $HandyDatabaseManager {
-  final _$HandyDatabase _db;
-  $HandyDatabaseManager(this._db);
+class $ErrandDatabaseManager {
+  final _$ErrandDatabase _db;
+  $ErrandDatabaseManager(this._db);
   $$ConversationsTableTableManager get conversations =>
       $$ConversationsTableTableManager(_db, _db.conversations);
   $$ConversationMessagesTableTableManager get conversationMessages =>

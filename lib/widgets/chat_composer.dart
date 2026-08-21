@@ -62,7 +62,7 @@ class ChatComposer extends StatelessWidget {
                 onSubmitted: (_) => onSend(),
                 style: const TextStyle(color: kText, fontSize: 15),
                 decoration: const InputDecoration(
-                  hintText: 'Message Handy…',
+                  hintText: 'Message Errand…',
                   hintStyle: TextStyle(color: kMuted),
                   border: InputBorder.none,
                   isDense: true,

@@ -1,4 +1,4 @@
-package com.handy.handy_flutter
+package com.errand.errand
 
 import android.app.UiModeManager
 import android.content.Context

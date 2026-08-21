@@ -1,10 +1,10 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:handy_flutter/agent/tool.dart';
-import 'package:handy_flutter/agent/tool_registry.dart';
-import 'package:handy_flutter/tools/file_tools.dart';
-import 'package:handy_flutter/types/tool.dart';
+import 'package:errand/agent/tool.dart';
+import 'package:errand/agent/tool_registry.dart';
+import 'package:errand/tools/file_tools.dart';
+import 'package:errand/types/tool.dart';
 
 void main() {
   test('default registry exposes the core file tools', () {
@@ -48,9 +48,9 @@ void main() {
   });
 
   test('read rejects paths outside the workspace and oversized ranges', () async {
-    final workspace = await Directory.systemTemp.createTemp('handy_workspace');
+    final workspace = await Directory.systemTemp.createTemp('errand_workspace');
     final outside = File(
-      '${workspace.parent.path}/handy_outside_${DateTime.now().microsecondsSinceEpoch}.txt',
+      '${workspace.parent.path}/errand_outside_${DateTime.now().microsecondsSinceEpoch}.txt',
     );
     await outside.writeAsString('outside');
     addTearDown(() async {
@@ -77,7 +77,7 @@ void main() {
   });
 
   test('find matches shell-style file patterns and directory types', () async {
-    final workspace = await Directory.systemTemp.createTemp('handy_find');
+    final workspace = await Directory.systemTemp.createTemp('errand_find');
     final nested = Directory('${workspace.path}/nested');
     final deeper = Directory('${nested.path}/deeper');
     await nested.create();
@@ -123,7 +123,7 @@ void main() {
   });
 
   test('find max_depth prunes deeper directories', () async {
-    final workspace = await Directory.systemTemp.createTemp('handy_depth');
+    final workspace = await Directory.systemTemp.createTemp('errand_depth');
     final levelOne = Directory('${workspace.path}/one');
     final levelTwo = Directory('${levelOne.path}/two');
     final levelThree = Directory('${levelTwo.path}/three');
@@ -151,7 +151,7 @@ void main() {
   });
 
   test('cd changes the shared base for subsequent relative searches', () async {
-    final workspace = await Directory.systemTemp.createTemp('handy_cd');
+    final workspace = await Directory.systemTemp.createTemp('errand_cd');
     final nested = Directory('${workspace.path}/nested');
     await nested.create();
     await File('${nested.path}/inside.pdf').writeAsString('pdf');

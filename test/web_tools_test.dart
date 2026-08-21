@@ -3,9 +3,9 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
-import 'package:handy_flutter/agent/tool.dart';
-import 'package:handy_flutter/services/tavily_client.dart';
-import 'package:handy_flutter/tools/web_tools.dart';
+import 'package:errand/agent/tool.dart';
+import 'package:errand/services/tavily_client.dart';
+import 'package:errand/tools/web_tools.dart';
 
 void main() {
   test('websearch formats Tavily results for the agent', () async {

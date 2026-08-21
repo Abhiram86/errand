@@ -5,7 +5,7 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:handy_flutter/services/database.dart';
+import 'package:errand/services/database.dart';
 import 'package:uuid/uuid.dart';
 
 import 'agent/agent_loop.dart';
@@ -26,9 +26,9 @@ import 'widgets/model_picker.dart';
 import 'widgets/paging.dart';
 
 const kApiKey = String.fromEnvironment('OPENROUTER_API_KEY');
-const kBaseUrl = String.fromEnvironment('HANDY_BASE_URL');
+const kBaseUrl = String.fromEnvironment('ERRAND_BASE_URL');
 const kSystemPrompt =
-    'You are Handy, a general-purpose agent running on an Android phone. '
+    'You are Errand, a general-purpose agent running on an Android phone. '
     'You can navigate, inspect, and read files inside the user\'s granted '
     'workspace. Prefer list before reading whole files. Never guess '
     'file paths that have not been confirmed to exist. '
@@ -38,7 +38,7 @@ const kSystemPrompt =
 String _systemPromptFor(Directory currentDir) =>
     '$kSystemPrompt\nCurrent working directory: ${currentDir.path}';
 
-final database = HandyDatabase.instance;
+final database = ErrandDatabase.instance;
 // database.loadConversation(id)
 
 void main() {
@@ -49,16 +49,16 @@ void main() {
       statusBarIconBrightness: Brightness.light,
     ),
   );
-  runApp(const HandyApp());
+  runApp(const ErrandApp());
 }
 
-class HandyApp extends StatelessWidget {
-  const HandyApp({super.key});
+class ErrandApp extends StatelessWidget {
+  const ErrandApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Handy',
+      title: 'Errand',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         brightness: Brightness.dark,
@@ -269,7 +269,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         builder: (dialogContext) => AlertDialog(
           title: const Text('Storage access needed'),
           content: const Text(
-            'Handy needs access to shared storage so it can read and list '
+            'Errand needs access to shared storage so it can read and list '
             'files. Android will open Settings where you can grant access.',
           ),
           actions: [

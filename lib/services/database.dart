@@ -76,16 +76,16 @@ class ConversationAttachments extends Table {
 @DriftDatabase(
   tables: [Conversations, ConversationMessages, ConversationAttachments],
 )
-final class HandyDatabase extends _$HandyDatabase {
-  HandyDatabase._([QueryExecutor? executor])
-    : super(executor ?? driftDatabase(name: 'handy'));
+final class ErrandDatabase extends _$ErrandDatabase {
+  ErrandDatabase._([QueryExecutor? executor])
+    : super(executor ?? driftDatabase(name: 'errand'));
 
-  static final HandyDatabase instance = HandyDatabase._();
+  static final ErrandDatabase instance = ErrandDatabase._();
 
   /// Creates an isolated in-memory database for tests.
   @visibleForTesting
-  factory HandyDatabase.inMemory() =>
-      HandyDatabase._(NativeDatabase.memory());
+  factory ErrandDatabase.inMemory() =>
+      ErrandDatabase._(NativeDatabase.memory());
 
   @override
   int get schemaVersion => 2;

@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:handy_flutter/internal/document_reading/document_reader.dart';
+import 'package:errand/internal/document_reading/document_reader.dart';
 
 void main() {
   test('structured pagination uses logical units and overlaps boundaries', () {

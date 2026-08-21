@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:handy_flutter/agent/context_budget.dart';
-import 'package:handy_flutter/types/message.dart';
+import 'package:errand/agent/context_budget.dart';
+import 'package:errand/types/message.dart';
 
 Message user(String id, String text) => UserMessage(id: id, text: text);
 Message assistant(String id, String text) => AssistantMessage(id: id, text: text);

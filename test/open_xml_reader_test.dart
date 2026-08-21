@@ -2,7 +2,7 @@ import 'dart:io';
 
 import 'package:archive/archive.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:handy_flutter/internal/document_reading/open_xml_reader.dart';
+import 'package:errand/internal/document_reading/open_xml_reader.dart';
 
 void main() {
   test('reads DOCX paragraphs and tables', () async {
@@ -91,7 +91,7 @@ Future<File> _writePackage(
   Map<String, String> parts, {
   required String suffix,
 }) async {
-  final directory = await Directory.systemTemp.createTemp('handy_reader_test');
+  final directory = await Directory.systemTemp.createTemp('errand_reader_test');
   addTearDown(() => directory.delete(recursive: true));
 
   final archive = Archive();

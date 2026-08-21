@@ -1,4 +1,4 @@
-# Handy (Flutter) — Architecture Overview
+# Errand (Flutter) — Architecture Overview
 
 This document maps the current implementation: a streaming chat UI, an OpenAI-compatible agent loop with reasoning, file + workspace + web + Android-intent tools, structured document readers, Drift persistence, and Android shared-storage access. Everything except the LLM and Tavily runs on-device.
 
@@ -17,7 +17,7 @@ agent loop (lib/agent/agent_loop.dart) ──────────┐
      │  up to 12 turns, onTextDelta/onReasoning   │
      ▼                                             │
 LLM client (lib/llm/llm_client.dart)  ◀── HTTP/SSE ─┤ OpenRouter / HF / custom
-     ▲  POST /chat/completions (stream:true)      │  baseUrl (HANDY_BASE_URL)
+     ▲  POST /chat/completions (stream:true)      │  baseUrl (ERRAND_BASE_URL)
      │  tool schemas / tool_calls / reasoning      │
      ▼                                             │
 tool registry (lib/agent/tool_registry.dart)
@@ -42,7 +42,7 @@ tool registry (lib/agent/tool_registry.dart)
        (paged, char-budgeted)│                      settings-panel fallbacks)
 
 persistence (lib/services/database.dart)
-  HandyDatabase (drift) — Conversations / ConversationMessages / ConversationAttachments
+  ErrandDatabase (drift) — Conversations / ConversationMessages / ConversationAttachments
   saveConversation (transaction) · watchConversationSummaries · watchPinnedConversations
 
 model catalog (lib/services/model_catalog.dart → lib/models/model_option.dart)
@@ -93,7 +93,7 @@ The UI stores a short tool preview for rendering (truncated), while the complete
 
 ```bash
 flutter run --dart-define-from-file=.env
-# .env provides OPENROUTER_API_KEY / TAVILY_API_KEY / HANDY_BASE_URL / HANDY_MODEL
+# .env provides OPENROUTER_API_KEY / TAVILY_API_KEY / ERRAND_BASE_URL / ERRAND_MODEL
 ```
 
 ## The file & workspace tools — `lib/tools/`
@@ -134,7 +134,7 @@ One LLM tool (`intent`) covering Android app/web/system actions. Layered design:
 - `launch` — builds the intent per action (`getLaunchIntentForPackage`, `ACTION_SENDTO mailto:` with `EXTRA_SUBJECT/TEXT` + query-param fallback, `ACTION_DIAL` for dial, explicit `androidAction` otherwise), adds `FLAG_ACTIVITY_NEW_TASK | FLAG_ACTIVITY_CLEAR_TOP`, adds `CATEGORY_BROWSABLE` for http(s). `resolveActivity` pre-check runs only when a package is explicitly pinned — implicit intents rely on `ActivityNotFoundException` (avoids `<queries>` visibility false-negatives on API 30+).
 - `canResolve` — same mapping for pre-flight checks.
 - `hasWriteSettings` / `requestWriteSettings` — idempotent `WRITE_SETTINGS` flow (returns granted-state; OEM fallback without package Uri).
-- `system_toggle` — dark mode tries `UiModeManager.setNightMode()` first **with read-back verification** (some builds silently ignore 3P calls), then permission-gated `Settings.Secure/Global.putInt("ui_night_mode")`, finally opens `DARK_THEME_SETTINGS`/Display settings honestly. Note: system-wide night mode is effectively gated behind privileged `MODIFY_DAY_NIGHT_MODE`/`WRITE_SECURE_SETTINGS`; the adb-grantable path is `adb shell pm grant com.handy.handy_flutter android.permission.WRITE_SECURE_SETTINGS`.
+- `system_toggle` — dark mode tries `UiModeManager.setNightMode()` first **with read-back verification** (some builds silently ignore 3P calls), then permission-gated `Settings.Secure/Global.putInt("ui_night_mode")`, finally opens `DARK_THEME_SETTINGS`/Display settings honestly. Note: system-wide night mode is effectively gated behind privileged `MODIFY_DAY_NIGHT_MODE`/`WRITE_SECURE_SETTINGS`; the adb-grantable path is `adb shell pm grant com.errand.errand android.permission.WRITE_SECURE_SETTINGS`.
 - Manifest `<queries>` covers http(s)/geo/tel/mailto/spotify/whatsapp/tg schemes, alarm/calendar/share/delete/media-search actions, settings panels, and pinned packages (spotify/maps/chrome).
 
 **Error policy** (deliberate split):
@@ -154,14 +154,14 @@ Missing/failed channel calls are mapped to "no permission" rather than crashing.
 
 ## The model catalog — `lib/services/model_catalog.dart` + `lib/models/model_option.dart`
 
-- `ModelCatalogService { load(baseUrl, apiKey) }` — `GET {baseUrl}/models?output_modalities=text`, parses `data[].id/name`, maps provider from `id` prefix (`qwen/… → Qwen`). Static `_cache` + `_inFlight` dedup; fallback is `kFallbackModels` + `kDefaultModelId` (`Qwen/Qwen3.8-27B`) and env `HANDY_MODEL`.
+- `ModelCatalogService { load(baseUrl, apiKey) }` — `GET {baseUrl}/models?output_modalities=text`, parses `data[].id/name`, maps provider from `id` prefix (`qwen/… → Qwen`). Static `_cache` + `_inFlight` dedup; fallback is `kFallbackModels` + `kDefaultModelId` (`Qwen/Qwen3.8-27B`) and env `ERRAND_MODEL`.
 - `ModelOption { id, name, provider }` → consumed by `ModelPicker`.
 
 ## The UI — `lib/main.dart` + `lib/widgets/` + `lib/theme/`
 
 `ChatScreen` (with `WidgetsBindingObserver`) owns:
 
-- `HandyDatabase.instance` + two watch subscriptions (`watchConversationSummaries`, `watchPinnedConversations`);
+- `ErrandDatabase.instance` + two watch subscriptions (`watchConversationSummaries`, `watchPinnedConversations`);
 - `_messages`, `_activeConversation`, `_workingDirectory`, `_modelCatalog`, `_llm`, `_selectedModel`/`_models`, `_controller`/`_scroll`;
 - streaming bookkeeping: `_workingMessageId`, `_workingText` (StringBuffer), `_workingFlushTimer` (40 ms), `_persistTimer` (600 ms), `_scrollPending`.
 
@@ -176,7 +176,7 @@ Storage permission is checked on start and on `AppLifecycleState.resumed`, with 
 
 ## Persistence — `lib/services/database.dart`
 
-Drift database `HandyDatabase` (3 tables):
+Drift database `ErrandDatabase` (3 tables):
 
 - `Conversations { id PK, localSystemPrompt?, title, currentDir, provider?, model?, isPinned, createdAt, updatedAt }`
 - `ConversationMessages { localId autoinc PK, conversationId FK→Conversations.id, messageId, sortOrder, messageType (user/assistant/tool/error), messageText, toolName?, toolArgumentsJson?, result?, reasoning?, reasoningDetailsJson?, error? }`

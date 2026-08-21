@@ -34,6 +34,6 @@ const kFallbackModels = <ModelOption>[
 ];
 
 const kConfiguredModel = String.fromEnvironment(
-  'HANDY_MODEL',
+  'ERRAND_MODEL',
   defaultValue: kDefaultModelId,
 );

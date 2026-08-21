@@ -4,7 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
-import 'package:handy_flutter/services/model_catalog.dart';
+import 'package:errand/services/model_catalog.dart';
 
 void main() {
   test('loads text models and caches the catalog per base URL', () async {

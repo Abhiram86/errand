@@ -1,8 +1,8 @@
-# Handy — General-Purpose Android Agent (Flutter)
+# Errand — General-Purpose Android Agent (Flutter)
 
 An on-device AI agent for Android: search, read, and navigate any file the user grants access to, with web search and structured document understanding. The **loop + tools + storage all run on-device**; only the LLM is cloud (OpenAI-compatible HTTP). Persistence is local — no external data layer.
 
-> Why Flutter (researched Aug 2026): `dart:io` gives native `File`/`Directory`/`Process` — so the shell/real-filesystem work that would have forced Kotlin in RN/Expo needs **zero Kotlin**. Mature plugins cover a11y and notifications. Flutter is AOT-compiled native (not a game engine); it renders its own UI and talks to the OS via platform channels.
+> Why Flutter (researched Aug 2026): `dart:io` gives native `File`/`Directory`/`Process` — so EH work that would have forced Kotlin in RN/Expo needs **zero Kotlin**. Mature plugins cover a11y and notifications. Flutter is AOT-compiled native (not a game engine); it renders its own UI and talks to the OS via platform channels.
 
 ---
 
@@ -29,7 +29,7 @@ An on-device AI agent for Android: search, read, and navigate any file the user 
 | Web tools | `tavily` via `http` | `TavilyClient` (`/search`, `/extract`), used by `websearch`/`webfetch` tools; Bearer `TAVILY_API_KEY` |
 | LLM client | OpenAI-compatible over `http` | `lib/llm/llm_client.dart` → `POST /chat/completions` + SSE `stream:true`; `baseUrl` → OpenRouter / HF endpoint; custom loop preferred |
 | Agent loop | `lib/agent/` | `Tool` schema + `ToolRegistry` (safe `execute` → `ToolCallResult.failure`) + `AgentLoop.run()` with streaming deltas, reasoning, 12-turn cap |
-| Local session store | `drift` + `drift_flutter` | `HandyDatabase` (Conversations, ConversationMessages, ConversationAttachments), `saveConversation` transaction, `watchConversationSummaries`/`watchPinnedConversations` |
+| Local session store | `drift` + `drift_flutter` | `ErrandDatabase` (Conversations, ConversationMessages, ConversationAttachments), `saveConversation` transaction, `watchConversationSummaries`/`watchPinnedConversations` |
 | Model catalog | `http` + `lib/services/model_catalog.dart` | `GET /models?output_modalities=text`, static cache + in-flight dedup, fallback `kFallbackModels` |
 | UI | Flutter Material 3, dark theme | `ChatScreen` (lib/main.dart) + `ChatSidebar`, `ChatComposer`, `MessageBubbles`, `ModelPicker`, `AppColors` |
 | a11y / notifications (Phase 2) | `flutter_accessibility_service`, `flutter_notification_listener` | click/setText/dispatchGesture/screenshot; read other apps' notifications |

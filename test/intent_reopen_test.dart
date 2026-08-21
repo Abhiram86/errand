@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:handy_flutter/tools/intent_tool.dart';
-import 'package:handy_flutter/types/message.dart';
+import 'package:errand/tools/intent_tool.dart';
+import 'package:errand/types/message.dart';
 
 ToolMessage intentMessage(
   String action, {

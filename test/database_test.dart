@@ -1,15 +1,15 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:handy_flutter/services/database.dart';
-import 'package:handy_flutter/types/conversation.dart';
-import 'package:handy_flutter/types/message.dart';
+import 'package:errand/services/database.dart';
+import 'package:errand/types/conversation.dart';
+import 'package:errand/types/message.dart';
 
 void main() {
-  late HandyDatabase db;
+  late ErrandDatabase db;
 
   setUp(() {
-    db = HandyDatabase.inMemory();
+    db = ErrandDatabase.inMemory();
   });
 
   tearDown(() async {

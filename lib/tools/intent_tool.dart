@@ -1,8 +1,8 @@
 import 'package:flutter/services.dart';
-import 'package:handy_flutter/agent/tool.dart';
-import 'package:handy_flutter/services/intent_service.dart';
-import 'package:handy_flutter/types/message.dart';
-import 'package:handy_flutter/types/tool.dart';
+import 'package:errand/agent/tool.dart';
+import 'package:errand/services/intent_service.dart';
+import 'package:errand/types/message.dart';
+import 'package:errand/types/tool.dart';
 
 Tool intentTool({IntentService? service}) {
   final svc = service ?? IntentService();
@@ -626,7 +626,7 @@ Future<ToolCallResult> _systemAction(ToolCall call, IntentService svc) async {
       return ToolCallResult.failure(
           call.id,
           'WRITE_SETTINGS permission required. '
-          'I opened the system dialog for you—please toggle "Allow modify system settings" ON for Handy and try again. '
+          'I opened the system dialog for you—please toggle "Allow modify system settings" ON for Errand and try again. '
           'Note: dark_mode now also tries UiModeManager first, so a retry often succeeds without permission.');
     }
     if (e.code == 'PERMISSION_DENIED') {
