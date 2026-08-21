@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:errand/services/database.dart';
+import 'package:errand/services/intent_service.dart';
 import 'package:uuid/uuid.dart';
 
 import 'agent/agent_loop.dart';
@@ -14,6 +15,7 @@ import 'agent/tool_registry.dart';
 import 'llm/llm_client.dart';
 import 'models/model_option.dart';
 import 'services/model_catalog.dart';
+import 'services/speech_service.dart';
 import 'services/workspace.dart';
 import 'tools/file_tools.dart';
 import 'theme/app_colors.dart';
@@ -122,6 +124,16 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   String? _editingMessageId;
   final _workingText = StringBuffer();
   Timer? _workingFlushTimer;
+
+  /// Elapsed-seconds ticker for the …working placeholder (see
+  /// [_startWorkingElapsedTimer]).
+  Timer? _workingElapsedTimer;
+  int _workingElapsedSeconds = 0;
+
+  /// Platform-channel service used for the foreground work indicator that
+  /// runs alongside every agent turn.
+  final IntentService _intentService = IntentService();
+
   bool _scrollPending = false;
   bool _permissionDialogOpen = false;
   bool _sidebarOpen = false;
@@ -169,6 +181,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _activeConversation = _newDraftConversation();
     _llm = _createLlmClient(_selectedModel);
     unawaited(_loadModelCatalog());
+    // One-time POST_NOTIFICATIONS grant so the foreground work indicator is
+    // visible on API 33+ (the service itself runs regardless).
+    unawaited(_intentService.requestNotificationPermission());
     WidgetsBinding.instance.addObserver(this);
     // Keep the sidebar in sync with everything that was persisted across
     // app restarts as well as any conversation we save while running.
@@ -216,6 +231,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _workingFlushTimer?.cancel();
+    _workingElapsedTimer?.cancel();
+    unawaited(_intentService.stopWorkIndicator());
     _persistTimer?.cancel();
     _conversationsSub?.cancel();
     _pinnedConversationsSub?.cancel();
@@ -671,6 +688,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     if (text.isEmpty || _busy) return;
     _controller.clear();
 
+    // A live dictation session would keep writing its next partials into
+    // the (now empty) composer after the message is gone — end it.
+    unawaited(SpeechService.instance.stop());
+
     // Editing an earlier message: the resend replaces it and everything
     // after it (later messages AND their tool runs).
     if (_editingMessageId != null) {
@@ -774,6 +795,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _messages.add(AssistantMessage(id: workingId, text: '…working'));
       _busy = true;
     });
+    // Foreground service: keeps the process non-cached (and its sockets
+    // alive) even when an intent tool sends Errand to the background.
+    unawaited(_intentService.startWorkIndicator());
+    _startWorkingElapsedTimer();
     _persistNow();
     _scrollToBottom();
 
@@ -828,11 +853,36 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
   }
 
+  /// Elapsed-seconds ticker for the …working placeholder: slow models spend
+  /// 30–90s before the first token, and a static "…working" is
+  /// indistinguishable from a hung request. Stops updating once real deltas
+  /// arrive (the streamed text takes over the bubble).
+  void _startWorkingElapsedTimer() {
+    _workingElapsedTimer?.cancel();
+    _workingElapsedSeconds = 0;
+    _workingElapsedTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted || _workingMessageId == null) return;
+      if (_workingText.isNotEmpty) return; // streamed text owns the bubble now
+      _workingElapsedSeconds++;
+      final index =
+          _messages.indexWhere((message) => message.id == _workingMessageId);
+      if (index == -1) return;
+      setState(() {
+        _messages[index] = AssistantMessage(
+          id: _workingMessageId!,
+          text: '…working · ${_workingElapsedSeconds}s',
+        );
+      });
+    });
+  }
+
   /// Removes the working placeholder and surfaces [message] as a snackbar.
   /// Used for infra-level failures that must not enter model context.
   void _failWorking(String message) {
     _workingFlushTimer?.cancel();
     _workingFlushTimer = null;
+    _workingElapsedTimer?.cancel();
+    unawaited(_intentService.stopWorkIndicator());
     final id = _workingMessageId;
     _workingText.clear();
     if (!mounted) return;
@@ -987,6 +1037,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   void _replaceWorking(String text) {
     _workingFlushTimer?.cancel();
     _workingFlushTimer = null;
+    _workingElapsedTimer?.cancel();
+    unawaited(_intentService.stopWorkIndicator());
     final id = _workingMessageId;
     _workingText.clear();
     if (!mounted) return;
@@ -1031,6 +1083,101 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   void _stopGeneration() {
     if (!_busy) return;
     _cancelToken.cancel();
+  }
+
+  // -- Voice input ---------------------------------------------------------
+
+  /// Mic button: start/stop a speech-recognition session. Recognized text
+  /// lands in the composer (live partials); the user reviews and sends.
+  Future<void> _toggleVoiceInput() async {
+    final speech = SpeechService.instance;
+    if (speech.listening.value) {
+      await speech.stop();
+      return; // listening notifier flips via onStatus
+    }
+    if (_busy) return;
+
+    if (!await speech.hasMicPermission()) {
+      final granted = await speech.requestMicPermission();
+      if (!mounted) return;
+      if (!granted) {
+        _showToast('Microphone permission is needed for voice input.');
+        return;
+      }
+    }
+
+    if (!await speech.initialize()) {
+      if (!mounted) return;
+      _showToast(
+        'Speech recognition is unavailable on this device. On emulators, '
+        'enable the Google app and grant it microphone access.',
+      );
+      return;
+    }
+
+    var localeId = await speech.savedLocaleId();
+    if (localeId == null) {
+      localeId = await _pickVoiceLocale();
+      if (!mounted) return;
+      if (localeId == null) return; // user cancelled the picker
+      await speech.saveLocaleId(localeId);
+    }
+
+    try {
+      await speech.listen(
+        localeId: localeId,
+        onResult: (words, isFinal) {
+          if (!mounted) return;
+          // Cumulative partials replace the composer text; keep the cursor
+          // at the end so typing can continue seamlessly.
+          _controller.value = TextEditingValue(
+            text: words,
+            selection: TextSelection.collapsed(offset: words.length),
+          );
+          if (isFinal && mounted) setState(() {});
+        },
+      );
+    } catch (e) {
+      if (!mounted) return;
+      _showToast('Could not start voice input: $e');
+    }
+  }
+
+  /// First-use language picker over the device's installed speech locales.
+  Future<String?> _pickVoiceLocale() async {
+    final locales = await SpeechService.instance.locales();
+    if (!mounted) return null;
+    if (locales.isEmpty) {
+      _showToast('No speech languages are installed on this device.');
+      return null;
+    }
+    return showDialog<String>(
+      context: context,
+      builder: (dialogContext) => SimpleDialog(
+        title: const Text('Voice input language'),
+        children: [
+          for (final locale in locales)
+            SimpleDialogOption(
+              onPressed: () =>
+                  Navigator.of(dialogContext).pop(locale.localeId),
+              child: Text(
+                locale.name,
+                style: const TextStyle(color: kText, fontSize: 14),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  void _showToast(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 4),
+      ),
+    );
   }
 
   /// Finalizes a stopped turn: partial streamed text becomes the final
@@ -1273,6 +1420,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       onMoreActions: _showMoreActions,
       onSend: _send,
       onStop: _stopGeneration,
+      onMic: _toggleVoiceInput,
+      isListening: SpeechService.instance.listening,
     );
   }
 

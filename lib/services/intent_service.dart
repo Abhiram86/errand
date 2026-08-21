@@ -61,4 +61,32 @@ class IntentService {
     });
     return result ?? 'Toggle applied';
   }
+
+  // -- Foreground work indicator -------------------------------------------
+  //
+  // Held while an agent turn runs. Keeps the process out of Android's
+  // cached state (whose freezer kills TCP sockets ~10s after backgrounding)
+  // so SSE streams survive when the intent tool opens another app.
+
+  /// Starts the foreground-service notification. Best-effort: failures are
+  /// swallowed because a missing indicator must never fail the turn.
+  Future<void> startWorkIndicator() async {
+    try {
+      await _channel.invokeMethod<void>('startWorkIndicator');
+    } catch (_) {}
+  }
+
+  Future<void> stopWorkIndicator() async {
+    try {
+      await _channel.invokeMethod<void>('stopWorkIndicator');
+    } catch (_) {}
+  }
+
+  /// One-time POST_NOTIFICATIONS grant so the indicator is visible on
+  /// API 33+. Safe to call repeatedly.
+  Future<void> requestNotificationPermission() async {
+    try {
+      await _channel.invokeMethod<void>('requestNotificationPermission');
+    } catch (_) {}
+  }
 }

@@ -44,11 +44,53 @@ void main() {
         'calendar_event',
         'uninstall',
         'system',
-        'intent',
       ]) {
         expect(isReopenable(intentMessage(action)), isFalse,
             reason: '$action should NOT be reopenable');
       }
+    });
+
+    test('raw intent: bare data Uri is reopenable (defaults to VIEW)', () {
+      // The "play a local mp3" case: ACTION_VIEW on a file Uri — the system
+      // chooser opens the content, nothing else happens. Re-tapping is safe.
+      expect(
+        isReopenable(intentMessage(
+          'intent',
+          args: {'url': '/storage/emulated/0/Download/song.mp3'},
+        )),
+        isTrue,
+      );
+    });
+
+    test('raw intent: view-style android actions are reopenable', () {
+      for (final androidAction in [
+        'android.intent.action.VIEW',
+        'android.intent.action.MAIN',
+        'android.intent.action.DIAL',
+        'android.intent.action.SENDTO',
+        'android.media.action.MEDIA_PLAY_FROM_SEARCH',
+        'android.settings.DISPLAY_SETTINGS', // settings.* prefix
+        'android.settings.panel.action.WIFI', // settings panels
+      ]) {
+        expect(
+          isReopenable(intentMessage(
+            'intent',
+            args: {'android_action': androidAction},
+          )),
+          isTrue,
+          reason: '$androidAction should be reopenable',
+        );
+      }
+    });
+
+    test('raw intent: unknown third-party actions stay button-less', () {
+      expect(
+        isReopenable(intentMessage(
+          'intent',
+          args: {'android_action': 'com.someapp.action.SYNC'},
+        )),
+        isFalse,
+      );
     });
 
     test('rejects failed results', () {

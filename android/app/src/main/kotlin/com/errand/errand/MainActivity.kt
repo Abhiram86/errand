@@ -1,12 +1,16 @@
 package com.errand.errand
 
+import android.Manifest
 import android.app.UiModeManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.Settings
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -15,6 +19,23 @@ class MainActivity : FlutterActivity() {
 
     private val STORAGE_CHANNEL = "storage_access"
     private val INTENT_CHANNEL = "intent"
+
+    private val MIC_PERMISSION_CODE = 9001
+    private var micPermissionResult: MethodChannel.Result? = null
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == MIC_PERMISSION_CODE) {
+            micPermissionResult?.success(
+                grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
+            )
+            micPermissionResult = null
+        }
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -183,6 +204,60 @@ class MainActivity : FlutterActivity() {
 
                 "hasWriteSettings" -> {
                     result.success(Settings.System.canWrite(this))
+                }
+
+                "startWorkIndicator" -> {
+                    try {
+                        AgentForegroundService.start(this)
+                        result.success("started")
+                    } catch (e: Exception) {
+                        result.error("FGS_ERR", e.message, null)
+                    }
+                }
+
+                "stopWorkIndicator" -> {
+                    try {
+                        AgentForegroundService.stop(this)
+                        result.success("stopped")
+                    } catch (e: Exception) {
+                        result.error("FGS_ERR", e.message, null)
+                    }
+                }
+
+                "requestNotificationPermission" -> {
+                    // Fire-and-forget: needed to SHOW the foreground-service
+                    // notification on API 33+. The service itself runs either
+                    // way — without the grant the notification is just hidden.
+                    if (Build.VERSION.SDK_INT >= 33) {
+                        ActivityCompat.requestPermissions(
+                            this,
+                            arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                            9002
+                        )
+                    }
+                    result.success(null)
+                }
+
+                "hasMicPermission" -> {
+                    result.success(
+                        ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+                            PackageManager.PERMISSION_GRANTED
+                    )
+                }
+
+                "requestMicPermission" -> {
+                    val granted = ContextCompat.checkSelfPermission(
+                        this, Manifest.permission.RECORD_AUDIO
+                    ) == PackageManager.PERMISSION_GRANTED
+                    if (granted) {
+                        result.success(true)
+                        return@setMethodCallHandler
+                    }
+                    // Reply arrives via onRequestPermissionsResult.
+                    micPermissionResult = result
+                    ActivityCompat.requestPermissions(
+                        this, arrayOf(Manifest.permission.RECORD_AUDIO), MIC_PERMISSION_CODE
+                    )
                 }
 
                 "requestWriteSettings" -> {

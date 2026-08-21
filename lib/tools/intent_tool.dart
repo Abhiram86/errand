@@ -174,8 +174,7 @@ Future<ToolCallResult> handleIntentAction(
 /// that merely OPENS a surface (URL, app, page, panel, composer, sheet)
 /// can be re-tapped freely. Excludes only actions with side effects:
 /// alarm/timer/calendar_event (re-tap creates duplicates), system (toggles
-/// state), uninstall (destructive prompt), and the raw `intent` escape
-/// hatch (unknown semantics).
+/// state), uninstall (destructive prompt).
 const _reopenableActions = {
   'open_url',
   'open_app',
@@ -190,16 +189,45 @@ const _reopenableActions = {
   'settings_panel',
 };
 
+/// Android intent actions that merely OPEN a surface (no side effects), so
+/// a raw `intent` call resolving to one of these is as safe to re-tap as
+/// open_url. Anything not listed — third-party custom actions especially —
+/// has unknown semantics and stays button-less.
+const _viewStyleAndroidActions = {
+  'android.intent.action.VIEW', // open content (files, URIs, deeplinks)
+  'android.intent.action.MAIN', // launcher-style app open
+  'android.intent.action.DIAL', // pre-fills the dialler, never dials
+  'android.intent.action.SENDTO', // opens a composer/picker, sends nothing
+  'android.media.action.MEDIA_PLAY_FROM_SEARCH',
+};
+
 /// Whether a persisted tool message can be re-launched via the UI's
-/// reopen button: an intent tool success on a reopenable action.
+/// reopen button: an intent tool success whose launch was open-style.
+///
+/// The rule is about WHAT was launched, not which tool path produced it:
+/// curated open-style actions always qualify; a raw `intent` qualifies only
+/// when it resolved to a view-style Android action (or a bare data Uri,
+/// which defaults to ACTION_VIEW) or an android.settings.* page.
 ///
 /// Derives everything from already-persisted data (tool name + args +
 /// result text), so it works for conversations stored before this
 /// feature existed — no schema change.
-bool isReopenable(ToolMessage message) =>
-    message.tool.name == 'intent' &&
-    _reopenableActions.contains(message.tool.args['action']) &&
-    !message.result.startsWith('ERROR');
+bool isReopenable(ToolMessage message) {
+  if (message.tool.name != 'intent') return false;
+  if (message.result.startsWith('ERROR')) return false;
+
+  final action = message.tool.args['action'];
+  if (_reopenableActions.contains(action)) return true;
+
+  if (action == 'intent') {
+    final androidAction =
+        (message.tool.args['android_action'] as String?)?.trim();
+    if (androidAction == null || androidAction.isEmpty) return true;
+    return _viewStyleAndroidActions.contains(androidAction) ||
+        androidAction.startsWith('android.settings.');
+  }
+  return false;
+}
 
 /// Re-launches a previously successful intent action from the chat UI
 /// ("Reopen" button). Returns the human-readable outcome; never throws —

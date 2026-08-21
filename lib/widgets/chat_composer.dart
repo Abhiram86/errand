@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../theme/app_colors.dart';
@@ -12,6 +13,12 @@ class ChatComposer extends StatelessWidget {
   /// (square stop icon) while [busy].
   final VoidCallback onStop;
 
+  /// Toggles voice input; offered when the composer is empty.
+  final VoidCallback onMic;
+
+  /// True while a speech-recognition session is active (mic turns red).
+  final ValueListenable<bool> isListening;
+
   const ChatComposer({
     super.key,
     required this.controller,
@@ -19,6 +26,8 @@ class ChatComposer extends StatelessWidget {
     required this.onMoreActions,
     required this.onSend,
     required this.onStop,
+    required this.onMic,
+    required this.isListening,
   });
 
   @override
@@ -76,17 +85,27 @@ class ChatComposer extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 4),
-            // While a turn is in flight the send button becomes a square
-            // stop button; otherwise it enables with the composer text.
+            // Right button state machine:
+            // busy            → square stop (cancel the turn)
+            // empty composer  → mic (voice input; red while listening)
+            // has text        → send arrow
             if (busy)
               _SendButton(stop: true, canSend: true, onPressed: onStop)
             else
               ValueListenableBuilder<TextEditingValue>(
                 valueListenable: controller,
-                builder: (context, value, child) => _SendButton(
-                  canSend: value.text.trim().isNotEmpty,
-                  onPressed: onSend,
-                ),
+                builder: (context, value, child) {
+                  final hasText = value.text.trim().isNotEmpty;
+                  return ValueListenableBuilder<bool>(
+                    valueListenable: isListening,
+                    builder: (context, listening, child) => _SendButton(
+                      canSend: true,
+                      onPressed: hasText ? onSend : onMic,
+                      mic: !hasText,
+                      listening: listening,
+                    ),
+                  );
+                },
               ),
           ],
         ),
@@ -100,23 +119,39 @@ class _SendButton extends StatelessWidget {
 
   /// Renders as a square stop button wired to [ChatComposer.onStop].
   final bool stop;
+
+  /// Renders as a mic button (voice input) instead of the send arrow.
+  final bool mic;
+
+  /// While listening, the mic turns red — tap again to stop.
+  final bool listening;
   final VoidCallback? onPressed;
 
   const _SendButton({
     required this.canSend,
     required this.onPressed,
     this.stop = false,
+    this.mic = false,
+    this.listening = false,
   });
 
   @override
   Widget build(BuildContext context) {
+    final Color background;
+    if (stop || (mic && listening)) {
+      // Stop and an active mic both read as "tap to end": accent for stop,
+      // danger red for the live mic.
+      background = stop ? kBubbleUser : kDanger;
+    } else {
+      background = kBubbleUser;
+    }
     return SizedBox(
       width: 38,
       height: 38,
       child: IconButton(
-        onPressed: (stop || canSend) ? onPressed : null,
+        onPressed: onPressed,
         style: IconButton.styleFrom(
-          backgroundColor: (stop || canSend) ? kBubbleUser : kSendDisabled,
+          backgroundColor: background,
           shape: stop
               ? RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))
               : const CircleBorder(),
@@ -124,7 +159,13 @@ class _SendButton extends StatelessWidget {
         ),
         icon: stop
             ? const Icon(Icons.stop_rounded, color: Colors.white, size: 24)
-            : const Icon(Icons.arrow_upward, color: Colors.white, size: 20),
+            : mic
+                ? Icon(
+                    Icons.mic_rounded,
+                    color: Colors.white,
+                    size: listening ? 22 : 20,
+                  )
+                : const Icon(Icons.arrow_upward, color: Colors.white, size: 20),
       ),
     );
   }

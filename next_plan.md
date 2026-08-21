@@ -120,15 +120,20 @@ Plus a **generic escape hatch**: `action:"intent"` accepts raw `android_action` 
   `_truncateFrom` machinery applied from just after the last user message,
   then re-run via the shared `_runAgentTurn` (extracted from `_send`).
 
-### 5. Voice input (`speech_to_text`)
+### 5. Voice input (`speech_to_text`) (SHIPPED Aug 21 2026)
 - Mic icon (accent blue) on the send button when the composer is empty;
-  switches to the send arrow when there is text. Live partial results go
-  into the controller.
-- **First-use language picker**, choice persisted locally. Needs a small
-  key-value settings table (**schema v3**) — no sensitive data, so plain
-  sqlite (no SQLCipher dependency change).
-- Plugin uses Android's built-in SpeechRecognizer: zero shipped model weight,
-  quality/network behavior follows the device's voice typing.
+  turns red while listening (tap again to stop); switches to the send arrow
+  when there is text. Live partial results replace the composer text.
+- First-use language picker over `speech.locales()`, choice persisted via
+  **shared_preferences** (one string key — schema v3 not needed for this).
+- Plugin wraps Android's built-in SpeechRecognizer: zero shipped model
+  weight, quality/network behavior follows the device's voice typing.
+- Mic permission via the existing "intent" MethodChannel
+  (`hasMicPermission`/`requestMicPermission`, awaitable through
+  `onRequestPermissionsResult`) — no `permission_handler` dependency.
+- Emulator note: enable the Google app + grant it mic access, and install an
+  offline language under Settings → Voice → Offline recognition, or
+  `listen` fails with `error_audio_error`.
 
 ### 6. Multimodality — images only
 - **Attach path**: composer image picker → OpenAI-compatible `image_url`

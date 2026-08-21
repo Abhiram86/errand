@@ -122,6 +122,34 @@ void main() {
     expect(dirs.output, contains('nested'));
   });
 
+  test('find accepts regex-style patterns too', () async {
+    // Regression: the pattern was glob-only, so a regex like `\.pdf$` was
+    // escaped literally (backslash + dollar) and matched nothing — the
+    // agent got "found 0 match(es)" even though PDFs existed.
+    final workspace = await Directory.systemTemp.createTemp('errand_find_re');
+    await File('${workspace.path}/report.pdf').writeAsString('pdf');
+    await File('${workspace.path}/notes.txt').writeAsString('text');
+    addTearDown(() => workspace.delete(recursive: true));
+
+    final registry = ToolRegistry.defaults(currentDir: workspace);
+    final result = await registry.execute(
+      const ToolCall(
+        id: 'find-regex',
+        name: 'workspace',
+        arguments: {
+          'action': 'find',
+          'path': '.',
+          'pattern': r'\.pdf$',
+          'type': 'file',
+        },
+      ),
+    );
+
+    expect(result.ok, isTrue);
+    expect(result.output, contains('report.pdf'));
+    expect(result.output, isNot(contains('notes.txt')));
+  });
+
   test('find max_depth prunes deeper directories', () async {
     final workspace = await Directory.systemTemp.createTemp('errand_depth');
     final levelOne = Directory('${workspace.path}/one');

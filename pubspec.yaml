@@ -44,6 +44,8 @@ dependencies:
   drift_flutter: ^0.3.1
   meta: ^1.18.3
   gpt_markdown: ^1.1.8
+  speech_to_text: ^7.4.0
+  shared_preferences: ^2.5.3
 
 dev_dependencies:
   flutter_test:

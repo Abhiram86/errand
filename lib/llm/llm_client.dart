@@ -9,12 +9,39 @@ import '../agent/tool.dart';
 /// Shared cancellation flag for an in-flight agent turn. The UI sets it
 /// from the stop button; the client checks it between SSE events and the
 /// loop checks it at turn boundaries.
+/// Shared cancellation flag for an in-flight agent turn. The UI sets it
+/// from the stop button; the client checks it between SSE events and the
+/// loop checks it at turn boundaries.
+///
+/// Cancellation is ABORTIVE, not just cooperative: HTTP clients backing
+/// in-flight requests are registered here and [cancel] closes them, which
+/// kills the underlying sockets immediately. This is what makes stop work
+/// during the time-to-first-token window, where no code of ours runs to
+/// poll the flag.
 class CancelToken {
   bool _cancelled = false;
+  final Set<http.Client> _clients = {};
 
   bool get isCancelled => _cancelled;
 
-  void cancel() => _cancelled = true;
+  /// Registers the client backing one or more in-flight requests.
+  void register(http.Client client) => _clients.add(client);
+
+  /// Removes a client whose request finished on its own, so a later
+  /// [cancel] cannot close it out from under unrelated work.
+  void unregister(http.Client client) => _clients.remove(client);
+
+  void cancel() {
+    if (_cancelled) return;
+    _cancelled = true;
+    // Closing makes every pending send/stream fail immediately with a
+    // ClientException instead of waiting for server bytes or timeout.
+    for (final client in {..._clients}) {
+      client.close();
+    }
+    _clients.clear();
+  }
+
   void reset() => _cancelled = false;
 }
 
@@ -68,8 +95,20 @@ class LlmClient {
   final LlmConfig config;
   final http.Client _client;
 
+  /// True when [LlmClient] created [_client] itself (production). In that
+  /// case each request gets a short-lived client so [CancelToken.cancel]
+  /// can close it and abort in-flight work. An injected client (tests,
+  /// shared usage) is reused as-is instead.
+  final bool _ownsClient;
+
   LlmClient({required this.config, http.Client? client})
-    : _client = client ?? http.Client();
+    : _client = client ?? http.Client(),
+      _ownsClient = client == null;
+
+  /// Client for one call/attempt: fresh + abortable when we own the
+  /// lifecycle, otherwise the injected instance.
+  http.Client _clientForCall() =>
+      _ownsClient ? http.Client() : _client;
 
   static const _timeout = Duration(seconds: 30);
   static const _streamTimeout = Duration(seconds: 60);
@@ -90,6 +129,7 @@ class LlmClient {
         HttpHeaders.authorizationHeader: 'Bearer ${config.apiKey}',
       },
       jsonEncode(body),
+      cancelToken,
     );
 
     if (res.statusCode != 200) {
@@ -118,21 +158,31 @@ class LlmClient {
 
   /// POST with retry for transient failures: connection aborts (stale
   /// keep-alive sockets, mobile network switches), timeouts, HTTP 429/5xx.
-  /// Honors `Retry-After` when present.
+  /// Honors `Retry-After` when present. Cancellation aborts the in-flight
+  /// request by closing its client and is never retried.
   Future<http.Response> _postWithRetry(
     Uri uri,
     Map<String, String> headers,
     String body,
+    CancelToken? cancelToken,
   ) async {
     for (var attempt = 1;; attempt++) {
+      if (cancelToken?.isCancelled ?? false) {
+        throw const LlmStoppedException();
+      }
+      final client = _clientForCall();
+      cancelToken?.register(client);
       try {
-        final res = await _client
+        final res = await client
             .post(uri, headers: headers, body: body)
             .timeout(_timeout);
         final transient = res.statusCode == 429 || res.statusCode >= 500;
         if (!transient || attempt >= _maxAttempts) return res;
         await _backoff(attempt, res.headers['retry-after']);
+      } on LlmStoppedException {
+        rethrow;
       } on TimeoutException {
+        _rethrowIfCancelled(cancelToken);
         if (attempt >= _maxAttempts) {
           throw LlmException(
             'Request timed out after ${_timeout.inSeconds}s',
@@ -141,17 +191,28 @@ class LlmClient {
         }
         await _backoff(attempt, null);
       } on SocketException catch (e) {
+        _rethrowIfCancelled(cancelToken);
         if (attempt >= _maxAttempts) {
           throw LlmException('Connection lost: ${e.message}', transport: true);
         }
         await _backoff(attempt, null);
       } on http.ClientException catch (e) {
+        _rethrowIfCancelled(cancelToken);
         if (attempt >= _maxAttempts) {
           throw LlmException('Connection lost: ${e.message}', transport: true);
         }
         await _backoff(attempt, null);
+      } finally {
+        cancelToken?.unregister(client);
       }
     }
+  }
+
+  /// A cancelled request surfaces as ClientException ("client closed") /
+  /// SocketException from the aborted socket — map it to the stop signal
+  /// instead of treating it as a transport failure (or worse: retrying it).
+  void _rethrowIfCancelled(CancelToken? cancelToken) {
+    if (cancelToken?.isCancelled ?? false) throw const LlmStoppedException();
   }
 
   Future<void> _backoff(int attempt, String? retryAfter) async {
@@ -165,20 +226,31 @@ class LlmClient {
   /// Stream send with retry — only covers the phase until response headers
   /// arrive; mid-stream failures cannot be transparently resumed.
   /// [buildRequest] is invoked per attempt because an [http.Request] can only
-  /// be finalized once.
+  /// be finalized once. All attempts share [client] so a cancel closes the
+  /// in-flight attempt instantly.
   Future<http.StreamedResponse> _sendStreamWithRetry(
+    http.Client client,
     http.Request Function() buildRequest,
+    CancelToken? cancelToken,
   ) async {
     for (var attempt = 1;; attempt++) {
+      if (cancelToken?.isCancelled ?? false) {
+        throw const LlmStoppedException();
+      }
       try {
-        return await _client.send(buildRequest()).timeout(_streamTimeout);
+        return await client.send(buildRequest()).timeout(_streamTimeout);
+      } on LlmStoppedException {
+        rethrow;
       } on TimeoutException {
+        _rethrowIfCancelled(cancelToken);
         if (attempt >= _maxAttempts) rethrow;
         await _backoff(attempt, null);
       } on SocketException {
+        _rethrowIfCancelled(cancelToken);
         if (attempt >= _maxAttempts) rethrow;
         await _backoff(attempt, null);
       } on http.ClientException {
+        _rethrowIfCancelled(cancelToken);
         if (attempt >= _maxAttempts) rethrow;
         await _backoff(attempt, null);
       }
@@ -204,31 +276,42 @@ class LlmClient {
       'stream': true,
     });
 
-    http.StreamedResponse response;
+    // One client backs the whole call (send + stream reads), registered so
+    // a cancel aborts it at ANY phase: time-to-first-token, header waits,
+    // and mid-stream. An injected client (tests) is reused as-is.
+    final client = _clientForCall();
+    cancelToken?.register(client);
     try {
-      // A fresh http.Request must be built per attempt — package:http
-      // finalizes a Request on first send and re-sending throws
-      // "Bad state: Can't finalize a finalized Request".
-      response = await _sendStreamWithRetry(() {
-        return http.Request(
-          'POST',
-          Uri.parse('${config.baseUrl}/chat/completions'),
-        )
-          ..headers[HttpHeaders.contentTypeHeader] = 'application/json'
-          ..headers[HttpHeaders.authorizationHeader] = 'Bearer ${config.apiKey}'
-          ..headers[HttpHeaders.acceptHeader] = 'text/event-stream'
-          ..body = streamBody;
-      });
-    } on TimeoutException {
-      throw LlmException(
-        'Request timed out after ${_streamTimeout.inSeconds}s',
-        transport: true,
-      );
-    } on SocketException catch (e) {
-      throw LlmException('Connection lost: ${e.message}', transport: true);
-    } on http.ClientException catch (e) {
-      throw LlmException('Connection lost: ${e.message}', transport: true);
-    }
+      http.StreamedResponse response;
+      try {
+        // A fresh http.Request must be built per attempt — package:http
+        // finalizes a Request on first send and re-sending throws
+        // "Bad state: Can't finalize a finalized Request".
+        response = await _sendStreamWithRetry(client, () {
+          return http.Request(
+            'POST',
+            Uri.parse('${config.baseUrl}/chat/completions'),
+          )
+            ..headers[HttpHeaders.contentTypeHeader] = 'application/json'
+            ..headers[HttpHeaders.authorizationHeader] =
+                'Bearer ${config.apiKey}'
+            ..headers[HttpHeaders.acceptHeader] = 'text/event-stream'
+            ..body = streamBody;
+        }, cancelToken);
+      } on LlmStoppedException {
+        rethrow;
+      } on TimeoutException {
+        throw LlmException(
+          'Request timed out after ${_streamTimeout.inSeconds}s',
+          transport: true,
+        );
+      } on SocketException catch (e) {
+        _rethrowIfCancelled(cancelToken);
+        throw LlmException('Connection lost: ${e.message}', transport: true);
+      } on http.ClientException catch (e) {
+        _rethrowIfCancelled(cancelToken);
+        throw LlmException('Connection lost: ${e.message}', transport: true);
+      }
     if (response.statusCode != 200) {
       final body = await response.stream.bytesToString();
       final truncated = body.length > 800 ? '${body.substring(0, 800)}…[truncated]' : body;
@@ -298,9 +381,13 @@ class LlmClient {
         if (arguments != null) accumulated.arguments.write(arguments);
       }
       }
+    } on LlmStoppedException {
+      rethrow;
     } on SocketException catch (e) {
+      _rethrowIfCancelled(cancelToken);
       throw LlmException('Stream interrupted: ${e.message}', transport: true);
     } on http.ClientException catch (e) {
+      _rethrowIfCancelled(cancelToken);
       throw LlmException('Stream interrupted: ${e.message}', transport: true);
     }
 
@@ -316,6 +403,13 @@ class LlmClient {
       reasoningDetails: reasoningDetails,
       toolCalls: toolCalls,
     );
+    } finally {
+      cancelToken?.unregister(client);
+      // Safe in all exit paths: normal completion, mid-stream stop, or an
+      // exception propagating — the socket is either done or being aborted.
+      // Injected clients are owned elsewhere; leave them open.
+      if (_ownsClient) client.close();
+    }
   }
 
   Map<String, dynamic> _buildBody({

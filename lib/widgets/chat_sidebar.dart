@@ -299,7 +299,7 @@ class _ProfileFooter extends StatelessWidget {
         border: Border(top: BorderSide(color: kBorder, width: 0.6)),
       ),
       child: Transform.translate(
-        offset: const Offset(0, 5),
+        offset: const Offset(0, 2),
         child: Row(
           children: [
             Container(
