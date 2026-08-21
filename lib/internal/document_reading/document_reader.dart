@@ -26,23 +26,28 @@ Future<LogicalDocument?> readStructuredDocument(File file) async {
   switch (extension) {
     case 'pdf':
       return readPdfDocument(file);
+
     case 'docx':
     case 'docm':
       return readDocxDocument(file);
+
     case 'xlsx':
     case 'xlsm':
       return readXlsxDocument(file);
+
     case 'pptx':
     case 'pptm':
       return readPptxDocument(file);
+
     case 'ppt':
     case 'doc':
     case 'xls':
-      throw UnsupportedError(
-        'Legacy $extension files are binary Office formats. '
-        'DOCX/XLSX/PPTX are supported; convert this file first or open it '
-        'with a compatible office app.',
+      throw FormatException(
+        'Legacy $extension files are binary Office formats and cannot be '
+        'read as structured text. DOCX/XLSX/PPTX are supported; convert '
+        'this file first or open it with a compatible office app.',
       );
+
     case 'jpg':
     case 'jpeg':
     case 'png':
@@ -50,10 +55,11 @@ Future<LogicalDocument?> readStructuredDocument(File file) async {
     case 'webp':
     case 'heic':
     case 'heif':
-      throw UnsupportedError(
+      throw FormatException(
         'Image files are not text documents. Use the vision reader for '
         'image understanding.',
       );
+
     default:
       return null;
   }
@@ -61,6 +67,10 @@ Future<LogicalDocument?> readStructuredDocument(File file) async {
 
 String _extension(String filePath) {
   final lastDot = filePath.lastIndexOf('.');
-  if (lastDot == -1 || lastDot == filePath.length - 1) return '';
+
+  if (lastDot == -1 || lastDot == filePath.length - 1) {
+    return '';
+  }
+
   return filePath.substring(lastDot + 1).toLowerCase();
 }

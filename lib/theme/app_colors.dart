@@ -8,3 +8,4 @@ const kMuted = Color(0xFF8B93A1);
 const kBorder = Color(0xFF242A33);
 const kInputBg = Color(0xFF131820);
 const kSendDisabled = Color(0xFF2B323C);
+const kDanger = Color(0xFFE5484D);

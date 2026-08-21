@@ -97,6 +97,7 @@ class _ScrollingModelName extends StatefulWidget {
 class _ScrollingModelNameState extends State<_ScrollingModelName>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller;
+  bool _shouldAnimate = false;
 
   @override
   void initState() {
@@ -120,7 +121,21 @@ class _ScrollingModelNameState extends State<_ScrollingModelName>
       _controller
         ..reset()
         ..stop();
+      _shouldAnimate = false;
     }
+  }
+
+  void _syncAnimation(bool shouldAnimate) {
+    if (_shouldAnimate == shouldAnimate) return;
+    _shouldAnimate = shouldAnimate;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (shouldAnimate) {
+        if (!_controller.isAnimating) _controller.repeat(reverse: true);
+      } else {
+        if (_controller.isAnimating) _controller.stop();
+      }
+    });
   }
 
   @override
@@ -139,13 +154,14 @@ class _ScrollingModelNameState extends State<_ScrollingModelName>
           textDirection: Directionality.of(context),
         )..layout();
         final overflow = painter.width - constraints.maxWidth;
+        final shouldAnimate = overflow > 0 && constraints.maxWidth > 0;
 
-        if (overflow <= 0 || constraints.maxWidth <= 0) {
-          _controller.stop();
+        _syncAnimation(shouldAnimate);
+
+        if (!shouldAnimate) {
           return Text(widget.name, maxLines: 1, style: style);
         }
 
-        if (!_controller.isAnimating) _controller.repeat(reverse: true);
         return ClipRect(
           child: AnimatedBuilder(
             animation: CurvedAnimation(
@@ -309,6 +325,7 @@ class _ModelPickerDialogState extends State<_ModelPickerDialog> {
                           final isSelected = model.id == widget.selectedModel;
                           return ListTile(
                             dense: true,
+                            visualDensity: const VisualDensity(vertical: -2),
                             contentPadding: const EdgeInsets.symmetric(
                               horizontal: 10,
                               vertical: 0,

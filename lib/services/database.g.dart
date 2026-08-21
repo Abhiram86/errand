@@ -4,7 +4,7 @@ part of 'database.dart';
 
 // ignore_for_file: type=lint
 class $ConversationsTable extends Conversations
-    with TableInfo<$ConversationsTable, Conversation> {
+    with TableInfo<$ConversationsTable, ConversationRow> {
   @override
   final GeneratedDatabase attachedDatabase;
   final String? _alias;
@@ -127,7 +127,7 @@ class $ConversationsTable extends Conversations
   static const String $name = 'conversations';
   @override
   VerificationContext validateIntegrity(
-    Insertable<Conversation> instance, {
+    Insertable<ConversationRow> instance, {
     bool isInserting = false,
   }) {
     final context = VerificationContext();
@@ -200,9 +200,9 @@ class $ConversationsTable extends Conversations
   @override
   Set<GeneratedColumn> get $primaryKey => {id};
   @override
-  Conversation map(Map<String, dynamic> data, {String? tablePrefix}) {
+  ConversationRow map(Map<String, dynamic> data, {String? tablePrefix}) {
     final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
-    return Conversation(
+    return ConversationRow(
       id: attachedDatabase.typeMapping.read(
         DriftSqlType.string,
         data['${effectivePrefix}id'],
@@ -248,7 +248,7 @@ class $ConversationsTable extends Conversations
   }
 }
 
-class Conversation extends DataClass implements Insertable<Conversation> {
+class ConversationRow extends DataClass implements Insertable<ConversationRow> {
   final String id;
   final String? localSystemPrompt;
   final String title;
@@ -258,7 +258,7 @@ class Conversation extends DataClass implements Insertable<Conversation> {
   final bool isPinned;
   final DateTime createdAt;
   final DateTime updatedAt;
-  const Conversation({
+  const ConversationRow({
     required this.id,
     this.localSystemPrompt,
     required this.title,
@@ -310,12 +310,12 @@ class Conversation extends DataClass implements Insertable<Conversation> {
     );
   }
 
-  factory Conversation.fromJson(
+  factory ConversationRow.fromJson(
     Map<String, dynamic> json, {
     ValueSerializer? serializer,
   }) {
     serializer ??= driftRuntimeOptions.defaultSerializer;
-    return Conversation(
+    return ConversationRow(
       id: serializer.fromJson<String>(json['id']),
       localSystemPrompt: serializer.fromJson<String?>(
         json['localSystemPrompt'],
@@ -345,7 +345,7 @@ class Conversation extends DataClass implements Insertable<Conversation> {
     };
   }
 
-  Conversation copyWith({
+  ConversationRow copyWith({
     String? id,
     Value<String?> localSystemPrompt = const Value.absent(),
     String? title,
@@ -355,7 +355,7 @@ class Conversation extends DataClass implements Insertable<Conversation> {
     bool? isPinned,
     DateTime? createdAt,
     DateTime? updatedAt,
-  }) => Conversation(
+  }) => ConversationRow(
     id: id ?? this.id,
     localSystemPrompt: localSystemPrompt.present
         ? localSystemPrompt.value
@@ -368,8 +368,8 @@ class Conversation extends DataClass implements Insertable<Conversation> {
     createdAt: createdAt ?? this.createdAt,
     updatedAt: updatedAt ?? this.updatedAt,
   );
-  Conversation copyWithCompanion(ConversationsCompanion data) {
-    return Conversation(
+  ConversationRow copyWithCompanion(ConversationsCompanion data) {
+    return ConversationRow(
       id: data.id.present ? data.id.value : this.id,
       localSystemPrompt: data.localSystemPrompt.present
           ? data.localSystemPrompt.value
@@ -388,7 +388,7 @@ class Conversation extends DataClass implements Insertable<Conversation> {
 
   @override
   String toString() {
-    return (StringBuffer('Conversation(')
+    return (StringBuffer('ConversationRow(')
           ..write('id: $id, ')
           ..write('localSystemPrompt: $localSystemPrompt, ')
           ..write('title: $title, ')
@@ -417,7 +417,7 @@ class Conversation extends DataClass implements Insertable<Conversation> {
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      (other is Conversation &&
+      (other is ConversationRow &&
           other.id == this.id &&
           other.localSystemPrompt == this.localSystemPrompt &&
           other.title == this.title &&
@@ -429,7 +429,7 @@ class Conversation extends DataClass implements Insertable<Conversation> {
           other.updatedAt == this.updatedAt);
 }
 
-class ConversationsCompanion extends UpdateCompanion<Conversation> {
+class ConversationsCompanion extends UpdateCompanion<ConversationRow> {
   final Value<String> id;
   final Value<String?> localSystemPrompt;
   final Value<String> title;
@@ -467,7 +467,7 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
        currentDir = Value(currentDir),
        createdAt = Value(createdAt),
        updatedAt = Value(updatedAt);
-  static Insertable<Conversation> custom({
+  static Insertable<ConversationRow> custom({
     Expression<String>? id,
     Expression<String>? localSystemPrompt,
     Expression<String>? title,
@@ -574,7 +574,7 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
 }
 
 class $ConversationMessagesTable extends ConversationMessages
-    with TableInfo<$ConversationMessagesTable, ConversationMessage> {
+    with TableInfo<$ConversationMessagesTable, ConversationMessageRow> {
   @override
   final GeneratedDatabase attachedDatabase;
   final String? _alias;
@@ -737,7 +737,7 @@ class $ConversationMessagesTable extends ConversationMessages
   static const String $name = 'conversation_messages';
   @override
   VerificationContext validateIntegrity(
-    Insertable<ConversationMessage> instance, {
+    Insertable<ConversationMessageRow> instance, {
     bool isInserting = false,
   }) {
     final context = VerificationContext();
@@ -845,9 +845,9 @@ class $ConversationMessagesTable extends ConversationMessages
   @override
   Set<GeneratedColumn> get $primaryKey => {localId};
   @override
-  ConversationMessage map(Map<String, dynamic> data, {String? tablePrefix}) {
+  ConversationMessageRow map(Map<String, dynamic> data, {String? tablePrefix}) {
     final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
-    return ConversationMessage(
+    return ConversationMessageRow(
       localId: attachedDatabase.typeMapping.read(
         DriftSqlType.int,
         data['${effectivePrefix}local_id'],
@@ -905,8 +905,8 @@ class $ConversationMessagesTable extends ConversationMessages
   }
 }
 
-class ConversationMessage extends DataClass
-    implements Insertable<ConversationMessage> {
+class ConversationMessageRow extends DataClass
+    implements Insertable<ConversationMessageRow> {
   final int localId;
   final String conversationId;
   final String messageId;
@@ -919,7 +919,7 @@ class ConversationMessage extends DataClass
   final String? reasoning;
   final String? reasoningDetailsJson;
   final String? error;
-  const ConversationMessage({
+  const ConversationMessageRow({
     required this.localId,
     required this.conversationId,
     required this.messageId,
@@ -992,12 +992,12 @@ class ConversationMessage extends DataClass
     );
   }
 
-  factory ConversationMessage.fromJson(
+  factory ConversationMessageRow.fromJson(
     Map<String, dynamic> json, {
     ValueSerializer? serializer,
   }) {
     serializer ??= driftRuntimeOptions.defaultSerializer;
-    return ConversationMessage(
+    return ConversationMessageRow(
       localId: serializer.fromJson<int>(json['localId']),
       conversationId: serializer.fromJson<String>(json['conversationId']),
       messageId: serializer.fromJson<String>(json['messageId']),
@@ -1035,7 +1035,7 @@ class ConversationMessage extends DataClass
     };
   }
 
-  ConversationMessage copyWith({
+  ConversationMessageRow copyWith({
     int? localId,
     String? conversationId,
     String? messageId,
@@ -1048,7 +1048,7 @@ class ConversationMessage extends DataClass
     Value<String?> reasoning = const Value.absent(),
     Value<String?> reasoningDetailsJson = const Value.absent(),
     Value<String?> error = const Value.absent(),
-  }) => ConversationMessage(
+  }) => ConversationMessageRow(
     localId: localId ?? this.localId,
     conversationId: conversationId ?? this.conversationId,
     messageId: messageId ?? this.messageId,
@@ -1066,8 +1066,8 @@ class ConversationMessage extends DataClass
         : this.reasoningDetailsJson,
     error: error.present ? error.value : this.error,
   );
-  ConversationMessage copyWithCompanion(ConversationMessagesCompanion data) {
-    return ConversationMessage(
+  ConversationMessageRow copyWithCompanion(ConversationMessagesCompanion data) {
+    return ConversationMessageRow(
       localId: data.localId.present ? data.localId.value : this.localId,
       conversationId: data.conversationId.present
           ? data.conversationId.value
@@ -1095,7 +1095,7 @@ class ConversationMessage extends DataClass
 
   @override
   String toString() {
-    return (StringBuffer('ConversationMessage(')
+    return (StringBuffer('ConversationMessageRow(')
           ..write('localId: $localId, ')
           ..write('conversationId: $conversationId, ')
           ..write('messageId: $messageId, ')
@@ -1130,7 +1130,7 @@ class ConversationMessage extends DataClass
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      (other is ConversationMessage &&
+      (other is ConversationMessageRow &&
           other.localId == this.localId &&
           other.conversationId == this.conversationId &&
           other.messageId == this.messageId &&
@@ -1146,7 +1146,7 @@ class ConversationMessage extends DataClass
 }
 
 class ConversationMessagesCompanion
-    extends UpdateCompanion<ConversationMessage> {
+    extends UpdateCompanion<ConversationMessageRow> {
   final Value<int> localId;
   final Value<String> conversationId;
   final Value<String> messageId;
@@ -1191,7 +1191,7 @@ class ConversationMessagesCompanion
        sortOrder = Value(sortOrder),
        messageType = Value(messageType),
        messageText = Value(messageText);
-  static Insertable<ConversationMessage> custom({
+  static Insertable<ConversationMessageRow> custom({
     Expression<int>? localId,
     Expression<String>? conversationId,
     Expression<String>? messageId,
@@ -1317,7 +1317,7 @@ class ConversationMessagesCompanion
 }
 
 class $ConversationAttachmentsTable extends ConversationAttachments
-    with TableInfo<$ConversationAttachmentsTable, ConversationAttachment> {
+    with TableInfo<$ConversationAttachmentsTable, ConversationAttachmentRow> {
   @override
   final GeneratedDatabase attachedDatabase;
   final String? _alias;
@@ -1354,7 +1354,7 @@ class $ConversationAttachmentsTable extends ConversationAttachments
   static const String $name = 'conversation_attachments';
   @override
   VerificationContext validateIntegrity(
-    Insertable<ConversationAttachment> instance, {
+    Insertable<ConversationAttachmentRow> instance, {
     bool isInserting = false,
   }) {
     final context = VerificationContext();
@@ -1384,9 +1384,12 @@ class $ConversationAttachmentsTable extends ConversationAttachments
   @override
   Set<GeneratedColumn> get $primaryKey => {conversationId, uri};
   @override
-  ConversationAttachment map(Map<String, dynamic> data, {String? tablePrefix}) {
+  ConversationAttachmentRow map(
+    Map<String, dynamic> data, {
+    String? tablePrefix,
+  }) {
     final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
-    return ConversationAttachment(
+    return ConversationAttachmentRow(
       conversationId: attachedDatabase.typeMapping.read(
         DriftSqlType.string,
         data['${effectivePrefix}conversation_id'],
@@ -1404,11 +1407,11 @@ class $ConversationAttachmentsTable extends ConversationAttachments
   }
 }
 
-class ConversationAttachment extends DataClass
-    implements Insertable<ConversationAttachment> {
+class ConversationAttachmentRow extends DataClass
+    implements Insertable<ConversationAttachmentRow> {
   final String conversationId;
   final String uri;
-  const ConversationAttachment({
+  const ConversationAttachmentRow({
     required this.conversationId,
     required this.uri,
   });
@@ -1427,12 +1430,12 @@ class ConversationAttachment extends DataClass
     );
   }
 
-  factory ConversationAttachment.fromJson(
+  factory ConversationAttachmentRow.fromJson(
     Map<String, dynamic> json, {
     ValueSerializer? serializer,
   }) {
     serializer ??= driftRuntimeOptions.defaultSerializer;
-    return ConversationAttachment(
+    return ConversationAttachmentRow(
       conversationId: serializer.fromJson<String>(json['conversationId']),
       uri: serializer.fromJson<String>(json['uri']),
     );
@@ -1446,15 +1449,15 @@ class ConversationAttachment extends DataClass
     };
   }
 
-  ConversationAttachment copyWith({String? conversationId, String? uri}) =>
-      ConversationAttachment(
+  ConversationAttachmentRow copyWith({String? conversationId, String? uri}) =>
+      ConversationAttachmentRow(
         conversationId: conversationId ?? this.conversationId,
         uri: uri ?? this.uri,
       );
-  ConversationAttachment copyWithCompanion(
+  ConversationAttachmentRow copyWithCompanion(
     ConversationAttachmentsCompanion data,
   ) {
-    return ConversationAttachment(
+    return ConversationAttachmentRow(
       conversationId: data.conversationId.present
           ? data.conversationId.value
           : this.conversationId,
@@ -1464,7 +1467,7 @@ class ConversationAttachment extends DataClass
 
   @override
   String toString() {
-    return (StringBuffer('ConversationAttachment(')
+    return (StringBuffer('ConversationAttachmentRow(')
           ..write('conversationId: $conversationId, ')
           ..write('uri: $uri')
           ..write(')'))
@@ -1476,13 +1479,13 @@ class ConversationAttachment extends DataClass
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      (other is ConversationAttachment &&
+      (other is ConversationAttachmentRow &&
           other.conversationId == this.conversationId &&
           other.uri == this.uri);
 }
 
 class ConversationAttachmentsCompanion
-    extends UpdateCompanion<ConversationAttachment> {
+    extends UpdateCompanion<ConversationAttachmentRow> {
   final Value<String> conversationId;
   final Value<String> uri;
   final Value<int> rowid;
@@ -1497,7 +1500,7 @@ class ConversationAttachmentsCompanion
     this.rowid = const Value.absent(),
   }) : conversationId = Value(conversationId),
        uri = Value(uri);
-  static Insertable<ConversationAttachment> custom({
+  static Insertable<ConversationAttachmentRow> custom({
     Expression<String>? conversationId,
     Expression<String>? uri,
     Expression<int>? rowid,
@@ -1594,7 +1597,8 @@ typedef $$ConversationsTableUpdateCompanionBuilder =
     });
 
 final class $$ConversationsTableReferences
-    extends BaseReferences<_$HandyDatabase, $ConversationsTable, Conversation> {
+    extends
+        BaseReferences<_$HandyDatabase, $ConversationsTable, ConversationRow> {
   $$ConversationsTableReferences(
     super.$_db,
     super.$_table,
@@ -1603,7 +1607,7 @@ final class $$ConversationsTableReferences
 
   static MultiTypedResultKey<
     $ConversationMessagesTable,
-    List<ConversationMessage>
+    List<ConversationMessageRow>
   >
   _conversationMessagesRefsTable(_$HandyDatabase db) =>
       MultiTypedResultKey.fromTable(
@@ -1628,7 +1632,7 @@ final class $$ConversationsTableReferences
 
   static MultiTypedResultKey<
     $ConversationAttachmentsTable,
-    List<ConversationAttachment>
+    List<ConversationAttachmentRow>
   >
   _conversationAttachmentsRefsTable(_$HandyDatabase db) =>
       MultiTypedResultKey.fromTable(
@@ -1913,14 +1917,14 @@ class $$ConversationsTableTableManager
         RootTableManager<
           _$HandyDatabase,
           $ConversationsTable,
-          Conversation,
+          ConversationRow,
           $$ConversationsTableFilterComposer,
           $$ConversationsTableOrderingComposer,
           $$ConversationsTableAnnotationComposer,
           $$ConversationsTableCreateCompanionBuilder,
           $$ConversationsTableUpdateCompanionBuilder,
-          (Conversation, $$ConversationsTableReferences),
-          Conversation,
+          (ConversationRow, $$ConversationsTableReferences),
+          ConversationRow,
           PrefetchHooks Function({
             bool conversationMessagesRefs,
             bool conversationAttachmentsRefs,
@@ -2011,9 +2015,9 @@ class $$ConversationsTableTableManager
                     return [
                       if (conversationMessagesRefs)
                         await $_getPrefetchedData<
-                          Conversation,
+                          ConversationRow,
                           $ConversationsTable,
-                          ConversationMessage
+                          ConversationMessageRow
                         >(
                           currentTable: table,
                           referencedTable: $$ConversationsTableReferences
@@ -2032,9 +2036,9 @@ class $$ConversationsTableTableManager
                         ),
                       if (conversationAttachmentsRefs)
                         await $_getPrefetchedData<
-                          Conversation,
+                          ConversationRow,
                           $ConversationsTable,
-                          ConversationAttachment
+                          ConversationAttachmentRow
                         >(
                           currentTable: table,
                           referencedTable: $$ConversationsTableReferences
@@ -2063,14 +2067,14 @@ typedef $$ConversationsTableProcessedTableManager =
     ProcessedTableManager<
       _$HandyDatabase,
       $ConversationsTable,
-      Conversation,
+      ConversationRow,
       $$ConversationsTableFilterComposer,
       $$ConversationsTableOrderingComposer,
       $$ConversationsTableAnnotationComposer,
       $$ConversationsTableCreateCompanionBuilder,
       $$ConversationsTableUpdateCompanionBuilder,
-      (Conversation, $$ConversationsTableReferences),
-      Conversation,
+      (ConversationRow, $$ConversationsTableReferences),
+      ConversationRow,
       PrefetchHooks Function({
         bool conversationMessagesRefs,
         bool conversationAttachmentsRefs,
@@ -2112,7 +2116,7 @@ final class $$ConversationMessagesTableReferences
         BaseReferences<
           _$HandyDatabase,
           $ConversationMessagesTable,
-          ConversationMessage
+          ConversationMessageRow
         > {
   $$ConversationMessagesTableReferences(
     super.$_db,
@@ -2394,14 +2398,14 @@ class $$ConversationMessagesTableTableManager
         RootTableManager<
           _$HandyDatabase,
           $ConversationMessagesTable,
-          ConversationMessage,
+          ConversationMessageRow,
           $$ConversationMessagesTableFilterComposer,
           $$ConversationMessagesTableOrderingComposer,
           $$ConversationMessagesTableAnnotationComposer,
           $$ConversationMessagesTableCreateCompanionBuilder,
           $$ConversationMessagesTableUpdateCompanionBuilder,
-          (ConversationMessage, $$ConversationMessagesTableReferences),
-          ConversationMessage,
+          (ConversationMessageRow, $$ConversationMessagesTableReferences),
+          ConversationMessageRow,
           PrefetchHooks Function({bool conversationId})
         > {
   $$ConversationMessagesTableTableManager(
@@ -2534,14 +2538,14 @@ typedef $$ConversationMessagesTableProcessedTableManager =
     ProcessedTableManager<
       _$HandyDatabase,
       $ConversationMessagesTable,
-      ConversationMessage,
+      ConversationMessageRow,
       $$ConversationMessagesTableFilterComposer,
       $$ConversationMessagesTableOrderingComposer,
       $$ConversationMessagesTableAnnotationComposer,
       $$ConversationMessagesTableCreateCompanionBuilder,
       $$ConversationMessagesTableUpdateCompanionBuilder,
-      (ConversationMessage, $$ConversationMessagesTableReferences),
-      ConversationMessage,
+      (ConversationMessageRow, $$ConversationMessagesTableReferences),
+      ConversationMessageRow,
       PrefetchHooks Function({bool conversationId})
     >;
 typedef $$ConversationAttachmentsTableCreateCompanionBuilder =
@@ -2562,7 +2566,7 @@ final class $$ConversationAttachmentsTableReferences
         BaseReferences<
           _$HandyDatabase,
           $ConversationAttachmentsTable,
-          ConversationAttachment
+          ConversationAttachmentRow
         > {
   $$ConversationAttachmentsTableReferences(
     super.$_db,
@@ -2707,14 +2711,14 @@ class $$ConversationAttachmentsTableTableManager
         RootTableManager<
           _$HandyDatabase,
           $ConversationAttachmentsTable,
-          ConversationAttachment,
+          ConversationAttachmentRow,
           $$ConversationAttachmentsTableFilterComposer,
           $$ConversationAttachmentsTableOrderingComposer,
           $$ConversationAttachmentsTableAnnotationComposer,
           $$ConversationAttachmentsTableCreateCompanionBuilder,
           $$ConversationAttachmentsTableUpdateCompanionBuilder,
-          (ConversationAttachment, $$ConversationAttachmentsTableReferences),
-          ConversationAttachment,
+          (ConversationAttachmentRow, $$ConversationAttachmentsTableReferences),
+          ConversationAttachmentRow,
           PrefetchHooks Function({bool conversationId})
         > {
   $$ConversationAttachmentsTableTableManager(
@@ -2816,14 +2820,14 @@ typedef $$ConversationAttachmentsTableProcessedTableManager =
     ProcessedTableManager<
       _$HandyDatabase,
       $ConversationAttachmentsTable,
-      ConversationAttachment,
+      ConversationAttachmentRow,
       $$ConversationAttachmentsTableFilterComposer,
       $$ConversationAttachmentsTableOrderingComposer,
       $$ConversationAttachmentsTableAnnotationComposer,
       $$ConversationAttachmentsTableCreateCompanionBuilder,
       $$ConversationAttachmentsTableUpdateCompanionBuilder,
-      (ConversationAttachment, $$ConversationAttachmentsTableReferences),
-      ConversationAttachment,
+      (ConversationAttachmentRow, $$ConversationAttachmentsTableReferences),
+      ConversationAttachmentRow,
       PrefetchHooks Function({bool conversationId})
     >;
 

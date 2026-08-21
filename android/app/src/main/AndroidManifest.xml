@@ -1,6 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"/>
+    <uses-permission android:name="android.permission.WRITE_SETTINGS"/>
     <application
         android:label="handy_flutter"
         android:name="${applicationName}"
@@ -43,5 +44,37 @@
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
         </intent>
+        <!-- Web -->
+        <intent><action android:name="android.intent.action.VIEW"/><data android:scheme="https"/></intent>
+        <intent><action android:name="android.intent.action.VIEW"/><data android:scheme="http"/></intent>
+        <!-- Maps & navigation -->
+        <intent><action android:name="android.intent.action.VIEW"/><data android:scheme="geo"/></intent>
+        <intent><action android:name="android.intent.action.VIEW"/><data android:scheme="google.navigation"/></intent>
+        <intent><action android:name="android.intent.action.VIEW"/><data android:scheme="google.streetview"/></intent>
+        <!-- Dialer / Email -->
+        <intent><action android:name="android.intent.action.VIEW"/><data android:scheme="tel"/></intent>
+        <intent><action android:name="android.intent.action.VIEW"/><data android:scheme="mailto"/></intent>
+        <!-- Spotify deep link -->
+        <intent><action android:name="android.intent.action.VIEW"/><data android:scheme="spotify"/></intent>
+        <!-- Common messaging deeplinks -->
+        <intent><action android:name="android.intent.action.VIEW"/><data android:scheme="whatsapp"/></intent>
+        <intent><action android:name="android.intent.action.VIEW"/><data android:scheme="tg"/></intent>
+        <!-- Custom-action intents (alarm/timer/calendar/share/uninstall) -->
+        <intent><action android:name="android.intent.action.SET_ALARM"/></intent>
+        <intent><action android:name="android.intent.action.SET_TIMER"/></intent>
+        <intent><action android:name="android.intent.action.SHOW_ALARMS"/></intent>
+        <intent><action android:name="android.intent.action.INSERT"/><data android:mimeType="vnd.android.cursor.item/event"/></intent>
+        <intent><action android:name="android.intent.action.SEND"/><data android:mimeType="*/*"/></intent>
+        <intent><action android:name="android.intent.action.DELETE"/><data android:scheme="package"/></intent>
+        <intent><action android:name="android.media.action.MEDIA_PLAY_FROM_SEARCH"/></intent>
+        <!-- Settings panels (slide-over wifi/internet/volume/nfc) -->
+        <intent><action android:name="android.settings.panel.action.INTERNET_CONNECTIVITY"/></intent>
+        <intent><action android:name="android.settings.panel.action.WIFI"/></intent>
+        <intent><action android:name="android.settings.panel.action.VOLUME"/></intent>
+        <intent><action android:name="android.settings.panel.action.NFC"/></intent>
+        <!-- Explicit packages you want to launch directly -->
+        <package android:name="com.spotify.music"/>
+        <package android:name="com.google.android.apps.maps"/>
+        <package android:name="com.android.chrome"/>
     </queries>
 </manifest>

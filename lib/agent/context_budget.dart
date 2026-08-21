@@ -1,0 +1,146 @@
+import 'dart:convert';
+
+import '../types/message.dart';
+
+/// Total assumed context window, in characters (~tokens x 4).
+const int kContextWindowChars = 256 * 1024;
+
+/// Truncation kicks in above this many estimated characters; below it the
+/// history is sent untouched (apart from per-result clamping).
+const int kContextSoftLimit = 200 * 1024;
+
+/// After truncation the kept history should fit within this budget, leaving
+/// headroom for the completion and tool schemas inside the 256K window.
+const int kContextTarget = 110 * 1024;
+
+/// A single tool result larger than this is head-clamped regardless of the
+/// total budget, so one giant `read` cannot dominate the context.
+const int kMaxToolResultChars = 32 * 1024;
+
+/// Rough per-message JSON envelope overhead (role, ids, formatting).
+const int _perMessageOverheadChars = 40;
+
+const String _truncationMarker = '\n[...truncated ';
+
+/// Estimates the characters a [Message] contributes to the LLM payload.
+///
+/// Mirrors what `_toLlmHistory` actually serializes: text plus, for tool
+/// messages, the full result, reasoning, and JSON-encoded args/details.
+int estimateMessageChars(Message message) {
+  var size = message.text.length + _perMessageOverheadChars;
+  if (message is ToolMessage) {
+    size += message.tool.name.length;
+    size += jsonEncode(message.tool.args).length;
+    size += message.result.length;
+    size += message.reasoning?.length ?? 0;
+    if (message.reasoningDetails.isNotEmpty) {
+      size += jsonEncode(message.reasoningDetails).length;
+    }
+  }
+  if (message is ErrorMessage) {
+    size += message.error.length;
+  }
+  return size;
+}
+
+/// Estimates the total characters a history contributes to the LLM payload.
+int estimateHistoryChars(List<Message> history) =>
+    history.fold(0, (sum, message) => sum + estimateMessageChars(message));
+
+/// Returns [history] with any oversized tool result head-clamped.
+///
+/// Applied unconditionally: even below the soft limit, a single multi-hundred-
+/// kilobyte `read` output should not crowd out the rest of the conversation.
+List<Message> clampToolResults(List<Message> history) => [
+  for (final message in history) _clampToolResult(message),
+];
+
+Message _clampToolResult(Message message) {
+  if (message is! ToolMessage) return message;
+  if (message.result.length <= kMaxToolResultChars) return message;
+  final dropped = message.result.length - kMaxToolResultChars;
+  return ToolMessage(
+    id: message.id,
+    text: message.text,
+    tool: message.tool,
+    result:
+        '${message.result.substring(0, kMaxToolResultChars)}'
+        '$_truncationMarker$dropped chars]',
+    reasoning: message.reasoning,
+    reasoningDetails: message.reasoningDetails,
+  );
+}
+
+/// Groups a history into atomic truncation units.
+///
+/// Consecutive `ToolMessage`s form ONE unit: `_toLlmHistory` synthesizes a
+/// single assistant `tool_calls` message from the whole run, so splitting a
+/// run would produce an orphaned tool result or a dangling tool_calls block.
+List<List<Message>> groupIntoUnits(List<Message> history) {
+  final units = <List<Message>>[];
+  var index = 0;
+  while (index < history.length) {
+    final message = history[index];
+    if (message is ToolMessage) {
+      final run = <Message>[message];
+      while (index + 1 < history.length && history[index + 1] is ToolMessage) {
+        index++;
+        run.add(history[index]);
+      }
+      units.add(run);
+    } else {
+      units.add([message]);
+    }
+    index++;
+  }
+  return units;
+}
+
+/// Sliding-window truncation over the conversation history.
+///
+/// - Under the soft limit: returns the history with tool results clamped only.
+/// - Over the soft limit: drops whole oldest units (never mid-tool-batch)
+///   until the kept suffix fits [targetLimit]. Everything from the most
+///   recent [UserMessage] onwards is mandatory and always kept, even if that
+///   alone exceeds the target.
+///
+/// Pure/non-destructive: the input list is never mutated and the full
+/// history remains available for persistence and UI rendering.
+List<Message> truncateHistory(
+  List<Message> history, {
+  int softLimit = kContextSoftLimit,
+  int targetLimit = kContextTarget,
+}) {
+  if (history.isEmpty) return history;
+
+  final clamped = clampToolResults(history);
+  if (estimateHistoryChars(clamped) <= softLimit) return clamped;
+
+  final units = groupIntoUnits(clamped);
+
+  // Index of the unit containing the last user message; every unit from
+  // there to the end is mandatory context for the current turn.
+  var lastUserUnit = -1;
+  for (var i = 0; i < units.length; i++) {
+    if (units[i].first is UserMessage) lastUserUnit = i;
+  }
+
+  final keptUnits = <List<Message>>[];
+  var budget = 0;
+  for (var i = units.length - 1; i >= 0; i--) {
+    final unitSize = estimateHistoryChars(units[i]);
+    final isMandatory = i >= lastUserUnit && lastUserUnit != -1;
+    if (!isMandatory && budget + unitSize > targetLimit) break;
+    budget += unitSize;
+    // Collected back-to-front; flattened front-to-back below.
+    keptUnits.add(units[i]);
+  }
+
+  // Degenerate case: no user message at all and the newest unit already
+  // blows the target — still send something rather than nothing.
+  if (keptUnits.isEmpty) keptUnits.add(units.last);
+
+  return [
+    for (final unit in keptUnits.reversed) ...unit,
+  ];
+}

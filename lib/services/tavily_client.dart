@@ -1,15 +1,19 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
 const kTavilyApiKey = String.fromEnvironment('TAVILY_API_KEY');
+const _tavilyTimeout = Duration(seconds: 15);
 
 class TavilyClient {
   final String apiKey;
   final http.Client _client;
+  final bool _ownsClient;
 
   TavilyClient({required this.apiKey, http.Client? client})
-    : _client = client ?? http.Client();
+    : _client = client ?? http.Client(),
+      _ownsClient = client == null;
 
   Future<Map<String, dynamic>> search(
     String query, {
@@ -45,15 +49,22 @@ class TavilyClient {
       throw const TavilyException('TAVILY_API_KEY is not configured.');
     }
 
-    final response = await _client.post(
-      Uri.parse('https://api.tavily.com$endpoint'),
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer $apiKey',
-      },
-      body: jsonEncode(body),
-    );
+    http.Response response;
+    try {
+      response = await _client
+          .post(
+            Uri.parse('https://api.tavily.com$endpoint'),
+            headers: {
+              'Accept': 'application/json',
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer $apiKey',
+            },
+            body: jsonEncode(body),
+          )
+          .timeout(_tavilyTimeout);
+    } on TimeoutException {
+      throw TavilyException('Tavily request timed out after ${_tavilyTimeout.inSeconds}s');
+    }
 
     final decoded = _decodeResponse(response.body);
     if (response.statusCode < 200 || response.statusCode >= 300) {
@@ -77,7 +88,9 @@ class TavilyClient {
     }
   }
 
-  void close() => _client.close();
+  void close() {
+    if (_ownsClient) _client.close();
+  }
 }
 
 class TavilyException implements Exception {

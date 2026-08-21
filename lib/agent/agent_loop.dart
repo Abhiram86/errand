@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import '../llm/llm_client.dart';
 import '../types/conversation.dart';
+import 'context_budget.dart';
 import '../types/message.dart';
 import '../types/tool.dart';
 import 'tool.dart';
@@ -49,17 +50,26 @@ class AgentLoop {
   });
 
   Future<String> run(Conversation conversation) async {
+    // OPT-07: the LLM payload is truncated to the context budget here, at
+    // the boundary. The full history stays intact on the Conversation for
+    // persistence and UI rendering.
+    final history = truncateHistory(conversation.messages);
     final messages = <Map<String, dynamic>>[
       if (conversation.localSystemPrompt != null)
         {'role': 'system', 'content': conversation.localSystemPrompt},
-      ..._toLlmHistory(conversation.messages),
+      ..._toLlmHistory(history),
     ];
 
     for (var turn = 0; turn < maxTurns; turn++) {
       final systemPromptBuilder = this.systemPromptBuilder;
-      if (systemPromptBuilder != null && messages.isNotEmpty) {
-        messages[0] = {'role': 'system', 'content': systemPromptBuilder()};
+      if (systemPromptBuilder != null) {
+        if (messages.isNotEmpty && messages[0]['role']=='system') {
+          messages[0]['content'] = systemPromptBuilder();
+        } else {
+          messages.insert(0, {'role': 'system', 'content': systemPromptBuilder()});
+        }
       }
+
 
       final textObserver = onTextDelta;
       final message = textObserver == null

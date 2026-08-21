@@ -49,23 +49,31 @@ class LlmClient {
   LlmClient({required this.config, http.Client? client})
     : _client = client ?? http.Client();
 
+  static const _timeout = Duration(seconds: 30);
+  static const _streamTimeout = Duration(seconds: 60);
+  static const _maxAttempts = 3;
+
   Future<LlmMessage> chat({
     required List<Map<String, dynamic>> messages,
     List<Tool> tools = const [],
   }) async {
     final body = _buildBody(messages: messages, tools: tools);
 
-    final res = await _client.post(
+    final res = await _postWithRetry(
       Uri.parse('${config.baseUrl}/chat/completions'),
-      headers: {
+      {
         HttpHeaders.contentTypeHeader: 'application/json',
         HttpHeaders.authorizationHeader: 'Bearer ${config.apiKey}',
       },
-      body: jsonEncode(body),
+      jsonEncode(body),
     );
 
     if (res.statusCode != 200) {
-      throw LlmException('HTTP ${res.statusCode}: ${res.body}');
+      final truncated = res.body.length > 800 ? '${res.body.substring(0, 800)}…[truncated]' : res.body;
+      throw LlmException(
+        'HTTP ${res.statusCode}: $truncated',
+        transport: res.statusCode == 429 || res.statusCode >= 500,
+      );
     }
 
     final data = jsonDecode(res.body) as Map<String, dynamic>;
@@ -84,6 +92,75 @@ class LlmClient {
     );
   }
 
+  /// POST with retry for transient failures: connection aborts (stale
+  /// keep-alive sockets, mobile network switches), timeouts, HTTP 429/5xx.
+  /// Honors `Retry-After` when present.
+  Future<http.Response> _postWithRetry(
+    Uri uri,
+    Map<String, String> headers,
+    String body,
+  ) async {
+    for (var attempt = 1;; attempt++) {
+      try {
+        final res = await _client
+            .post(uri, headers: headers, body: body)
+            .timeout(_timeout);
+        final transient = res.statusCode == 429 || res.statusCode >= 500;
+        if (!transient || attempt >= _maxAttempts) return res;
+        await _backoff(attempt, res.headers['retry-after']);
+      } on TimeoutException {
+        if (attempt >= _maxAttempts) {
+          throw LlmException(
+            'Request timed out after ${_timeout.inSeconds}s',
+            transport: true,
+          );
+        }
+        await _backoff(attempt, null);
+      } on SocketException catch (e) {
+        if (attempt >= _maxAttempts) {
+          throw LlmException('Connection lost: ${e.message}', transport: true);
+        }
+        await _backoff(attempt, null);
+      } on http.ClientException catch (e) {
+        if (attempt >= _maxAttempts) {
+          throw LlmException('Connection lost: ${e.message}', transport: true);
+        }
+        await _backoff(attempt, null);
+      }
+    }
+  }
+
+  Future<void> _backoff(int attempt, String? retryAfter) async {
+    final seconds = int.tryParse(retryAfter ?? '');
+    final delay = seconds != null && seconds > 0
+        ? Duration(seconds: seconds)
+        : Duration(milliseconds: 800 * (1 << (attempt - 1)));
+    await Future<void>.delayed(delay);
+  }
+
+  /// Stream send with retry — only covers the phase until response headers
+  /// arrive; mid-stream failures cannot be transparently resumed.
+  /// [buildRequest] is invoked per attempt because an [http.Request] can only
+  /// be finalized once.
+  Future<http.StreamedResponse> _sendStreamWithRetry(
+    http.Request Function() buildRequest,
+  ) async {
+    for (var attempt = 1;; attempt++) {
+      try {
+        return await _client.send(buildRequest()).timeout(_streamTimeout);
+      } on TimeoutException {
+        if (attempt >= _maxAttempts) rethrow;
+        await _backoff(attempt, null);
+      } on SocketException {
+        if (attempt >= _maxAttempts) rethrow;
+        await _backoff(attempt, null);
+      } on http.ClientException {
+        if (attempt >= _maxAttempts) rethrow;
+        await _backoff(attempt, null);
+      }
+    }
+  }
+
   /// Sends an OpenAI-compatible streaming chat request.
   ///
   /// Text is forwarded as it arrives, while the returned [LlmMessage] still
@@ -96,20 +173,43 @@ class LlmClient {
     required void Function(String delta) onTextDelta,
     void Function()? onReasoningDelta,
   }) async {
-    final request =
-        http.Request('POST', Uri.parse('${config.baseUrl}/chat/completions'))
+    final streamBody = jsonEncode({
+      ..._buildBody(messages: messages, tools: tools),
+      'stream': true,
+    });
+
+    http.StreamedResponse response;
+    try {
+      // A fresh http.Request must be built per attempt — package:http
+      // finalizes a Request on first send and re-sending throws
+      // "Bad state: Can't finalize a finalized Request".
+      response = await _sendStreamWithRetry(() {
+        return http.Request(
+          'POST',
+          Uri.parse('${config.baseUrl}/chat/completions'),
+        )
           ..headers[HttpHeaders.contentTypeHeader] = 'application/json'
           ..headers[HttpHeaders.authorizationHeader] = 'Bearer ${config.apiKey}'
           ..headers[HttpHeaders.acceptHeader] = 'text/event-stream'
-          ..body = jsonEncode({
-            ..._buildBody(messages: messages, tools: tools),
-            'stream': true,
-          });
-
-    final response = await _client.send(request);
+          ..body = streamBody;
+      });
+    } on TimeoutException {
+      throw LlmException(
+        'Request timed out after ${_streamTimeout.inSeconds}s',
+        transport: true,
+      );
+    } on SocketException catch (e) {
+      throw LlmException('Connection lost: ${e.message}', transport: true);
+    } on http.ClientException catch (e) {
+      throw LlmException('Connection lost: ${e.message}', transport: true);
+    }
     if (response.statusCode != 200) {
       final body = await response.stream.bytesToString();
-      throw LlmException('HTTP ${response.statusCode}: $body');
+      final truncated = body.length > 800 ? '${body.substring(0, 800)}…[truncated]' : body;
+      throw LlmException(
+        'HTTP ${response.statusCode}: $truncated',
+        transport: response.statusCode == 429 || response.statusCode >= 500,
+      );
     }
 
     final content = StringBuffer();
@@ -117,14 +217,15 @@ class LlmClient {
     final reasoningDetails = <Map<String, dynamic>>[];
     final streamedToolCalls = <int, _StreamToolCall>{};
 
-    await for (final event in _sseDataEvents(response.stream)) {
-      if (event == '[DONE]') break;
+    try {
+      await for (final event in _sseDataEvents(response.stream)) {
+        if (event == '[DONE]') break;
 
-      final data = jsonDecode(event) as Map<String, dynamic>;
-      final error = data['error'];
-      if (error is Map<String, dynamic>) {
-        throw LlmException(error['message']?.toString() ?? 'Streaming error');
-      }
+        final data = jsonDecode(event) as Map<String, dynamic>;
+        final error = data['error'];
+        if (error is Map<String, dynamic>) {
+          throw LlmException(error['message']?.toString() ?? 'Streaming error');
+        }
 
       final choices = data['choices'] as List<dynamic>? ?? const [];
       if (choices.isEmpty) continue;
@@ -167,16 +268,24 @@ class LlmClient {
         final arguments = function['arguments'] as String?;
         if (arguments != null) accumulated.arguments.write(arguments);
       }
+      }
+    } on SocketException catch (e) {
+      throw LlmException('Stream interrupted: ${e.message}', transport: true);
+    } on http.ClientException catch (e) {
+      throw LlmException('Stream interrupted: ${e.message}', transport: true);
+    }
+
+    final toolCalls = <ToolCall>[];
+    for (final entry in streamedToolCalls.entries) {
+      final call = entry.value.tryToToolCall(index: entry.key);
+      if (call != null) toolCalls.add(call);
     }
 
     return LlmMessage(
       content: content.length == 0 ? null : content.toString(),
       reasoning: reasoning.length == 0 ? null : reasoning.toString(),
       reasoningDetails: reasoningDetails,
-      toolCalls: [
-        for (final entry in streamedToolCalls.entries)
-          entry.value.toToolCall(index: entry.key),
-      ],
+      toolCalls: toolCalls,
     );
   }
 
@@ -186,8 +295,8 @@ class LlmClient {
   }) => {
     'model': config.model,
     'messages': messages,
-    'tools': tools.map((t) => t.toJson()).toList(),
-    'tool_choice': 'auto',
+    if (tools.isNotEmpty) 'tools': tools.map((t) => t.toJson()).toList(),
+    if (tools.isNotEmpty) 'tool_choice': 'auto',
   };
 
   String? _readReasoning(Map<String, dynamic> message) {
@@ -282,6 +391,8 @@ Stream<String> _sseDataEvents(Stream<List<int>> bytes) async* {
     data.write(value);
   }
 
+  // Server may omit the final blank line before closing the stream.
+  // Treat any buffered data as one last event (covers `data: [DONE]` without `\n\n`).
   if (data.length > 0) yield data.toString();
 }
 
@@ -290,7 +401,14 @@ class _StreamToolCall {
   String? name;
   final StringBuffer arguments = StringBuffer();
 
-  ToolCall toToolCall({required int index}) {
+  ToolCall? tryToToolCall({required int index}) {
+    // Incomplete tool calls (missing id or name) happen when some proxies
+    // stream partial deltas. Emitting a synthetic id like `tool-call-$index`
+    // breaks the OpenAI contract: the subsequent `tool` message must carry
+    // the exact `tool_call_id` the model issued, otherwise the next turn
+    // is rejected as malformed history. Drop incomplete calls instead.
+    if (id == null || id!.isEmpty) return null;
+    if (name == null || name!.isEmpty) return null;
     final decoded = jsonDecode(
       arguments.length == 0 ? '{}' : arguments.toString(),
     );
@@ -298,16 +416,29 @@ class _StreamToolCall {
       throw LlmException('Tool arguments must be a JSON object');
     }
     return ToolCall(
-      id: id ?? 'tool-call-$index',
-      name: name ?? '',
+      id: id!,
+      name: name!,
       arguments: decoded,
     );
+  }
+
+  @Deprecated('Use tryToToolCall')
+  ToolCall toToolCall({required int index}) {
+    final call = tryToToolCall(index: index);
+    if (call != null) return call;
+    throw LlmException('Incomplete tool call at index $index');
   }
 }
 
 class LlmException implements Exception {
   final String message;
-  LlmException(this.message);
+
+  /// True when the failure is transport/API-side (connection aborts,
+  /// timeouts, HTTP 429/5xx) rather than an agent/tool mistake. Transport
+  /// errors must be surfaced to the user but never added to model context.
+  final bool transport;
+
+  LlmException(this.message, {this.transport = false});
 
   @override
   String toString() => message;

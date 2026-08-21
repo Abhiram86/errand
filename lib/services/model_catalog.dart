@@ -1,8 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
 import '../models/model_option.dart';
+
+const _catalogTimeout = Duration(seconds: 15);
 
 class ModelCatalogService {
   static final Map<String, List<ModelOption>> _cache = {};
@@ -34,13 +37,20 @@ class ModelCatalogService {
     required String apiKey,
   }) async {
     final uri = Uri.parse('$baseUrl/models?output_modalities=text');
-    final response = await _client.get(
-      uri,
-      headers: {
-        'Accept': 'application/json',
-        if (apiKey.isNotEmpty) 'Authorization': 'Bearer $apiKey',
-      },
-    );
+    http.Response response;
+    try {
+      response = await _client
+          .get(
+            uri,
+            headers: {
+              'Accept': 'application/json',
+              if (apiKey.isNotEmpty) 'Authorization': 'Bearer $apiKey',
+            },
+          )
+          .timeout(_catalogTimeout);
+    } on TimeoutException {
+      throw ModelCatalogException('Model catalog request timed out after ${_catalogTimeout.inSeconds}s');
+    }
 
     if (response.statusCode != 200) {
       throw ModelCatalogException(

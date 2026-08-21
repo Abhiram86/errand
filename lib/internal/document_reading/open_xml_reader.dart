@@ -186,46 +186,123 @@ class _OpenXmlPackage {
 
   XmlDocument? xml(String name) {
     final bytes = _parts[_normalizePart(name)];
-    if (bytes == null || bytes.length > _maxXmlPartBytes) return null;
+
+    if (bytes == null || bytes.length > _maxXmlPartBytes) {
+      return null;
+    }
+
     try {
-      return XmlDocument.parse(utf8.decode(bytes, allowMalformed: true));
+      return XmlDocument.parse(
+        utf8.decode(bytes, allowMalformed: true),
+      );
     } on XmlException {
       return null;
     }
   }
 
   static Future<_OpenXmlPackage> load(File file) async {
-    final length = await file.length();
-    if (length > _maxPackageBytes) {
+    final compressedSize = await file.length();
+
+    if (compressedSize > _maxPackageBytes) {
       throw FormatException(
         'Office document is too large to inspect safely '
         '(maximum $_maxPackageBytes bytes).',
       );
     }
 
-    final archive = ZipDecoder().decodeBytes(await file.readAsBytes());
-    if (archive.length > _maxPackageEntries) {
-      throw FormatException(
-        'Office document contains too many package entries.',
-      );
-    }
+    final input = InputFileStream(file.path);
 
-    final parts = <String, Uint8List>{};
-    var totalPartBytes = 0;
-    for (final entry in archive) {
-      if (!entry.isFile) continue;
-      totalPartBytes += entry.size;
-      if (totalPartBytes > _maxPackageBytes * 4) {
+    try {
+      // IMPORTANT:
+      // Do not use verify: true here. CRC verification causes archive
+      // entries to be decompressed before we perform our size checks.
+      //
+      // decodeStream() uses the file-backed input and ArchiveFile keeps
+      // ZIP content lazy until readBytes()/content is requested.
+      final archive = ZipDecoder().decodeStream(input);
+
+      if (archive.length > _maxPackageEntries) {
         throw FormatException(
-          'Office document expands beyond the safe size limit.',
+          'Office document contains too many package entries.',
         );
       }
-      if (entry.size > _maxXmlPartBytes && entry.name.endsWith('.xml')) {
-        continue;
+
+      final parts = <String, Uint8List>{};
+
+      var totalPartBytes = 0;
+
+      for (final entry in archive) {
+        if (!entry.isFile) {
+          continue;
+        }
+
+        final name = _normalizePart(entry.name);
+        // OPT-04: Office packages can contain large media (ppt/media/*,
+        // word/media/*, xl/media/*, embedded fonts). We only need XML
+        // parts and relationships — skip everything else before
+        // decompression to keep peak heap ~ bounded by XML size, not
+        // by 20 MB images/embedded binaries that were previously cached.
+        final lower = name.toLowerCase();
+        final isXml = lower.endsWith('.xml');
+        final isRels = lower.endsWith('.rels');
+        if (!isXml && !isRels) {
+          continue;
+        }
+
+        // entry.size is the uncompressed size from the ZIP metadata.
+        //
+        // This check happens BEFORE readBytes(), so an oversized entry
+        // is never decompressed into a large Uint8List.
+        final entrySize = entry.size;
+
+        if (isXml && entrySize > _maxXmlPartBytes) {
+          continue;
+        }
+
+        // Do the arithmetic without allowing integer overflow.
+        final maxExpandedBytes = _maxPackageBytes * 4;
+
+        if (entrySize > maxExpandedBytes) {
+          throw FormatException(
+            'Office document contains an oversized package part.',
+          );
+        }
+
+        if (totalPartBytes > maxExpandedBytes - entrySize) {
+          throw FormatException(
+            'Office document expands beyond the safe size limit.',
+          );
+        }
+
+        // Only now do we request decompression.
+        final content = entry.readBytes();
+
+        if (content == null) {
+          continue;
+        }
+
+        // Defend against malformed ZIP metadata. The actual decompressed
+        // content must not exceed the declared/remaining budget.
+        if (content.length > maxExpandedBytes - totalPartBytes) {
+          throw FormatException(
+            'Office document expands beyond the safe size limit.',
+          );
+        }
+
+        // Keep the actual size rather than trusting ZIP metadata.
+        totalPartBytes += content.length;
+
+        parts[name] = content;
       }
-      parts[_normalizePart(entry.name)] = entry.content;
+
+      return _OpenXmlPackage(parts);
+    } on ArchiveException catch (e) {
+      throw FormatException(
+        'Office document contains an invalid ZIP archive: $e',
+      );
+    } finally {
+      input.close();
     }
-    return _OpenXmlPackage(parts);
   }
 }
 

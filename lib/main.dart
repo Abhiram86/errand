@@ -2,11 +2,14 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:handy_flutter/services/database.dart';
 import 'package:uuid/uuid.dart';
 
 import 'agent/agent_loop.dart';
+import 'agent/context_budget.dart';
 import 'agent/tool_registry.dart';
 import 'llm/llm_client.dart';
 import 'models/model_option.dart';
@@ -20,6 +23,7 @@ import 'widgets/chat_composer.dart';
 import 'widgets/chat_sidebar.dart';
 import 'widgets/message_bubbles.dart';
 import 'widgets/model_picker.dart';
+import 'widgets/paging.dart';
 
 const kApiKey = String.fromEnvironment('OPENROUTER_API_KEY');
 const kBaseUrl = String.fromEnvironment('HANDY_BASE_URL');
@@ -33,6 +37,9 @@ const kSystemPrompt =
 
 String _systemPromptFor(Directory currentDir) =>
     '$kSystemPrompt\nCurrent working directory: ${currentDir.path}';
+
+final database = HandyDatabase.instance;
+// database.loadConversation(id)
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -75,6 +82,14 @@ class ChatScreen extends StatefulWidget {
 }
 
 class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
+  /// Sidebar pagination: page size for the live-watched first page and
+  /// every subsequently loaded batch of recent conversations.
+  static const _sidebarPageSize = 20;
+
+  /// Message windowing: how many of the newest messages are loaded when a
+  /// conversation is opened; earlier pages load on scroll-up.
+  static const _messagePageSize = 50;
+
   final _controller = TextEditingController();
   final _scroll = ScrollController();
   final _modelCatalog = ModelCatalogService();
@@ -84,7 +99,17 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   List<ModelOption> _models = kFallbackModels;
   List<Message> _messages = _welcomeMessages();
   late Conversation _activeConversation;
-  final List<Conversation> _conversations = [];
+  List<Conversation> _conversations = [];
+  List<Conversation> _pinnedConversations = [];
+
+  // OPT-07 sidebar pagination: pages beyond the live-watched first page.
+  final List<Conversation> _olderConversations = [];
+  bool _loadingMoreConversations = false;
+
+  // OPT-07 message windowing.
+  bool _hasOlderMessages = false;
+  bool _loadingOlderMessages = false;
+
   bool _busy = false;
   String? _workingMessageId;
   final _workingText = StringBuffer();
@@ -92,8 +117,42 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   bool _scrollPending = false;
   bool _permissionDialogOpen = false;
   bool _sidebarOpen = false;
+  StreamSubscription<List<Conversation>>? _conversationsSub;
+  StreamSubscription<List<Conversation>>? _pinnedConversationsSub;
+  Timer? _persistTimer;
   final WorkingDirectory _workingDirectory = WorkingDirectory(
     Workspace.instance.root,
+  );
+
+  /// Loads sidebar pages past the live-watched first page. Cursor-anchored
+  /// at the oldest currently visible conversation: unlike a count-based
+  /// offset, this cannot skip or duplicate rows when the watched first page
+  /// shifts mid-session (new chat created, conversation touched, …).
+  late final PagedFetcher<Conversation> _conversationFetcher = PagedFetcher(
+    pageSize: _sidebarPageSize,
+    keyOf: (conversation) => conversation.id!,
+    fetchPage: (_, limit) {
+      final sorted = _sortedConversations;
+      if (sorted.isEmpty) return Future.value(const []);
+      final oldest = sorted.last;
+      return database.loadOlderConversations(
+        beforeUpdatedAt: oldest.updatedAt,
+        beforeId: oldest.id!,
+        limit: limit,
+      );
+    },
+  );
+
+  /// Loads message pages older than the currently loaded window, anchored
+  /// at the oldest in-memory message.
+  late final PagedFetcher<Message> _messageFetcher = PagedFetcher(
+    pageSize: _messagePageSize,
+    keyOf: (message) => message.id,
+    fetchPage: (_, limit) => database.loadOlderMessages(
+      _activeConversation.id!,
+      beforeMessageId: _messages.first.id,
+      limit: limit,
+    ),
   );
 
   @override
@@ -103,6 +162,20 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _llm = _createLlmClient(_selectedModel);
     unawaited(_loadModelCatalog());
     WidgetsBinding.instance.addObserver(this);
+    // Keep the sidebar in sync with everything that was persisted across
+    // app restarts as well as any conversation we save while running.
+    _conversationsSub = database.watchConversationSummaries(
+      limit: _sidebarPageSize,
+    ).listen((summaries) {
+      if (!mounted) return;
+      setState(() => _conversations = summaries);
+    });
+    _pinnedConversationsSub = database.watchPinnedConversations().listen((
+      pinned,
+    ) {
+      if (!mounted) return;
+      setState(() => _pinnedConversations = pinned);
+    });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _checkStoragePermission(promptIfMissing: true);
     });
@@ -111,10 +184,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   LlmClient _createLlmClient(String model) {
     return LlmClient(
       config: LlmConfig(
-        // baseUrl: kBaseUrl.isEmpty ? 'https://openrouter.ai/api/v1' : kBaseUrl,
-        baseUrl: kBaseUrl.isEmpty
-            ? 'https://g9hnto0u7lvbu837.us-east-2.aws.endpoints.huggingface.cloud/v1'
-            : kBaseUrl,
+        baseUrl: kBaseUrl.isEmpty ? 'https://openrouter.ai/api/v1' : kBaseUrl,
         apiKey: kApiKey,
         model: model,
       ),
@@ -131,12 +201,16 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _activeConversation.provider = _providerForModel(model);
       _touchConversation();
     });
+    _persistNow();
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _workingFlushTimer?.cancel();
+    _persistTimer?.cancel();
+    _conversationsSub?.cancel();
+    _pinnedConversationsSub?.cancel();
     _modelCatalog.close();
     _llm.close();
     _controller.dispose();
@@ -253,6 +327,55 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
   }
 
+  // -- Persistence --------------------------------------------------------
+
+  /// Saves the active conversation (without the in-flight "…working" bubble)
+  /// to the local database.
+  Future<void> _persistConversation() async {
+    final id = _activeConversation.id;
+    if (id == null) return;
+
+    final workingId = _workingMessageId;
+    final messages = workingId == null
+        ? _messages
+        : _messages
+              .where((message) => message.id != workingId)
+              .toList(growable: false);
+
+    await database.saveConversation(
+      Conversation(
+        id: id,
+        localSystemPrompt: _activeConversation.localSystemPrompt,
+        messages: messages,
+        currentDir: _activeConversation.currentDir,
+        attachedFileUris: _activeConversation.attachedFileUris,
+        title: _activeConversation.title,
+        provider: _activeConversation.provider,
+        model: _activeConversation.model,
+        isPinned: _activeConversation.isPinned,
+        createdAt: _activeConversation.createdAt,
+        updatedAt: _activeConversation.updatedAt,
+      ),
+    );
+  }
+
+  /// Debounces saves during streaming so we don't rewrite the whole
+  /// conversation on every text delta.
+  void _schedulePersist([Duration delay = const Duration(milliseconds: 600)]) {
+    if (_activeConversation.id == null) return;
+    _persistTimer?.cancel();
+    _persistTimer = Timer(delay, () {
+      _persistTimer = null;
+      unawaited(_persistConversation());
+    });
+  }
+
+  void _persistNow() {
+    _persistTimer?.cancel();
+    _persistTimer = null;
+    unawaited(_persistConversation());
+  }
+
   void _startConversation(String firstMessage) {
     if (_activeConversation.id != null) {
       _touchConversation();
@@ -265,7 +388,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       ..model = _selectedModel
       ..provider = _providerForModel(_selectedModel);
     _touchConversation();
-    _conversations.add(_activeConversation);
   }
 
   String _conversationTitle(String message) {
@@ -274,10 +396,38 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     return '${singleLine.substring(0, 39)}...';
   }
 
+  /// Watched first page + loaded older pages, deduped by id (the watched
+  /// page wins) and re-sorted by recency.
   List<Conversation> get _sortedConversations {
-    final sorted = [..._conversations];
-    sorted.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
-    return sorted;
+    final seen = <String>{};
+    final unique = <Conversation>[
+      for (final conversation in [..._conversations, ..._olderConversations])
+        if (conversation.id != null && seen.add(conversation.id!))
+          conversation,
+    ];
+    unique.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    return unique;
+  }
+
+  Future<void> _loadMoreConversations() async {
+    final fetcher = _conversationFetcher;
+    if (!fetcher.hasMore || fetcher.loading || _loadingMoreConversations) {
+      return;
+    }
+    setState(() => _loadingMoreConversations = true);
+    try {
+      final fresh = await fetcher.loadMore({
+        for (final conversation in _sortedConversations) conversation.id!,
+      });
+      if (!mounted) return;
+      setState(() {
+        _olderConversations.addAll(fresh);
+        _loadingMoreConversations = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _loadingMoreConversations = false);
+    }
   }
 
   void _startNewChat() {
@@ -290,27 +440,154 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _activeConversation = _newDraftConversation();
       _workingMessageId = null;
       _workingText.clear();
+      _hasOlderMessages = false;
     });
     _closeSidebar();
     _scrollToBottom(animated: false);
   }
 
-  void _selectConversation(Conversation conversation) {
-    if (_busy || conversation.id == _activeConversation.id) {
+  Future<void> _selectConversation(Conversation conversation) async {
+    final id = conversation.id;
+    if (_busy || id == null || id == _activeConversation.id) {
       _closeSidebar();
       return;
     }
+
+    // Sidebar rows are summaries; fetch the full conversation with messages
+    // before switching to it. OPT-07: only the newest window of messages is
+    // loaded; older pages stream in on scroll-up.
+    final loaded = await database.loadConversation(
+      id,
+      messageLimit: _messagePageSize,
+    );
+    if (!mounted) return;
+    if (loaded == null) {
+      _closeSidebar();
+      return;
+    }
+
     setState(() {
-      _activeConversation = conversation;
-      _messages = conversation.messages;
-      _selectedModel = conversation.model ?? kConfiguredModel;
+      _activeConversation = loaded;
+      _messages = loaded.messages;
+      _selectedModel = loaded.model ?? kConfiguredModel;
       _llm.close();
       _llm = _createLlmClient(_selectedModel);
       _workingMessageId = null;
       _workingText.clear();
+      // A short page means the whole history fit in the first window.
+      _hasOlderMessages = loaded.messages.length == _messagePageSize;
+      _messageFetcher.hasMore = true;
     });
     _closeSidebar();
     _scrollToBottom(animated: false);
+  }
+
+  /// Prepends the previous page of messages, keeping the viewport anchored
+  /// on the same content (no visual jump).
+  Future<void> _loadOlderMessages() async {
+    final conversationId = _activeConversation.id;
+    if (conversationId == null ||
+        !_hasOlderMessages ||
+        _loadingOlderMessages ||
+        _messageFetcher.loading) {
+      return;
+    }
+
+    final hadClients = _scroll.hasClients;
+    final oldMax = hadClients ? _scroll.position.maxScrollExtent : 0.0;
+    final oldPixels = hadClients ? _scroll.position.pixels : 0.0;
+
+    setState(() => _loadingOlderMessages = true);
+    var older = const <Message>[];
+    try {
+      older = await _messageFetcher.loadMore({
+        for (final message in _messages) message.id,
+      });
+    } catch (_) {
+      // Keep the window as-is on failure; the user can retry by scrolling.
+    }
+    if (!mounted) return;
+    setState(() {
+      _loadingOlderMessages = false;
+      _hasOlderMessages = _messageFetcher.hasMore && older.isNotEmpty;
+      if (older.isNotEmpty) {
+        _messages = [...older, ..._messages];
+      }
+    });
+    if (older.isNotEmpty && hadClients) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!_scroll.hasClients) return;
+        // Everything inserted above shifted the content down by exactly
+        // the growth of maxScrollExtent; compensate to stay in place.
+        final delta = _scroll.position.maxScrollExtent - oldMax;
+        _scroll.jumpTo(
+          (oldPixels + delta).clamp(0.0, _scroll.position.maxScrollExtent),
+        );
+      });
+    }
+  }
+
+  Future<void> _deleteConversation(Conversation conversation) async {
+    final id = conversation.id;
+    if (_busy || id == null) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Delete conversation?'),
+        content: Text(
+          '"${conversation.title}" and its messages will be permanently removed.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    await database.deleteConversation(id);
+    if (!mounted) return;
+    // The live watch only covers the first page — evict the deleted row
+    // from any already-loaded older pages so it can't linger as a ghost.
+    setState(() {
+      _olderConversations.removeWhere((c) => c.id == id);
+    });
+    if (_activeConversation.id == id) {
+      _startNewChat();
+    }
+    _closeSidebar();
+  }
+
+  Future<void> _pinConversation(Conversation conversation) async {
+    final id = conversation.id;
+    if (_busy || id == null) return;
+
+    await database.pinConversation(id);
+    if (!mounted) return;
+    // Older pages hold summary snapshots; refresh (or drop, if deleted)
+    // the toggled row so the sidebar doesn't render stale pin state.
+    final fresh = await database.loadConversationSummary(id);
+    if (!mounted) return;
+    setState(() {
+      final index = _olderConversations.indexWhere((c) => c.id == id);
+      if (index != -1) {
+        if (fresh == null) {
+          _olderConversations.removeAt(index);
+        } else {
+          _olderConversations[index] = fresh;
+        }
+      }
+    });
+    if (_activeConversation.id == id) {
+      _touchConversation();
+    }
   }
 
   void _scrollToBottom({bool animated = true}) {
@@ -352,12 +629,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _messages.add(AssistantMessage(id: workingId, text: '…working'));
       _busy = true;
     });
+    _persistNow();
     _scrollToBottom();
 
     try {
       if (kApiKey.isEmpty) {
-        _replaceWorking(
-          'Error: OPENROUTER_API_KEY is missing. Start the app with '
+        _failWorking(
+          'OPENROUTER_API_KEY is missing. Start the app with '
           '`flutter run --dart-define-from-file=.env`.',
         );
         return;
@@ -393,8 +671,42 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       final answer = await loop.run(conversation);
       _replaceWorking(answer);
     } catch (e) {
-      _replaceWorking('Error: $e');
+      // Transport/API failures (connection aborts, timeouts, HTTP 429/5xx)
+      // are not the agent's fault — show a transient toast instead of adding
+      // an error message to the conversation context.
+      _failWorking(e is LlmException ? e.message : 'Unexpected error: $e');
     }
+  }
+
+  /// Removes the working placeholder and surfaces [message] as a snackbar.
+  /// Used for infra-level failures that must not enter model context.
+  void _failWorking(String message) {
+    _workingFlushTimer?.cancel();
+    _workingFlushTimer = null;
+    final id = _workingMessageId;
+    _workingText.clear();
+    if (!mounted) return;
+    setState(() {
+      final index = id == null
+          ? -1
+          : _messages.indexWhere((current) => current.id == id);
+      if (index != -1) _messages.removeAt(index);
+      _busy = false;
+      _workingMessageId = null;
+    });
+    // OPT-07: saves merge by message id now, so a working bubble that was
+    // already persisted mid-stream must be removed from the DB explicitly.
+    final conversationId = _activeConversation.id;
+    if (conversationId != null && id != null) {
+      unawaited(database.deleteMessage(conversationId, id));
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 5),
+      ),
+    );
   }
 
   void _handleEvent(AgentEvent event) {
@@ -464,6 +776,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       );
       _touchConversation();
     });
+    // OPT-01: coalesce persists when multiple tool calls arrive in the
+    // same agent turn (was _persistNow per tool -> N full rewrites).
+    // A short debounce batches them; the final answer still does _persistNow.
+    _schedulePersist(const Duration(milliseconds: 150));
     _scrollToBottom();
   }
 
@@ -510,6 +826,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       );
       _touchConversation();
     });
+    _schedulePersist();
     _scrollToBottom(animated: false);
   }
 
@@ -536,6 +853,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _busy = false;
       _workingMessageId = null;
     });
+    _persistNow();
     _scrollToBottom();
   }
 
@@ -555,6 +873,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                   children: [
                     _buildHeader(),
                     Expanded(child: _buildMessageList()),
+                    if (kDebugMode) _buildContextFooter(),
                     _buildComposer(),
                   ],
                 ),
@@ -582,10 +901,41 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                 left: _sidebarOpen ? 0 : -sidebarWidth,
                 width: sidebarWidth,
                 child: ChatSidebar(
+                  pinnedConversations: _pinnedConversations,
                   conversations: _sortedConversations,
                   activeConversationId: _activeConversation.id,
                   onClose: _closeSidebar,
                   onSelectConversation: _selectConversation,
+                  onDeleteConversation: _deleteConversation,
+                  hasMoreConversations: _conversationFetcher.hasMore,
+                  isLoadingMoreConversations: _loadingMoreConversations,
+                  onLoadMoreConversations: _loadMoreConversations,
+                  optionsBuilder: (conversation) => [
+                    ChatOption(
+                      title: 'Rename',
+                      icon: Icons.edit,
+                      onTap: () {
+                        // rename conversation
+                      },
+                    ),
+                    ChatOption(
+                      title: conversation.isPinned ? 'Unpin Conversation' : 'Pin Conversation',
+                      icon: conversation.isPinned
+                          ? Icons.push_pin
+                          : Icons.push_pin_outlined,
+                      onTap: () {
+                        _pinConversation(conversation);
+                      },
+                    ),
+                    ChatOption(
+                      title: 'Delete conversation',
+                      icon: Icons.delete_outline_rounded,
+                      type: ChatOptionType.destructive,
+                      onTap: () {
+                        _deleteConversation(conversation);
+                      },
+                    ),
+                  ],
                 ),
               ),
             ],
@@ -635,16 +985,25 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             ),
           ),
           const SizedBox(width: 4),
-          TextButton.icon(
+          if (_activeConversation.id != null)
+          TextButton(
             onPressed: _busy ? null : _startNewChat,
-            icon: const Icon(Icons.add_rounded, size: 18),
-            label: const Text('New'),
             style: TextButton.styleFrom(
               foregroundColor: kText,
               disabledForegroundColor: kMuted,
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              minimumSize: const Size(0, 40),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 0),
+              alignment: Alignment.center,
+              backgroundColor: kBubbleAssistant,
+              minimumSize: const Size(60, 35),
               tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.add_rounded, size: 14),
+                const SizedBox(width: 2),
+                const Text('New', style: TextStyle(fontSize: 12)),
+              ],
             ),
           ),
         ],
@@ -653,17 +1012,55 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   Widget _buildMessageList() {
-    return ListView.builder(
-      controller: _scroll,
-      padding: const EdgeInsets.all(16),
-      itemCount: _messages.length,
-      itemBuilder: (context, i) {
-        final message = _messages[i];
-        if (message is ToolMessage) {
-          return ToolMessageBubble(key: ValueKey(message.id), message: message);
+    return NotificationListener<ScrollNotification>(
+      onNotification: (notification) {
+        if (notification.depth == 0 &&
+            !_busy &&
+            shouldLoadMore(notification, PagingEdge.leading)) {
+          _loadOlderMessages();
         }
-        return MessageBubble(key: ValueKey(message.id), message: message);
+        return false;
       },
+      child: ListView.builder(
+        controller: _scroll,
+        padding: const EdgeInsets.all(16),
+        itemCount: _messages.length + (_loadingOlderMessages ? 1 : 0),
+        itemBuilder: (context, i) {
+          if (_loadingOlderMessages && i == 0) {
+            return const LoadMoreIndicator(label: 'Loading earlier messages');
+          }
+          final message = _messages[_loadingOlderMessages ? i - 1 : i];
+          if (message is ToolMessage) {
+            return ToolMessageBubble(
+              key: ValueKey(message.id),
+              message: message,
+            );
+          }
+          return MessageBubble(key: ValueKey(message.id), message: message);
+        },
+      ),
+    );
+  }
+
+  /// Debug-only: estimated LLM context size for the loaded history
+  /// (chars/4 ≈ tokens) against the truncation limits.
+  Widget _buildContextFooter() {
+    final chars = estimateHistoryChars(_messages);
+    final truncated = chars > kContextSoftLimit;
+    return Material(
+      color: kInputBg,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 2, 16, 0),
+        child: Align(
+          alignment: Alignment.centerLeft,
+          child: Text(
+            'ctx ~${chars ~/ 1024}K / ${kContextSoftLimit ~/ 1024}K'
+            '${truncated ? ' (will truncate to ≤${kContextTarget ~/ 1024}K)' : ''}'
+            ' · ${_messages.length} msgs loaded',
+            style: const TextStyle(color: kMuted, fontSize: 10),
+          ),
+        ),
+      ),
     );
   }
 
