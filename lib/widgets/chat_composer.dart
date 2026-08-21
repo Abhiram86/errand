@@ -8,12 +8,17 @@ class ChatComposer extends StatelessWidget {
   final VoidCallback onMoreActions;
   final VoidCallback onSend;
 
+  /// Requests cancellation of the in-flight turn; replaces the send button
+  /// (square stop icon) while [busy].
+  final VoidCallback onStop;
+
   const ChatComposer({
     super.key,
     required this.controller,
     required this.busy,
     required this.onMoreActions,
     required this.onSend,
+    required this.onStop,
   });
 
   @override
@@ -71,13 +76,18 @@ class ChatComposer extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 4),
-            ValueListenableBuilder<TextEditingValue>(
-              valueListenable: controller,
-              builder: (context, value, child) => _SendButton(
-                canSend: !busy && value.text.trim().isNotEmpty,
-                onPressed: onSend,
+            // While a turn is in flight the send button becomes a square
+            // stop button; otherwise it enables with the composer text.
+            if (busy)
+              _SendButton(stop: true, canSend: true, onPressed: onStop)
+            else
+              ValueListenableBuilder<TextEditingValue>(
+                valueListenable: controller,
+                builder: (context, value, child) => _SendButton(
+                  canSend: value.text.trim().isNotEmpty,
+                  onPressed: onSend,
+                ),
               ),
-            ),
           ],
         ),
       ),
@@ -87,9 +97,16 @@ class ChatComposer extends StatelessWidget {
 
 class _SendButton extends StatelessWidget {
   final bool canSend;
-  final VoidCallback onPressed;
 
-  const _SendButton({required this.canSend, required this.onPressed});
+  /// Renders as a square stop button wired to [ChatComposer.onStop].
+  final bool stop;
+  final VoidCallback? onPressed;
+
+  const _SendButton({
+    required this.canSend,
+    required this.onPressed,
+    this.stop = false,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -97,13 +114,17 @@ class _SendButton extends StatelessWidget {
       width: 38,
       height: 38,
       child: IconButton(
-        onPressed: canSend ? onPressed : null,
+        onPressed: (stop || canSend) ? onPressed : null,
         style: IconButton.styleFrom(
-          backgroundColor: canSend ? kBubbleUser : kSendDisabled,
-          shape: const CircleBorder(),
+          backgroundColor: (stop || canSend) ? kBubbleUser : kSendDisabled,
+          shape: stop
+              ? RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))
+              : const CircleBorder(),
           padding: EdgeInsets.zero,
         ),
-        icon: const Icon(Icons.arrow_upward, color: Colors.white, size: 20),
+        icon: stop
+            ? const Icon(Icons.stop_rounded, color: Colors.white, size: 24)
+            : const Icon(Icons.arrow_upward, color: Colors.white, size: 20),
       ),
     );
   }

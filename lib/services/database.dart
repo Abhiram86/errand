@@ -359,6 +359,17 @@ final class ErrandDatabase extends _$ErrandDatabase {
       'UPDATE conversations SET is_pinned = NOT is_pinned WHERE id = ?',
       [id],
     );
+    // Raw SQL bypasses drift's table-update tracking, so the sidebar watch
+    // streams would never re-run without this explicit notification.
+    markTablesUpdated([conversations]);
+  }
+
+  /// Renames a conversation. Sidebar rows update via the existing watch
+  /// streams; already-loaded older pages are refreshed by the caller.
+  Future<void> renameConversation(String id, String title) async {
+    await (update(conversations)..where((c) => c.id.equals(id))).write(
+      ConversationsCompanion(title: Value(title)),
+    );
   }
 
   /// Deterministic sidebar ordering: (updatedAt desc, id desc). The id

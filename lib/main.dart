@@ -112,6 +112,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   bool _busy = false;
   String? _workingMessageId;
+
+  /// Set by the composer stop button; checked between SSE events and at
+  /// agent-loop turn boundaries.
+  final CancelToken _cancelToken = CancelToken();
+
+  /// When set, the next send replaces this user message (and everything
+  /// after it) instead of appending — the edit-resend flow.
+  String? _editingMessageId;
   final _workingText = StringBuffer();
   Timer? _workingFlushTimer;
   bool _scrollPending = false;
@@ -440,6 +448,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _activeConversation = _newDraftConversation();
       _workingMessageId = null;
       _workingText.clear();
+      _editingMessageId = null;
       _hasOlderMessages = false;
     });
     _closeSidebar();
@@ -474,6 +483,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _llm = _createLlmClient(_selectedModel);
       _workingMessageId = null;
       _workingText.clear();
+      _editingMessageId = null;
       // A short page means the whole history fit in the first window.
       _hasOlderMessages = loaded.messages.length == _messagePageSize;
       _messageFetcher.hasMore = true;
@@ -565,6 +575,51 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _closeSidebar();
   }
 
+  /// Rename dialog → update the title in the DB. The sidebar refreshes via
+  /// the existing watch stream; older loaded pages are refreshed here.
+  Future<void> _renameConversation(Conversation conversation) async {
+    final id = conversation.id;
+    if (id == null) return;
+
+    final controller = TextEditingController(text: conversation.title);
+    final title = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Rename chat'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          maxLength: 100,
+          onSubmitted: (value) =>
+              Navigator.of(dialogContext).pop(value.trim()),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () =>
+                Navigator.of(dialogContext).pop(controller.text.trim()),
+            child: const Text('Rename'),
+          ),
+        ],
+      ),
+    );
+    if (title == null || title.isEmpty || !mounted) return;
+
+    await database.renameConversation(id, title);
+    if (!mounted) return;
+    setState(() {
+      if (_activeConversation.id == id) {
+        _activeConversation.title = title;
+      }
+      // Older pages hold summary snapshots; refresh the renamed row.
+      final index = _olderConversations.indexWhere((c) => c.id == id);
+      if (index != -1) _olderConversations[index].title = title;
+    });
+  }
+
   Future<void> _pinConversation(Conversation conversation) async {
     final id = conversation.id;
     if (_busy || id == null) return;
@@ -615,10 +670,15 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     final text = _controller.text.trim();
     if (text.isEmpty || _busy) return;
     _controller.clear();
+
+    // Editing an earlier message: the resend replaces it and everything
+    // after it (later messages AND their tool runs).
+    if (_editingMessageId != null) {
+      await _truncateFrom(_editingMessageId!);
+      _editingMessageId = null;
+    }
+
     _startConversation(text);
-    final workingId = 'working-${DateTime.now().microsecondsSinceEpoch}';
-    _workingMessageId = workingId;
-    _workingText.clear();
     setState(() {
       _messages.add(
         UserMessage(
@@ -626,6 +686,91 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           text: text,
         ),
       );
+    });
+    await _runAgentTurn();
+  }
+
+  /// Regenerate: drops everything after [userMessageId] (same truncation
+  /// semantics as edit-resend) and re-runs the loop for that turn.
+  Future<void> _regenerate(String userMessageId) async {
+    if (_busy) return;
+    // A pending edit (banner + loaded composer text) is superseded by an
+    // explicit regenerate — drop it instead of leaving stale state around.
+    if (_editingMessageId != null) _cancelEditing();
+    final index = _messages.indexWhere((m) => m.id == userMessageId);
+    if (index == -1) return;
+
+    // Nothing after it (e.g. the previous turn failed) → nothing to drop.
+    if (index + 1 < _messages.length) {
+      await _truncateFrom(_messages[index + 1].id);
+    }
+    await _runAgentTurn();
+  }
+
+  /// If [message] is the final assistant bubble of a user-turn response
+  /// (the end-of-response step), returns the owning user message id so a
+  /// regenerate can be anchored to that turn; otherwise null.
+  String? _regenerateTargetFor(Message message) {
+    if (message is! AssistantMessage) return null;
+    final index = _messages.indexOf(message);
+    // The response's last step: no other assistant bubble follows before
+    // the next user message (tool bubbles in between are fine).
+    for (var i = index + 1; i < _messages.length; i++) {
+      final next = _messages[i];
+      if (next is AssistantMessage) return null;
+      if (next is UserMessage) break; // turn boundary — this IS the last step
+    }
+    // Walk back to the owning user message; no user message → nothing to
+    // regenerate from (e.g. the welcome bubble).
+    for (var i = index - 1; i >= 0; i--) {
+      final previous = _messages[i];
+      if (previous is UserMessage) return previous.id;
+    }
+    return null;
+  }
+
+  /// Tap on own bubble: load its text into the composer for editing.
+  void _editUserMessage(UserMessage message) {
+    if (_busy) return;
+    setState(() {
+      _editingMessageId = message.id;
+      _controller.text = message.text;
+    });
+  }
+
+  void _cancelEditing() {
+    setState(() {
+      _editingMessageId = null;
+      _controller.clear();
+    });
+  }
+
+  /// Removes [messageId] and every message after it from memory AND from
+  /// the database. Shared by edit-resend and regenerate: merge-based saves
+  /// keep rows outside the loaded window, so dropping them from memory
+  /// alone would leave orphaned rows that resurrect on reload.
+  Future<void> _truncateFrom(String messageId) async {
+    final index = _messages.indexWhere((message) => message.id == messageId);
+    if (index == -1) return;
+
+    final removed = _messages.sublist(index);
+    setState(() => _messages.removeRange(index, _messages.length));
+    _touchConversation();
+
+    final conversationId = _activeConversation.id;
+    if (conversationId == null) return;
+    for (final message in removed) {
+      await database.deleteMessage(conversationId, message.id);
+    }
+  }
+
+  /// Shared tail of send / edit-resend / regenerate: adds the …working
+  /// bubble and runs the agent loop over the current history.
+  Future<void> _runAgentTurn() async {
+    final workingId = 'working-${DateTime.now().microsecondsSinceEpoch}';
+    _workingMessageId = workingId;
+    _workingText.clear();
+    setState(() {
       _messages.add(AssistantMessage(id: workingId, text: '…working'));
       _busy = true;
     });
@@ -664,12 +809,17 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           workingDirectory: _workingDirectory,
         ),
         systemPromptBuilder: () => _systemPromptFor(_workingDirectory.current),
+        cancelToken: _cancelToken,
         onEvent: _handleEvent,
         onTextDelta: _handleTextDelta,
         onReasoningDelta: _handleReasoningDelta,
       );
+      _cancelToken.reset();
       final answer = await loop.run(conversation);
       _replaceWorking(answer);
+    } on LlmStoppedException {
+      // Stop pressed: keep whatever streamed so far as the final answer.
+      _finishStopped();
     } catch (e) {
       // Transport/API failures (connection aborts, timeouts, HTTP 429/5xx)
       // are not the agent's fault — show a transient toast instead of adding
@@ -875,6 +1025,21 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _scrollToBottom();
   }
 
+  /// Stop button pressed: flag cancellation; the loop throws
+  /// [LlmStoppedException] at the next safe boundary (between SSE events,
+  /// or at the next turn boundary if a native tool call is in flight).
+  void _stopGeneration() {
+    if (!_busy) return;
+    _cancelToken.cancel();
+  }
+
+  /// Finalizes a stopped turn: partial streamed text becomes the final
+  /// answer (marked "(stopped)"); nothing streamed → drop the bubble.
+  void _finishStopped() {
+    final partial = _workingText.toString().trim();
+    _replaceWorking(partial.isEmpty ? '' : '$partial\n\n_(stopped)_');
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -892,6 +1057,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                     _buildHeader(),
                     Expanded(child: _buildMessageList()),
                     if (kDebugMode) _buildContextFooter(),
+                    if (_editingMessageId != null) _buildEditingBanner(),
                     _buildComposer(),
                   ],
                 ),
@@ -933,7 +1099,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                       title: 'Rename',
                       icon: Icons.edit,
                       onTap: () {
-                        // rename conversation
+                        _renameConversation(conversation);
                       },
                     ),
                     ChatOption(
@@ -1048,14 +1214,30 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           if (_loadingOlderMessages && i == 0) {
             return const LoadMoreIndicator(label: 'Loading earlier messages');
           }
-          final message = _messages[_loadingOlderMessages ? i - 1 : i];
+          final index = _loadingOlderMessages ? i - 1 : i;
+          final message = _messages[index];
           if (message is ToolMessage) {
             return ToolMessageBubble(
               key: ValueKey(message.id),
               message: message,
             );
           }
-          return MessageBubble(key: ValueKey(message.id), message: message);
+          // Regenerate sits on the LAST assistant bubble of each user-turn
+          // response (the end-of-response step), not just the literal last
+          // message of the conversation. Regenerating an older turn also
+          // drops every later turn — same semantics as edit-resend.
+          final regenerateUserId = !_busy
+              ? _regenerateTargetFor(message)
+              : null;
+          return MessageBubble(
+            key: ValueKey(message.id),
+            message: message,
+            onEdit:
+                message is UserMessage ? () => _editUserMessage(message) : null,
+            onRegenerate: regenerateUserId == null
+                ? null
+                : () => _regenerate(regenerateUserId),
+          );
         },
       ),
       ),
@@ -1090,6 +1272,40 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       busy: _busy,
       onMoreActions: _showMoreActions,
       onSend: _send,
+      onStop: _stopGeneration,
+    );
+  }
+
+  /// Shown while editing a user message; sending replaces it and
+  /// everything after it.
+  Widget _buildEditingBanner() {
+    return Material(
+      color: kInputBg,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 6, 4, 0),
+        child: Row(
+          children: [
+            const Icon(Icons.edit_rounded, size: 14, color: kMuted),
+            const SizedBox(width: 8),
+            const Expanded(
+              child: Text(
+                'Editing message — sending replaces it and everything after',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(color: kMuted, fontSize: 12),
+              ),
+            ),
+            IconButton(
+              onPressed: _cancelEditing,
+              tooltip: 'Cancel edit',
+              visualDensity: VisualDensity.compact,
+              iconSize: 16,
+              color: kMuted,
+              icon: const Icon(Icons.close_rounded),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

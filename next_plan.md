@@ -94,7 +94,7 @@ Plus a **generic escape hatch**: `action:"intent"` accepts raw `android_action` 
 > existing merge-save + windowing machinery. P2 (AccessibilityService) stays
 > queued behind this batch.
 
-### 1. Stop button + copy buttons
+### 1. Stop button + copy buttons (SHIPPED Aug 21 2026)
 - While `_busy`, the rounded send button becomes a **square stop** button.
   Cancellation = a cancel flag threaded into `LlmClient.chatStream`/`chat`,
   checked between SSE events and at agent-loop turn boundaries. Partial text
@@ -104,22 +104,21 @@ Plus a **generic escape hatch**: `action:"intent"` accepts raw `android_action` 
 - **Copy buttons**: one-tap copy icon on assistant bubbles and tool output
   (SelectionArea stays for free-form selection).
 
-### 2. Finish Rename
-- The sidebar Rename option is currently a stub. Dialog → update `title` in
-  DB; sidebar updates via the existing watch stream.
+### 2. Finish Rename (SHIPPED Aug 21 2026)
+- Dialog → `renameConversation(id, title)` in DB; sidebar updates via the
+  existing watch stream; older loaded pages refreshed in place.
 
-### 3. Edit user message
-- Tap own bubble → loads text into composer. On resend, **truncate history
-  from that message onward** (later messages AND their tool runs), then run
-  the loop fresh.
-- ⚠️ Merge-based saves keep rows outside the loaded window — truncation must
-  explicitly `deleteMessage` every removed row, not just drop them from
-  memory.
+### 3. Edit user message (SHIPPED Aug 21 2026)
+- Tap own bubble → loads text into composer (banner + cancel above the
+  composer). On resend, history is truncated from that message onward
+  (later messages AND their tool runs), then the loop runs fresh.
+- Merge-based saves keep rows outside the loaded window — truncation
+  explicitly `deleteMessage`s every removed row (`_truncateFrom`).
 
-### 4. Regenerate answer
-- Same truncation semantics as #3 applied from the last user message (drops
-  the assistant + tool turns under it), then re-run. Shares machinery with #3
-  and with retry-on-transport-error.
+### 4. Regenerate answer (SHIPPED Aug 21 2026)
+- Refresh icon on the last assistant bubble of a completed turn. Same
+  `_truncateFrom` machinery applied from just after the last user message,
+  then re-run via the shared `_runAgentTurn` (extracted from `_send`).
 
 ### 5. Voice input (`speech_to_text`)
 - Mic icon (accent blue) on the send button when the composer is empty;

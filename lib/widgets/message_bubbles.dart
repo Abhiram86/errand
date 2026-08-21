@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:gpt_markdown/gpt_markdown.dart';
 
 import '../theme/app_colors.dart';
@@ -20,6 +21,38 @@ String _formatToolArgs(Map<String, dynamic> args) {
     return jsonEncode(args);
   } catch (_) {
     return args.toString();
+  }
+}
+
+/// One-tap copy for assistant text and tool output. Free-form selection
+/// still comes from the SelectionArea wrapping the message list.
+class _CopyButton extends StatelessWidget {
+  final String text;
+  final String tooltip;
+
+  const _CopyButton({required this.text, this.tooltip = 'Copy'});
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      onPressed: () async {
+        await Clipboard.setData(ClipboardData(text: text));
+        if (!context.mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Copied'),
+            duration: Duration(seconds: 1),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      },
+      tooltip: tooltip,
+      constraints: const BoxConstraints.tightFor(width: 24, height: 24),
+      padding: EdgeInsets.zero,
+      iconSize: 14,
+      color: kMuted,
+      icon: const Icon(Icons.copy_rounded),
+    );
   }
 }
 
@@ -76,15 +109,24 @@ class ToolMessageBubble extends StatelessWidget {
             children: [
               Align(
                 alignment: Alignment.centerLeft,
-                child: SelectableText(
-                  outputWasTruncated
-                      ? '$output\n\n[output truncated for display]'
-                      : output,
-                  style: const TextStyle(
-                    color: kMuted,
-                    fontSize: 11,
-                    height: 1.3,
-                  ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: SelectableText(
+                        outputWasTruncated
+                            ? '$output\n\n[output truncated for display]'
+                            : output,
+                        style: const TextStyle(
+                          color: kMuted,
+                          fontSize: 11,
+                          height: 1.3,
+                        ),
+                      ),
+                    ),
+                    // Copies the full (untruncated) result.
+                    _CopyButton(text: message.result, tooltip: 'Copy output'),
+                  ],
                 ),
               ),
             ],
@@ -141,7 +183,19 @@ class _ReopenButton extends StatelessWidget {
 class MessageBubble extends StatelessWidget {
   final Message message;
 
-  const MessageBubble({super.key, required this.message});
+  /// User bubbles only: load the text into the composer for edit-resend.
+  final VoidCallback? onEdit;
+
+  /// Assistant bubbles only: drop the turns after the last user message
+  /// and re-run. Only wired for the last message of a completed turn.
+  final VoidCallback? onRegenerate;
+
+  const MessageBubble({
+    super.key,
+    required this.message,
+    this.onEdit,
+    this.onRegenerate,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -152,36 +206,102 @@ class MessageBubble extends StatelessWidget {
     final text = message.text.trim();
     if (text.isEmpty) return const SizedBox.shrink();
 
-    return Align(
-      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
-      child: Container(
-        margin: const EdgeInsets.symmetric(vertical: 6),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        constraints: BoxConstraints(
-          maxWidth: MediaQuery.of(context).size.width * 0.82,
+    final bubble = Container(
+      margin: const EdgeInsets.symmetric(vertical: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      constraints: BoxConstraints(
+        maxWidth: MediaQuery.of(context).size.width * (isUser ? 0.78 : 0.82),
+      ),
+      decoration: BoxDecoration(
+        color: isUser ? kBubbleUser : kBubbleAssistant,
+        borderRadius: BorderRadius.only(
+          topLeft: const Radius.circular(18),
+          topRight: const Radius.circular(18),
+          bottomLeft: Radius.circular(isUser ? 18 : 4),
+          bottomRight: Radius.circular(isUser ? 4 : 18),
         ),
-        decoration: BoxDecoration(
-          color: isUser ? kBubbleUser : kBubbleAssistant,
-          borderRadius: BorderRadius.only(
-            topLeft: const Radius.circular(18),
-            topRight: const Radius.circular(18),
-            bottomLeft: Radius.circular(isUser ? 18 : 4),
-            bottomRight: Radius.circular(isUser ? 4 : 18),
-          ),
-        ),
-        child: isUser
-            ? SelectableText(
-                text,
-                style:
-                    const TextStyle(color: kText, fontSize: 15, height: 20 / 15),
-              )
-            // Assistant turns render as markdown (bold, tables, code,
-            // LaTeX). Text selection comes from the SelectionArea that
-            // wraps the message list.
-            : GptMarkdown(
-                text,
-                style: const TextStyle(color: kText, fontSize: 15),
+      ),
+      child: isUser
+          ? SelectableText(
+              text,
+              style: const TextStyle(
+                color: kText,
+                fontSize: 15,
+                height: 20 / 15,
               ),
+            )
+          // Assistant turns render as markdown (bold, tables, code,
+          // LaTeX). Text selection comes from the SelectionArea that
+          // wraps the message list.
+          : GptMarkdown(
+              text,
+              style: const TextStyle(color: kText, fontSize: 15),
+            ),
+    );
+
+    // User bubbles carry an explicit pen affordance on their left — more
+    // discoverable than tap-to-edit and immune to the SelectionArea
+    // swallowing taps on desktop/pointer devices.
+    if (isUser) {
+      return Align(
+        alignment: Alignment.centerRight,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            if (onEdit != null)
+              Transform.translate(
+                offset: const Offset(0, -6),
+                child: IconButton(
+                  onPressed: onEdit,
+                  tooltip: 'Edit',
+                  constraints:
+                      const BoxConstraints.tightFor(width: 28, height: 24),
+                  padding: EdgeInsets.zero,
+                  iconSize: 14,
+                  color: kMuted,
+                  icon: const Icon(Icons.edit_rounded),
+                ),
+              ),
+            Flexible(child: bubble),
+          ],
+        ),
+      );
+    }
+
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          bubble,
+          Transform.translate(
+            offset: const Offset(-8, -8),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _CopyButton(text: text),
+                if (onRegenerate != null)
+                  Transform.translate(
+                    offset: const Offset(-6, 0),
+                    child: IconButton(
+                      onPressed: onRegenerate,
+                      tooltip: 'Regenerate',
+                      constraints: const BoxConstraints.tightFor(
+                        width: 24,
+                        height: 24,
+                      ),
+                      padding: EdgeInsets.zero,
+                      iconSize: 14,
+                      color: kMuted,
+                      icon: const Icon(Icons.refresh_rounded),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }

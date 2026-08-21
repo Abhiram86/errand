@@ -36,6 +36,10 @@ class AgentLoop {
   final LlmClient _llm;
   final ToolRegistry _registry;
   final String Function()? systemPromptBuilder;
+
+  /// Set by the UI stop button; checked at every turn boundary and between
+  /// SSE events. Throws [LlmStoppedException] at the next safe boundary.
+  final CancelToken? cancelToken;
   final AgentObserver? _onEvent;
   final AgentTextObserver? onTextDelta;
   final AgentReasoningObserver? onReasoningDelta;
@@ -44,6 +48,7 @@ class AgentLoop {
     required this._llm,
     required this._registry,
     this.systemPromptBuilder,
+    this.cancelToken,
     this._onEvent,
     this.onTextDelta,
     this.onReasoningDelta,
@@ -61,6 +66,7 @@ class AgentLoop {
     ];
 
     for (var turn = 0; turn < maxTurns; turn++) {
+      if (cancelToken?.isCancelled ?? false) throw const LlmStoppedException();
       final systemPromptBuilder = this.systemPromptBuilder;
       if (systemPromptBuilder != null) {
         if (messages.isNotEmpty && messages[0]['role']=='system') {
@@ -73,12 +79,17 @@ class AgentLoop {
 
       final textObserver = onTextDelta;
       final message = textObserver == null
-          ? await _llm.chat(messages: messages, tools: _registry.all)
+          ? await _llm.chat(
+              messages: messages,
+              tools: _registry.all,
+              cancelToken: cancelToken,
+            )
           : await _llm.chatStream(
               messages: messages,
               tools: _registry.all,
               onTextDelta: textObserver,
               onReasoningDelta: onReasoningDelta,
+              cancelToken: cancelToken,
             );
       if (!message.hasToolCalls) {
         return message.content ?? '';

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -179,12 +180,53 @@ void main() {
     await db.pinConversation('nope');
   });
 
+  test('pinConversation notifies watch streams', () async {
+    // Regression: pinConversation used raw SQL without notifying drift's
+    // stream-query store, so the sidebar watches kept stale pin state until
+    // the next typed write. customStatement requires an explicit
+    // markTablesUpdated — this guards exactly that by holding ONE live
+    // subscription across the toggle.
+    await db.saveConversation(makeConversation());
+
+    final emissions = <bool>[];
+    final gotUpdate = Completer<void>();
+    final sub = db.watchConversationSummaries().listen((summaries) {
+      emissions.add(summaries.single.isPinned);
+      if (!gotUpdate.isCompleted && emissions.length >= 2) {
+        gotUpdate.complete();
+      }
+    });
+
+    // Let the initial emission arrive before toggling.
+    await pumpEventQueue();
+    expect(emissions, [isFalse]);
+
+    await db.pinConversation('conv-1');
+
+    // Without markTablesUpdated this never completes and times out.
+    await gotUpdate.future.timeout(const Duration(seconds: 5));
+    await sub.cancel();
+    expect(emissions.last, isTrue);
+  });
+
   test('touchConversation bumps updatedAt', () async {
     await db.saveConversation(makeConversation());
     await db.touchConversation('conv-1');
 
     final loaded = await db.loadConversation('conv-1');
     expect(loaded!.updatedAt.isAfter(DateTime(2026, 1, 2)), isTrue);
+  });
+
+  test('renameConversation updates the title', () async {
+    await db.saveConversation(makeConversation());
+
+    await db.renameConversation('conv-1', 'Renamed');
+
+    final loaded = await db.loadConversationSummary('conv-1');
+    expect(loaded!.title, 'Renamed');
+
+    // Unknown id must be a no-op, not a crash.
+    await db.renameConversation('nope', 'x');
   });
 
   // test('loadAllConversations sorts by recency', () async {

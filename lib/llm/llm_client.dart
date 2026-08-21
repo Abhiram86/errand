@@ -6,6 +6,28 @@ import 'package:http/http.dart' as http;
 
 import '../agent/tool.dart';
 
+/// Shared cancellation flag for an in-flight agent turn. The UI sets it
+/// from the stop button; the client checks it between SSE events and the
+/// loop checks it at turn boundaries.
+class CancelToken {
+  bool _cancelled = false;
+
+  bool get isCancelled => _cancelled;
+
+  void cancel() => _cancelled = true;
+  void reset() => _cancelled = false;
+}
+
+/// Thrown at the next safe boundary after [CancelToken.cancel]. In-flight
+/// native tool calls cannot be interrupted — text streamed so far stays on
+/// screen and becomes the final answer.
+class LlmStoppedException implements Exception {
+  const LlmStoppedException();
+
+  @override
+  String toString() => 'Stopped';
+}
+
 class LlmMessage {
   final String? content;
   final List<ToolCall> toolCalls;
@@ -56,7 +78,9 @@ class LlmClient {
   Future<LlmMessage> chat({
     required List<Map<String, dynamic>> messages,
     List<Tool> tools = const [],
+    CancelToken? cancelToken,
   }) async {
+    if (cancelToken?.isCancelled ?? false) throw const LlmStoppedException();
     final body = _buildBody(messages: messages, tools: tools);
 
     final res = await _postWithRetry(
@@ -172,7 +196,9 @@ class LlmClient {
     List<Tool> tools = const [],
     required void Function(String delta) onTextDelta,
     void Function()? onReasoningDelta,
+    CancelToken? cancelToken,
   }) async {
+    if (cancelToken?.isCancelled ?? false) throw const LlmStoppedException();
     final streamBody = jsonEncode({
       ..._buildBody(messages: messages, tools: tools),
       'stream': true,
@@ -219,6 +245,9 @@ class LlmClient {
 
     try {
       await for (final event in _sseDataEvents(response.stream)) {
+        if (cancelToken?.isCancelled ?? false) {
+          throw const LlmStoppedException();
+        }
         if (event == '[DONE]') break;
 
         final data = jsonDecode(event) as Map<String, dynamic>;
