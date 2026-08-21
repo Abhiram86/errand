@@ -1,6 +1,6 @@
 # Next Plan — Status & Roadmap
 
-> **Updated Aug 21 2026.** P0 (DIY Intent tool) and P1 (OPT-07 truncation) are **shipped** — see below for what landed vs the original designs. P2 (AccessibilityService) queued after a stability pass.
+> **Updated Aug 21 2026.** P0 (DIY Intent tool) and P1 (OPT-07 truncation) are **shipped** — see below for what landed vs the original designs. **P1.5 (UX batch: stop/copy, rename, edit/regenerate, voice input, image multimodality) is queued next.** P2 (AccessibilityService) queued after that.
 
 ---
 
@@ -85,6 +85,64 @@ Plus a **generic escape hatch**: `action:"intent"` accepts raw `android_action` 
 - **Empty-bubble suppression**: whitespace-only streaming deltas no longer
   blank the …working placeholder; empty final answers drop the bubble (and
   delete its persisted row) instead of rendering an empty turn.
+
+---
+
+## 🎯 P1.5 — UX Batch (queued next, before P2)
+
+> Scoped Aug 21 2026. All items are UI/history-manipulation work on top of the
+> existing merge-save + windowing machinery. P2 (AccessibilityService) stays
+> queued behind this batch.
+
+### 1. Stop button + copy buttons
+- While `_busy`, the rounded send button becomes a **square stop** button.
+  Cancellation = a cancel flag threaded into `LlmClient.chatStream`/`chat`,
+  checked between SSE events and at agent-loop turn boundaries. Partial text
+  is kept as the final answer (marked "(stopped)"). In-flight native tool
+  calls can't be interrupted — cancel takes effect at the next boundary.
+  Pairs with the stream-stall watchdog (open items below).
+- **Copy buttons**: one-tap copy icon on assistant bubbles and tool output
+  (SelectionArea stays for free-form selection).
+
+### 2. Finish Rename
+- The sidebar Rename option is currently a stub. Dialog → update `title` in
+  DB; sidebar updates via the existing watch stream.
+
+### 3. Edit user message
+- Tap own bubble → loads text into composer. On resend, **truncate history
+  from that message onward** (later messages AND their tool runs), then run
+  the loop fresh.
+- ⚠️ Merge-based saves keep rows outside the loaded window — truncation must
+  explicitly `deleteMessage` every removed row, not just drop them from
+  memory.
+
+### 4. Regenerate answer
+- Same truncation semantics as #3 applied from the last user message (drops
+  the assistant + tool turns under it), then re-run. Shares machinery with #3
+  and with retry-on-transport-error.
+
+### 5. Voice input (`speech_to_text`)
+- Mic icon (accent blue) on the send button when the composer is empty;
+  switches to the send arrow when there is text. Live partial results go
+  into the controller.
+- **First-use language picker**, choice persisted locally. Needs a small
+  key-value settings table (**schema v3**) — no sensitive data, so plain
+  sqlite (no SQLCipher dependency change).
+- Plugin uses Android's built-in SpeechRecognizer: zero shipped model weight,
+  quality/network behavior follows the device's voice typing.
+
+### 6. Multimodality — images only
+- **Attach path**: composer image picker → OpenAI-compatible `image_url`
+  content parts (base64 data URLs) on user messages.
+- **Agent path**: new `image` tool — model locates an image via
+  `workspace.find`, then reads it; the tool result carries the image as a
+  content part for the next turn. This is the path the old
+  `document_reader` `UnsupportedError("future vision path")` reserved.
+- Loop changes: `_toLlmHistory` must emit multimodal content arrays;
+  persistence needs attachment↔message linkage beyond the current
+  conversation-level table (schema v3 candidate together with #5).
+- Error policy: non-vision model selected → honest failure telling the user
+  to switch models (reuse the transport-vs-agent error split).
 
 ---
 
