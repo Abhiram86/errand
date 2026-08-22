@@ -3,7 +3,6 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
-const kTavilyApiKey = String.fromEnvironment('TAVILY_API_KEY');
 const _tavilyTimeout = Duration(seconds: 15);
 
 class TavilyClient {
@@ -46,7 +45,7 @@ class TavilyClient {
     Map<String, dynamic> body,
   ) async {
     if (apiKey.trim().isEmpty) {
-      throw const TavilyException('TAVILY_API_KEY is not configured.');
+      throw const TavilyException('Tavily API key is not configured.');
     }
 
     http.Response response;

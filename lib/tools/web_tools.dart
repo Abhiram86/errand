@@ -1,13 +1,25 @@
 import '../agent/tool.dart';
+import '../services/app_settings.dart';
 import '../services/tavily_client.dart';
 import '../types/tool.dart';
 
 const kMaxWebSearchContentChars = 1200;
 const kMaxWebFetchContentChars = 20000;
 
-Tool webSearchTavilyTool({TavilyClient? client}) {
-  final tavily = client ?? TavilyClient(apiKey: kTavilyApiKey);
+/// Builds a [TavilyClient] from the key stored in app settings.
+///
+/// Resolved lazily PER CALL (not at registry construction) so saving a key
+/// in Settings takes effect immediately without rebuilding the tool set.
+/// Returns null when no key is configured — callers turn that into a clean
+/// tool failure pointing at Settings.
+TavilyClient? _resolveTavilyClient({TavilyClient? client}) {
+  if (client != null) return client;
+  final key = AppSettingsService.instance.tavilyKey?.trim();
+  if (key == null || key.isEmpty) return null;
+  return TavilyClient(apiKey: key);
+}
 
+Tool webSearchTavilyTool({TavilyClient? client}) {
   return Tool(
     name: 'websearch',
     description:
@@ -25,6 +37,14 @@ Tool webSearchTavilyTool({TavilyClient? client}) {
       final query = (call.arguments['query'] as String?)?.trim();
       if (query == null || query.isEmpty) {
         return ToolCallResult.failure(call.id, 'Query cannot be empty.');
+      }
+      final tavily = _resolveTavilyClient(client: client);
+      if (tavily == null) {
+        return ToolCallResult.failure(
+          call.id,
+          'Tavily API key is not configured. Open Settings (gear icon) and '
+          'add a Tavily key to enable web search.',
+        );
       }
 
       try {
@@ -59,14 +79,16 @@ Tool webSearchTavilyTool({TavilyClient? client}) {
         return ToolCallResult(id: call.id, ok: true, output: output.toString());
       } catch (error) {
         return ToolCallResult.failure(call.id, 'Web search failed: $error');
+      } finally {
+        // Per-call client: release its socket pool immediately instead of
+        // letting idle keep-alive connections accumulate across tool calls.
+        tavily.close();
       }
     },
   );
 }
 
 Tool webFetchTool({TavilyClient? client}) {
-  final tavily = client ?? TavilyClient(apiKey: kTavilyApiKey);
-
   return Tool(
     name: 'webfetch',
     description:
@@ -103,6 +125,15 @@ Tool webFetchTool({TavilyClient? client}) {
       }
 
       final query = (call.arguments['query'] as String?)?.trim();
+
+      final tavily = _resolveTavilyClient(client: client);
+      if (tavily == null) {
+        return ToolCallResult.failure(
+          call.id,
+          'Tavily API key is not configured. Open Settings (gear icon) and '
+          'add a Tavily key to enable web fetching.',
+        );
+      }
 
       try {
         final data = await tavily.extract(
@@ -141,6 +172,8 @@ Tool webFetchTool({TavilyClient? client}) {
         );
       } catch (error) {
         return ToolCallResult.failure(call.id, 'Web fetch failed: $error');
+      } finally {
+        tavily.close();
       }
     },
   );

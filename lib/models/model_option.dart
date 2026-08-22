@@ -11,7 +11,6 @@ class ModelOption {
 }
 
 const kDefaultModelId = 'nvidia/nemotron-3-ultra-550b-a55b:free';
-
 // Used immediately on launch and whenever the model endpoint is unavailable.
 // The live catalog normally replaces this list after startup.
 const kFallbackModels = <ModelOption>[
@@ -33,7 +32,3 @@ const kFallbackModels = <ModelOption>[
   ),
 ];
 
-const kConfiguredModel = String.fromEnvironment(
-  'ERRAND_MODEL',
-  defaultValue: kDefaultModelId,
-);

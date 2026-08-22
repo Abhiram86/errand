@@ -5,9 +5,9 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:errand/services/database.dart';
 import 'package:errand/services/a11y_service.dart';
+import 'package:errand/services/app_settings.dart';
 import 'package:errand/services/intent_service.dart';
 import 'package:uuid/uuid.dart';
 
@@ -28,9 +28,7 @@ import 'widgets/chat_sidebar.dart';
 import 'widgets/message_bubbles.dart';
 import 'widgets/model_picker.dart';
 import 'widgets/paging.dart';
-
-const kApiKey = String.fromEnvironment('OPENROUTER_API_KEY');
-const kBaseUrl = String.fromEnvironment('ERRAND_BASE_URL');
+import 'widgets/settings_sheet.dart';
 const kSystemPrompt =
     'You are Errand, a general-purpose agent running on an Android phone. '
     'You can navigate, inspect, and read files inside the user\'s granted '
@@ -116,7 +114,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   final _modelCatalog = ModelCatalogService();
   final _uuid = const Uuid();
   late LlmClient _llm;
-  String _selectedModel = kConfiguredModel;
+  String _selectedModel = kDefaultModelId;
   List<ModelOption> _models = kFallbackModels;
   List<Message> _messages = _welcomeMessages();
   late Conversation _activeConversation;
@@ -211,7 +209,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     super.initState();
     _activeConversation = _newDraftConversation();
     _llm = _createLlmClient(_selectedModel);
-    unawaited(_loadModelCatalog());
+    unawaited(_loadAppConfig());
     unawaited(_refreshA11yState());
     // One-time POST_NOTIFICATIONS grant so the foreground work indicator is
     // visible on API 33+ (the service itself runs regardless).
@@ -237,19 +235,50 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   LlmClient _createLlmClient(String model) {
+    final settings = AppSettingsService.instance;
     return LlmClient(
       config: LlmConfig(
-        baseUrl: kBaseUrl.isEmpty ? 'https://openrouter.ai/api/v1' : kBaseUrl,
-        apiKey: kApiKey,
+        baseUrl: settings.effectiveBaseUrl,
+        apiKey: settings.openRouterKey ?? '',
         model: model,
       ),
     );
+  }
+
+  /// Loads runtime configuration (decrypted keys, last-selected model) from
+  /// the settings store, then refreshes the model catalog. Replaces the old
+  /// compile-time --dart-define env injection.
+  Future<void> _loadAppConfig() async {
+    await AppSettingsService.instance.ensureLoaded();
+    if (!mounted) return;
+    setState(() {
+      _selectedModel = AppSettingsService.instance.selectedModel;
+      _llm.close();
+      _llm = _createLlmClient(_selectedModel);
+    });
+    await _loadModelCatalog();
+  }
+
+  /// Opens the Settings sheet; returns true when something was saved.
+  /// Reloads the LLM client + catalog afterwards so new keys take effect
+  /// immediately.
+  Future<bool> _openSettings() async {
+    final changed = await showSettingsSheet(context);
+    if (changed && mounted) {
+      setState(() {
+        _llm.close();
+        _llm = _createLlmClient(_selectedModel);
+      });
+      unawaited(_loadModelCatalog());
+    }
+    return changed;
   }
 
   void _selectModel(String model) {
     if (_busy || model == _selectedModel) return;
     _llm.close();
     _llm = _createLlmClient(model);
+    unawaited(AppSettingsService.instance.setSelectedModel(model));
     setState(() {
       _selectedModel = model;
       _activeConversation.model = model;
@@ -307,10 +336,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   Future<void> _maybeShowA11yDialog() async {
     if (_a11yDialogOpen) return;
     try {
-      final prefs = await SharedPreferences.getInstance();
-      if (prefs.getBool('a11y_prompt_dismissed') ?? false) return;
+      if (await AppSettingsService.instance.a11yPromptDismissed()) return;
     } catch (_) {
-      return; // prefs unavailable — don't nag without an escape hatch
+      return; // settings unavailable — don't nag without an escape hatch
     }
     if (!mounted) return;
 
@@ -339,8 +367,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             TextButton(
               onPressed: () async {
                 Navigator.of(dialogContext).pop();
-                final prefs = await SharedPreferences.getInstance();
-                await prefs.setBool('a11y_prompt_dismissed', true);
+                await AppSettingsService.instance.setA11yPromptDismissed(true);
               },
               child: const Text("Don't ask again"),
             ),
@@ -375,12 +402,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _loadModelCatalog() async {
-    if (kApiKey.isEmpty) return;
+    final settings = AppSettingsService.instance;
+    if (!settings.hasOpenRouterKey) return;
 
     try {
       final models = await _modelCatalog.load(
-        baseUrl: kBaseUrl.isEmpty ? 'https://openrouter.ai/api/v1' : kBaseUrl,
-        apiKey: kApiKey,
+        baseUrl: settings.effectiveBaseUrl,
+        apiKey: settings.openRouterKey!,
       );
       if (!mounted) return;
 
@@ -611,7 +639,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     setState(() {
       _activeConversation = loaded;
       _messages = loaded.messages;
-      _selectedModel = loaded.model ?? kConfiguredModel;
+      _selectedModel = loaded.model ?? AppSettingsService.instance.selectedModel;
       _llm.close();
       _llm = _createLlmClient(_selectedModel);
       _workingMessageId = null;
@@ -904,6 +932,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   /// Shared tail of send / edit-resend / regenerate: adds the …working
   /// bubble and runs the agent loop over the current history.
   Future<void> _runAgentTurn() async {
+    // Checked before any UI churn so a missing key can't leave a phantom
+    // working bubble behind.
+    if (!AppSettingsService.instance.hasOpenRouterKey) {
+      _showToast('Add an OpenRouter API key in Settings to start chatting.');
+      await _openSettings();
+      return;
+    }
+
     final workingId = 'working-${DateTime.now().microsecondsSinceEpoch}';
     _workingMessageId = workingId;
     _workingText.clear();
@@ -920,14 +956,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _scrollToBottom();
 
     try {
-      if (kApiKey.isEmpty) {
-        _failWorking(
-          'OPENROUTER_API_KEY is missing. Start the app with '
-          '`flutter run --dart-define-from-file=.env`.',
-        );
-        return;
-      }
-
       final conversation = Conversation(
         id: _activeConversation.id,
         localSystemPrompt:
@@ -1433,14 +1461,34 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           ),
           const SizedBox(width: 4),
           Expanded(
-            child: ModelPicker(
-              selectedModel: _selectedModel,
-              models: _models,
-              enabled: !_busy,
-              expand: true,
-              onChanged: _selectModel,
-            ),
+            // Nothing to pick without an API key — the gear takes the
+            // picker's place until one is configured.
+            child: AppSettingsService.instance.hasOpenRouterKey
+                ? ModelPicker(
+                    selectedModel: _selectedModel,
+                    models: _models,
+                    enabled: !_busy,
+                    expand: true,
+                    onChanged: _selectModel,
+                  )
+                : Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                      onPressed: _openSettings,
+                      style: TextButton.styleFrom(foregroundColor: kText),
+                      icon: const Icon(Icons.settings_rounded, size: 18),
+                      label: const Text('Set API key'),
+                    ),
+                  ),
           ),
+          if (AppSettingsService.instance.hasOpenRouterKey)
+            IconButton(
+              onPressed: _openSettings,
+              tooltip: 'Settings',
+              icon: const Icon(Icons.settings_rounded, size: 20),
+              color: kMuted,
+              visualDensity: VisualDensity.compact,
+            ),
           const SizedBox(width: 4),
           if (_activeConversation.id != null)
           TextButton(

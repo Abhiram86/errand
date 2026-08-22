@@ -1,7 +1,8 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:speech_to_text/speech_to_text.dart';
+
+import 'app_settings.dart';
 
 /// Thin singleton over the device's built-in speech recognizer
 /// (via the `speech_to_text` plugin). Zero shipped model weight —
@@ -17,7 +18,6 @@ class SpeechService {
   static final SpeechService instance = SpeechService._();
 
   static const _channel = MethodChannel('intent');
-  static const _localePrefKey = 'voice_input_locale';
 
   final SpeechToText _speech = SpeechToText();
   bool _initialized = false;
@@ -65,22 +65,13 @@ class SpeechService {
 
   Future<void> stop() => _speech.stop();
 
-  // -- Persisted language choice (shared_preferences; one string key — no
-  // schema v3 needed for this) -------------------------------------------
+  // -- Persisted language choice (app-settings table; one string key) ------
 
-  Future<String?> savedLocaleId() async {
-    final prefs = await SharedPreferences.getInstance();
-    return prefs.getString(_localePrefKey);
-  }
+  Future<String?> savedLocaleId() =>
+      AppSettingsService.instance.loadVoiceLocaleId();
 
-  Future<void> saveLocaleId(String? localeId) async {
-    final prefs = await SharedPreferences.getInstance();
-    if (localeId == null) {
-      await prefs.remove(_localePrefKey);
-    } else {
-      await prefs.setString(_localePrefKey, localeId);
-    }
-  }
+  Future<void> saveLocaleId(String? localeId) =>
+      AppSettingsService.instance.saveVoiceLocaleId(localeId);
 
   // -- Mic permission via the platform channel -----------------------------
 

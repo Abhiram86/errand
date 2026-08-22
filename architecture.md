@@ -17,7 +17,7 @@ agent loop (lib/agent/agent_loop.dart) ──────────┐
      │  up to 18 turns, onTextDelta/onReasoning   │
      ▼                                             │
 LLM client (lib/llm/llm_client.dart)  ◀── HTTP/SSE ─┤ OpenRouter / HF / custom
-     ▲  POST /chat/completions (stream:true)      │  baseUrl (ERRAND_BASE_URL)
+     ▲  POST /chat/completions (stream:true)      │  baseUrl (AppSettingsService)
      │  tool schemas / tool_calls / reasoning      │
      ▼                                             │
 tool registry (lib/agent/tool_registry.dart)
@@ -83,7 +83,7 @@ The UI stores a short tool preview for rendering (truncated), while the complete
 - `chat()` — single JSON response, parses `choices[0].message.tool_calls` + `reasoning`/`reasoning_details`;
 - `chatStream()` — SSE (`Accept: text/event-stream`, `stream:true`), forwards `content` deltas via `onTextDelta`, reasoning deltas via `onReasoningDelta`, and accumulates fragmented `tool_calls[].function.arguments` until `[DONE]`.
 
-`LlmMessage { content, toolCalls, reasoning, reasoningDetails }` is the parsed response. `_sseDataEvents` handles UTF-8 chunk reassembly and comment keepalives. API key + baseUrl + model come from `LlmConfig` (sourced at runtime from `--dart-define-from-file=.env`).
+`LlmMessage { content, toolCalls, reasoning, reasoningDetails }` is the parsed response. `_sseDataEvents` handles UTF-8 chunk reassembly and comment keepalives. API key + baseUrl + model come from `LlmConfig`, built at runtime from `AppSettingsService` (SQLite-backed settings; no more compile-time dart-defines).
 
 **Resilience (added after free-model flakiness):**
 
@@ -92,10 +92,8 @@ The UI stores a short tool preview for rendering (truncated), while the complete
 - Retry covers only time-to-response-headers for streams; mid-stream failures surface as `LlmException(transport: true)` ("Stream interrupted") and cannot be transparently resumed.
 - `LlmException.transport` marks infra-side failures (connection lost, timeouts, 429/5xx) vs agent/tool mistakes — consumed by the UI error policy (below).
 
-```bash
-flutter run --dart-define-from-file=.env
-# .env provides OPENROUTER_API_KEY / TAVILY_API_KEY / ERRAND_BASE_URL / ERRAND_MODEL
-```
+Keys are configured in-app (header gear icon → Settings sheet) and stored
+AES-GCM encrypted in the app-settings table.
 
 ## The file & workspace tools — `lib/tools/`
 
@@ -114,7 +112,7 @@ flutter run --dart-define-from-file=.env
 
 ## Web tools — `lib/tools/web_tools.dart` + `lib/services/tavily_client.dart`
 
-- `TavilyClient { search, extract, _post }` — `POST https://api.tavily.com/{search,extract}`, Bearer `TAVILY_API_KEY`, JSON decode with status-range check.
+- `TavilyClient { search, extract, _post }` — `POST https://api.tavily.com/{search,extract}`, Bearer token from `AppSettingsService.tavilyKey`, JSON decode with status-range check. The web tools resolve the client **lazily per call** (not at registry construction), so saving a key in Settings takes effect immediately; an unset key is a clean `ToolCallResult.failure` pointing at Settings.
 - `websearch` — `query → search` → titles/URLs/snippets (truncated to 1200 chars each).
 - `webfetch` — `url (+ optional query) → extract` (Markdown, 20k char cap) from a single URL, focused when query is present.
 
@@ -155,7 +153,7 @@ Missing/failed channel calls are mapped to "no permission" rather than crashing.
 
 ## The model catalog — `lib/services/model_catalog.dart` + `lib/models/model_option.dart`
 
-- `ModelCatalogService { load(baseUrl, apiKey) }` — `GET {baseUrl}/models?output_modalities=text`, parses `data[].id/name`, maps provider from `id` prefix (`qwen/… → Qwen`). Static `_cache` + `_inFlight` dedup; fallback is `kFallbackModels` + `kDefaultModelId` (`Qwen/Qwen3.8-27B`) and env `ERRAND_MODEL`.
+- `ModelCatalogService { load(baseUrl, apiKey) }` — `GET {baseUrl}/models?output_modalities=text`, parses `data[].id/name`, maps provider from `id` prefix (`qwen/… → Qwen`). Static `_cache` + `_inFlight` dedup; fallback is `kFallbackModels` + `kDefaultModelId`; the last user-picked model persists in the settings table.
 - `ModelOption { id, name, provider }` → consumed by `ModelPicker`.
 
 ## The UI — `lib/main.dart` + `lib/widgets/` + `lib/theme/`
@@ -177,11 +175,12 @@ Storage permission is checked on start and on `AppLifecycleState.resumed`, with 
 
 ## Persistence — `lib/services/database.dart`
 
-Drift database `ErrandDatabase` (3 tables):
+Drift database `ErrandDatabase` (4 tables):
 
 - `Conversations { id PK, localSystemPrompt?, title, currentDir, provider?, model?, isPinned, createdAt, updatedAt }`
 - `ConversationMessages { localId autoinc PK, conversationId FK→Conversations.id, messageId, sortOrder, messageType (user/assistant/tool/error), messageText, toolName?, toolArgumentsJson?, result?, reasoning?, reasoningDetailsJson?, error? }`
 - `ConversationAttachments { conversationId FK, uri, PK(conversationId, uri) }`
+- `AppSettings { key PK, value }` — generic runtime KV store: encrypted API secrets (OpenRouter/Tavily keys, base-URL override) + plain preferences (voice locale, last-selected model, a11y prompt flag). Encryption lives in `SecretStore` (AES-256-GCM, key file at `<app-support>/errand.key`, outside the DB); `AppSettingsService` is the typed access layer with an in-memory cache. Replaces the former shared_preferences usage.
 
 Key ops:
 
@@ -189,8 +188,9 @@ Key ops:
 - `deleteConversation`, `pinConversation` (toggle), `touchConversation` (bump `updatedAt`).
 - `loadConversation(id)` / `_loadMessages` / `_loadAttachmentUris`, plus `insertMessage`/`replaceMessage`/`deleteMessage`.
 - `watchConversationSummaries()` / `watchPinnedConversations()` — ordered streams for the sidebar.
+- `getSetting(key)` / `setSetting(key, value)` / `deleteSetting(key)` — raw KV upserts/removals consumed by `AppSettingsService`.
 
-`schemaVersion = 2`, `NativeDatabase` (or `drift_flutter` on device), `inMemory()` for tests. v1→v2 migration dedupes message rows, then creates the two indexes above.
+`schemaVersion = 3`, `NativeDatabase` (or `drift_flutter` on device), `inMemory()` for tests. v1→v2 migration dedupes message rows, then creates the two indexes above; v2→v3 adds the app-settings table.
 
 ## Reading order
 

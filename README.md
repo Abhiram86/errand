@@ -37,27 +37,26 @@ conversations are stored locally (Drift/SQLite) with no cloud sync.
   with re-open buttons for launch-style intents, searchable model picker.
 - **Local persistence** — conversations/messages/attachments in Drift with
   merge-based saves, pinned favourites, recency-ordered sidebar.
+- **In-app configuration** — API keys are entered in Settings (gear icon in
+  the header), encrypted with AES-256-GCM, and stored in the app's SQLite
+  database. No `.env` file is needed.
 
-## Run with local environment
+## Configuration
 
-Flutter does not load `.env` files automatically. Start the app with:
+Keys are configured at runtime in the app — tap the gear icon (or
+**Set API key** in the header when no key exists yet):
 
-```bash
-flutter run --dart-define-from-file=.env
-```
+- **OpenRouter API key** (required) — enables chat; the model picker loads
+  the live catalog once set.
+- **Tavily API key** (optional) — enables the `websearch` / `webfetch`
+  tools; without it they fail cleanly and chat keeps working.
+- **Base URL** (optional) — override for OpenAI-compatible endpoints;
+  defaults to `https://openrouter.ai/api/v1`.
 
-The local `.env` file should define:
-
-```text
-OPENROUTER_API_KEY=...
-TAVILY_API_KEY=...
-ERRAND_BASE_URL=https://openrouter.ai/api/v1
-ERRAND_MODEL=openai/gpt-4o-mini
-```
-
-`ERRAND_BASE_URL`, `ERRAND_MODEL`, and `TAVILY_API_KEY` are optional; the app
-defaults to OpenRouter and falls back to a built-in model list. Web tools are
-disabled without a Tavily key.
+Secrets are AES-GCM encrypted before storage; the encryption key lives in a
+separate file (`<app-support>/errand.key`), so the database alone contains
+nothing readable. Preferences (voice-input locale, last-selected model,
+prompt-dismissed flags) live in the same SQLite store as plain values.
 
 On Android, the app requests all-files access and operates under
 `/storage/emulated/0`; the agent refuses absolute paths outside its injected

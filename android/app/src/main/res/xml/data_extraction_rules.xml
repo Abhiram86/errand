@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Cloud backup (API 31+): everything EXCEPT the secret-store key file.
+     Backing up errand.db together with errand.key would make the AES-GCM
+     encryption pointless against cloud extraction. -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="file" path="errand.key"/>
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="file" path="errand.key"/>
+    </device-transfer>
+</data-extraction-rules>

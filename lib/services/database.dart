@@ -73,8 +73,25 @@ class ConversationAttachments extends Table {
   Set<Column<Object>> get primaryKey => {conversationId, uri};
 }
 
+/// Generic on-device key/value store (schema v3). Holds runtime app config:
+/// encrypted API secrets (OpenRouter / Tavily keys, base-URL override) and
+/// plain preferences (voice locale, prompt-dismissed flags). Replaces the
+/// former shared_preferences usage so everything lives in one SQLite file.
+///
+/// Values are opaque strings here — encryption is applied by the caller
+/// ([AppSettingsService]/[SecretStore]), keeping this table dumb.
+@DataClassName('AppSettingRow')
+class AppSettings extends Table {
+  TextColumn get key => text()();
+
+  TextColumn get value => text()();
+
+  @override
+  Set<Column<Object>> get primaryKey => {key};
+}
+
 @DriftDatabase(
-  tables: [Conversations, ConversationMessages, ConversationAttachments],
+  tables: [Conversations, ConversationMessages, ConversationAttachments, AppSettings],
 )
 final class ErrandDatabase extends _$ErrandDatabase {
   ErrandDatabase._([QueryExecutor? executor])
@@ -88,7 +105,7 @@ final class ErrandDatabase extends _$ErrandDatabase {
       ErrandDatabase._(NativeDatabase.memory());
 
   @override
-  int get schemaVersion => 2;
+  int get schemaVersion => 3;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -109,6 +126,10 @@ final class ErrandDatabase extends _$ErrandDatabase {
           )
         ''');
         await _createMessageIndexes(m);
+      }
+      if (from < 3) {
+        // v3 adds the app-settings key/value store.
+        await m.createTable(appSettings);
       }
     },
   );
@@ -237,6 +258,29 @@ final class ErrandDatabase extends _$ErrandDatabase {
       ConversationsCompanion(updatedAt: Value(DateTime.now())),
     );
   }
+
+  // -- App settings (key/value) ---------------------------------------------
+
+  /// Reads a settings value; null when the key is absent.
+  Future<String?> getSetting(String key) async {
+    final row = await (select(
+      appSettings,
+    )..where((s) => s.key.equals(key))).getSingleOrNull();
+    return row?.value;
+  }
+
+  /// Inserts or overwrites a settings value.
+  Future<void> setSetting(String key, String value) async {
+    await into(appSettings).insertOnConflictUpdate(
+      AppSettingsCompanion.insert(key: key, value: value),
+    );
+  }
+
+  /// Removes a settings key. No-op when absent.
+  Future<void> deleteSetting(String key) async {
+    await (delete(appSettings)..where((s) => s.key.equals(key))).go();
+  }
+
 
   // -- Message CRUD --------------------------------------------------------
 

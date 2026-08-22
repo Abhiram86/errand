@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Legacy full-backup content (API ≤30): exclude the secret-store key
+     file for the same reason as data_extraction_rules.xml. -->
+<full-backup-content>
+    <exclude domain="file" path="errand.key"/>
+</full-backup-content>

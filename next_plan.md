@@ -279,8 +279,22 @@ final act.
     - Commit-control detection via label/class heuristics (text ∈ {send,
       post, publish, pay…}); if no confident match → silently stays in
       Draft mode (safe-by-default).
-12. *(deferred until gate UX proves itself)* Multi-step flows with raised
-    turn cap (>12); each step = one ToolMessage = free audit log.
+12. **Longer loops — ACTIVE (turn cap exhausted in practice)**. Cap went
+    12 → 18 → still too few: every UI step costs 2–3 turns (read → act →
+    verify), so a 10-step automation needs 20–30+. Plan:
+    - Raise `maxTurns` to ~40 (make it an `AgentLoop` constructor param).
+    - **Mid-run compaction is mandatory with that** — entry truncation only
+      sees persisted history; screen outlines are up to ~24K chars per read,
+      so a long run can exceed the window mid-flight even though each turn
+      fit. After each completed turn, if the running payload exceeds
+      `kContextSoftLimit`, drop the oldest complete *turn units* (one
+      assistant message + its tool results — same atomic shape
+      `_toLlmHistory` synthesizes, so removal never orphans a tool call),
+      always keeping the newest ~6 turns and the system prompt. Local-only:
+      persistence/UI history untouched. If the model needs dropped context,
+      it re-runs `screen read` — same recovery a human would do.
+    - Each step already = one ToolMessage = free audit log, so compacted
+      turns stay reviewable in chat even after leaving the LLM payload.
 13. *(deferred)* Coordinate fallback tap for empty-semantics apps; require
     screenshot preview before approving (blind taps are the riskiest form).
     Known Draft-mode gap: apps that don't expose input fields via semantics
