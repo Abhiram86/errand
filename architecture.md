@@ -4,7 +4,7 @@ This document maps the current implementation: a streaming chat UI, an OpenAI-co
 
 ## Big picture
 
-The app keeps the conversation (and its persistence) on the phone and sends the history to the configured LLM. The LLM can call the registered file/web tools; tool results are fed back into the same loop until the model returns a final answer or 12 turns are reached. Streaming deltas and reasoning are forwarded to the UI live.
+The app keeps the conversation (and its persistence) on the phone and sends the history to the configured LLM. The LLM can call the registered file/web tools; tool results are fed back into the same loop until the model returns a final answer or 18 turns are reached. Streaming deltas and reasoning are forwarded to the UI live.
 
 ```text
 chat UI (lib/main.dart: ChatScreen)
@@ -14,14 +14,15 @@ chat UI (lib/main.dart: ChatScreen)
      ▼
 agent loop (lib/agent/agent_loop.dart) ──────────┐
      │  _toLlmHistory() + systemPromptBuilder      │
-     │  up to 12 turns, onTextDelta/onReasoning   │
+     │  up to 18 turns, onTextDelta/onReasoning   │
      ▼                                             │
 LLM client (lib/llm/llm_client.dart)  ◀── HTTP/SSE ─┤ OpenRouter / HF / custom
      ▲  POST /chat/completions (stream:true)      │  baseUrl (ERRAND_BASE_URL)
      │  tool schemas / tool_calls / reasoning      │
      ▼                                             │
 tool registry (lib/agent/tool_registry.dart)
-     │  defaults: read, workspace, websearch, webfetch, intent
+     │  defaults: read, workspace, websearch, webfetch,
+     │            intent, screen, act
      ├──────────┬──────────────┬─────────────┴─────────┐
      ▼          ▼              ▼                       ▼
  file tools   workspace    web tools              intent tool
@@ -72,8 +73,8 @@ The UI stores a short tool preview for rendering (truncated), while the complete
 ## The agent — `lib/agent/`
 
 - **`tool.dart`** defines the LLM-facing `Tool` schema (`name`, `description`, `parameters`, `handler`) and parsed `ToolCall` (`id`, `name`, `arguments`). `ToolCall.toJson()` serializes arguments as a JSON string as required by OpenAI-compatible APIs. `requiresValidation` is internal metadata for future mutation tools.
-- **`tool_registry.dart`** registers the current tools and safely executes a call, converting handler exceptions into `ToolCallResult.failure`. `ToolRegistry.defaults({currentDir, workingDirectory})` currently contains `read` + `workspace` (which multiplexes `list`/`find`/`cd`/`pwd`) + `websearch` + `webfetch` + `intent`.
-- **`agent_loop.dart`** exposes `run(Conversation)`. It builds the LLM message array (`system` + `_toLlmHistory`), injects the live system prompt each turn, and drives streaming (`chatStream`) or non-streaming (`chat`) via `LlmClient`. Consecutive `ToolMessage`s are reconstructed as one assistant `tool_calls` message + matching `tool` result messages. Tool events are emitted via `onEvent` (`AgentToolCall` with `reasoning`). Loop cap is 12 turns.
+- **`tool_registry.dart`** registers the current tools and safely executes a call, converting handler exceptions into `ToolCallResult.failure`. `ToolRegistry.defaults({currentDir, workingDirectory})` currently contains `read` + `workspace` (which multiplexes `list`/`find`/`cd`/`pwd`) + `websearch` + `webfetch` + `intent` + `screen` + `act`.
+- **`agent_loop.dart`** exposes `run(Conversation)`. It builds the LLM message array (`system` + `_toLlmHistory`), injects the live system prompt each turn, and drives streaming (`chatStream`) or non-streaming (`chat`) via `LlmClient`. Consecutive `ToolMessage`s are reconstructed as one assistant `tool_calls` message + matching `tool` result messages. Tool events are emitted via `onEvent` (`AgentToolCall` with `reasoning`). Loop cap is 18 turns.
 
 ## The LLM client — `lib/llm/llm_client.dart`
 
@@ -199,17 +200,43 @@ Key ops:
 4. `lib/internal/document_reading/` (models → reader → open_xml/pdf)
 5. `lib/tools/web_tools.dart` + `lib/services/tavily_client.dart`
 6. `lib/tools/intent_tool.dart` + `lib/services/intent_service.dart` + `MainActivity.kt` (intent channel)
-7. `lib/llm/llm_client.dart`
-8. `lib/services/database.dart` + `lib/services/model_catalog.dart`
-9. `lib/main.dart` + `lib/widgets/` + `lib/theme/app_colors.dart`
+7. `lib/tools/screen_tool.dart` + `lib/tools/act_tool.dart` + `lib/services/a11y_service.dart` + `ErrandAccessibilityService.kt` (a11y channel)
+8. `lib/llm/llm_client.dart`
+9. `lib/services/database.dart` + `lib/services/model_catalog.dart`
+10. `lib/main.dart` + `lib/widgets/` + `lib/theme/app_colors.dart`
+
+## The accessibility tools — `screen` + `act` (P2)
+
+One user-enabled accessibility service (`ErrandAccessibilityService`, bound
+via `BIND_ACCESSIBILITY_SERVICE`, config in `res/xml/`) backs two tools over
+the `"a11y"` MethodChannel. Static-instance pattern: a null instance IS the
+"not enabled" signal; Android 13+ "Restricted setting" for sideloads is
+detected via AppOps and surfaced as enablement guidance.
+
+- **`screen`** — read-only. Serializes the active window's node tree into a
+  compact outline (`[depth] Class "label" [clickable,…]`) with independent
+  depth/node/char caps; labels trim at word boundaries and empty-segment
+  glue is collapsed. Truncation reports WHICH cap hit (`capHit: chars |
+  nodes`) plus real counts, so the model doesn't retry uselessly.
+  `settle_ms` (default 350) guards against stale reads after navigation.
+  Global actions: back / home / recents / notifications / quick_settings /
+  lock_screen (API 28+).
+- **`act`** — gated injection, **Draft policy** (*agent prepares, user
+  sends*): tap-by-label walks up to the nearest clickable ancestor;
+  type uses ACTION_SET_TEXT on the focused field (never submits; password
+  fields refused); scroll prefers node actions with a gesture fallback.
+  Commit-looking controls (send/pay/delete/confirm…) are refused Dart-side
+  by word-boundary matching, reporting the matched pattern. No coordinate
+  taps exist at all.
 
 ## Next steps
 
-- **P1 — context truncation (OPT-07)**: **shipped** — `lib/agent/context_budget.dart` (200K soft limit, ≤110K target, 32K per-tool-result clamp) applied at the `AgentLoop` boundary; message window (50) + sidebar pagination (20/page) via the shared `lib/widgets/paging.dart`; merge-based `saveConversation`. See `next_plan.md` §P1.
-- **P2 — AccessibilityService**: screen-tree reading + gesture injection for full on-device automation (Tasker-class); after P1 and any remaining stability work.
-- Add a stream-stall watchdog to `chatStream` (inactivity timeout per SSE event; `_streamTimeout` only covers time-to-headers).
-- Add incremental DB persistence (batch + dirty-set) to replace delete-all+reinsert per streaming delta (OPT-01).
+- **P2 — AccessibilityService**: Tier S (read + globals) and Tier A Draft-mode
+  (tap/type/scroll with commit refusal) **shipped** — see `next_plan.md` §P2
+  for tier list, Play-policy findings, and remaining deferred items (plan-
+  preview card, coordinate fallback for empty-semantics apps).
+- Stream-stall watchdog for `chatStream` (inactivity timeout per SSE event; `_streamTimeout` only covers time-to-headers).
+- Per-turn context re-truncation inside long agent runs (truncation currently happens once at run start; maxTurns is 18).
 - Harden `_OpenXmlPackage.load` (streaming zip decode, pre-decode size check) and unify `UnsupportedError` → `ToolCallResult.failure` mapping.
-- Safe-edit tool (`write`/`edit_file` with diff preview + undo) — requires write-policy + validation gate (`Tool.requiresValidation`).
-- Local retrieval (embeddings/FTS) over recent docs to stay within context budget.
+- P3 — image multimodality (build on `attachedFileUris`), safe-edit tool (`write`/`edit_file` with diff preview + undo), local retrieval (embeddings/FTS).
 - Evaluate SAF as an alternative to `MANAGE_EXTERNAL_STORAGE` for Play distribution.

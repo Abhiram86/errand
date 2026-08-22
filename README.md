@@ -12,7 +12,7 @@ conversations are stored locally (Drift/SQLite) with no cloud sync.
 
 ## Features
 
-- **Agent loop** (`lib/agent/`) — OpenAI-compatible tool-calling, up to 12
+- **Agent loop** (`lib/agent/`) — OpenAI-compatible tool-calling, up to 18
   turns per request, live streaming of text and reasoning deltas.
 - **Tools**
   - `read` — bounded byte-range reads for text; logical pagination for PDF,
@@ -24,6 +24,11 @@ conversations are stored locally (Drift/SQLite) with no cloud sync.
     alarms/timers, calendar events, media playback, share, wallpaper,
     uninstall, settings pages/panels, dark-mode toggle) plus a generic raw
     `android_action` escape hatch.
+  - `screen` / `act` — optional accessibility-backed screen reading (compact
+    outline of the active window) and Draft-mode interaction: tap labeled
+    controls, type into focused fields, scroll. Commit-looking actions
+    (Send/Pay/Delete…) are refused — Errand prepares, the user sends.
+    Requires enabling Errand in Accessibility settings.
 - **Context management** — history truncation against a 200K-char soft limit
   with atomic tool batches, message windowing (newest 50 on open, paged
   scroll-up), and sidebar pagination.

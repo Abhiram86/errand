@@ -203,7 +203,7 @@ policy limits mapped; scope split into tiers below.**
 
 ### Capability tier list
 
-#### 🟢 Tier S — P2a: read + safe globals (ship first, near-zero risk)
+#### 🟢 Tier S — P2a: read + safe globals (SHIPPED Aug 22 2026)
 1. **`ErrandAccessibilityService`** — Kotlin service + XML config
    (`canRetrieveWindowContent`, `canPerformGestures`, `canTakeScreenshot`,
    `flagReportViewIds`, `feedbackGeneric`). Static-instance + MethodChannel
@@ -228,6 +228,14 @@ policy limits mapped; scope split into tiers below.**
    actions to confirm a tap landed (same discipline as the dark-mode ladder).
 
 #### 🟡 Tier A — P2b: gated gesture injection (Deny / Draft / Send model)
+
+> **Draft-mode subset SHIPPED Aug 22 2026**: tap-by-label (commit-word
+> refusal, matched-pattern reporting), SET_TEXT typing (password-refused,
+> never submits), direction-aware scroll with deterministic `at_end`, plus
+> Gmail-session hardening (cap-reason reporting, word-boundary labels,
+> settle_ms, sequential-call prompt guidance). Remaining: plan-preview card
+> (#11 UI), risk-class metadata (#7), Send-tier opt-in, coordinate fallback
+> (#13).
 
 **Consent model — risk-tiered three-way gate, not binary Approve/Deny.**
 Rule of thumb: *the model may prepare anything, only the user pulls

@@ -8,7 +8,7 @@ An on-device AI agent for Android: search, read, and navigate any file the user 
 
 ## Main goals
 
-1. **General-purpose agent loop on-device** — small custom loop (model → `tool_call` → result) with streaming + reasoning, up to 12 turns per request.
+1. **General-purpose agent loop on-device** — small custom loop (model → `tool_call` → result) with streaming + reasoning, up to 18 turns per request.
 2. **Search/read/navigate any accessible file** — `MANAGE_EXTERNAL_STORAGE` + `dart:io` over `/storage/emulated/0`; workspace abstraction (`WorkingDirectory` root vs current) with `read`, `workspace` (pwd/cd/list/find), and path-traversal guards.
 3. **Structured document understanding** — logical pagination for PDF (via `read_pdf_text`), DOCX/XLSX/PPTX (via `archive`+`xml`), with per-unit labels, character budgeting, and overlap for continuity.
 4. **Web-augmented answers** — `websearch`/`webfetch` via Tavily (`search` + `extract` to Markdown) so the agent can ground file questions with live context.
@@ -48,7 +48,7 @@ Flutter — entirely on-device                   Cloud (LLM + Web only)
 │   ↕ messages, working bubble,    │──HTTP──▶ │  /chat/completions (SSE) │
 │     model picker, composer       │◀──SSE──── │  OpenRouter / HF / custom│
 │                                  │           └──────────────────────────┘
-│ agent loop (12 turns, streaming) │           ┌──────────────────────────┐
+│ agent loop (18 turns, streaming) │           ┌──────────────────────────┐
 │   ↕ Tool schemas / calls/results │──HTTP──▶ │ Tavily — /search,        │
 │                                  │           │  /extract → Markdown     │
 │ tools: read · workspace          │           └──────────────────────────┘
@@ -86,7 +86,7 @@ class ToolCallResult { final String id; final bool ok; final String output; fina
 8. ✅ Android intent tool — 17 curated actions + raw `android_action` escape hatch, settings panels, dark-mode toggle, UI reopen buttons (see `next_plan.md` §P0).
 9. ✅ Context budgeting (OPT-07) — history truncation + message windowing + sidebar pagination + merge-based saves (see `next_plan.md` §P1).
 10. ✅ UX batch (P1.5) — stop/copy buttons, rename, edit-message & regenerate (history truncation), voice input (`speech_to_text`), plus abortable cancel + foreground work indicator. See `next_plan.md` §P1.5.
-11. **Next — AccessibilityService (P2)** — `ui_read`/`ui_click`/`ui_type`/`ui_swipe`, notification reading; confirmation gates for destructive actions.
+11. ✅ AccessibilityService (P2, partial) — screen read + global actions + gated Draft-mode injection (`act`: tap/type/scroll with commit refusal). Remaining: plan-preview approval card, risk-class metadata, Send-tier opt-in. See `next_plan.md` §P2.
 12. **P3** — image multimodality (on `attachedFileUris`), safe editing (`edit_file` + diff/undo), local retrieval (embeddings + FTS).
 13. **Phase 3+:** bundled `busybox` shell via `dart:io Process` in app-private workspace.
 
