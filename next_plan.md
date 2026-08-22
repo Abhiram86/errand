@@ -1,6 +1,6 @@
 # Next Plan — Status & Roadmap
 
-> **Updated Aug 21 2026.** P0 (DIY Intent tool) and P1 (OPT-07 truncation) are **shipped** — see below for what landed vs the original designs. **P1.5 (UX batch: stop/copy, rename, edit/regenerate, voice input, image multimodality) is queued next.** P2 (AccessibilityService) queued after that.
+> **Updated Aug 22 2026.** P0 (DIY Intent tool), P1 (OPT-07 truncation) and P1.5 (UX batch: stop/copy, rename, edit/regenerate, voice input) are **shipped**. **P2 (AccessibilityService) is the active next focus.** Image multimodality deferred to P3 (build on the unused `attachedFileUris` hook).
 
 ---
 
@@ -88,11 +88,15 @@ Plus a **generic escape hatch**: `action:"intent"` accepts raw `android_action` 
 
 ---
 
-## 🎯 P1.5 — UX Batch (queued next, before P2)
+## ✅ P1.5 — UX Batch (SHIPPED Aug 21–22 2026, except item 6 → deferred to P3)
 
-> Scoped Aug 21 2026. All items are UI/history-manipulation work on top of the
-> existing merge-save + windowing machinery. P2 (AccessibilityService) stays
-> queued behind this batch.
+> All items are UI/history-manipulation work on top of the existing
+> merge-save + windowing machinery. Also landed with this batch: abortable
+> LLM cancellation (stop works during slow time-to-first-token via socket
+> close, elapsed-seconds on the working bubble) and a foreground work
+> indicator (dataSync FGS held while a turn runs — fixes SSE streams dying
+> when an intent tool sends Errand to the background and Android's
+> cached-apps freezer kills its sockets ~10s later).
 
 ### 1. Stop button + copy buttons (SHIPPED Aug 21 2026)
 - While `_busy`, the rounded send button becomes a **square stop** button.
@@ -135,7 +139,7 @@ Plus a **generic escape hatch**: `action:"intent"` accepts raw `android_action` 
   offline language under Settings → Voice → Offline recognition, or
   `listen` fails with `error_audio_error`.
 
-### 6. Multimodality — images only
+### 6. Multimodality — images only (DEFERRED → P3)
 - **Attach path**: composer image picker → OpenAI-compatible `image_url`
   content parts (base64 data URLs) on user messages.
 - **Agent path**: new `image` tool — model locates an image via
@@ -144,17 +148,173 @@ Plus a **generic escape hatch**: `action:"intent"` accepts raw `android_action` 
   `document_reader` `UnsupportedError("future vision path")` reserved.
 - Loop changes: `_toLlmHistory` must emit multimodal content arrays;
   persistence needs attachment↔message linkage beyond the current
-  conversation-level table (schema v3 candidate together with #5).
+  conversation-level table (schema v3).
 - Error policy: non-vision model selected → honest failure telling the user
   to switch models (reuse the transport-vs-agent error split).
+- **Existing hook**: `Conversation.attachedFileUris` + the
+  `conversation_attachments` table already persist per-conversation file
+  URIs (unused so far) — image attach should build on that instead of
+  inventing new storage.
 
 ---
 
-## 🧭 P2 — AccessibilityService (queued)
+## 🧭 P2 — AccessibilityService (NEXT)
 
-After P1 + stability pass. Screen-tree reading (`AccessibilityNodeInfo`) + gesture injection (`dispatchGesture`) → full on-device automation (Tasker-class), including UI-only toggles like dark mode via actually tapping Settings. Requires manual user enable in accessibility settings; big privacy/trust story to design first.
+Screen-tree reading (`AccessibilityNodeInfo`) + gesture injection
+(`dispatchGesture`) → on-device automation (Tasker-class), including UI-only
+toggles like dark mode by actually tapping Settings. Requires manual user
+enable in accessibility settings. **Researched Aug 22 2026 — capability and
+policy limits mapped; scope split into tiers below.**
 
-Related future candidates (on-device, non-cloud): NotificationListenerService (read/dismiss notifications), ML Kit document scanner + OCR (~300KB, no camera perm), BiometricPrompt gating for destructive actions.
+### Research findings (Aug 2026)
+
+**Policy — Play distribution of gestures is dead, sideload is fine:**
+- **Play policy updated Oct 30 2025**: the Accessibility API now explicitly
+  *cannot* be used by "an app that autonomously initiates, plans, and executes
+  actions or decisions" — written specifically against AI agents. Errand's
+  agent loop is exactly that. Non-autonomous uses still require a Play Console
+  declaration + demo video + prominent in-app disclosure.
+- **Conclusion**: P2 is **sideload/F-Droid only**, consistent with our existing
+  model (MANAGE_EXTERNAL_STORAGE, adb-granted WRITE_SECURE_SETTINGS).
+  Document as such; never ship Tier A to Play.
+- **Android 13+ "Restricted setting"**: sideloaded APKs get the service
+  grayed out ("For your security…"). Unlocks: App Info → ⋮ → **Allow
+  restricted settings** (+ biometric confirm), session-based installers
+  (F-Droid/Zapstore unaffected), or one-time
+  `adb shell appops set com.errand.errand ACCESS_RESTRICTED_SETTINGS allow`
+  (same spirit as the existing WRITE_SECURE_SETTINGS grant). The app should
+  detect this state (`AppOpsManager.checkOpNoThrow("android:access_restricted_settings", …)`)
+  and show honest instructions instead of a dead toggle.
+- **Android 17 / Advanced Protection Mode**: blocks non-`isAccessibilityTool`
+  apps from the API entirely. We can't honestly declare `isAccessibilityTool`
+  → AAPM users are locked out regardless. Accepted limit.
+
+**Platform walls (accepted):**
+- `FLAG_SECURE` blocks `takeScreenshot()` but not node reading.
+- `isAccessibilityDataSensitive` (Android 14) hides views from non-declared
+  tools; adoption growing (OTP fields, password managers) — some targets will
+  go invisible over time.
+- Banking/finance apps run anti-a11y SDKs (ThreatMark etc.) that detect and
+  block us. Don't fight it.
+- Compose/Flutter/Canvas-heavy apps may expose empty trees without semantics;
+  coordinate-tap fallback covers this blind.
+- No programmatic enable, ever — manual user enablement in Settings is by
+  design.
+
+### Capability tier list
+
+#### 🟢 Tier S — P2a: read + safe globals (ship first, near-zero risk)
+1. **`ErrandAccessibilityService`** — Kotlin service + XML config
+   (`canRetrieveWindowContent`, `canPerformGestures`, `canTakeScreenshot`,
+   `flagReportViewIds`, `feedbackGeneric`). Static-instance + MethodChannel
+   `"a11y"` mirroring `"intent"` (service lives independent of the Flutter
+   engine). Methods: `isEnabled`, `isRestricted` (appops check),
+   `openSettings`, `readScreen`, `globalAction`, later `gesture`.
+2. **`screen` tool** — serialize active-window tree into a compact outline
+   (`[i] Button "Allow" bounds=[…] clickable`), char-budgeted like
+   `LogicalDocument`, reusing the existing 32K per-result clamp; depth/result
+   caps from day one.
+3. **Global actions**: back, home, recents, notification shade, lock screen
+   (API 28+), screenshot (API 30+, fails cleanly on FLAG_SECURE windows).
+4. **Dark mode payoff** — open Display settings via the existing intent tool,
+   find the "Dark theme" toggle node, tap it. Retires the fragile
+   UiModeManager → putInt → DARK_THEME_SETTINGS ladder on every OEM, no
+   WRITE_SECURE_SETTINGS needed.
+5. **State awareness** — `isEnabled`/restricted-state surfaced through
+   `_systemPromptFor` ("screen control available / not enabled — tell user
+   how") + persistent "Errand can see your screen" indicator (reuse FGS
+   notification pattern from AgentForegroundService).
+6. **Read-back verification** — listen for `TYPE_WINDOW_STATE_CHANGED` after
+   actions to confirm a tap landed (same discipline as the dark-mode ladder).
+
+#### 🟡 Tier A — P2b: gated gesture injection (Deny / Draft / Send model)
+
+**Consent model — risk-tiered three-way gate, not binary Approve/Deny.**
+Rule of thumb: *the model may prepare anything, only the user pulls
+triggers.* Draft-as-default also keeps committing flows outside Play's
+"autonomously executes" clause even in principle — the user performs the
+final act.
+
+| Option | Behavior | Default for |
+|---|---|---|
+| **Deny** | Step dropped; agent told "user declined", continues or aborts | — |
+| **Draft** ⭐ | Agent does everything except the commit: opens chat, types into the field, fills forms — **leaves Send untapped**, then tells the user "review & send" | Anything irreversible: messages, emails, posts, payments, deletes |
+| **Send** | Full auto-completion | Reversible actions only: navigation taps, scrolls, opening apps, toggles |
+
+7. **Risk classes** — `Tool.requiresValidation` graduates into an
+   `actionRisk` metadata: `readonly` (no gate) / `reversible`
+   (batch-approve OK) / `committing` (**draft-only unless user upgrades**) /
+   `dangerous` (per-step approval always). Applied per intent-action too:
+   `dial` ≈ committing, `alarm` reversible, `uninstall` dangerous. Same
+   open-style vs side-effect split the reopen-button logic already uses.
+   Enforcement hook point: `ToolRegistry.execute` honoring the flag
+   (`CancelToken` proves mid-loop external control already works).
+8. **Tap by text/label** — `findAccessibilityNodeInfosByText` →
+   `ACTION_CLICK`, classified by risk class above.
+9. **Type into focused field** — `ACTION_SET_TEXT` on editable nodes. Note:
+   SET_TEXT never fires keyboard enter-to-send, which is why Draft mode is
+   reliable — typed text just sits in the field. Fallback for apps without
+   SET_TEXT support: clipboard-paste gesture. Hard gate: never auto-type
+   into password/OTP-ish fields (`isPassword` + heuristics).
+10. **Swipe/scroll** — `dispatchGesture` + continued strokes;
+    navigation-grade, reversible class.
+11. **Plan preview + draft verification** (the preview story):
+    - **Upfront plan card** rendered in chat while Errand is still
+      foreground: numbered steps with risk badges, commit steps marked
+      `SKIPPED — you send`; user picks Approve · Edit · Deny once for the
+      whole batch. This also sidesteps the "chat UI is behind the target
+      app after launch" problem — no overlay bubble or notification-action
+      approval needed in v1.
+    - **Post-draft verification**: one extra `readScreen` after typing →
+      tool result shows the field content (`typed: "…" ✓`) so chat history
+      doubles as the receipt (ToolMessages already give us this).
+    - Commit-control detection via label/class heuristics (text ∈ {send,
+      post, publish, pay…}); if no confident match → silently stays in
+      Draft mode (safe-by-default).
+12. *(deferred until gate UX proves itself)* Multi-step flows with raised
+    turn cap (>12); each step = one ToolMessage = free audit log.
+13. *(deferred)* Coordinate fallback tap for empty-semantics apps; require
+    screenshot preview before approving (blind taps are the riskiest form).
+    Known Draft-mode gap: apps that don't expose input fields via semantics
+    degrade to "agent can't help here" — correct failure.
+
+#### 🟠 Tier B — adjacent wins (opportunistic, cheaper APIs)
+14. Notification reader/dismissal — `NotificationListenerService`, lighter
+    permission, no gesture hell.
+15. "What's on my screen" queries — Tier-S reading + existing websearch.
+16. Focus/app-blocker mode — foreground-app detection + self-return-home;
+    policy-gray on Play, fine sideloaded.
+
+#### 🔴 Tier C — never build
+- Reading OTP/2FA codes or automating banking/payment flows (anti-abuse SDKs
+  fight this; malware-shaped).
+- Background always-on event monitoring / keylogging patterns — only listen
+  during an active agent turn.
+- Programmatic enablement / bypassing Restricted Settings.
+- Any Play distribution of Tier A (Oct 2025 policy prohibits autonomous
+  execution outright).
+
+### Cut line
+**P2a = all of Tier S. P2b = items 8–10 under the Deny/Draft/Send gate +
+item 11 previews. Items 12–13 deferred. Tier B opportunistic. Tier C never.**
+
+Design notes carried over from P1.5 planning:
+- Foreground-service plumbing from P1.5 (start/stop with a work lifecycle +
+  typed service declaration) is directly reusable for the accessibility
+  service's "Errand is automating" indicator and the batch-approval flow.
+
+Related future candidates (on-device, non-cloud): ML Kit document scanner +
+OCR (~300KB, no camera perm), BiometricPrompt gating for destructive actions.
+
+---
+
+## 🧭 P3 — Multimodality & beyond (queued after P2)
+
+- **Image multimodality** — scope as deferred from P1.5 item 6 above; build
+  the attach path on `attachedFileUris`.
+- Safe editing tool (`write`/`edit_file` with diff preview + undo) — needs
+  the write-policy decision originally blocking it.
+- Local retrieval (embeddings/FTS) over recent docs for context budgeting.
 
 ---
 

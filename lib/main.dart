@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:errand/services/database.dart';
+import 'package:errand/services/a11y_service.dart';
 import 'package:errand/services/intent_service.dart';
 import 'package:uuid/uuid.dart';
 
@@ -37,8 +38,18 @@ const kSystemPrompt =
     'Try different methods when appropriate and do not stop after one failure. '
     'Use cd to change directories, then use relative paths from the new location.';
 
-String _systemPromptFor(Directory currentDir) =>
-    '$kSystemPrompt\nCurrent working directory: ${currentDir.path}';
+String _systemPromptFor(Directory currentDir, {bool screenAccess = false}) {
+  var prompt = '$kSystemPrompt\nCurrent working directory: ${currentDir.path}';
+  if (screenAccess) {
+    prompt +=
+        '\nScreen access is ENABLED: you can use the "screen" tool to read '
+        'what is currently on the phone\'s display (action:"read") and perform '
+        'system navigation like back/home/recents (action:"global"). Use it to '
+        'answer questions about the current screen or verify what an opened app '
+        'is showing.';
+  }
+  return prompt;
+}
 
 final database = ErrandDatabase.instance;
 // database.loadConversation(id)
@@ -133,6 +144,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   /// Platform-channel service used for the foreground work indicator that
   /// runs alongside every agent turn.
   final IntentService _intentService = IntentService();
+  final A11yService _a11yService = A11yService();
+
+  /// Cached accessibility-service state (refreshed on start/resume) feeding
+  /// the conditional screen-access block of the system prompt.
+  bool _a11yAvailable = false;
 
   bool _scrollPending = false;
   bool _permissionDialogOpen = false;
@@ -181,6 +197,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _activeConversation = _newDraftConversation();
     _llm = _createLlmClient(_selectedModel);
     unawaited(_loadModelCatalog());
+    unawaited(_refreshA11yState());
     // One-time POST_NOTIFICATIONS grant so the foreground work indicator is
     // visible on API 33+ (the service itself runs regardless).
     unawaited(_intentService.requestNotificationPermission());
@@ -247,7 +264,21 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _checkStoragePermission(promptIfMissing: true);
+      // Re-check after the user may have toggled the service in Settings
+      // while we were backgrounded.
+      unawaited(_refreshA11yState());
     }
+  }
+
+  /// Cached screen-access availability for the system prompt. Refreshed on
+  /// start and every resume — cheap channel call, avoids making
+  /// _systemPromptFor async.
+  Future<void> _refreshA11yState() async {
+    try {
+      final enabled = await _a11yService.isEnabled();
+      if (!mounted || enabled == _a11yAvailable) return;
+      setState(() => _a11yAvailable = enabled);
+    } catch (_) {}
   }
 
   Future<void> _checkStoragePermission({required bool promptIfMissing}) async {
@@ -813,7 +844,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
       final conversation = Conversation(
         id: _activeConversation.id,
-        localSystemPrompt: _systemPromptFor(_workingDirectory.current),
+        localSystemPrompt:
+            _systemPromptFor(_workingDirectory.current, screenAccess: _a11yAvailable),
         messages: _messages
             .where((message) => message.id != _workingMessageId)
             .toList(growable: false),
@@ -833,7 +865,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           currentDir: _workingDirectory.root,
           workingDirectory: _workingDirectory,
         ),
-        systemPromptBuilder: () => _systemPromptFor(_workingDirectory.current),
+        systemPromptBuilder: () =>
+            _systemPromptFor(_workingDirectory.current, screenAccess: _a11yAvailable),
         cancelToken: _cancelToken,
         onEvent: _handleEvent,
         onTextDelta: _handleTextDelta,

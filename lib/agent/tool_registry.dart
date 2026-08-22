@@ -4,6 +4,7 @@ import 'tool.dart';
 import '../tools/file_tools.dart';
 import '../tools/workspace_tool.dart';
 import '../tools/intent_tool.dart';
+import '../tools/screen_tool.dart';
 import '../tools/web_tools.dart';
 import '../types/tool.dart';
 
@@ -29,6 +30,7 @@ class ToolRegistry {
       webSearchTavilyTool(),
       webFetchTool(),
       intentTool(),
+      screenTool(),
     ]);
   }
 

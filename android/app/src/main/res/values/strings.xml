@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="a11y_service_description">Lets Errand read the current screen so your AI assistant can see and describe what\'s on it, and use system navigation (back/home/recents). Errand only reads the screen while you ask it to act; it never types or taps for you.</string>
+</resources>

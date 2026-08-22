@@ -19,6 +19,7 @@ class MainActivity : FlutterActivity() {
 
     private val STORAGE_CHANNEL = "storage_access"
     private val INTENT_CHANNEL = "intent"
+    private val A11Y_CHANNEL = "a11y"
 
     private val MIC_PERMISSION_CODE = 9001
     private var micPermissionResult: MethodChannel.Result? = null
@@ -364,6 +365,56 @@ class MainActivity : FlutterActivity() {
                     }
                 }
 
+                else -> result.notImplemented()
+            }
+        }
+
+        // ---- Accessibility (P2a: read-only screen access) ----
+        // Delegates to the live ErrandAccessibilityService via its static
+        // instance; a null instance IS the "not enabled" signal.
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            A11Y_CHANNEL
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "isEnabled" -> result.success(ErrandAccessibilityService.isConnected())
+                "isRestricted" -> result.success(ErrandAccessibilityService.isRestricted(this))
+                "openSettings" -> {
+                    try {
+                        // Deep link straight to our own service toggle when possible;
+                        // fall back to the accessibility list page.
+                        val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                            .apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+                        startActivity(intent)
+                        result.success(null)
+                    } catch (e: Exception) {
+                        result.error("SETTINGS_ERR", e.message, null)
+                    }
+                }
+                "readScreen" -> {
+                    val svc = ErrandAccessibilityService.instance
+                    if (svc == null) {
+                        result.error("NOT_ENABLED", "Accessibility service is not enabled.", null)
+                    } else {
+                        try {
+                            val maxNodes = call.argument<Int>("maxNodes") ?: 300
+                            result.success(svc.readScreen(maxNodes = maxNodes))
+                        } catch (e: Exception) {
+                            result.error("READ_ERR", e.message, null)
+                        }
+                    }
+                }
+                "globalAction" -> {
+                    val svc = ErrandAccessibilityService.instance
+                    if (svc == null) {
+                        result.error("NOT_ENABLED", "Accessibility service is not enabled.", null)
+                    } else {
+                        val name = call.argument<String>("name") ?: ""
+                        val err = svc.performGlobalActionByName(name)
+                        if (err != null) result.error("ACTION_ERR", err, null)
+                        else result.success(null)
+                    }
+                }
                 else -> result.notImplemented()
             }
         }

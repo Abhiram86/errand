@@ -45,6 +45,21 @@
             android:name=".AgentForegroundService"
             android:exported="false"
             android:foregroundServiceType="dataSync"/>
+
+        <!-- P2a screen-reading service. User-enabled in Settings > Accessibility;
+             restricted for sideloaded installs on Android 13+ (see next_plan.md P2). -->
+        <service
+            android:name=".ErrandAccessibilityService"
+            android:exported="true"
+            android:label="Errand screen access"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService"/>
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config"/>
+        </service>
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and
