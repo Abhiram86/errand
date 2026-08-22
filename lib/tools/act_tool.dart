@@ -124,19 +124,25 @@ const kCommitWords = <String>{
   'authorize', 'sign',
 };
 
-bool looksLikeCommitAction(String label) {
+/// Returns the matched commit word, or null when [label] is safe to tap.
+/// The word is surfaced in the refusal message so the model knows exactly
+/// which pattern tripped the guard instead of guessing.
+String? looksLikeCommitAction(String label) {
   // Keep hyphens inside tokens so 'reply-all' can match its list entry;
   // every other non-letter becomes a separator.
   final words = label
       .toLowerCase()
       .replaceAll(RegExp(r'[^a-z\s-]'), ' ')
       .split(RegExp(r'\s+'));
-  bool hit(String word) =>
-      kCommitWords.contains(word) ||
-      // Hyphenated compounds count segment-wise too: 'confirm-order' must
-      // refuse just like 'confirm'.
-      word.split('-').any(kCommitWords.contains);
-  return words.any(hit);
+  for (final word in words) {
+    if (kCommitWords.contains(word)) return word;
+    // Hyphenated compounds count segment-wise too: 'confirm-order' must
+    // refuse just like 'confirm'.
+    for (final segment in word.split('-')) {
+      if (kCommitWords.contains(segment)) return segment;
+    }
+  }
+  return null;
 }
 
 // ---- Handlers ---------------------------------------------------------------
@@ -151,12 +157,13 @@ Future<ToolCallResult> _tap(ToolCall call, A11yService svc) async {
     );
   }
 
-  if (looksLikeCommitAction(label)) {
+  if (looksLikeCommitAction(label) case final matchedWord?) {
     return ToolCallResult.failure(
       call.id,
-      'Refusing to tap "$label" — it looks like a final-commit control. Draft '
-      'policy: Errand prepares, the USER presses Send/Confirm/Pay/etc. Prepare '
-      'everything up to that point, then tell the user to do the last step.',
+      'Refusing to tap "$label" — refused: matches commit pattern '
+      '"$matchedWord". Draft policy: Errand prepares, the USER presses '
+      'Send/Confirm/Pay/etc. Prepare everything up to that point, then tell '
+      'the user to do the last step.',
     );
   }
 

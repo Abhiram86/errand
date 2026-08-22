@@ -46,8 +46,16 @@ Tool screenTool({A11yService? service}) {
         'max_nodes': {
           'type': 'integer',
           'description':
-              'Cap on UI nodes returned for read (default 300). Lower it if you '
-              'only need a quick summary.',
+              'Cap on UI nodes returned for read (default 300). Raise it only '
+              'when a read reports the NODE cap was hit; raising it never '
+              'changes a CHARACTER-capped result.',
+        },
+        'settle_ms': {
+          'type': 'integer',
+          'description':
+              'Milliseconds to wait before reading (default 350). Raise to '
+              '~800-1500 right after open_app/navigation so the new screen '
+              'has time to render; reading too early returns stale content.',
         },
       },
       'required': ['action'],
@@ -98,6 +106,16 @@ Future<ToolCallResult> _read(ToolCall call, A11yService svc) async {
   final maxNodesRaw = call.arguments['max_nodes'];
   final maxNodes =
       maxNodesRaw is int && maxNodesRaw > 0 ? maxNodesRaw.clamp(10, 1000) : 300;
+  final settleMsRaw = call.arguments['settle_ms'];
+  final settleMs =
+      settleMsRaw is int && settleMsRaw > 0 ? settleMsRaw.clamp(0, 5000) : 350;
+
+  // Settle time: reading immediately after open_app/navigation returns the
+  // previous screen. The default covers most transitions; the model raises
+  // it when a first read came back stale.
+  if (settleMs > 0) {
+    await Future<void>.delayed(Duration(milliseconds: settleMs));
+  }
 
   final res = await svc.readScreen(maxNodes: maxNodes);
   if (res['ok'] != true) {
@@ -109,9 +127,21 @@ Future<ToolCallResult> _read(ToolCall call, A11yService svc) async {
 
   var outline = res['outline'] as String? ?? '';
   if (res['truncated'] == true) {
-    outline +=
-        '\n[...outline truncated (node/char cap). Re-read with a higher '
-        'max_nodes for more detail, or ask the user about anything not shown.]';
+    final capHit = res['capHit'] as String?;
+    if (capHit == 'chars') {
+      // Raising max_nodes cannot change a character-capped result — say so,
+      // or the model burns turns retrying with bigger node caps.
+      outline +=
+          '\n[...outline truncated at the CHARACTER budget '
+          '(${res['charsUsed']}/${res['maxChars']} chars; ${res['nodes']} nodes seen). '
+          'Raising max_nodes will NOT change this. Some apps render body content '
+          'in web views that expose little or no text to accessibility — ask the '
+          'user for specifics instead of retrying.]';
+    } else {
+      outline +=
+          '\n[...outline truncated at the NODE cap (${res['nodes']}/$maxNodes nodes). '
+          'Re-read with a higher max_nodes for more detail.]';
+    }
   }
   // Hard char clamp mirrors the per-tool-result budget in context_budget.
   const maxChars = 24000;

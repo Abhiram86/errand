@@ -109,13 +109,39 @@ class ErrandAccessibilityService : AccessibilityService() {
 
         val pkg = root.packageName?.toString() ?: "unknown"
         val header = "Screen: package=$pkg\n"
+
+        // Report WHICH cap bound the walk — "truncated" alone made the model
+        // raise max_nodes when the character budget was the real limit.
+        val charCapHit = truncated && sb.length >= maxChars
+        val nodeCapHit = truncated && !charCapHit && visited >= maxNodes
         return mapOf(
             "ok" to true,
             "package" to pkg,
             "outline" to header + sb.toString(),
             "nodes" to visited,
+            "maxNodes" to maxNodes,
+            "charsUsed" to sb.length,
+            "maxChars" to maxChars,
+            "capHit" to when {
+                charCapHit -> "chars"
+                nodeCapHit -> "nodes"
+                else -> null
+            },
             "truncated" to truncated,
         )
+    }
+
+    /**
+     * Word-boundary trim so long labels (mail snippets, list items) don't
+     * cut mid-word like "Confirm your ema". Marks the cut with an ellipsis.
+     */
+    private fun trimLabel(raw: String, maxLen: Int = 120): String {
+        // Apps like Gmail glue list fields into one contentDescription with
+        // empty segments (", , , Spotify, , subject…") — collapse those gaps.
+        val s = raw.replace('\n', ' ').replace(Regex("(),\\s*"), "").trim()
+        if (s.length <= maxLen) return s
+        val cut = s.lastIndexOf(' ', maxLen)
+        return (if (cut > maxLen / 2) s.substring(0, cut) else s.substring(0, maxLen)) + "…"
     }
 
     /** Returns true if the walk was cut short by a cap. */
@@ -130,9 +156,9 @@ class ErrandAccessibilityService : AccessibilityService() {
         if (depth > maxDepth || sb.length >= maxChars || !budget()) return true
 
         val cls = node.className?.toString()?.substringAfterLast('.') ?: "View"
-        val label = node.text?.toString()?.take(120)?.ifBlank { null }
-            ?: node.contentDescription?.toString()?.take(120)?.ifBlank { null }
-            ?: node.hintText?.toString()?.take(120)?.ifBlank { null }
+        val label = node.text?.toString()?.let(::trimLabel)?.ifBlank { null }
+            ?: node.contentDescription?.toString()?.let(::trimLabel)?.ifBlank { null }
+            ?: node.hintText?.toString()?.let(::trimLabel)?.ifBlank { null }
 
         val actionable = node.isClickable || node.isScrollable || node.isEditable
         if (!node.isVisibleToUser && label == null && !actionable) {
@@ -318,18 +344,22 @@ class ErrandAccessibilityService : AccessibilityService() {
      * Scrolls the first visible scrollable node; falls back to a center-screen
      * swipe gesture when no scrollable node exposes actions (custom views).
      * [down] = scroll toward later content.
-     * Returns {ok, method?, message?}.
+     *
+     * End-of-list signal: a scrollable that only supports the OPPOSITE
+     * direction means we're already at the end in the requested direction —
+     * reported as at_end instead of blindly dispatching.
      */
     fun scroll(down: Boolean): Map<String, Any?> {
         val root = rootInActiveWindow
             ?: return mapOf("ok" to false, "error" to "NO_WINDOW",
                 "message" to "No active window content available.")
 
-        findScrollable(root)?.let { scrollable ->
+        val targetAction = if (down) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+        else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+
+        findScrollable(root, targetAction)?.let { scrollable ->
             try {
-                val action = if (down) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
-                else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
-                if (scrollable.performAction(action)) {
+                if (scrollable.performAction(targetAction)) {
                     return mapOf("ok" to true, "method" to "node_action",
                         "message" to if (down) "Scrolled down" else "Scrolled up")
                 }
@@ -338,7 +368,19 @@ class ErrandAccessibilityService : AccessibilityService() {
             }
         }
 
-        // Gesture fallback: swipe up = scroll down.
+        val oppositeAction = if (down) AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+        else AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+        findScrollable(root, oppositeAction)?.let {
+            it.recycle()
+            return mapOf("ok" to true, "at_end" to true, "method" to "node_action",
+                "message" to if (down)
+                    "Already at the END of this list — no more content below."
+                else
+                    "Already at the TOP of this list.")
+        }
+
+        // Gesture fallback: swipe up = scroll down. Needs API 24+ and
+        // canPerformGestures; no reliable end-detection on this path.
         return if (swipeCenter(down)) {
             mapOf("ok" to true, "method" to "gesture",
                 "message" to if (down) "Swiped up (scroll down)" else "Swiped down (scroll up)")
@@ -348,19 +390,19 @@ class ErrandAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun findScrollable(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        if (node.isScrollable && node.isVisibleToUser) {
-            for (action in node.actionList) {
-                if (action.id == AccessibilityNodeInfo.ACTION_SCROLL_FORWARD ||
-                    action.id == AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
-                ) {
-                    return AccessibilityNodeInfo.obtain(node)
-                }
-            }
+    /** First visible scrollable node whose actionList contains [actionId]. */
+    private fun findScrollable(
+        node: AccessibilityNodeInfo,
+        actionId: Int,
+    ): AccessibilityNodeInfo? {
+        if (node.isScrollable && node.isVisibleToUser &&
+            node.actionList.any { it.id == actionId }
+        ) {
+            return AccessibilityNodeInfo.obtain(node)
         }
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
-            val found = findScrollable(child)
+            val found = findScrollable(child, actionId)
             child.recycle()
             if (found != null) return found
         }

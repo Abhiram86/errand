@@ -50,7 +50,11 @@ String _systemPromptFor(Directory currentDir, {bool screenAccess = false}) {
         'and scroll. DRAFT POLICY: you prepare, the user sends — act refuses '
         'final-commit taps (Send/Pay/Delete/Confirm); prepare everything up to '
         'them, then tell the user to do that last step themselves. Use screen '
-        '"read" first to find exact labels, and again after acting to verify.';
+        '"read" first to find exact labels, and again after acting to verify. '
+        'Screen/act calls are STATEFUL and SEQUENTIAL: every tap or navigation '
+        'changes what is on screen, so read after each act before deciding the '
+        'next step — never batch independent screen reads. After open_app or '
+        'navigation, pass a larger settle_ms (~800-1500) to the read.';
   }
   return prompt;
 }
