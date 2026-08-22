@@ -51,6 +51,37 @@ class A11yService {
     return await _channel.invokeMethod<String>('globalAction', {'name': name});
   }
 
+  // -- P2b: gated injection (Draft-mode primitives) --------------------------
+
+  /// Taps the clickable element whose label matches [label] (case-insensitive;
+  /// exact match preferred over prefix/contains unless [exact]).
+  /// Returns {ok, label?, error?, message?}.
+  Future<Map<String, dynamic>> tapByText(String label, {bool exact = false}) async {
+    final res = await _channel.invokeMethod<Map<Object?, Object?>>('tapByText', {
+      'label': label,
+      'exact': exact,
+    });
+    return res?.map((k, v) => MapEntry(k.toString(), v)) ?? {'ok': false};
+  }
+
+  /// Types [text] into the focused editable field (REPLACES content; password
+  /// fields refused natively). Returns {ok, chars?, error?, message?}.
+  Future<Map<String, dynamic>> typeText(String text) async {
+    final res = await _channel.invokeMethod<Map<Object?, Object?>>('typeText', {
+      'text': text,
+    });
+    return res?.map((k, v) => MapEntry(k.toString(), v)) ?? {'ok': false};
+  }
+
+  /// Scrolls toward later content when [down], earlier otherwise. Node action
+  /// first, center-screen gesture as fallback. Returns {ok, method?, ...}.
+  Future<Map<String, dynamic>> scroll({bool down = true}) async {
+    final res = await _channel.invokeMethod<Map<Object?, Object?>>('scroll', {
+      'down': down,
+    });
+    return res?.map((k, v) => MapEntry(k.toString(), v)) ?? {'ok': false};
+  }
+
   /// Convenience: combined availability check used by tool handlers and the
   /// system-prompt builder. Returns (enabled, restricted).
   Future<(bool, bool)> availability() async {

@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'tool.dart';
+import '../tools/act_tool.dart';
 import '../tools/file_tools.dart';
 import '../tools/workspace_tool.dart';
 import '../tools/intent_tool.dart';
@@ -31,6 +32,7 @@ class ToolRegistry {
       webFetchTool(),
       intentTool(),
       screenTool(),
+      actTool(),
     ]);
   }
 

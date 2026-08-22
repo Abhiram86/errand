@@ -5,18 +5,22 @@ import android.accessibilityservice.AccessibilityServiceInfo
 import android.app.AppOpsManager
 import android.content.Context
 import android.content.Intent
+import android.graphics.Path
 import android.os.Build
+import android.os.Bundle
 import android.provider.Settings
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import io.flutter.plugin.common.MethodChannel
 
 /**
- * P2a screen-reading accessibility service.
+ * P2a screen-reading + P2b gated-injection accessibility service.
  *
- * Read-only for now (Tier S): serializes the active window's node tree to a
- * compact text outline and performs global navigation actions. Gesture/node
- * injection is Tier A and intentionally absent.
+ * P2a: serializes the active window's node tree to a compact text outline
+ * and performs global navigation actions.
+ * P2b (Tier A, Draft-mode): semantic node actions only — tap-by-label,
+ * type-into-focused-field, scroll. NO blind coordinate taps; commit-looking
+ * controls are refused at the Dart tool layer (see act_tool.dart).
  *
  * Lifecycle notes:
  * - Android instantiates this class itself when the user enables it in
@@ -174,5 +178,209 @@ class ErrandAccessibilityService : AccessibilityService() {
             else -> return "Unknown global action '$name'"
         }
         return if (performGlobalAction(action)) null else "Global action '$name' failed"
+    }
+
+    // ---- P2b: gated injection (Draft mode primitives) -----------------------
+    //
+    // Deliberately narrow: semantic targets only (label text from the screen
+    // outline the agent already read), never raw coordinates. The commit-control
+    // refusal lives in act_tool.dart so it stays unit-testable in Dart.
+
+    /** Returns {ok, label?, error?, message?}. */
+    fun tapByText(label: String, exact: Boolean): Map<String, Any?> {
+        val root = rootInActiveWindow
+            ?: return mapOf("ok" to false, "error" to "NO_WINDOW",
+                "message" to "No active window content available.")
+
+        val needle = label.trim().lowercase()
+        if (needle.isEmpty()) {
+            return mapOf("ok" to false, "error" to "EMPTY_LABEL",
+                "message" to "Tap target label was empty.")
+        }
+
+        // (node, score, matchedText) triples; everything recycled after pick.
+        val candidates = mutableListOf<Triple<AccessibilityNodeInfo, Int, String>>()
+        collectMatchingClickable(root, needle, exact, candidates)
+
+        val best = candidates.maxByOrNull { it.second }
+        if (best == null) {
+            candidates.forEach { it.first.recycle() }
+            return mapOf("ok" to false, "error" to "NOT_FOUND",
+                "message" to "No clickable element matching \"$label\" on the current screen. " +
+                    "Re-read the screen and use the exact label.")
+        }
+
+        val clickedText = best.third
+
+        // Track every node instance we touch so each is recycled exactly once.
+        val touched = mutableListOf(best.first)
+        var target: AccessibilityNodeInfo = best.first
+        var hops = 0
+        while (!target.isClickable && hops < 5) {
+            val parent = target.parent ?: break
+            touched.add(parent)
+            target = parent
+            hops++
+        }
+
+        val ok = target.isClickable && target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        touched.forEach { it.recycle() }
+
+        return if (ok) {
+            mapOf("ok" to true, "label" to clickedText,
+                "message" to "Tapped \"$clickedText\"")
+        } else {
+            mapOf("ok" to false, "error" to "CLICK_FAILED",
+                "message" to "Found \"$clickedText\" but could not click it.")
+        }
+    }
+
+    private fun nodeLabel(node: AccessibilityNodeInfo): String? =
+        node.text?.toString()?.trim()?.ifBlank { null }
+            ?: node.contentDescription?.toString()?.trim()?.ifBlank { null }
+
+    private fun matchScore(candidate: String, needle: String, exact: Boolean): Int? {
+        val lower = candidate.lowercase()
+        return when {
+            lower == needle -> 3
+            lower.startsWith(needle) -> 2
+            !exact && lower.contains(needle) -> 1
+            else -> null
+        }
+    }
+
+    private fun collectMatchingClickable(
+        node: AccessibilityNodeInfo,
+        needle: String,
+        exact: Boolean,
+        out: MutableList<Triple<AccessibilityNodeInfo, Int, String>>,
+    ) {
+        // Any labeled match is a candidate; tapByText() walks up to the nearest
+        // clickable ancestor afterwards (labels often live on child TextViews).
+        val label = nodeLabel(node)
+        if (label != null) {
+            matchScore(label, needle, exact)?.let { score ->
+                out.add(Triple(AccessibilityNodeInfo.obtain(node), score, label))
+            }
+        }
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            collectMatchingClickable(child, needle, exact, out)
+            child.recycle()
+        }
+    }
+
+    /**
+     * Types [text] into the focused editable field via ACTION_SET_TEXT.
+     * NOTE: SET_TEXT REPLACES field content — to append, read the field from
+     * the screen outline first and set the full combined string. Password
+     * fields are refused unconditionally.
+     * Returns {ok, error?, message?}.
+     */
+    fun typeText(text: String): Map<String, Any?> {
+        val root = rootInActiveWindow
+            ?: return mapOf("ok" to false, "error" to "NO_WINDOW",
+                "message" to "No active window content available.")
+
+        val focus = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+            ?: return mapOf("ok" to false, "error" to "NO_FOCUS",
+                "message" to "No focused input field. Tap the field's label first " +
+                    "(act tap) or ask the user to focus it.")
+
+        try {
+            if (!focus.isEditable) {
+                return mapOf("ok" to false, "error" to "NOT_EDITABLE",
+                    "message" to "The focused element is not an editable field.")
+            }
+            if (focus.isPassword) {
+                return mapOf("ok" to false, "error" to "PASSWORD_FIELD",
+                    "message" to "Refusing to type into a password field.")
+            }
+            val args = Bundle().apply {
+                putCharSequence(
+                    AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+            }
+            val ok = focus.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+            return if (ok) {
+                mapOf("ok" to true, "chars" to text.length,
+                    "message" to "Set field content (${text.length} chars). " +
+                        "This does NOT submit — the user sends.")
+            } else {
+                mapOf("ok" to false, "error" to "SET_TEXT_FAILED",
+                    "message" to "Field refused SET_TEXT (some apps don't support it).")
+            }
+        } finally {
+            focus.recycle()
+        }
+    }
+
+    /**
+     * Scrolls the first visible scrollable node; falls back to a center-screen
+     * swipe gesture when no scrollable node exposes actions (custom views).
+     * [down] = scroll toward later content.
+     * Returns {ok, method?, message?}.
+     */
+    fun scroll(down: Boolean): Map<String, Any?> {
+        val root = rootInActiveWindow
+            ?: return mapOf("ok" to false, "error" to "NO_WINDOW",
+                "message" to "No active window content available.")
+
+        findScrollable(root)?.let { scrollable ->
+            try {
+                val action = if (down) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+                else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+                if (scrollable.performAction(action)) {
+                    return mapOf("ok" to true, "method" to "node_action",
+                        "message" to if (down) "Scrolled down" else "Scrolled up")
+                }
+            } finally {
+                scrollable.recycle()
+            }
+        }
+
+        // Gesture fallback: swipe up = scroll down.
+        return if (swipeCenter(down)) {
+            mapOf("ok" to true, "method" to "gesture",
+                "message" to if (down) "Swiped up (scroll down)" else "Swiped down (scroll up)")
+        } else {
+            mapOf("ok" to false, "error" to "SCROLL_FAILED",
+                "message" to "Nothing scrollable found and gesture dispatch failed.")
+        }
+    }
+
+    private fun findScrollable(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        if (node.isScrollable && node.isVisibleToUser) {
+            for (action in node.actionList) {
+                if (action.id == AccessibilityNodeInfo.ACTION_SCROLL_FORWARD ||
+                    action.id == AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+                ) {
+                    return AccessibilityNodeInfo.obtain(node)
+                }
+            }
+        }
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = findScrollable(child)
+            child.recycle()
+            if (found != null) return found
+        }
+        return null
+    }
+
+    /** Vertical center-screen swipe; needs API 24+ and canPerformGestures. */
+    private fun swipeCenter(scrollDown: Boolean): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false
+        val m = resources.displayMetrics
+        val h = m.heightPixels.toFloat()
+        val w = m.widthPixels / 2f
+        val path = Path().apply {
+            moveTo(w, if (scrollDown) h * 0.70f else h * 0.30f)
+            lineTo(w, if (scrollDown) h * 0.30f else h * 0.70f)
+        }
+        val gesture = android.accessibilityservice.GestureDescription.Builder()
+            .addStroke(
+                android.accessibilityservice.GestureDescription.StrokeDescription(path, 0, 250))
+            .build()
+        return dispatchGesture(gesture, null, null)
     }
 }

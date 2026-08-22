@@ -415,6 +415,46 @@ class MainActivity : FlutterActivity() {
                         else result.success(null)
                     }
                 }
+                "tapByText" -> {
+                    val svc = ErrandAccessibilityService.instance
+                    if (svc == null) {
+                        result.error("NOT_ENABLED", "Accessibility service is not enabled.", null)
+                    } else {
+                        try {
+                            val label = call.argument<String>("label") ?: ""
+                            val exact = call.argument<Boolean>("exact") ?: false
+                            result.success(svc.tapByText(label, exact))
+                        } catch (e: Exception) {
+                            result.error("TAP_ERR", e.message, null)
+                        }
+                    }
+                }
+                "typeText" -> {
+                    val svc = ErrandAccessibilityService.instance
+                    if (svc == null) {
+                        result.error("NOT_ENABLED", "Accessibility service is not enabled.", null)
+                    } else {
+                        try {
+                            val text = call.argument<String>("text") ?: ""
+                            result.success(svc.typeText(text))
+                        } catch (e: Exception) {
+                            result.error("TYPE_ERR", e.message, null)
+                        }
+                    }
+                }
+                "scroll" -> {
+                    val svc = ErrandAccessibilityService.instance
+                    if (svc == null) {
+                        result.error("NOT_ENABLED", "Accessibility service is not enabled.", null)
+                    } else {
+                        try {
+                            val down = call.argument<Boolean>("down") ?: true
+                            result.success(svc.scroll(down))
+                        } catch (e: Exception) {
+                            result.error("SCROLL_ERR", e.message, null)
+                        }
+                    }
+                }
                 else -> result.notImplemented()
             }
         }

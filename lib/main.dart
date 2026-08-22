@@ -5,6 +5,7 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:errand/services/database.dart';
 import 'package:errand/services/a11y_service.dart';
 import 'package:errand/services/intent_service.dart';
@@ -44,9 +45,12 @@ String _systemPromptFor(Directory currentDir, {bool screenAccess = false}) {
     prompt +=
         '\nScreen access is ENABLED: you can use the "screen" tool to read '
         'what is currently on the phone\'s display (action:"read") and perform '
-        'system navigation like back/home/recents (action:"global"). Use it to '
-        'answer questions about the current screen or verify what an opened app '
-        'is showing.';
+        'system navigation like back/home/recents (action:"global"). You can also '
+        'use the "act" tool to tap labeled controls, type into focused fields, '
+        'and scroll. DRAFT POLICY: you prepare, the user sends — act refuses '
+        'final-commit taps (Send/Pay/Delete/Confirm); prepare everything up to '
+        'them, then tell the user to do that last step themselves. Use screen '
+        '"read" first to find exact labels, and again after acting to verify.';
   }
   return prompt;
 }
@@ -141,6 +145,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   Timer? _workingElapsedTimer;
   int _workingElapsedSeconds = 0;
 
+  /// Flipped true when reasoning deltas stream for the current turn —
+  /// switches the placeholder label …working → …thinking. Single-writer
+  /// rule: this flag + [_updateWorkingPlaceholder] own the placeholder
+  /// text so writers can't fight each other (that used to flicker).
+  bool _workingReasoning = false;
+
   /// Platform-channel service used for the foreground work indicator that
   /// runs alongside every agent turn.
   final IntentService _intentService = IntentService();
@@ -149,6 +159,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   /// Cached accessibility-service state (refreshed on start/resume) feeding
   /// the conditional screen-access block of the system prompt.
   bool _a11yAvailable = false;
+  bool _a11yDialogOpen = false;
 
   bool _scrollPending = false;
   bool _permissionDialogOpen = false;
@@ -276,9 +287,79 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   Future<void> _refreshA11yState() async {
     try {
       final enabled = await _a11yService.isEnabled();
-      if (!mounted || enabled == _a11yAvailable) return;
-      setState(() => _a11yAvailable = enabled);
+      if (!mounted) return;
+      if (enabled != _a11yAvailable) {
+        setState(() => _a11yAvailable = enabled);
+      }
+      // Mirror of the storage-permission popup: one-time offer when screen
+      // access is off. "Don't ask again" persists; resume re-checks state
+      // but never re-nags after a permanent dismissal.
+      if (!enabled) {
+        await _maybeShowA11yDialog();
+      }
     } catch (_) {}
+  }
+
+  Future<void> _maybeShowA11yDialog() async {
+    if (_a11yDialogOpen) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (prefs.getBool('a11y_prompt_dismissed') ?? false) return;
+    } catch (_) {
+      return; // prefs unavailable — don't nag without an escape hatch
+    }
+    if (!mounted) return;
+
+    final restricted = await _a11yService.isRestricted();
+    if (!mounted || _a11yDialogOpen) return;
+    _a11yDialogOpen = true;
+    try {
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Screen access needed'),
+          content: Text(
+            restricted
+                ? 'Android blocks Errand\'s screen-access service because the '
+                    'app was installed outside an app store ("Restricted '
+                    'setting").\n\n1. Open Settings > Apps > Errand\n'
+                    '2. Tap the three-dot menu > Allow restricted settings\n'
+                    '3. Then enable Errand under Settings > Accessibility.'
+                : 'Errand can read the current screen so it can answer questions '
+                    'about what\'s displayed, navigate system UI, and draft '
+                    'messages in other apps. It only reads while acting on your '
+                    'request, and never presses send for you.\n\nAndroid will open '
+                    'Settings > Accessibility where you can turn the service on.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () async {
+                Navigator.of(dialogContext).pop();
+                final prefs = await SharedPreferences.getInstance();
+                await prefs.setBool('a11y_prompt_dismissed', true);
+              },
+              child: const Text("Don't ask again"),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Not now'),
+            ),
+            FilledButton(
+              onPressed: () {
+                Navigator.of(dialogContext).pop();
+                // No public API deep-links straight to our service toggle
+                // (unlike storage's package-URI intent); the Accessibility
+                // list page is as close as stock Android allows.
+                unawaited(_a11yService.openSettings());
+              },
+              child: const Text('Open settings'),
+            ),
+          ],
+        ),
+      );
+    } finally {
+      _a11yDialogOpen = false;
+    }
   }
 
   Future<void> _checkStoragePermission({required bool promptIfMissing}) async {
@@ -822,6 +903,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     final workingId = 'working-${DateTime.now().microsecondsSinceEpoch}';
     _workingMessageId = workingId;
     _workingText.clear();
+    _workingReasoning = false;
     setState(() {
       _messages.add(AssistantMessage(id: workingId, text: '…working'));
       _busy = true;
@@ -886,10 +968,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
   }
 
-  /// Elapsed-seconds ticker for the …working placeholder: slow models spend
-  /// 30–90s before the first token, and a static "…working" is
-  /// indistinguishable from a hung request. Stops updating once real deltas
-  /// arrive (the streamed text takes over the bubble).
+  /// Elapsed-seconds ticker for the …working/…thinking placeholder: slow
+  /// models spend 30–90s before the first token, and a static placeholder is
+  /// indistinguishable from a hung request. The ticker is the ONLY writer of
+  /// the elapsed suffix; [_handleReasoningDelta] just flips the label flag.
+  /// Stops updating once real text deltas arrive (streamed content takes
+  /// over the bubble).
   void _startWorkingElapsedTimer() {
     _workingElapsedTimer?.cancel();
     _workingElapsedSeconds = 0;
@@ -897,15 +981,24 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       if (!mounted || _workingMessageId == null) return;
       if (_workingText.isNotEmpty) return; // streamed text owns the bubble now
       _workingElapsedSeconds++;
-      final index =
-          _messages.indexWhere((message) => message.id == _workingMessageId);
-      if (index == -1) return;
-      setState(() {
-        _messages[index] = AssistantMessage(
-          id: _workingMessageId!,
-          text: '…working · ${_workingElapsedSeconds}s',
-        );
-      });
+      _updateWorkingPlaceholder();
+    });
+  }
+
+  /// Single writer for the …working/…thinking placeholder. Every other
+  /// state change (reasoning start, new turn) goes through here, so the
+  /// label and the elapsed suffix can never be written out of sync.
+  void _updateWorkingPlaceholder() {
+    final id = _workingMessageId;
+    if (id == null || _workingText.isNotEmpty) return;
+    final index = _messages.indexWhere((message) => message.id == id);
+    if (index == -1) return;
+    final label = _workingReasoning ? '…thinking' : '…working';
+    setState(() {
+      _messages[index] = AssistantMessage(
+        id: id,
+        text: '$label · ${_workingElapsedSeconds}s',
+      );
     });
   }
 
@@ -1003,6 +1096,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
       final nextWorkingId = 'working-${DateTime.now().microsecondsSinceEpoch}';
       _workingMessageId = nextWorkingId;
+      _workingReasoning = false; // next step starts as …working again
       _messages.insert(
         nextWorkingIndex,
         AssistantMessage(id: nextWorkingId, text: '…working'),
@@ -1030,17 +1124,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     if (!mounted || _workingMessageId == null || _workingText.isNotEmpty) {
       return;
     }
-    final index = _messages.indexWhere(
-      (message) => message.id == _workingMessageId,
-    );
-    if (index == -1 || _messages[index].text == '…thinking') return;
-    setState(() {
-      _messages[index] = AssistantMessage(
-        id: _workingMessageId!,
-        text: '…thinking',
-      );
-      _touchConversation();
-    });
+    // Flip the label once; the 1s ticker owns the elapsed suffix from here.
+    // Writing the bubble per-delta used to fight the ticker's
+    // '…working · Ns' write and made the placeholder flicker.
+    if (_workingReasoning) return;
+    _workingReasoning = true;
+    _updateWorkingPlaceholder();
   }
 
   void _flushWorkingText() {

@@ -31,7 +31,7 @@ class AgentToolCall extends AgentEvent {
 }
 
 class AgentLoop {
-  static const int maxTurns = 12;
+  static const int maxTurns = 18;
 
   final LlmClient _llm;
   final ToolRegistry _registry;
