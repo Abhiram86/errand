@@ -236,6 +236,14 @@ policy limits mapped; scope split into tiers below.**
 > settle_ms, sequential-call prompt guidance). Remaining: plan-preview card
 > (#11 UI), risk-class metadata (#7), Send-tier opt-in, coordinate fallback
 > (#13).
+>
+> **Deferred idea (ColorOS alarm session, Aug 23 2026):** ViewPager page
+> filtering — tabbed apps keep off-screen pages in the tree, polluting
+> outlines. Skipped because detection is fragile (ViewPager2 IS a
+> RecyclerView; `[selected]` anchors are OEM-specific) and a wrong guess
+> hides the live screen. Mitigated instead via the active-tab header +
+> near_label scroll targeting + prompt guidance. Revisit only if outline
+> noise actually breaks flows.
 
 **Consent model — risk-tiered three-way gate, not binary Approve/Deny.**
 Rule of thumb: *the model may prepare anything, only the user pulls

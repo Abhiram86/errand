@@ -54,12 +54,18 @@ class A11yService {
   // -- P2b: gated injection (Draft-mode primitives) --------------------------
 
   /// Taps the clickable element whose label matches [label] (case-insensitive;
-  /// exact match preferred over prefix/contains unless [exact]).
-  /// Returns {ok, label?, error?, message?}.
-  Future<Map<String, dynamic>> tapByText(String label, {bool exact = false}) async {
+  /// exact match preferred over prefix/contains unless [exact]). When several
+  /// best-scoring matches exist, [occurrence] (1-based, outline order) picks
+  /// one. Returns {ok, label?, error?, message?}.
+  Future<Map<String, dynamic>> tapByText(
+    String label, {
+    bool exact = false,
+    int occurrence = 1,
+  }) async {
     final res = await _channel.invokeMethod<Map<Object?, Object?>>('tapByText', {
       'label': label,
       'exact': exact,
+      'occurrence': occurrence,
     });
     return res?.map((k, v) => MapEntry(k.toString(), v)) ?? {'ok': false};
   }
@@ -73,11 +79,19 @@ class A11yService {
     return res?.map((k, v) => MapEntry(k.toString(), v)) ?? {'ok': false};
   }
 
-  /// Scrolls toward later content when [down], earlier otherwise. Node action
-  /// first, center-screen gesture as fallback. Returns {ok, method?, ...}.
-  Future<Map<String, dynamic>> scroll({bool down = true}) async {
+  /// Scrolls [down] toward later/earlier content, [times] times in one call
+  /// (wheels move one unit per scroll; lists one page). With [nearLabel],
+  /// only the scrollable whose subtree contains that text is targeted.
+  /// Returns {ok, method?, scrolled?, at_end?, ...}.
+  Future<Map<String, dynamic>> scroll({
+    bool down = true,
+    int times = 1,
+    String? nearLabel,
+  }) async {
     final res = await _channel.invokeMethod<Map<Object?, Object?>>('scroll', {
       'down': down,
+      'times': times,
+      'nearLabel': nearLabel,
     });
     return res?.map((k, v) => MapEntry(k.toString(), v)) ?? {'ok': false};
   }

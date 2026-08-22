@@ -423,7 +423,8 @@ class MainActivity : FlutterActivity() {
                         try {
                             val label = call.argument<String>("label") ?: ""
                             val exact = call.argument<Boolean>("exact") ?: false
-                            result.success(svc.tapByText(label, exact))
+                            val occurrence = call.argument<Int>("occurrence") ?: 1
+                            result.success(svc.tapByText(label, exact, occurrence))
                         } catch (e: Exception) {
                             result.error("TAP_ERR", e.message, null)
                         }
@@ -449,7 +450,9 @@ class MainActivity : FlutterActivity() {
                     } else {
                         try {
                             val down = call.argument<Boolean>("down") ?: true
-                            result.success(svc.scroll(down))
+                            val times = call.argument<Int>("times") ?: 1
+                            val nearLabel = call.argument<String>("nearLabel")
+                            result.success(svc.scroll(down, times, nearLabel))
                         } catch (e: Exception) {
                             result.error("SCROLL_ERR", e.message, null)
                         }

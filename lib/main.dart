@@ -52,7 +52,12 @@ String _systemPromptFor(Directory currentDir, {bool screenAccess = false}) {
         'Screen/act calls are STATEFUL and SEQUENTIAL: every tap or navigation '
         'changes what is on screen, so read after each act before deciding the '
         'next step — never batch independent screen reads. After open_app or '
-        'navigation, pass a larger settle_ms (~800-1500) to the read.';
+        'navigation, pass a larger settle_ms (~800-1500) to the read. The '
+        'outline may also contain OFF-SCREEN tab pages of tabbed apps — target '
+        'content under the active tab only. For On/Off switches embedded in '
+        'list rows (alarms, settings), prefer tapping the row\'s title/time '
+        'label (the whole row is clickable) over the switch itself, and use '
+        'occurrence when several rows share labels.';
   }
   return prompt;
 }

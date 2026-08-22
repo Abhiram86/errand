@@ -66,7 +66,8 @@ class ErrandAccessibilityService : AccessibilityService() {
         serviceInfo = serviceInfo.apply {
             eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
             feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
-            flags = AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
+            flags = AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or
+                AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
             notificationTimeout = 100
         }
     }
@@ -105,10 +106,13 @@ class ErrandAccessibilityService : AccessibilityService() {
 
         val sb = StringBuilder()
         var visited = 0
+        activeTab = null // per-read scratch; see visitNode
         val truncated = visitNode(root, 0, maxDepth, maxChars, sb) { visited++ < maxNodes }
 
         val pkg = root.packageName?.toString() ?: "unknown"
-        val header = "Screen: package=$pkg\n"
+        val tab = activeTab
+        val header = "Screen: package=$pkg" +
+            (tab?.let { "  active-tab=\"$it\"" } ?: "") + "\n"
 
         // Report WHICH cap bound the walk — "truncated" alone made the model
         // raise max_nodes when the character budget was the real limit.
@@ -144,6 +148,13 @@ class ErrandAccessibilityService : AccessibilityService() {
         return (if (cut > maxLen / 2) s.substring(0, cut) else s.substring(0, maxLen)) + "…"
     }
 
+    /**
+     * First selected node's label seen during the current read — tabbed apps
+     * (ViewPager) mark their live page/nav item with isSelected. Surfaced in
+     * the header so the model can ignore off-screen tab content.
+     */
+    private var activeTab: String? = null
+
     /** Returns true if the walk was cut short by a cap. */
     private fun visitNode(
         node: AccessibilityNodeInfo,
@@ -160,6 +171,10 @@ class ErrandAccessibilityService : AccessibilityService() {
             ?: node.contentDescription?.toString()?.let(::trimLabel)?.ifBlank { null }
             ?: node.hintText?.toString()?.let(::trimLabel)?.ifBlank { null }
 
+        if (node.isSelected && activeTab == null) {
+            activeTab = label ?: cls
+        }
+
         val actionable = node.isClickable || node.isScrollable || node.isEditable
         if (!node.isVisibleToUser && label == null && !actionable) {
             // Skip invisible structural nodes — but keep invisible ones that
@@ -174,6 +189,10 @@ class ErrandAccessibilityService : AccessibilityService() {
                 if (node.isScrollable) add("scrollable")
             }
             sb.append('[').append(depth).append("] ").append(cls)
+            node.viewIdResourceName
+                ?.substringAfterLast('/')
+                ?.takeIf { it.isNotBlank() }
+                ?.let { sb.append(" id=").append(it) }
             if (label != null) sb.append(" \"").append(label.replace("\n", " ")).append('"')
             if (flags.isNotEmpty()) sb.append(" [").append(flags.joinToString(",")).append(']')
             sb.append('\n')
@@ -213,7 +232,7 @@ class ErrandAccessibilityService : AccessibilityService() {
     // refusal lives in act_tool.dart so it stays unit-testable in Dart.
 
     /** Returns {ok, label?, error?, message?}. */
-    fun tapByText(label: String, exact: Boolean): Map<String, Any?> {
+    fun tapByText(label: String, exact: Boolean, occurrence: Int = 1): Map<String, Any?> {
         val root = rootInActiveWindow
             ?: return mapOf("ok" to false, "error" to "NO_WINDOW",
                 "message" to "No active window content available.")
@@ -228,19 +247,32 @@ class ErrandAccessibilityService : AccessibilityService() {
         val candidates = mutableListOf<Triple<AccessibilityNodeInfo, Int, String>>()
         collectMatchingClickable(root, needle, exact, candidates)
 
-        val best = candidates.maxByOrNull { it.second }
-        if (best == null) {
+        // Identical labels are common in list UIs (five alarms, five "Off"
+        // switches) — [occurrence] is the 1-based index WITHIN the
+        // best-scoring pool, matching the outline's top-to-bottom order.
+        val bestScore = candidates.maxOfOrNull { it.second }
+        if (bestScore == null) {
             candidates.forEach { it.first.recycle() }
             return mapOf("ok" to false, "error" to "NOT_FOUND",
                 "message" to "No clickable element matching \"$label\" on the current screen. " +
                     "Re-read the screen and use the exact label.")
         }
 
-        val clickedText = best.third
+        val pool = candidates.filter { it.second == bestScore }
+        if (occurrence !in 1..pool.size) {
+            val msg = "Found ${pool.size} match(es) for \"$label\"; occurrence " +
+                "$occurrence is out of range (1-${pool.size})."
+            candidates.forEach { it.first.recycle() }
+            return mapOf("ok" to false, "error" to "OCCURRENCE_OUT_OF_RANGE",
+                "message" to msg)
+        }
+
+        val picked = pool[occurrence - 1]
+        val clickedText = picked.third
 
         // Track every node instance we touch so each is recycled exactly once.
-        val touched = mutableListOf(best.first)
-        var target: AccessibilityNodeInfo = best.first
+        val touched = mutableListOf(picked.first)
+        var target: AccessibilityNodeInfo = picked.first
         var hops = 0
         while (!target.isClickable && hops < 5) {
             val parent = target.parent ?: break
@@ -251,13 +283,17 @@ class ErrandAccessibilityService : AccessibilityService() {
 
         val ok = target.isClickable && target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
         touched.forEach { it.recycle() }
+        candidates.forEach { if (it !== picked) it.first.recycle() }
 
+        val which = if (pool.size > 1) " (match $occurrence of ${pool.size})" else ""
         return if (ok) {
             mapOf("ok" to true, "label" to clickedText,
-                "message" to "Tapped \"$clickedText\"")
+                "message" to "Tapped \"$clickedText\"$which")
         } else {
             mapOf("ok" to false, "error" to "CLICK_FAILED",
-                "message" to "Found \"$clickedText\" but could not click it.")
+                "message" to "Found \"$clickedText\" but could not click it. Some apps " +
+                    "only respond to taps on the parent ROW — try tapping the row's " +
+                    "title/time label instead of the control itself.")
         }
     }
 
@@ -341,54 +377,77 @@ class ErrandAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Scrolls the first visible scrollable node; falls back to a center-screen
-     * swipe gesture when no scrollable node exposes actions (custom views).
+     * Scrolls [times] times (1..30); falls back to a center-screen swipe
+     * gesture when no scrollable node exposes actions (custom views).
      * [down] = scroll toward later content.
      *
-     * End-of-list signal: a scrollable that only supports the OPPOSITE
-     * direction means we're already at the end in the requested direction —
-     * reported as at_end instead of blindly dispatching.
+     * Targeting: with [nearLabel], only scrollables whose subtree contains
+     * that text are considered — this is how the agent picks the MINUTE wheel
+     * instead of the hour one, or the alarm list instead of a ViewPager page.
+     *
+     * End-of-list signal: a scrollable supporting only the OPPOSITE action
+     * means we're at the end in the requested direction — reported as
+     * at_end instead of dispatching blind scrolls.
      */
-    fun scroll(down: Boolean): Map<String, Any?> {
+    fun scroll(down: Boolean, times: Int = 1, nearLabel: String? = null): Map<String, Any?> {
         val root = rootInActiveWindow
             ?: return mapOf("ok" to false, "error" to "NO_WINDOW",
                 "message" to "No active window content available.")
 
+        val clamped = times.coerceIn(1, 30)
         val targetAction = if (down) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
         else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
 
-        findScrollable(root, targetAction)?.let { scrollable ->
+        // Near-label targeting: the needle must appear somewhere inside the
+        // scrollable's subtree (e.g. "52" for the minutes wheel, "Ring once"
+        // for the alarms list). Case-insensitive.
+        val scrollable = nearLabel?.trim()?.takeIf { it.isNotEmpty() }?.let { needle ->
+            findScrollableContaining(root, targetAction, needle.lowercase())
+                ?: return mapOf(
+                    "ok" to false,
+                    "error" to "NO_TARGET_SCROLLABLE",
+                    "message" to "No scrollable area containing \"$nearLabel\" found. " +
+                        "Re-read the screen; the label must be currently visible.",
+                )
+        } ?: run {
+            findScrollable(root, targetAction)
+                ?: findScrollable(root, if (down) AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+                else AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)?.let {
+                    it.recycle()
+                    return mapOf("ok" to true, "at_end" to true, "method" to "node_action",
+                        "message" to if (down)
+                            "Already at the END of this list — no more content below."
+                        else "Already at the TOP of this list.")
+                }
+                ?: return gestureFallbackScroll(down)
+        }
+
+        scrollable.let { s ->
             try {
-                if (scrollable.performAction(targetAction)) {
-                    return mapOf("ok" to true, "method" to "node_action",
-                        "message" to if (down) "Scrolled down" else "Scrolled up")
+                var done = 0
+                repeat(clamped) {
+                    if (s.performAction(targetAction)) done++
+                }
+                if (done > 0) {
+                    return mapOf("ok" to true, "method" to "node_action", "scrolled" to done,
+                        "message" to "Scrolled ${if (down) "down" else "up"} ×$done" +
+                            (if (nearLabel != null) " (targeted by \"$nearLabel\")" else ""))
                 }
             } finally {
-                scrollable.recycle()
+                s.recycle()
             }
         }
+        return gestureFallbackScroll(down)
+    }
 
-        val oppositeAction = if (down) AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
-        else AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
-        findScrollable(root, oppositeAction)?.let {
-            it.recycle()
-            return mapOf("ok" to true, "at_end" to true, "method" to "node_action",
-                "message" to if (down)
-                    "Already at the END of this list — no more content below."
-                else
-                    "Already at the TOP of this list.")
-        }
-
-        // Gesture fallback: swipe up = scroll down. Needs API 24+ and
-        // canPerformGestures; no reliable end-detection on this path.
-        return if (swipeCenter(down)) {
+    private fun gestureFallbackScroll(down: Boolean): Map<String, Any?> =
+        if (swipeCenter(down)) {
             mapOf("ok" to true, "method" to "gesture",
                 "message" to if (down) "Swiped up (scroll down)" else "Swiped down (scroll up)")
         } else {
             mapOf("ok" to false, "error" to "SCROLL_FAILED",
                 "message" to "Nothing scrollable found and gesture dispatch failed.")
         }
-    }
 
     /** First visible scrollable node whose actionList contains [actionId]. */
     private fun findScrollable(
@@ -407,6 +466,46 @@ class ErrandAccessibilityService : AccessibilityService() {
             if (found != null) return found
         }
         return null
+    }
+
+    /** Like [findScrollable], but the node's subtree must contain [needle]. */
+    private fun findScrollableContaining(
+        node: AccessibilityNodeInfo,
+        actionId: Int,
+        needle: String,
+        depth: Int = 0,
+    ): AccessibilityNodeInfo? {
+        if (node.isScrollable && node.isVisibleToUser &&
+            node.actionList.any { it.id == actionId } &&
+            subtreeContainsText(node, needle)
+        ) {
+            return AccessibilityNodeInfo.obtain(node)
+        }
+        if (depth >= 12) return null
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = findScrollableContaining(child, actionId, needle, depth + 1)
+            child.recycle()
+            if (found != null) return found
+        }
+        return null
+    }
+
+    private fun subtreeContainsText(
+        node: AccessibilityNodeInfo,
+        needle: String,
+        depth: Int = 0,
+    ): Boolean {
+        if (depth >= 12) return false
+        node.text?.toString()?.lowercase()?.contains(needle)?.let { if (it) return true }
+        node.contentDescription?.toString()?.lowercase()?.contains(needle)?.let { if (it) return true }
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = subtreeContainsText(child, needle, depth + 1)
+            child.recycle()
+            if (found) return true
+        }
+        return false
     }
 
     /** Vertical center-screen swipe; needs API 24+ and canPerformGestures. */

@@ -50,6 +50,30 @@ Tool actTool({A11yService? service}) {
               'Require an exact label match instead of best-match '
               '(default false). Prefer true when several elements share words.',
         },
+        'occurrence': {
+          'type': 'integer',
+          'description':
+              '1-based index among identical/best-matching labels (outline '
+              'order). Use when the screen shows several elements with the '
+              'same label — count them from the read output. Default 1.',
+          'minimum': 1,
+        },
+        'times': {
+          'type': 'integer',
+          'description':
+              'For scroll: repeat the scroll this many times in ONE call '
+              '(wheels move one unit per scroll; lists one page per scroll). '
+              'Default 1, max 30. Use instead of many separate scroll calls.',
+          'minimum': 1,
+        },
+        'near_label': {
+          'type': 'string',
+          'description':
+              'For scroll: target only the scrollable whose visible content '
+              'contains this text (e.g. the current minutes value "52", or a '
+              'row label like "Kolkata"). Required to pick between multiple '
+              'scrollables (hour vs minute wheels, tab pages).',
+        },
         'text': {
           'type': 'string',
           'description':
@@ -168,7 +192,10 @@ Future<ToolCallResult> _tap(ToolCall call, A11yService svc) async {
   }
 
   final exact = call.arguments['exact'] == true;
-  final res = await svc.tapByText(label, exact: exact);
+  final occurrenceRaw = call.arguments['occurrence'];
+  final occurrence =
+      occurrenceRaw is int && occurrenceRaw > 0 ? occurrenceRaw : 1;
+  final res = await svc.tapByText(label, exact: exact, occurrence: occurrence);
   if (res['ok'] != true) {
     return ToolCallResult.failure(
       call.id,
@@ -209,12 +236,26 @@ Future<ToolCallResult> _scroll(ToolCall call, A11yService svc) async {
     return ToolCallResult.failure(call.id, 'direction must be "up" or "down"');
   }
 
-  final res = await svc.scroll(down: direction == 'down');
+  final timesRaw = call.arguments['times'];
+  final times = timesRaw is int && timesRaw > 0 ? timesRaw.clamp(1, 30) : 1;
+  final nearLabel = (call.arguments['near_label'] as String?)?.trim();
+
+  final res = await svc.scroll(
+    down: direction == 'down',
+    times: times,
+    nearLabel: (nearLabel?.isEmpty ?? true) ? null : nearLabel,
+  );
   if (res['ok'] != true) {
     return ToolCallResult.failure(
       call.id,
       (res['message'] as String?) ?? 'Scroll failed.',
     );
   }
-  return ToolCallResult(id: call.id, ok: true, output: res['message'] as String? ?? '');
+  final atEnd = res['at_end'] == true;
+  final suffix = atEnd ? ' — AT_END: no further content in this direction.' : '';
+  return ToolCallResult(
+    id: call.id,
+    ok: true,
+    output: '${res['message'] ?? ''}$suffix',
+  );
 }
