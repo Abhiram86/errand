@@ -166,7 +166,12 @@ Future<ToolCallResult> handleIntentAction(
       return await _systemAction(call, svc);
     default:
       return ToolCallResult.failure(
-          call.id, 'Unknown intent action "$action"');
+          call.id,
+          'Unknown intent action "$action". Valid actions: open_url, search, '
+          'open_app, open_maps, dial, email, alarm, timer, calendar_event, '
+          'media_play, share, wallpaper, uninstall, settings_panel, settings, '
+          'system, intent. (To read the phone SCREEN, use the separate '
+          '"screen" tool with action:"read" — not this tool.)');
   }
 }
 

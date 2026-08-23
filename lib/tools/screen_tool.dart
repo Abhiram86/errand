@@ -1,5 +1,6 @@
 import 'package:errand/agent/tool.dart';
 import 'package:errand/services/a11y_service.dart';
+import 'package:errand/services/intent_service.dart';
 import 'package:errand/types/tool.dart';
 
 /// P2a screen tool (Tier S): read-only access to the active window's
@@ -19,17 +20,21 @@ Tool screenTool({A11yService? service}) {
         '(buttons, labels, editable fields) — use it to answer "what\'s on my screen" '
         'or to check a result after opening an app. Use action "global" for '
         'system navigation: back, home, recents, notifications shade, quick settings, '
-        'lock_screen. Requires the user to have enabled Errand in Accessibility '
-        'settings; if unavailable, tell the user how to enable it instead of retrying.',
+        'lock_screen. Use action "alarm_status" for SYSTEM ground truth on whether an '
+        'alarm is scheduled and when — always verify alarm tasks this way instead of '
+        'trusting screen contents. Requires the user to have enabled Errand in '
+        'Accessibility settings; if unavailable, tell the user how to enable it '
+        'instead of retrying.',
     parameters: {
       'type': 'object',
       'properties': {
         'action': {
           'type': 'string',
-          'enum': ['read', 'global'],
+          'enum': ['read', 'global', 'alarm_status'],
           'description':
               'read = describe current screen contents; global = perform a '
-              'navigation action (use "name")',
+              'navigation action (use "name"); alarm_status = system-verified '
+              'next scheduled alarm',
         },
         'name': {
           'type': 'string',
@@ -56,6 +61,13 @@ Tool screenTool({A11yService? service}) {
               'Milliseconds to wait before reading (default 350). Raise to '
               '~800-1500 right after open_app/navigation so the new screen '
               'has time to render; reading too early returns stale content.',
+        },
+        'full': {
+          'type': 'boolean',
+          'description':
+              'Set true ONLY when you believe an UNCHANGED result is stale '
+              '(e.g. the app misbehaved). By default, unchanged screens return '
+              'a one-line summary instead of a full outline — that is desired.',
         },
       },
       'required': ['action'],
@@ -97,8 +109,23 @@ Future<ToolCallResult> handleScreenAction(ToolCall call, A11yService svc) async 
       return _read(call, svc);
     case 'global':
       return _global(call, svc);
+    case 'alarm_status':
+      // System ground truth — works even with the a11y service disabled,
+      // so it is handled BEFORE the availability gate. Stateless, so a
+      // fresh IntentService here is fine.
+      final res = await IntentService().nextAlarm();
+      return ToolCallResult(
+        id: call.id,
+        ok: true,
+        output: (res['message'] as String?) ?? 'No alarm information available.',
+      );
     default:
-      return ToolCallResult.failure(call.id, 'Unknown screen action: $action');
+      return ToolCallResult.failure(
+        call.id,
+        'Unknown screen action "$action". Valid actions: read, global, '
+        'alarm_status. (Note: "read" here reads THE SCREEN — it belongs to '
+        'this tool, not the intent tool.)',
+      );
   }
 }
 
@@ -109,6 +136,7 @@ Future<ToolCallResult> _read(ToolCall call, A11yService svc) async {
   final settleMsRaw = call.arguments['settle_ms'];
   final settleMs =
       settleMsRaw is int && settleMsRaw > 0 ? settleMsRaw.clamp(0, 5000) : 350;
+  final full = call.arguments['full'] == true;
 
   // Settle time: reading immediately after open_app/navigation returns the
   // previous screen. The default covers most transitions; the model raises
@@ -117,11 +145,24 @@ Future<ToolCallResult> _read(ToolCall call, A11yService svc) async {
     await Future<void>.delayed(Duration(milliseconds: settleMs));
   }
 
-  final res = await svc.readScreen(maxNodes: maxNodes);
+  final res = await svc.readScreen(maxNodes: maxNodes, full: full);
   if (res['ok'] != true) {
     return ToolCallResult.failure(
       call.id,
       (res['message'] as String?) ?? 'Could not read the active window.',
+    );
+  }
+
+  // Verification re-read on an unchanged screen: one line instead of the
+  // full outline — this is what keeps long screen flows from burning tokens.
+  if (res['unchanged'] == true) {
+    return ToolCallResult(
+      id: call.id,
+      ok: true,
+      output:
+          'UNCHANGED — screen is identical to your previous read; everything '
+          'you saw earlier still applies. Do not re-read unless you perform '
+          'an action. Pass full:true only if you believe the snapshot is stale.',
     );
   }
 

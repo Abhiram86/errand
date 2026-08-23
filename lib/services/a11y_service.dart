@@ -34,12 +34,18 @@ class A11yService {
     await _channel.invokeMethod<void>('openSettings');
   }
 
-  /// Reads the active window as a compact text outline.
+  /// Reads the active window as a compact text outline. Identical consecutive
+  /// reads return {ok, unchanged: true, message} unless [full] is set.
   ///
-  /// Returns {ok, package?, outline?, nodes?, truncated?, error?, message?}.
-  Future<Map<String, dynamic>> readScreen({int maxNodes = 300}) async {
+  /// Returns {ok, package?, outline?, nodes?, truncated?, unchanged?,
+  /// capHit?, error?, message?}.
+  Future<Map<String, dynamic>> readScreen({
+    int maxNodes = 300,
+    bool full = false,
+  }) async {
     final res = await _channel.invokeMethod<Map<Object?, Object?>>('readScreen', {
       'maxNodes': maxNodes,
+      'full': full,
     });
     return res?.map((k, v) => MapEntry(k.toString(), v)) ?? {'ok': false};
   }

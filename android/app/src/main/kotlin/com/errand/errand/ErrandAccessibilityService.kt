@@ -6,6 +6,7 @@ import android.app.AppOpsManager
 import android.content.Context
 import android.content.Intent
 import android.graphics.Path
+import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -87,15 +88,21 @@ class ErrandAccessibilityService : AccessibilityService() {
 
     /**
      * Serializes the active window into a compact outline:
-     *   [12] Button "Allow" [clickable]
-     * Depth-, node- and char-capped DFS; a char budget is enforced here so
-     * we don't build megabyte strings natively, and again on the Dart side
-     * as the final backstop.
+     *   [12] Button "Allow" id=allow [clickable] [state=On] [row=3]
+     *
+     * Reliability features:
+     * - Entries are sorted by on-screen position (top, then left), so the
+     *   outline reads in VISUAL order — tree order does not match what the
+     *   user sees (the "read the first mail" failure).
+     * - Identical outlines short-circuit: verification re-reads return
+     *   UNCHANGED instead of dumping 12K chars into context again.
+     * - Depth-, node- and char-capped; caps reported by name.
      */
     fun readScreen(
         maxNodes: Int = 300,
         maxDepth: Int = 15,
         maxChars: Int = 12000,
+        full: Boolean = false,
     ): Map<String, Any?> {
         val root = rootInActiveWindow
             ?: return mapOf(
@@ -104,27 +111,48 @@ class ErrandAccessibilityService : AccessibilityService() {
                 "message" to "No active window content available. The foreground app may not expose semantics.",
             )
 
-        val sb = StringBuilder()
+        val entries = mutableListOf<Pair<Rect, String>>()
         var visited = 0
         activeTab = null // per-read scratch; see visitNode
-        val truncated = visitNode(root, 0, maxDepth, maxChars, sb) { visited++ < maxNodes }
+        val truncated =
+            visitNode(root, 0, maxDepth, maxChars, entries) { visited++ < maxNodes }
+
+        // Visual reading order, not tree order.
+        entries.sortWith(compareBy({ it.first.top }, { it.first.left }))
+        val body = entries.joinToString("\n") { it.second }
 
         val pkg = root.packageName?.toString() ?: "unknown"
         val tab = activeTab
         val header = "Screen: package=$pkg" +
             (tab?.let { "  active-tab=\"$it\"" } ?: "") + "\n"
+        val outlineText = header + body
+
+        // Verification re-reads are the biggest token sink: if nothing changed
+        // since the previous read, say so in one line instead of re-dumping.
+        val unchanged = !full && lastOutline == outlineText
+        lastOutline = outlineText
+        if (unchanged) {
+            return mapOf(
+                "ok" to true,
+                "unchanged" to true,
+                "package" to pkg,
+                "message" to "Screen is UNCHANGED since your previous read — everything " +
+                    "reported earlier still applies. Pass full:true only if you believe " +
+                    "this snapshot is stale.",
+            )
+        }
 
         // Report WHICH cap bound the walk — "truncated" alone made the model
         // raise max_nodes when the character budget was the real limit.
-        val charCapHit = truncated && sb.length >= maxChars
+        val charCapHit = truncated && body.length >= maxChars
         val nodeCapHit = truncated && !charCapHit && visited >= maxNodes
         return mapOf(
             "ok" to true,
             "package" to pkg,
-            "outline" to header + sb.toString(),
+            "outline" to outlineText,
             "nodes" to visited,
             "maxNodes" to maxNodes,
-            "charsUsed" to sb.length,
+            "charsUsed" to body.length,
             "maxChars" to maxChars,
             "capHit" to when {
                 charCapHit -> "chars"
@@ -148,25 +176,35 @@ class ErrandAccessibilityService : AccessibilityService() {
         return (if (cut > maxLen / 2) s.substring(0, cut) else s.substring(0, maxLen)) + "…"
     }
 
-    /**
-     * First selected node's label seen during the current read — tabbed apps
-     * (ViewPager) mark their live page/nav item with isSelected. Surfaced in
-     * the header so the model can ignore off-screen tab content.
-     */
+    /** Per-read scratch: first selected node's label seen during the walk. */
     private var activeTab: String? = null
 
-    /** Returns true if the walk was cut short by a cap. */
+    /**
+     * Previous read's outline text. Identical consecutive reads return
+     * UNCHANGED instead of re-dumping — verification re-reads were the
+     * biggest token sink in long screen flows.
+     */
+    private var lastOutline: String? = null
+
+    /**
+     * Collects one outline entry per emitted node into [entries] as
+     * (screenBounds, line). Sorting happens in [readScreen] — visual order,
+     * not tree order.
+     */
     private fun visitNode(
         node: AccessibilityNodeInfo,
         depth: Int,
         maxDepth: Int,
         maxChars: Int,
-        sb: StringBuilder,
+        entries: MutableList<Pair<Rect, String>>,
         budget: () -> Boolean,
     ): Boolean {
-        if (depth > maxDepth || sb.length >= maxChars || !budget()) return true
+        if (depth > maxDepth || entries.sumOf { it.second.length } >= maxChars || !budget()) {
+            return true
+        }
 
         val cls = node.className?.toString()?.substringAfterLast('.') ?: "View"
+
         val label = node.text?.toString()?.let(::trimLabel)?.ifBlank { null }
             ?: node.contentDescription?.toString()?.let(::trimLabel)?.ifBlank { null }
             ?: node.hintText?.toString()?.let(::trimLabel)?.ifBlank { null }
@@ -187,20 +225,35 @@ class ErrandAccessibilityService : AccessibilityService() {
                 if (node.isChecked) add("checked")
                 if (node.isSelected) add("selected")
                 if (node.isScrollable) add("scrollable")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    // Material switches report On/Off here instead of
+                    // isChecked — without it switch state is invisible to us.
+                    node.stateDescription?.toString()?.trim()
+                        ?.takeIf { it.isNotBlank() }
+                        ?.let { add("state=$it") }
+                }
+                // RecyclerView items self-report their position — this is the
+                // row identity that makes repeated labels disambiguatable.
+                node.collectionItemInfo?.let { ci ->
+                    if (ci.rowIndex >= 0) add("row=${ci.rowIndex}")
+                }
             }
-            sb.append('[').append(depth).append("] ").append(cls)
-            node.viewIdResourceName
-                ?.substringAfterLast('/')
-                ?.takeIf { it.isNotBlank() }
-                ?.let { sb.append(" id=").append(it) }
-            if (label != null) sb.append(" \"").append(label.replace("\n", " ")).append('"')
-            if (flags.isNotEmpty()) sb.append(" [").append(flags.joinToString(",")).append(']')
-            sb.append('\n')
+            val bounds = Rect().also { node.getBoundsInScreen(it) }
+            val sbLine = StringBuilder().apply {
+                append('[').append(depth).append("] ").append(cls)
+                node.viewIdResourceName
+                    ?.substringAfterLast('/')
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { append(" id=").append(it) }
+                if (label != null) append(" \"").append(label.replace("\n", " ")).append('"')
+                if (flags.isNotEmpty()) append(" [").append(flags.joinToString(",")).append(']')
+            }
+            entries.add(bounds to sbLine.toString())
         }
 
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
-            val cut = visitNode(child, depth + 1, maxDepth, maxChars, sb, budget)
+            val cut = visitNode(child, depth + 1, maxDepth, maxChars, entries, budget)
             child.recycle()
             if (cut) return true
         }

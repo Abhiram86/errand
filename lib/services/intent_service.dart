@@ -89,4 +89,12 @@ class IntentService {
       await _channel.invokeMethod<void>('requestNotificationPermission');
     } catch (_) {}
   }
+
+  /// SYSTEM GROUND TRUTH for alarm verification: the device-wide next
+  /// scheduled alarm, regardless of which clock app set it or what that
+  /// app's UI shows. Returns {ok, scheduled, time?, package?, message}.
+  Future<Map<String, dynamic>> nextAlarm() async {
+    final res = await _channel.invokeMethod<Map<Object?, Object?>>('nextAlarm');
+    return res?.map((k, v) => MapEntry(k.toString(), v)) ?? {'ok': false};
+  }
 }

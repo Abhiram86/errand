@@ -35,7 +35,10 @@ const kSystemPrompt =
     'workspace. Prefer list before reading whole files. Never guess '
     'file paths that have not been confirmed to exist. '
     'Try different methods when appropriate and do not stop after one failure. '
-    'Use cd to change directories, then use relative paths from the new location.';
+    'Use cd to change directories, then use relative paths from the new location. '
+    'If a tool call fails, re-derive its arguments from that tool\'s schema and '
+    'fix them — NEVER repeat an identical failing call. Two identical failures '
+    'in a row mean the approach is wrong: change approach or ask the user.';
 
 String _systemPromptFor(Directory currentDir, {bool screenAccess = false}) {
   var prompt = '$kSystemPrompt\nCurrent working directory: ${currentDir.path}';

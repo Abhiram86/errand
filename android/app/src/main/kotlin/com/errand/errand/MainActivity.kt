@@ -1,6 +1,8 @@
 package com.errand.errand
 
 import android.Manifest
+import android.accessibilityservice.AccessibilityServiceInfo
+import android.app.AlarmManager
 import android.app.UiModeManager
 import android.content.Context
 import android.content.Intent
@@ -239,6 +241,39 @@ class MainActivity : FlutterActivity() {
                     result.success(null)
                 }
 
+                "nextAlarm" -> {
+                    // System ground truth for alarm verification: works
+                    // regardless of which clock app set the alarm, and
+                    // regardless of what that app's UI shows. Needs no
+                    // accessibility service at all.
+                    val am = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+                    val info = am.nextAlarmClock
+                    if (info == null) {
+                        result.success(
+                            mapOf(
+                                "ok" to true,
+                                "scheduled" to false,
+                                "message" to "No alarm is currently scheduled anywhere on this device.",
+                            )
+                        )
+                    } else {
+                        val time = java.text.SimpleDateFormat(
+                            "EEE MMM d, HH:mm", java.util.Locale.getDefault()
+                        ).format(java.util.Date(info.triggerTime))
+                        val pkg = info.showIntent?.creatorPackage ?: "unknown"
+                        result.success(
+                            mapOf(
+                                "ok" to true,
+                                "scheduled" to true,
+                                "time" to time,
+                                "package" to pkg,
+                                "message" to "SYSTEM GROUND TRUTH — next scheduled alarm: " +
+                                    "$time (set by $pkg).",
+                            )
+                        )
+                    }
+                }
+
                 "hasMicPermission" -> {
                     result.success(
                         ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
@@ -398,7 +433,8 @@ class MainActivity : FlutterActivity() {
                     } else {
                         try {
                             val maxNodes = call.argument<Int>("maxNodes") ?: 300
-                            result.success(svc.readScreen(maxNodes = maxNodes))
+                            val full = call.argument<Boolean>("full") ?: false
+                            result.success(svc.readScreen(maxNodes = maxNodes, full = full))
                         } catch (e: Exception) {
                             result.error("READ_ERR", e.message, null)
                         }

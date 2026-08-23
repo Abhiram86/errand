@@ -128,7 +128,10 @@ Future<ToolCallResult> handleActAction(ToolCall call, A11yService svc) async {
     case 'scroll':
       return _scroll(call, svc);
     default:
-      return ToolCallResult.failure(call.id, 'Unknown act action: $action');
+      return ToolCallResult.failure(
+          call.id,
+          'Unknown act action "$action". Valid actions: tap (use "label"), '
+          'type (use "text"), scroll (use "direction").');
   }
 }
 
