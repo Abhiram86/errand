@@ -2,6 +2,7 @@ package com.errand.errand
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.accessibilityservice.InputMethod
 import android.app.AppOpsManager
 import android.content.Context
 import android.content.Intent
@@ -10,8 +11,10 @@ import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.inputmethod.EditorInfo
 import io.flutter.plugin.common.MethodChannel
 
 /**
@@ -36,6 +39,23 @@ class ErrandAccessibilityService : AccessibilityService() {
         @Volatile
         var instance: ErrandAccessibilityService? = null
             private set
+
+        // Outline/interaction budgets.
+        private const val MAX_OUTLINE_CHARS = 12000
+        private const val MAX_TAP_HOPS = 5
+        private const val MAX_REF_DEPTH = 25
+        private const val MAX_WHEEL_STEPS = 30
+
+        /**
+         * Mirror of kCommitWords in lib/tools/act_tool.dart (Draft policy).
+         * Keep in sync.
+         */
+        private val COMMIT_WORDS = setOf(
+            "send", "post", "publish", "tweet", "reply-all",
+            "pay", "buy", "purchase", "checkout", "order", "transfer", "subscribe",
+            "delete", "remove", "uninstall", "confirm", "agree", "accept",
+            "approve", "authorize", "sign",
+        )
 
         /** True only while the user has enabled (and the system has bound) the service. */
         fun isConnected(): Boolean = instance != null
@@ -68,7 +88,8 @@ class ErrandAccessibilityService : AccessibilityService() {
             eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
             feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
             flags = AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or
-                AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
+                AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
+                AccessibilityServiceInfo.FLAG_INPUT_METHOD_EDITOR
             notificationTimeout = 100
         }
     }
@@ -87,22 +108,25 @@ class ErrandAccessibilityService : AccessibilityService() {
     // ---- Screen reading ----------------------------------------------------
 
     /**
-     * Serializes the active window into a compact outline:
-     *   [12] Button "Allow" id=allow [clickable] [state=On] [row=3]
+     * Serializes the active window into a compact outline (v2).
      *
-     * Reliability features:
-     * - Entries are sorted by on-screen position (top, then left), so the
-     *   outline reads in VISUAL order — tree order does not match what the
-     *   user sees (the "read the first mail" failure).
-     * - Identical outlines short-circuit: verification re-reads return
-     *   UNCHANGED instead of dumping 12K chars into context again.
-     * - Depth-, node- and char-capped; caps reported by name.
+     * - INTERACTIVE elements (clickable/editable/scrollable) get a stable
+     *   numeric ref [n], valid until the next read: `act tap ref:n`
+     *   addresses them without label collisions.
+     * - Interactive entries carry viewport bounds; off-screen ones are
+     *   marked [off-screen ↑↓←→].
+     * - Static text is included trimmed, without refs/geometry.
+     * - Entries sorted by on-screen position (top, then left): visual order.
+     * - Identical outlines short-circuit to UNCHANGED unless full=true.
+     * - probe=true returns ONLY whether the screen changed since the last
+     *   read, without updating the stored snapshot (effect check).
      */
     fun readScreen(
         maxNodes: Int = 300,
         maxDepth: Int = 15,
         maxChars: Int = 12000,
         full: Boolean = false,
+        probe: Boolean = false,
     ): Map<String, Any?> {
         val root = rootInActiveWindow
             ?: return mapOf(
@@ -111,21 +135,68 @@ class ErrandAccessibilityService : AccessibilityService() {
                 "message" to "No active window content available. The foreground app may not expose semantics.",
             )
 
-        val entries = mutableListOf<Pair<Rect, String>>()
+        val dm = resources.displayMetrics
+        val viewportW = dm.widthPixels
+        val viewportH = dm.heightPixels
+
+        val entries = mutableListOf<Entry>()
         var visited = 0
         activeTab = null // per-read scratch; see visitNode
+        overlayCandidateFound = null
         val truncated =
-            visitNode(root, 0, maxDepth, maxChars, entries) { visited++ < maxNodes }
+            visitNode(root, 0, maxDepth, entries) { visited++ < maxNodes }
 
         // Visual reading order, not tree order.
-        entries.sortWith(compareBy({ it.first.top }, { it.first.left }))
-        val body = entries.joinToString("\n") { it.second }
+        entries.sortWith(compareBy({ it.bounds.top }, { it.bounds.left }))
+
+        val refs = mutableMapOf<Int, RefEntry>()
+        val body = StringBuilder()
+        var refCounter = 0
+        var charsUsed = 0
+        for (e in entries) {
+            val line: String
+            if (e.interactive) {
+                refCounter++
+                refs[refCounter] = RefEntry(label = e.label, cls = e.cls, rect = e.bounds)
+                val off = offScreenTag(e.bounds, viewportW, viewportH)
+                val pos = off ?: "@${e.bounds.left},${e.bounds.top} ${e.bounds.width()}x${e.bounds.height()}"
+                line = "[$refCounter] ${e.cls}" +
+                    (e.vid?.let { " id=$it" } ?: "") +
+                    (e.label?.let { " \"$it\"" } ?: "") +
+                    (if (e.flags.isEmpty()) "" else " [${e.flags.joinToString(",")}]") +
+                    " $pos"
+            } else {
+                line = "${e.cls}" +
+                    (e.label?.let { " \"$it\"" } ?: "") +
+                    (if (e.flags.isEmpty()) "" else " [${e.flags.joinToString(",")}]")
+            }
+            if (charsUsed + line.length > maxChars) break
+            charsUsed += line.length + 1
+            body.append(line).append('\n')
+        }
+        elementRefs = refs
 
         val pkg = root.packageName?.toString() ?: "unknown"
         val tab = activeTab
+        val wins = try { windows } catch (_: Exception) { emptyList() }
+        val focusedTitle = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            wins.firstOrNull { it.isFocused }?.getTitle()?.toString()?.takeIf { it.isNotBlank() }
+        } else null
         val header = "Screen: package=$pkg" +
-            (tab?.let { "  active-tab=\"$it\"" } ?: "") + "\n"
+            (tab?.let { "  active-tab=\"$it\"" } ?: "") +
+            (if (wins.size > 1) "  windows=${wins.size}" else "") +
+            (focusedTitle?.let { "  focused-window=\"$it\"" } ?: "") +
+            "  viewport=${viewportW}x${viewportH}\n" +
+            (overlayCandidateFound?.let {
+                "WARN possible OVERLAY covering screen: $it -- taps may be swallowed; route around or ask the user.\n"
+            } ?: "")
         val outlineText = header + body
+
+        // Probe mode: effect check only. Does NOT update the stored snapshot,
+        // so a subsequent real read still diffs against the pre-action state.
+        if (probe) {
+            return mapOf("ok" to true, "changed" to (outlineText != lastOutline))
+        }
 
         // Verification re-reads are the biggest token sink: if nothing changed
         // since the previous read, say so in one line instead of re-dumping.
@@ -136,15 +207,13 @@ class ErrandAccessibilityService : AccessibilityService() {
                 "ok" to true,
                 "unchanged" to true,
                 "package" to pkg,
-                "message" to "Screen is UNCHANGED since your previous read — everything " +
+                "message" to "Screen is UNCHANGED since your previous read -- everything " +
                     "reported earlier still applies. Pass full:true only if you believe " +
                     "this snapshot is stale.",
             )
         }
 
-        // Report WHICH cap bound the walk — "truncated" alone made the model
-        // raise max_nodes when the character budget was the real limit.
-        val charCapHit = truncated && body.length >= maxChars
+        val charCapHit = truncated || charsUsed >= maxChars
         val nodeCapHit = truncated && !charCapHit && visited >= maxNodes
         return mapOf(
             "ok" to true,
@@ -152,8 +221,9 @@ class ErrandAccessibilityService : AccessibilityService() {
             "outline" to outlineText,
             "nodes" to visited,
             "maxNodes" to maxNodes,
-            "charsUsed" to body.length,
+            "charsUsed" to charsUsed,
             "maxChars" to maxChars,
+            "elements" to refCounter,
             "capHit" to when {
                 charCapHit -> "chars"
                 nodeCapHit -> "nodes"
@@ -180,6 +250,44 @@ class ErrandAccessibilityService : AccessibilityService() {
     private var activeTab: String? = null
 
     /**
+     * Captured when the system creates our restricted input-method role
+     * (API 33+, requires FLAG_INPUT_METHOD_EDITOR). Null until then.
+     */
+    private var inputMethod: InputMethod? = null
+
+    override fun onCreateInputMethod(): InputMethod {
+        val im = super.onCreateInputMethod()
+        inputMethod = im
+        return im
+    }
+
+    /**
+     * Class name of a fullscreen-ish clickable view seen above content --
+     * the consent-wall / modal-backdrop tell. Surfaced as an overlay warning
+     * in the outline header.
+     */
+    private var overlayCandidateFound: String? = null
+
+    /**
+     * Numeric refs -> element identity, rebuilt on every non-probe read.
+     * `act tap ref:n` resolves through this map by matching (bounds, class,
+     * label) against the live tree.
+     */
+    private var elementRefs: Map<Int, RefEntry> = emptyMap()
+    private var elementRefCount: Int = 0
+
+    private data class RefEntry(val label: String?, val cls: String, val rect: Rect)
+
+    private data class Entry(
+        val bounds: Rect,
+        val cls: String,
+        val vid: String?,
+        val label: String?,
+        val flags: List<String>,
+        val interactive: Boolean,
+    )
+
+    /**
      * Previous read's outline text. Identical consecutive reads return
      * UNCHANGED instead of re-dumping — verification re-reads were the
      * biggest token sink in long screen flows.
@@ -187,23 +295,24 @@ class ErrandAccessibilityService : AccessibilityService() {
     private var lastOutline: String? = null
 
     /**
-     * Collects one outline entry per emitted node into [entries] as
-     * (screenBounds, line). Sorting happens in [readScreen] — visual order,
-     * not tree order.
+     * Collects one structured entry per emitted node. Sorting (visual order)
+     * and numeric ref assignment happen in [readScreen].
      */
     private fun visitNode(
         node: AccessibilityNodeInfo,
         depth: Int,
         maxDepth: Int,
-        maxChars: Int,
-        entries: MutableList<Pair<Rect, String>>,
+        entries: MutableList<Entry>,
         budget: () -> Boolean,
     ): Boolean {
-        if (depth > maxDepth || entries.sumOf { it.second.length } >= maxChars || !budget()) {
+        val bounds = Rect().also { node.getBoundsInScreen(it) }
+        if (depth > maxDepth || charsCollected(entries) >= MAX_OUTLINE_CHARS || !budget()) {
             return true
         }
 
         val cls = node.className?.toString()?.substringAfterLast('.') ?: "View"
+        val vid = node.viewIdResourceName
+            ?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
 
         val label = node.text?.toString()?.let(::trimLabel)?.ifBlank { null }
             ?: node.contentDescription?.toString()?.let(::trimLabel)?.ifBlank { null }
@@ -213,51 +322,172 @@ class ErrandAccessibilityService : AccessibilityService() {
             activeTab = label ?: cls
         }
 
-        val actionable = node.isClickable || node.isScrollable || node.isEditable
-        if (!node.isVisibleToUser && label == null && !actionable) {
-            // Skip invisible structural nodes — but keep invisible ones that
-            // carry text (off-screen list content) or are actionable
-            // (collapsed menus), which the outline exists to surface.
-        } else {
-            val flags = buildList {
-                if (node.isClickable) add("clickable")
-                if (node.isEditable) add("editable")
-                if (node.isChecked) add("checked")
-                if (node.isSelected) add("selected")
-                if (node.isScrollable) add("scrollable")
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    // Material switches report On/Off here instead of
-                    // isChecked — without it switch state is invisible to us.
-                    node.stateDescription?.toString()?.trim()
-                        ?.takeIf { it.isNotBlank() }
-                        ?.let { add("state=$it") }
-                }
-                // RecyclerView items self-report their position — this is the
-                // row identity that makes repeated labels disambiguatable.
-                node.collectionItemInfo?.let { ci ->
-                    if (ci.rowIndex >= 0) add("row=${ci.rowIndex}")
-                }
-            }
-            val bounds = Rect().also { node.getBoundsInScreen(it) }
-            val sbLine = StringBuilder().apply {
-                append('[').append(depth).append("] ").append(cls)
-                node.viewIdResourceName
-                    ?.substringAfterLast('/')
+        val clickable = node.isClickable
+        val interactive = clickable || node.isEditable || node.isScrollable
+
+        // Fullscreen-ish clickable above content: the consent-wall /
+        // modal-backdrop tell. Scroll/list container classes are excluded --
+        // a full-screen RecyclerView is a normal feed, not an overlay.
+        val isContainerClass = cls in setOf(
+            "RecyclerView", "ListView", "GridView", "ViewPager",
+            "ScrollView", "NestedScrollView", "ViewPager2",
+        )
+        if (clickable && !isContainerClass &&
+            bounds.width() >= viewportW() * 0.9 &&
+            bounds.height() >= viewportH() * 0.6
+        ) {
+            overlayCandidateFound = overlayCandidateFound ?: cls
+        }
+
+        val flags = buildList {
+            if (clickable) add("clickable")
+            if (node.isEditable) add("editable")
+            if (node.isChecked) add("checked")
+            if (node.isSelected) add("selected")
+            if (node.isScrollable) add("scrollable")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                // Material switches report On/Off here instead of isChecked.
+                node.stateDescription?.toString()?.trim()
                     ?.takeIf { it.isNotBlank() }
-                    ?.let { append(" id=").append(it) }
-                if (label != null) append(" \"").append(label.replace("\n", " ")).append('"')
-                if (flags.isNotEmpty()) append(" [").append(flags.joinToString(",")).append(']')
+                    ?.let { add("state=$it") }
             }
-            entries.add(bounds to sbLine.toString())
+            node.collectionItemInfo?.let { ci ->
+                if (ci.rowIndex >= 0) add("row=${ci.rowIndex}")
+            }
+        }
+
+        if (!node.isVisibleToUser && label == null && !interactive) {
+            // Skip invisible structural nodes; keep labeled or actionable ones.
+        } else {
+            entries.add(
+                Entry(
+                    bounds = bounds,
+                    cls = cls,
+                    vid = vid,
+                    label = label,
+                    flags = flags,
+                    interactive = interactive,
+                )
+            )
         }
 
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
-            val cut = visitNode(child, depth + 1, maxDepth, maxChars, entries, budget)
+            val cut = visitNode(child, depth + 1, maxDepth, entries, budget)
             child.recycle()
             if (cut) return true
         }
         return false
+    }
+
+    private fun viewportW(): Int = resources.displayMetrics.widthPixels
+    private fun viewportH(): Int = resources.displayMetrics.heightPixels
+
+    private fun charsCollected(entries: MutableList<Entry>): Int =
+        entries.sumOf { it.cls.length + (it.label?.length ?: 0) + 24 }
+
+    private fun offScreenTag(b: Rect, vw: Int, vh: Int): String? = when {
+        b.bottom <= 0 -> "[off-screen above]"
+        b.top >= vh -> "[off-screen below]"
+        b.right <= 0 -> "[off-screen left]"
+        b.left >= vw -> "[off-screen right]"
+        else -> null
+    }
+
+    /**
+     * Resolves a numeric ref from the last read against the LIVE tree by
+     * matching (bounds, class, label). Returns an obtained node, or null
+     * when the screen changed too much since the read.
+     */
+    private fun findNodeByRef(
+        node: AccessibilityNodeInfo,
+        ref: RefEntry,
+        depth: Int = 0,
+    ): AccessibilityNodeInfo? {
+        if (depth > MAX_REF_DEPTH) return null
+        val b = Rect().also { node.getBoundsInScreen(it) }
+        if (b == ref.rect) {
+            val sameCls = node.className?.toString()?.substringAfterLast('.') == ref.cls
+            val l = nodeLabel(node)?.let(::trimLabel)
+            if (sameCls && (ref.label == null || l == ref.label)) {
+                return AccessibilityNodeInfo.obtain(node)
+            }
+        }
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = findNodeByRef(child, ref, depth + 1)
+            child.recycle()
+            if (found != null) return found
+        }
+        return null
+    }
+
+    /** Long-click variant of [tapByRef]. */
+    fun longPressByRef(ref: Int): Map<String, Any?> = tapByRef(ref, longClick = true)
+
+    /**
+     * Taps (or long-clicks) the element addressed by a numeric ref from the
+     * last read. Honest failure when the ref is stale.
+     *
+     * Draft-policy note: refs bypass act_tool.dart's Dart-side label refusal,
+     * so the same commit-word guard is mirrored here. Keep the word list in
+     * sync with kCommitWords in lib/tools/act_tool.dart.
+     */
+    fun tapByRef(ref: Int, longClick: Boolean = false): Map<String, Any?> {
+        val root = rootInActiveWindow
+            ?: return mapOf("ok" to false, "error" to "NO_WINDOW",
+                "message" to "No active window content available.")
+        val entry = elementRefs[ref]
+            ?: return mapOf("ok" to false, "error" to "STALE_REF",
+                "message" to "Ref $ref is not known. Re-read the screen; refs are renumbered on every read.")
+        val labelForPolicy = entry.label?.lowercase()
+        if (!longClick && labelForPolicy != null) {
+            val words = labelForPolicy.split(Regex("[^a-z-]+")).filter { it.isNotEmpty() }
+            val matched = words.firstOrNull { it in COMMIT_WORDS || it.split("-").any(COMMIT_WORDS::contains) }
+            if (matched != null) {
+                return mapOf("ok" to false, "error" to "COMMIT_REFUSAL",
+                    "message" to "Refusing to tap [$ref] \"$labelForPolicy\" -- matches commit pattern \"$matched\". " +
+                        "Draft policy: Errand prepares, the USER presses Send/Confirm/Pay/etc.")
+            }
+        }
+        val target = findNodeByRef(root, entry)
+            ?: return mapOf("ok" to false, "error" to "STALE_REF",
+                "message" to "Element [$ref] (\"${entry.label ?: entry.cls}\") is no longer at its position -- the screen changed. Re-read first.")
+        val touched = mutableListOf(target)
+        var t: AccessibilityNodeInfo = target
+        var hops = 0
+        while (!t.isClickable && hops < MAX_TAP_HOPS) {
+            val parent = t.parent ?: break
+            touched.add(parent)
+            t = parent
+            hops++
+        }
+        val action = if (longClick) AccessibilityNodeInfo.ACTION_LONG_CLICK
+        else AccessibilityNodeInfo.ACTION_CLICK
+        val ok = t.isClickable && t.performAction(action)
+        touched.forEach { it.recycle() }
+        return if (ok) {
+            mapOf("ok" to true,
+                "message" to (if (longClick) "Long-pressed" else "Tapped") +
+                    " [$ref] \"${entry.label ?: entry.cls}\"")
+        } else {
+            mapOf("ok" to false, "error" to "CLICK_FAILED",
+                "message" to "Element [$ref] found but refused the click. Some apps only respond to taps on the parent row -- try tapping a sibling label instead.")
+        }
+    }
+
+    /** Sends Escape through the focused field's input connection. */
+    fun imeSendEscape(): Map<String, Any?> {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            return mapOf("ok" to false, "error" to "NEEDS_API_33",
+                "message" to "Escape needs Android 13+.")
+        }
+        val conn = imeReady()
+            ?: return mapOf("ok" to false, "error" to "NO_INPUT_FOCUS",
+                "message" to "Escape needs a focused field to deliver the key. Try global back instead.")
+        conn.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ESCAPE))
+        conn.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ESCAPE))
+        return mapOf("ok" to true, "message" to "Sent Escape.")
     }
 
     // ---- Global actions ------------------------------------------------------
@@ -353,6 +583,9 @@ class ErrandAccessibilityService : AccessibilityService() {
     private fun nodeLabel(node: AccessibilityNodeInfo): String? =
         node.text?.toString()?.trim()?.ifBlank { null }
             ?: node.contentDescription?.toString()?.trim()?.ifBlank { null }
+            // Web form fields often expose ONLY their placeholder as hint —
+            // the reader shows hints, so the tapper must match them too.
+            ?: node.hintText?.toString()?.trim()?.ifBlank { null }
 
     private fun matchScore(candidate: String, needle: String, exact: Boolean): Int? {
         val lower = candidate.lowercase()
@@ -442,14 +675,31 @@ class ErrandAccessibilityService : AccessibilityService() {
      * means we're at the end in the requested direction — reported as
      * at_end instead of dispatching blind scrolls.
      */
-    fun scroll(down: Boolean, times: Int = 1, nearLabel: String? = null): Map<String, Any?> {
+    fun scroll(
+        direction: String,
+        times: Int = 1,
+        nearLabel: String? = null,
+    ): Map<String, Any?> {
+        val down = direction != "left" && direction != "right"
         val root = rootInActiveWindow
             ?: return mapOf("ok" to false, "error" to "NO_WINDOW",
                 "message" to "No active window content available.")
 
-        val clamped = times.coerceIn(1, 30)
-        val targetAction = if (down) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
-        else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+        val clamped = times.coerceIn(1, MAX_WHEEL_STEPS)
+        // Vertical containers expose FORWARD/BACKWARD. Horizontal ones expose
+        // SCROLL_LEFT/RIGHT on API 34+; older devices fall back to gestures.
+        val targetAction = when {
+            direction == "down" -> AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+            direction == "up" -> AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&
+                    direction == "left" ->
+                AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT.id
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&
+                    direction == "right" ->
+                AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT.id
+            direction == "left" -> AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+            else -> AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+        }
 
         // Near-label targeting: the needle must appear somewhere inside the
         // scrollable's subtree (e.g. "52" for the minutes wheel, "Ring once"
@@ -468,11 +718,9 @@ class ErrandAccessibilityService : AccessibilityService() {
                 else AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)?.let {
                     it.recycle()
                     return mapOf("ok" to true, "at_end" to true, "method" to "node_action",
-                        "message" to if (down)
-                            "Already at the END of this list — no more content below."
-                        else "Already at the TOP of this list.")
+                        "message" to "Already at the END of this direction ($direction) -- nothing further that way.")
                 }
-                ?: return gestureFallbackScroll(down)
+                ?: return gestureFallbackScroll(direction)
         }
 
         scrollable.let { s ->
@@ -483,22 +731,27 @@ class ErrandAccessibilityService : AccessibilityService() {
                 }
                 if (done > 0) {
                     return mapOf("ok" to true, "method" to "node_action", "scrolled" to done,
-                        "message" to "Scrolled ${if (down) "down" else "up"} ×$done" +
+                        "message" to "Scrolled $direction ×$done" +
                             (if (nearLabel != null) " (targeted by \"$nearLabel\")" else ""))
                 }
             } finally {
                 s.recycle()
             }
         }
-        return gestureFallbackScroll(down)
+        return gestureFallbackScroll(direction)
     }
 
-    private fun gestureFallbackScroll(down: Boolean): Map<String, Any?> =
-        if (swipeCenter(down)) {
-            mapOf("ok" to true, "method" to "gesture",
-                "message" to if (down) "Swiped up (scroll down)" else "Swiped down (scroll up)")
-        } else {
-            mapOf("ok" to false, "error" to "SCROLL_FAILED",
+    private fun gestureFallbackScroll(direction: String): Map<String, Any?> =
+        when {
+            direction == "left" && swipeHorizontal(right = false) ->
+                mapOf("ok" to true, "method" to "gesture", "message" to "Swiped right-to-left")
+            direction == "right" && swipeHorizontal(right = true) ->
+                mapOf("ok" to true, "method" to "gesture", "message" to "Swiped left-to-right")
+            direction == "down" && swipeCenter(scrollDown = true) ->
+                mapOf("ok" to true, "method" to "gesture", "message" to "Swiped up (scroll down)")
+            direction == "up" && swipeCenter(scrollDown = false) ->
+                mapOf("ok" to true, "method" to "gesture", "message" to "Swiped down (scroll up)")
+            else -> mapOf("ok" to false, "error" to "SCROLL_FAILED",
                 "message" to "Nothing scrollable found and gesture dispatch failed.")
         }
 
@@ -576,5 +829,110 @@ class ErrandAccessibilityService : AccessibilityService() {
                 android.accessibilityservice.GestureDescription.StrokeDescription(path, 0, 250))
             .build()
         return dispatchGesture(gesture, null, null)
+    }
+
+    /** Horizontal swipe for carousels: [right]=move toward later content. */
+    private fun swipeHorizontal(right: Boolean): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false
+        val m = resources.displayMetrics
+        val y = (m.heightPixels / 2f)
+        val leftX = m.widthPixels * 0.75f
+        val rightX = m.widthPixels * 0.25f
+        val path = Path().apply {
+            moveTo(if (right) leftX else rightX, y)
+            lineTo(if (right) rightX else leftX, y)
+        }
+        val gesture = android.accessibilityservice.GestureDescription.Builder()
+            .addStroke(
+                android.accessibilityservice.GestureDescription.StrokeDescription(path, 0, 250))
+            .build()
+        return dispatchGesture(gesture, null, null)
+    }
+
+    // ---- P2b+: IME-mode text primitives (API 33+) ---------------------------
+    //
+    // With FLAG_INPUT_METHOD_EDITOR the service becomes a restricted input
+    // method: it gets an InputConnection to the FOCUSED field even when that
+    // field doesn't support ACTION_SET_TEXT (common in web inputs), plus
+    // honest read-back of field contents via getSurroundingText.
+
+    private fun imeReady(): InputMethod.AccessibilityInputConnection? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return null
+        val im = inputMethod ?: getInputMethod() ?: return null
+        if (!im.currentInputStarted) return null
+        return im.currentInputConnection
+    }
+
+    /**
+     * Identity + content of the currently focused editable field. This is
+     * the verification primitive: it answers "what field is focused and what
+     * does it contain" without trusting any screen rendering.
+     */
+    fun imeFieldInfo(): Map<String, Any?> {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            return mapOf("ok" to false, "error" to "NEEDS_API_33",
+                "message" to "Field introspection needs Android 13+.")
+        }
+        val conn = imeReady()
+            ?: return mapOf("ok" to false, "error" to "NO_INPUT_FOCUS",
+                "message" to "No focused editable field. Tap the field first (act tap).")
+        val editor: EditorInfo? = inputMethod?.currentInputEditorInfo
+        val surrounding = try {
+            conn.getSurroundingText(2048, 2048, 0)
+        } catch (_: Exception) { null }
+        val content = surrounding?.text?.toString()
+        return mapOf(
+            "ok" to true,
+            "fieldId" to editor?.fieldId,
+            "hint" to editor?.hintText?.toString(),
+            "content" to (content ?: ""),
+            "message" to ("Focused field contains ${content?.length ?: 0} chars." +
+                (editor?.hintText?.let { " Hint: $it." } ?: "")),
+        )
+    }
+
+    /**
+     * Types [text] into the focused field via IME commit — works on web
+     * inputs where ACTION_SET_TEXT is refused. [replaceAll] selects the
+     * existing content first; otherwise text is inserted at the cursor.
+     * Returns the post-write field content for verification.
+     */
+    fun imeCommit(text: String, replaceAll: Boolean): Map<String, Any?> {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            return mapOf("ok" to false, "error" to "NEEDS_API_33",
+                "message" to "IME typing needs Android 13+.")
+        }
+        val conn = imeReady()
+            ?: return mapOf("ok" to false, "error" to "NO_INPUT_FOCUS",
+                "message" to "No focused editable field. Tap the field first (act tap).")
+        if (replaceAll) {
+            val st = try {
+                conn.getSurroundingText(4096, 4096, 0)
+            } catch (_: Exception) { null }
+            val len = st?.text?.length ?: 0
+            if (len > 0) conn.setSelection(0, len)
+        }
+        conn.commitText(text, 1, null)
+        val after = try {
+            conn.getSurroundingText(4096, 4096, 0)?.text?.toString() ?: ""
+        } catch (_: Exception) { "" }
+        return mapOf("ok" to true, "content" to after,
+            "message" to "Committed ${text.length} chars via IME. Field now contains " +
+                "${after.length} chars.")
+    }
+
+    /** Sends Tab through the focused field's input connection (field hop). */
+    fun imeSendTab(): Map<String, Any?> {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            return mapOf("ok" to false, "error" to "NEEDS_API_33",
+                "message" to "Tab hop needs Android 13+.")
+        }
+        val conn = imeReady()
+            ?: return mapOf("ok" to false, "error" to "NO_INPUT_FOCUS",
+                "message" to "No focused editable field to Tab from. Tap a field first.")
+        conn.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_TAB))
+        conn.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_TAB))
+        return mapOf("ok" to true,
+            "message" to "Sent Tab — focus should move to the next field.")
     }
 }

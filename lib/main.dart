@@ -60,7 +60,10 @@ String _systemPromptFor(Directory currentDir, {bool screenAccess = false}) {
         'content under the active tab only. For On/Off switches embedded in '
         'list rows (alarms, settings), prefer tapping the row\'s title/time '
         'label (the whole row is clickable) over the switch itself, and use '
-        'occurrence when several rows share labels.';
+        'occurrence when several rows share labels. For WEB FORMS in browsers, '
+        'use act fill (label + text) — it focuses, verifies the field, types, '
+        'and reports the field\'s actual content back; expect ad iframes to '
+        'shuffle the page between steps on heavy sites.';
   }
   return prompt;
 }
@@ -170,6 +173,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   /// the conditional screen-access block of the system prompt.
   bool _a11yAvailable = false;
   bool _a11yDialogOpen = false;
+
+  /// True for one frame after opening a conversation, so the leading-edge
+  /// pager doesn't cascade-load history while the viewport is still at the top.
+  bool _loadOlderSuppressed = false;
 
   bool _scrollPending = false;
   bool _permissionDialogOpen = false;
@@ -621,7 +628,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _hasOlderMessages = false;
     });
     _closeSidebar();
-    _scrollToBottom(animated: false);
+    _scrollToBottom(animated: false, force: true);
   }
 
   Future<void> _selectConversation(Conversation conversation) async {
@@ -658,7 +665,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _messageFetcher.hasMore = true;
     });
     _closeSidebar();
-    _scrollToBottom(animated: false);
+    // Land on the newest message. The flag also suppresses the leading-edge
+    // pager until we're actually at the bottom — otherwise sitting at the
+    // top (pre-scroll) would cascade-load the whole history.
+    _loadOlderSuppressed = true;
+    _scrollToBottom(animated: false, force: true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) setState(() => _loadOlderSuppressed = false);
+    });
   }
 
   /// Prepends the previous page of messages, keeping the viewport anchored
@@ -667,6 +681,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     final conversationId = _activeConversation.id;
     if (conversationId == null ||
         !_hasOlderMessages ||
+        _loadOlderSuppressed ||
         _loadingOlderMessages ||
         _messageFetcher.loading) {
       return;
@@ -814,7 +829,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
   }
 
-  void _scrollToBottom({bool animated = true}) {
+  void _scrollToBottom({bool animated = true, bool force = false}) {
     if (_scrollPending) return;
     _scrollPending = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -822,7 +837,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       if (!_scroll.hasClients) return;
       final distance =
           _scroll.position.maxScrollExtent - _scroll.position.pixels;
-      if (!animated && distance > 160) return;
+      // "Force" jumps are for opening a fresh view (new chat / conversation):
+      // they must land at the newest message no matter how far away it is.
+      if (!animated && !force && distance > 160) return;
       if (animated) {
         _scroll.animateTo(
           _scroll.position.maxScrollExtent,
@@ -1573,11 +1590,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     );
   }
 
-  /// Debug-only: estimated LLM context size for the loaded history
-  /// (chars/4 ≈ tokens) against the truncation limits.
+  /// Debug-only: what the NEXT agent run would actually send — the same
+  /// truncateHistory() the loop applies at its boundary — not the raw size
+  /// of whatever happens to be loaded in memory.
   Widget _buildContextFooter() {
-    final chars = estimateHistoryChars(_messages);
-    final truncated = chars > kContextSoftLimit;
+    final sent = estimateHistoryChars(truncateHistory(_messages));
+    final full = estimateHistoryChars(_messages);
     return Material(
       color: kInputBg,
       child: Padding(
@@ -1585,9 +1603,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         child: Align(
           alignment: Alignment.centerLeft,
           child: Text(
-            'ctx ~${chars ~/ 1024}K / ${kContextSoftLimit ~/ 1024}K'
-            '${truncated ? ' (will truncate to ≤${kContextTarget ~/ 1024}K)' : ''}'
-            ' · ${_messages.length} msgs loaded',
+            'ctx ~${sent ~/ 1024}K sent'
+            '${full > sent ? ' · ${full ~/ 1024}K loaded' : ''}'
+            ' · ${_messages.length} msgs',
             style: const TextStyle(color: kMuted, fontSize: 10),
           ),
         ),

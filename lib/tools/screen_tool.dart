@@ -17,8 +17,10 @@ Tool screenTool({A11yService? service}) {
     description:
         'Reads the current phone screen or performs system navigation. '
         'Use action "read" to get a text outline of what is on screen right now '
-        '(buttons, labels, editable fields) — use it to answer "what\'s on my screen" '
-        'or to check a result after opening an app. Use action "global" for '
+        '(interactive elements carry numeric refs [n] — address them via act '
+        'ref:n; refs expire on every read, so re-read after navigation) and use it '
+        'to answer "what\'s on my screen" or to check a result after opening an app. '
+        'Use action "global" for '
         'system navigation: back, home, recents, notifications shade, quick settings, '
         'lock_screen. Use action "alarm_status" for SYSTEM ground truth on whether an '
         'alarm is scheduled and when — always verify alarm tasks this way instead of '

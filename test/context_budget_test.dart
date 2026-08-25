@@ -180,4 +180,85 @@ void main() {
       expect(estimateHistoryChars(result), lessThanOrEqualTo(kContextTarget));
     });
   });
+
+  group('clampResultText (mid-loop)', () {
+    test('passes short results through', () {
+      expect(clampResultText('hello'), 'hello');
+    });
+
+    test('head-clamps oversized results with a marker', () {
+      final result = clampResultText('y' * (kMaxToolResultChars + 500));
+      expect(result.length, lessThan(kMaxToolResultChars + 100));
+      expect(result, contains('[...truncated 500 chars]'));
+      expect(result, startsWith('yyyy'));
+    });
+  });
+
+  group('trimLlmMessages (mid-loop payload guard)', () {
+    Map<String, dynamic> sys() => {'role': 'system', 'content': 'sys prompt'};
+    Map<String, dynamic> usr(String c) => {'role': 'user', 'content': c};
+    Map<String, dynamic> asst(String c) => {'role': 'assistant', 'content': c};
+    Map<String, dynamic> asstToolCall(String id) => {
+      'role': 'assistant',
+      'tool_calls': [
+        {
+          'id': id,
+          'function': {'name': 'screen', 'arguments': '{"action":"read"}'},
+        }
+      ],
+    };
+    Map<String, dynamic> toolResult(String id, String c) =>
+        {'role': 'tool', 'tool_call_id': id, 'content': c};
+
+    test('no-op under the soft limit', () {
+      final messages = [sys(), usr('hi'), asst('there')];
+      expect(identical(trimLlmMessages(messages), messages), isTrue);
+    });
+
+    test('drops oldest whole blocks until under target', () {
+      final big = 'x' * 70000; // 3 blocks land above the 200K soft limit
+      final messages = [
+        sys(),
+        usr('start'),
+        asst('thinking'),
+        asstToolCall('c1'),
+        toolResult('c1', big),
+        asstToolCall('c2'),
+        toolResult('c2', big),
+        asstToolCall('c3'),
+        toolResult('c3', big),
+      ];
+      final trimmed = trimLlmMessages(messages);
+      // Payload must now fit the target.
+      expect(estimateLlmMessagesChars(trimmed), lessThanOrEqualTo(kContextTarget));
+      // Newest block kept intact.
+      expect(trimmed.last['tool_call_id'], 'c3');
+      // The run's instruction survives even though old tool exchanges go.
+      expect(trimmed.map((m) => m['content']), contains('start'));
+      // No orphaned tool results: every tool message follows its assistant.
+      for (var i = 0; i < trimmed.length; i++) {
+        if (trimmed[i]['role'] == 'tool') {
+          expect(trimmed[i - 1]['role'], 'assistant',
+              reason: 'tool result at $i orphaned');
+        }
+      }
+      // System prompt survives.
+      expect(trimmed.first, sys());
+    });
+
+    test('never drops the last user message (mandatory tail)', () {
+      final big = 'x' * 130000; // alone exceeds the target
+      final messages = [
+        sys(),
+        usr('old'),
+        asst('x' * 60000),
+        usr(big), // last user message is itself huge
+        asst('answer'),
+      ];
+      final trimmed = trimLlmMessages(messages);
+      expect(trimmed.map((m) => m['content']), contains(big));
+      // The mandatory tail stays even though it alone exceeds target.
+      expect(estimateLlmMessagesChars(trimmed), greaterThan(kContextTarget));
+    });
+  });
 }

@@ -36,16 +36,40 @@ class A11yService {
 
   /// Reads the active window as a compact text outline. Identical consecutive
   /// reads return {ok, unchanged: true, message} unless [full] is set.
+  /// With [probe], returns ONLY {ok, changed} without updating the stored
+  /// snapshot — used as the post-action effect check.
   ///
   /// Returns {ok, package?, outline?, nodes?, truncated?, unchanged?,
-  /// capHit?, error?, message?}.
+  /// capHit?, elements?, changed?, error?, message?}.
   Future<Map<String, dynamic>> readScreen({
     int maxNodes = 300,
     bool full = false,
+    bool probe = false,
   }) async {
     final res = await _channel.invokeMethod<Map<Object?, Object?>>('readScreen', {
       'maxNodes': maxNodes,
       'full': full,
+      'probe': probe,
+    });
+    return res?.map((k, v) => MapEntry(k.toString(), v)) ?? {'ok': false};
+  }
+
+  /// Effect check: did the screen change since the last full read?
+  /// Returns {ok, changed: bool}. Never dumps content.
+  Future<Map<String, dynamic>> probeChanged({int settleMs = 600}) async {
+    if (settleMs > 0) {
+      await Future<void>.delayed(Duration(milliseconds: settleMs));
+    }
+    final res = await readScreen(probe: true);
+    return {'ok': res['ok'] == true, 'changed': res['changed'] == true};
+  }
+
+  /// Taps (or long-clicks) the element addressed by numeric [ref] from the
+  /// last screen read. Returns {ok, message?}.
+  Future<Map<String, dynamic>> tapByRef(int ref, {bool longClick = false}) async {
+    final res = await _channel.invokeMethod<Map<Object?, Object?>>('tapRef', {
+      'ref': ref,
+      'longClick': longClick,
     });
     return res?.map((k, v) => MapEntry(k.toString(), v)) ?? {'ok': false};
   }
@@ -85,20 +109,61 @@ class A11yService {
     return res?.map((k, v) => MapEntry(k.toString(), v)) ?? {'ok': false};
   }
 
-  /// Scrolls [down] toward later/earlier content, [times] times in one call
+  /// Scrolls [direction] (up/down/left/right) [times] times in one call
   /// (wheels move one unit per scroll; lists one page). With [nearLabel],
   /// only the scrollable whose subtree contains that text is targeted.
   /// Returns {ok, method?, scrolled?, at_end?, ...}.
-  Future<Map<String, dynamic>> scroll({
-    bool down = true,
+  Future<Map<String, dynamic>> scroll(
+    String direction, {
     int times = 1,
     String? nearLabel,
   }) async {
     final res = await _channel.invokeMethod<Map<Object?, Object?>>('scroll', {
-      'down': down,
+      'direction': direction,
       'times': times,
       'nearLabel': nearLabel,
     });
+    return res?.map((k, v) => MapEntry(k.toString(), v)) ?? {'ok': false};
+  }
+
+  /// Long-clicks the element addressed by numeric [ref] from the last read.
+  Future<Map<String, dynamic>> longPressByRef(int ref) async {
+    final res = await _channel.invokeMethod<Map<Object?, Object?>>('tapRef', {
+      'ref': ref,
+      'longClick': true,
+    });
+    return res?.map((k, v) => MapEntry(k.toString(), v)) ?? {'ok': false};
+  }
+
+  /// Sends Escape through the focused field's input connection (dismisses
+  /// some dialogs/popups). Returns {ok, message}.
+  Future<Map<String, dynamic>> imeSendEscape() async {
+    final res = await _channel.invokeMethod<Map<Object?, Object?>>('imeSendEscape');
+    return res?.map((k, v) => MapEntry(k.toString(), v)) ?? {'ok': false};
+  }
+
+  /// Identity + content of the currently focused editable field (IME mode,
+  /// API 33+). Returns {ok, fieldId?, hint?, content?, error?, message?}.
+  Future<Map<String, dynamic>> imeFieldInfo() async {
+    final res = await _channel.invokeMethod<Map<Object?, Object?>>('imeFieldInfo');
+    return res?.map((k, v) => MapEntry(k.toString(), v)) ?? {'ok': false};
+  }
+
+  /// Commits [text] into the focused field via the IME input connection
+  /// (works where SET_TEXT is refused, e.g. web inputs). Returns {ok,
+  /// content?} with the post-write field contents.
+  Future<Map<String, dynamic>> imeCommit(String text, {bool replaceAll = true}) async {
+    final res = await _channel.invokeMethod<Map<Object?, Object?>>('imeCommit', {
+      'text': text,
+      'replaceAll': replaceAll,
+    });
+    return res?.map((k, v) => MapEntry(k.toString(), v)) ?? {'ok': false};
+  }
+
+  /// Sends a Tab key through the focused field's input connection (moves to
+  /// next form field). Returns {ok, message}.
+  Future<Map<String, dynamic>> imeSendTab() async {
+    final res = await _channel.invokeMethod<Map<Object?, Object?>>('imeSendTab');
     return res?.map((k, v) => MapEntry(k.toString(), v)) ?? {'ok': false};
   }
 

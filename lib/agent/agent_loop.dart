@@ -78,6 +78,15 @@ class AgentLoop {
 
 
       final textObserver = onTextDelta;
+      // Mid-loop guard: results appended during this turn bypass
+      // truncateHistory(), so re-trim before every request. Cheap (length
+      // sums only) and a no-op under the soft limit.
+      final trimmed = trimLlmMessages(messages);
+      if (!identical(trimmed, messages)) {
+        messages
+          ..clear()
+          ..addAll(trimmed);
+      }
       final message = textObserver == null
           ? await _llm.chat(
               messages: messages,
@@ -109,7 +118,7 @@ class AgentLoop {
         messages.add({
           'role': 'tool',
           'tool_call_id': call.id,
-          'content': result.toText(),
+          'content': clampResultText(result.toText()),
         });
       }
     }

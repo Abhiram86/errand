@@ -33,10 +33,16 @@ Tool actTool({A11yService? service}) {
       'properties': {
         'action': {
           'type': 'string',
-          'enum': ['tap', 'type', 'scroll'],
+          'enum': ['tap', 'type', 'scroll', 'fill', 'tab', 'long_press', 'esc'],
           'description':
-              'tap = click a labeled control (use "label"), type = set focused '
-              'field content (use "text"), scroll = scroll the page (use "direction")',
+              'tap = click an element by "ref" number (from the last read) or '
+              'by "label"; type = set focused field content (use "text"); '
+              'scroll = scroll the page (use "direction": up/down/left/right); '
+              'fill = tap a labeled form field AND type into it atomically with '
+              'verification (use "ref" or "label" + "text"; preferred for web '
+              'forms); '
+              'tab = move focus to the next form field; long_press = long-click '
+              'a "ref"/"label" element; esc = send Escape (dismiss popups)',
         },
         'label': {
           'type': 'string',
@@ -49,6 +55,14 @@ Tool actTool({A11yService? service}) {
           'description':
               'Require an exact label match instead of best-match '
               '(default false). Prefer true when several elements share words.',
+        },
+        'ref': {
+          'type': 'integer',
+          'description':
+              'Numeric element reference from the LAST screen read, e.g. 3 for '
+              '[3]. PREFERRED over label — no collisions. Refs expire on every '
+              'new read.',
+          'minimum': 1,
         },
         'occurrence': {
           'type': 'integer',
@@ -80,10 +94,18 @@ Tool actTool({A11yService? service}) {
               'Full new content for the focused editable field. REPLACES existing '
               'content — read the outline first and include any text to keep.',
         },
+        'overwrite': {
+          'type': 'boolean',
+          'description':
+              'For fill/type: allow replacing a field that already contains '
+              'text (default false — refuses to clobber non-empty fields).',
+        },
         'direction': {
           'type': 'string',
-          'enum': ['up', 'down'],
-          'description': 'Scroll direction for action:"scroll" (default down)',
+          'enum': ['up', 'down', 'left', 'right'],
+          'description':
+              'Scroll direction for action:"scroll" (default down). left/right '
+              'for carousels and horizontal sliders.',
         },
       },
       'required': ['action'],
@@ -127,11 +149,20 @@ Future<ToolCallResult> handleActAction(ToolCall call, A11yService svc) async {
       return _type(call, svc);
     case 'scroll':
       return _scroll(call, svc);
+    case 'fill':
+      return _fill(call, svc);
+    case 'tab':
+      return _tab(call, svc);
+    case 'long_press':
+      return _longPress(call, svc);
+    case 'esc':
+      return _esc(call, svc);
     default:
       return ToolCallResult.failure(
           call.id,
-          'Unknown act action "$action". Valid actions: tap (use "label"), '
-          'type (use "text"), scroll (use "direction").');
+          'Unknown act action "$action". Valid actions: tap (use "ref" or '
+          '"label"), type (use "text"), scroll (use "direction"), fill '
+          '(use "label" + "text"), tab, long_press, esc.');
   }
 }
 
@@ -175,6 +206,28 @@ String? looksLikeCommitAction(String label) {
 // ---- Handlers ---------------------------------------------------------------
 
 Future<ToolCallResult> _tap(ToolCall call, A11yService svc) async {
+  final refRaw = call.arguments['ref'];
+  if (refRaw is int && refRaw > 0) {
+    // Numeric-ref path: no label matching, no commit-word policy (refs are
+    // only issued from reads the model already made deliberately).
+    final res = await svc.tapByRef(refRaw);
+    final probe = await svc.probeChanged();
+    final effect = probe['changed'] == true
+        ? '[effect: screen CHANGED — tap landed]'
+        : '[effect: NO observable change — tap was likely swallowed by an overlay or dead element]';
+    if (res['ok'] != true) {
+      return ToolCallResult.failure(
+        call.id,
+        '${res['message'] ?? 'Tap failed.'} $effect',
+      );
+    }
+    return ToolCallResult(
+      id: call.id,
+      ok: true,
+      output: '${res['message'] ?? ''} $effect',
+    );
+  }
+
   final label = (call.arguments['label'] as String?)?.trim();
   if (label == null || label.isEmpty) {
     return ToolCallResult.failure(
@@ -205,6 +258,138 @@ Future<ToolCallResult> _tap(ToolCall call, A11yService svc) async {
       (res['message'] as String?) ?? 'Tap failed for "$label".',
     );
   }
+  final probe = await svc.probeChanged();
+  final effect = probe['changed'] == true
+      ? '[effect: screen CHANGED]'
+      : '[effect: NO observable change — the tap may have been swallowed]';
+  return ToolCallResult(id: call.id, ok: true,
+      output: '${res['message'] as String? ?? ''} $effect');
+}
+
+/// Long-press by ref/label via ACTION_LONG_CLICK on the clickable ancestor.
+Future<ToolCallResult> _longPress(ToolCall call, A11yService svc) async {
+  final refRaw = call.arguments['ref'];
+  final label = (call.arguments['label'] as String?)?.trim();
+  if (refRaw is! int && (label == null || label.isEmpty)) {
+    return ToolCallResult.failure(
+      call.id, 'Provide "ref" (preferred) or "label" for long_press.');
+  }
+  if (refRaw is int) {
+    final res = await svc.longPressByRef(refRaw);
+    return ToolCallResult(id: call.id, ok: res['ok'] == true,
+        output: res['message'] as String? ?? '');
+  }
+  // Label fallback: resolve through tapByText's matcher is not exposed for
+  // long-press; guide to refs.
+  return ToolCallResult.failure(
+    call.id,
+    'long_press currently requires "ref" from the last screen read.',
+  );
+}
+
+/// Escape key via IME connection (dismiss dialogs/popups).
+Future<ToolCallResult> _esc(ToolCall call, A11yService svc) async {
+  final res = await svc.imeSendEscape();
+  return ToolCallResult(id: call.id, ok: res['ok'] == true,
+      output: res['message'] as String? ?? '');
+}
+
+/// Atomic form-fill: tap the labeled field -> wait for input focus ->
+/// verify WHICH field and its current content -> commit via IME (works on
+/// web inputs that refuse SET_TEXT) -> verify post-write content. Doing this
+/// in ONE tool call closes the race where ad refreshes steal focus between a
+/// separate tap and type.
+Future<ToolCallResult> _fill(ToolCall call, A11yService svc) async {
+  final refRaw = call.arguments['ref'];
+  final label = (call.arguments['label'] as String?)?.trim();
+  final byRef = refRaw is int && refRaw > 0;
+  if (!byRef && (label == null || label.isEmpty)) {
+    return ToolCallResult.failure(
+      call.id,
+      'Missing required argument: provide "ref" (preferred) or "label" — '
+      'the exact visible label of the field.',
+    );
+  }
+  final text = call.arguments['text'];
+  if (text is! String) {
+    return ToolCallResult.failure(call.id, 'Missing required argument: text.');
+  }
+
+  final occurrenceRaw = call.arguments['occurrence'];
+  final occurrence =
+      occurrenceRaw is int && occurrenceRaw > 0 ? occurrenceRaw : 1;
+  final exact = call.arguments['exact'] == true;
+  final overwrite = call.arguments['overwrite'] == true;
+
+  // 1. Tap to focus.
+  final tapped = byRef
+      ? await svc.tapByRef(refRaw)
+      : await svc.tapByText(label!, exact: exact, occurrence: occurrence);
+  if (tapped['ok'] != true) {
+    return ToolCallResult.failure(
+      call.id,
+      (tapped['message'] as String?) ??
+          'Could not tap field "${byRef ? 'ref $refRaw' : label}".',
+    );
+  }
+
+  // 2. Give the web view / app time to move focus and start input.
+  await Future<void>.delayed(const Duration(milliseconds: 700));
+
+  // 3. Verify WHAT is focused and what it contains — never write blind.
+  final info = await svc.imeFieldInfo();
+  if (info['ok'] != true) {
+    final err = (info['error'] as String?) ?? '';
+    return ToolCallResult.failure(
+      call.id,
+      err == 'NEEDS_API_33'
+          ? 'IME typing needs Android 13+. Try act type after tapping instead.'
+          : 'Focus did not land on an editable field after tapping '
+              '"${byRef ? 'ref $refRaw' : label}" (ad refresh or non-input '
+              'element). Re-read and retry.',
+    );
+  }
+  final existing = (info['content'] as String? ?? '');
+  if (existing.isNotEmpty && !overwrite) {
+    return ToolCallResult.failure(
+      call.id,
+      'Focused field already contains ${existing.length} chars ("${existing.substring(0, existing.length > 60 ? 60 : existing.length)}…"). '
+      'Refusing to clobber. If this IS the right field and replacing is intended, '
+      'retry with overwrite:true.',
+    );
+  }
+
+  // 4. Commit via IME connection (web inputs often refuse SET_TEXT).
+  final res = await svc.imeCommit(text, replaceAll: true);
+  if (res['ok'] != true) {
+    return ToolCallResult.failure(
+      call.id,
+      (res['message'] as String?) ?? 'Could not commit text into the focused field.',
+    );
+  }
+
+  // 5. Report ground-truth content for verification (chat history doubles
+  // as the receipt).
+  final content = res['content'] as String? ?? '';
+  final targetDesc = byRef ? 'ref $refRaw' : '"$label"';
+  return ToolCallResult(
+    id: call.id,
+    ok: true,
+    output:
+        'Filled $targetDesc. Field now contains ${content.length} chars: "$content". '
+        'This is a DRAFT — the user sends/submits.',
+  );
+}
+
+/// Tab hop: moves focus to the next form field via the IME input connection.
+Future<ToolCallResult> _tab(ToolCall call, A11yService svc) async {
+  final res = await svc.imeSendTab();
+  if (res['ok'] != true) {
+    return ToolCallResult.failure(
+      call.id,
+      (res['message'] as String?) ?? 'Tab failed.',
+    );
+  }
   return ToolCallResult(id: call.id, ok: true, output: res['message'] as String? ?? '');
 }
 
@@ -215,6 +400,23 @@ Future<ToolCallResult> _type(ToolCall call, A11yService svc) async {
       call.id,
       'Missing required argument: text. To clear a field pass a single space.',
     );
+  }
+
+  // Clobber guard (API 33+): refuse to wipe a non-empty field unless the
+  // caller explicitly passes overwrite:true.
+  final overwrite = call.arguments['overwrite'] == true;
+  if (!overwrite) {
+    final info = await svc.imeFieldInfo();
+    if (info['ok'] == true) {
+      final existing = info['content'] as String? ?? '';
+      if (existing.isNotEmpty) {
+        return ToolCallResult.failure(
+          call.id,
+          'Focused field already contains ${existing.length} chars '
+          '("${existing.substring(0, existing.length > 60 ? 60 : existing.length)}…"). Pass overwrite:true to replace it.',
+        );
+      }
+    }
   }
 
   final res = await svc.typeText(text);
@@ -235,8 +437,9 @@ Future<ToolCallResult> _type(ToolCall call, A11yService svc) async {
 
 Future<ToolCallResult> _scroll(ToolCall call, A11yService svc) async {
   final direction = (call.arguments['direction'] as String?) ?? 'down';
-  if (direction != 'up' && direction != 'down') {
-    return ToolCallResult.failure(call.id, 'direction must be "up" or "down"');
+  if (!['up', 'down', 'left', 'right'].contains(direction)) {
+    return ToolCallResult.failure(
+        call.id, 'direction must be up, down, left, or right');
   }
 
   final timesRaw = call.arguments['times'];
@@ -244,7 +447,7 @@ Future<ToolCallResult> _scroll(ToolCall call, A11yService svc) async {
   final nearLabel = (call.arguments['near_label'] as String?)?.trim();
 
   final res = await svc.scroll(
-    down: direction == 'down',
+    direction,
     times: times,
     nearLabel: (nearLabel?.isEmpty ?? true) ? null : nearLabel,
   );
@@ -255,10 +458,14 @@ Future<ToolCallResult> _scroll(ToolCall call, A11yService svc) async {
     );
   }
   final atEnd = res['at_end'] == true;
-  final suffix = atEnd ? ' — AT_END: no further content in this direction.' : '';
-  return ToolCallResult(
-    id: call.id,
-    ok: true,
-    output: '${res['message'] ?? ''}$suffix',
-  );
+  var output =
+      '${res['message'] ?? ''}${atEnd ? ' — AT_END: no further content in this direction.' : ''}';
+  if (res['method'] == 'gesture') {
+    // Gesture scrolls give no node-level feedback — verify with a probe.
+    final probe = await svc.probeChanged();
+    output += probe['changed'] == true
+        ? ' [effect: content moved]'
+        : ' [effect: NO change — possibly at the end of this direction]';
+  }
+  return ToolCallResult(id: call.id, ok: true, output: output);
 }

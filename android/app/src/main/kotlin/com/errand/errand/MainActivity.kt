@@ -434,7 +434,8 @@ class MainActivity : FlutterActivity() {
                         try {
                             val maxNodes = call.argument<Int>("maxNodes") ?: 300
                             val full = call.argument<Boolean>("full") ?: false
-                            result.success(svc.readScreen(maxNodes = maxNodes, full = full))
+                            val probe = call.argument<Boolean>("probe") ?: false
+                            result.success(svc.readScreen(maxNodes = maxNodes, full = full, probe = probe))
                         } catch (e: Exception) {
                             result.error("READ_ERR", e.message, null)
                         }
@@ -451,6 +452,62 @@ class MainActivity : FlutterActivity() {
                         else result.success(null)
                     }
                 }
+
+                "imeFieldInfo" -> {
+                    val svc = ErrandAccessibilityService.instance
+                    if (svc == null) {
+                        result.error("NOT_ENABLED", "Accessibility service is not enabled.", null)
+                    } else {
+                        try {
+                            result.success(svc.imeFieldInfo())
+                        } catch (e: Exception) {
+                            result.error("IME_ERR", e.message, null)
+                        }
+                    }
+                }
+
+                "imeCommit" -> {
+                    val svc = ErrandAccessibilityService.instance
+                    if (svc == null) {
+                        result.error("NOT_ENABLED", "Accessibility service is not enabled.", null)
+                    } else {
+                        try {
+                            val text = call.argument<String>("text") ?: ""
+                            val replaceAll = call.argument<Boolean>("replaceAll") ?: true
+                            result.success(svc.imeCommit(text, replaceAll))
+                        } catch (e: Exception) {
+                            result.error("IME_ERR", e.message, null)
+                        }
+                    }
+                }
+
+                "imeSendTab" -> {
+                    val svc = ErrandAccessibilityService.instance
+                    if (svc == null) {
+                        result.error("NOT_ENABLED", "Accessibility service is not enabled.", null)
+                    } else {
+                        try {
+                            result.success(svc.imeSendTab())
+                        } catch (e: Exception) {
+                            result.error("IME_ERR", e.message, null)
+                        }
+                    }
+                }
+                "tapRef" -> {
+                    val svc = ErrandAccessibilityService.instance
+                    if (svc == null) {
+                        result.error("NOT_ENABLED", "Accessibility service is not enabled.", null)
+                    } else {
+                        try {
+                            val ref = call.argument<Int>("ref") ?: 0
+                            val longClick = call.argument<Boolean>("longClick") ?: false
+                            result.success(svc.tapByRef(ref, longClick))
+                        } catch (e: Exception) {
+                            result.error("TAP_ERR", e.message, null)
+                        }
+                    }
+                }
+
                 "tapByText" -> {
                     val svc = ErrandAccessibilityService.instance
                     if (svc == null) {
@@ -485,10 +542,10 @@ class MainActivity : FlutterActivity() {
                         result.error("NOT_ENABLED", "Accessibility service is not enabled.", null)
                     } else {
                         try {
-                            val down = call.argument<Boolean>("down") ?: true
+                            val direction = call.argument<String>("direction") ?: "down"
                             val times = call.argument<Int>("times") ?: 1
                             val nearLabel = call.argument<String>("nearLabel")
-                            result.success(svc.scroll(down, times, nearLabel))
+                            result.success(svc.scroll(direction, times, nearLabel))
                         } catch (e: Exception) {
                             result.error("SCROLL_ERR", e.message, null)
                         }

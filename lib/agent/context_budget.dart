@@ -144,3 +144,113 @@ List<Message> truncateHistory(
     for (final unit in keptUnits.reversed) ...unit,
   ];
 }
+
+// ---- Mid-loop payload management (P2b) --------------------------------------
+//
+// truncateHistory() runs once per run(), but an agentic turn APPENDS results
+// as the loop progresses — a screen-automation flow adds ~12K per step. These
+// helpers keep the in-loop LLM payload inside the same budget.
+
+/// Head-clamps [text] to [kMaxToolResultChars], mirroring _clampToolResult.
+String clampResultText(String text) {
+  if (text.length <= kMaxToolResultChars) return text;
+  final dropped = text.length - kMaxToolResultChars;
+  return '${text.substring(0, kMaxToolResultChars)}'
+      '$_truncationMarker$dropped chars]';
+}
+
+int _llmMessageChars(Map<String, dynamic> message) {
+  var size = _perMessageOverheadChars;
+  final content = message['content'];
+  if (content is String) size += content.length;
+  final toolCalls = message['tool_calls'];
+  if (toolCalls is List) {
+    // Arguments dominate; jsonEncode-length is close enough for a guard.
+    for (final call in toolCalls) {
+      if (call is Map) {
+        final fn = call['function'];
+        if (fn is Map) {
+          size += (fn['name']?.toString().length ?? 0);
+          size += (fn['arguments']?.toString().length ?? 0);
+        }
+      }
+    }
+  }
+  return size;
+}
+
+int estimateLlmMessagesChars(List<Map<String, dynamic>> messages) =>
+    messages.fold(0, (sum, m) => sum + _llmMessageChars(m));
+
+/// Sliding-window trim over the in-loop LLM payload (raw message maps).
+///
+/// Drops whole oldest blocks until the payload fits [targetLimit]. A block is
+/// one of:
+/// - an assistant `tool_calls` message PLUS its following `tool` results
+///   (never split — orphaned tool results are API errors)
+/// - any standalone assistant/user text message
+///
+/// Protection rules differ from [truncateHistory]: within a single agentic
+/// run almost everything sits AFTER the one starting user message, so
+/// "everything from the last user message is mandatory" would make this a
+/// no-op. Instead only the system prompt and the last USER MESSAGE ITSELF
+/// are protected; stale intermediate tool exchanges are fair game.
+List<Map<String, dynamic>> trimLlmMessages(
+  List<Map<String, dynamic>> messages, {
+  int softLimit = kContextSoftLimit,
+  int targetLimit = kContextTarget,
+}) {
+  if (estimateLlmMessagesChars(messages) <= softLimit) return messages;
+
+  var start = 0;
+  if (messages.isNotEmpty && messages.first['role'] == 'system') start = 1;
+
+  // Partition into block ranges [from, to).
+  final blocks = <(int, int)>[];
+  var i = start;
+  while (i < messages.length) {
+    final toolCalls = messages[i]['tool_calls'];
+    if (messages[i]['role'] == 'assistant' && toolCalls is List && toolCalls.isNotEmpty) {
+      var j = i + 1;
+      while (j < messages.length && messages[j]['role'] == 'tool') {
+        j++;
+      }
+      blocks.add((i, j));
+      i = j;
+    } else {
+      blocks.add((i, i + 1));
+      i++;
+    }
+  }
+  if (blocks.isEmpty) return messages;
+
+  // The last user-message block is mandatory (the run's instruction).
+  var lastUserBlock = -1;
+  for (var b = 0; b < blocks.length; b++) {
+    for (var m = blocks[b].$1; m < blocks[b].$2; m++) {
+      if (messages[m]['role'] == 'user') lastUserBlock = b;
+    }
+  }
+
+  var total = estimateLlmMessagesChars(messages.sublist(start));
+  var dropped = false;
+  // Drop unprotected blocks oldest-first until under target. A protected
+  // block (the last user message) is skipped, not a stopping condition.
+  for (var b = 0; b < blocks.length && total > targetLimit; b++) {
+    if (b == lastUserBlock) continue;
+    final (from, to) = blocks[b];
+    for (var m = from; m < to; m++) {
+      total -= _llmMessageChars(messages[m]);
+    }
+    dropped = true;
+    blocks[b] = (-1, -1); // mark dropped
+  }
+  if (!dropped) return messages;
+
+  return [
+    for (var m = 0; m < start; m++) messages[m],
+    for (final (from, to) in blocks)
+      if (from != -1)
+        for (var m = from; m < to; m++) messages[m],
+  ];
+}
