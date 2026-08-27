@@ -71,7 +71,14 @@ class ModelCatalogService {
 
       final rawName = rawModel['name'];
       final name = rawName is String && rawName.isNotEmpty ? rawName : id;
-      models.add(ModelOption(id: id, name: name, provider: _providerFor(id)));
+      models.add(
+        ModelOption(
+          id: id,
+          name: name,
+          provider: _providerFor(id),
+          inputModalities: _inputModalitiesFor(rawModel),
+        ),
+      );
     }
 
     if (models.isEmpty) {
@@ -89,6 +96,38 @@ class ModelCatalogService {
       normalized = normalized.substring(0, normalized.length - 1);
     }
     return normalized;
+  }
+
+  /// Extracts `architecture.input_modalities` (["text","image","audio",
+  /// "video","file"]); defaults to ["text"] when absent or malformed.
+  static List<String> _inputModalitiesFor(Map rawModel) {
+    final architecture = rawModel['architecture'];
+    if (architecture is! Map) return const ['text'];
+    final modalities = architecture['input_modalities'];
+    if (modalities is! List) return const ['text'];
+    final result = <String>[
+      for (final modality in modalities)
+        if (modality is String && modality.isNotEmpty) modality,
+    ];
+    return result.contains('text') ? result : ['text', ...result];
+  }
+
+  /// Whether [modelId] claims support for an input modality, consulting every
+  /// cached catalog.
+  ///
+  /// Returns true/false from catalog knowledge; null when the model isn't in
+  /// any cache (custom endpoints that don't report architecture) — callers
+  /// should treat null as "allow the attempt".
+  static bool? supportsInput(String modelId, String modality) {
+    var seen = false;
+    for (final models in _cache.values) {
+      for (final option in models) {
+        if (option.id != modelId) continue;
+        seen = true;
+        if (option.supportsInput(modality)) return true;
+      }
+    }
+    return seen ? false : null;
   }
 
   static String _providerFor(String id) {

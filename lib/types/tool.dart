@@ -21,11 +21,19 @@ class ToolCallResult {
   final String output;
   final ToolCallError? error;
 
+  /// Optional OpenAI-compatible content parts (image_url / input_audio /
+  /// video_url / file data URLs) that accompany [output]. The agent loop
+  /// delivers them as a synthetic user message right after this tool result,
+  /// since tool-role media support varies by provider. Never persisted —
+  /// [output] is the durable record.
+  final List<Map<String, dynamic>>? contentParts;
+
   const ToolCallResult({
     required this.id,
     required this.ok,
     required this.output,
     this.error,
+    this.contentParts,
   });
 
   factory ToolCallResult.failure(

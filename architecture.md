@@ -1,6 +1,6 @@
 # Errand (Flutter) — Architecture Overview
 
-This document maps the current implementation: a streaming chat UI, an OpenAI-compatible agent loop with reasoning, file + workspace + web + Android-intent tools, structured document readers, Drift persistence, and Android shared-storage access. Everything except the LLM and Tavily runs on-device.
+This document maps the current implementation: a streaming chat UI, an OpenAI-compatible agent loop with reasoning, file + workspace + web + Android-intent + accessibility + **multimodal media** tools, structured document readers, Drift persistence (v4), and Android shared-storage access. Everything except the LLM and Tavily runs on-device.
 
 ## Big picture
 
@@ -8,26 +8,28 @@ The app keeps the conversation (and its persistence) on the phone and sends the 
 
 ```text
 chat UI (lib/main.dart: ChatScreen)
-     │  owns Conversation, _messages, _working state,
-     │  WorkingDirectory, sidebar/composer/model picker
+     │  owns Conversation, _messages, _pendingAttachments (staging),
+     │  _working state, WorkingDirectory, sidebar/composer/model picker
      │  + Drift watch streams (summaries + pinned)
      ▼
 agent loop (lib/agent/agent_loop.dart) ──────────┐
      │  _toLlmHistory() + systemPromptBuilder      │
+     │  UserMessage.attachedUris → text list      │  media via synthetic user message
+     │  ToolCallResult.contentParts → user role   │
      │  up to 18 turns, onTextDelta/onReasoning   │
      ▼                                             │
 LLM client (lib/llm/llm_client.dart)  ◀── HTTP/SSE ─┤ OpenRouter / HF / custom
      ▲  POST /chat/completions (stream:true)      │  baseUrl (AppSettingsService)
-     │  tool schemas / tool_calls / reasoning      │
+     │  tool schemas / tool_calls / reasoning      │  content: string | [text,image_url,input_audio,video_url]
      ▼                                             │
 tool registry (lib/agent/tool_registry.dart)
-     │  defaults: read, workspace, websearch, webfetch,
-     │            intent, screen, act
+     │  defaults: read (+media), workspace, websearch, webfetch,
+     │            intent, screen, act, attached_files
      ├──────────┬──────────────┬─────────────┴─────────┐
      ▼          ▼              ▼                       ▼
  file tools   workspace    web tools              intent tool
- (read)       tool         (websearch/webfetch    (open_url/search/email/
-              (pwd/cd/list/ → Tavily)                alarm/timer/share/settings/
+ (read+media) tool         (websearch/webfetch    (open_url/search/email/
+             (pwd/cd/list/ → Tavily)                alarm/timer/share/settings/
               find)                                  system toggles …)
      │           │             │                        │
      └────┬──────┘             │                        ▼
@@ -42,39 +44,50 @@ tool registry (lib/agent/tool_registry.dart)
      → LogicalDocument       │                     (UiModeManager dark mode w/ read-back,
        (paged, char-budgeted)│                      settings-panel fallbacks)
 
+a11y (P2) ──▶ ErrandAccessibilityService (channel "a11y")
+             screen (read outline, globals) + act (tap/type/scroll, Draft policy)
+
 persistence (lib/services/database.dart)
-  ErrandDatabase (drift) — Conversations / ConversationMessages / ConversationAttachments
-  saveConversation (transaction) · watchConversationSummaries · watchPinnedConversations
+  ErrandDatabase (drift, v4) — Conversations / ConversationMessages (+attachedUrisJson) /
+                               ConversationAttachments / AppSettings
+  saveConversation (transaction, merge) · watchConversationSummaries · watchPinnedConversations
 
 model catalog (lib/services/model_catalog.dart → lib/models/model_option.dart)
-  GET /models?output_modalities=text → ModelPicker dialog (searchable)
+  GET /models (≈ OpenRouter /models?output_modalities=text) → parses
+  architecture.input_modalities → ModelOption.supportsInput
+  ModelPicker dialog (searchable, marquee)
 ```
 
 ## Conversation and messages
 
 `lib/types/conversation.dart` is the runtime session container. It carries:
 
-- the optional system prompt (`localSystemPrompt` — built per turn from `WorkingDirectory.current`);
+- the optional system prompt (`localSystemPrompt` — built per turn from `WorkingDirectory.current` + screen state + attached-file inventory);
 - the complete `List<Message>` history;
 - the current `Directory` snapshot;
+- `attachedFileUris` — global inventory for the conversation (persisted via `ConversationAttachments`, shown in Settings → Local tab);
 - `title`, `provider`/`model`, `isPinned`, `createdAt`/`updatedAt`.
 
 `lib/types/message.dart` models the UI and history with typed messages:
 
-- `UserMessage` — user input;
+- `UserMessage { text, attachedUris }` — user input; `attachedUris` is the ordered list of file URIs bound to this turn (persisted per-message, rendered as a card under the bubble);
 - `AssistantMessage` — model responses (including streaming working bubble);
 - `ToolMessage` — tool name, args (`ToolInvocation`), call ID, display preview (`text`), full `result`, plus `reasoning`/`reasoningDetails`;
 - `ErrorMessage` — legacy typed error turn (transport errors are no longer inserted as messages; they surface as SnackBars via `_failWorking`).
 
-The UI stores a short tool preview for rendering (truncated), while the complete tool result is retained for future LLM requests and persisted to Drift.
+ChatScreen keeps `List<String> _pendingAttachments` (`lib/main.dart`) as the **staged** state between `+` → `Attach file` and `Send`. On send it is snapshotted into `UserMessage.attachedUris` and also appended to the conversation's global `attachedFileUris` (deduped), then cleared. The pre-send pending card (`_buildPendingAttachments`) and the post-send message card (`lib/widgets/message_bubbles.dart: MessageBubble`) both render in order.
 
-`lib/types/tool.dart` defines the runtime result: `ToolCallResult { id, ok, output, error? }` with `toText()` helper and `ToolCallError { type, message, retryable }`.
+`lib/types/tool.dart` defines the runtime result: `ToolCallResult { id, ok, output, error?, contentParts? }` with `toText()` helper and `ToolCallError { type, message, retryable }`. `contentParts` carries OpenAI-compatible media parts (`image_url` / `input_audio` / `video_url`) for `read`'s media branch — delivered as a synthetic `user` message after the tool batch (tool-role media isn't portable across providers).
 
 ## The agent — `lib/agent/`
 
 - **`tool.dart`** defines the LLM-facing `Tool` schema (`name`, `description`, `parameters`, `handler`) and parsed `ToolCall` (`id`, `name`, `arguments`). `ToolCall.toJson()` serializes arguments as a JSON string as required by OpenAI-compatible APIs. `requiresValidation` is internal metadata for future mutation tools.
-- **`tool_registry.dart`** registers the current tools and safely executes a call, converting handler exceptions into `ToolCallResult.failure`. `ToolRegistry.defaults({currentDir, workingDirectory})` currently contains `read` + `workspace` (which multiplexes `list`/`find`/`cd`/`pwd`) + `websearch` + `webfetch` + `intent` + `screen` + `act`.
-- **`agent_loop.dart`** exposes `run(Conversation)`. It builds the LLM message array (`system` + `_toLlmHistory`), injects the live system prompt each turn, and drives streaming (`chatStream`) or non-streaming (`chat`) via `LlmClient`. Consecutive `ToolMessage`s are reconstructed as one assistant `tool_calls` message + matching `tool` result messages. Tool events are emitted via `onEvent` (`AgentToolCall` with `reasoning`). Loop cap is 18 turns.
+- **`tool_registry.dart`** registers the current tools and safely executes a call, converting handler exceptions into `ToolCallResult.failure`. `ToolRegistry.defaults({currentDir, workingDirectory, supportsInput, getAttachedFiles})` currently contains `read` + `workspace` (`list`/`find`/`cd`/`pwd`) + `websearch` + `webfetch` + `intent` + `screen` + `act` + `attached_files`. `supportsInput` (from `ModelCatalogService.supportsInput`) lets `read` fail honestly when the current model lacks `image`/`audio`/`video` support; `getAttachedFiles` lets `read` resolve file-picker cache paths outside the workspace and lets `attached_files` list the conversation inventory.
+- **`agent_loop.dart`** exposes `run(Conversation)`. It builds the LLM message array (`system` + `_toLlmHistory`), injects the live system prompt each turn, and drives streaming (`chatStream`) or non-streaming (`chat`) via `LlmClient`. 
+  - `UserMessage.attachedUris` is rendered in `_toLlmHistory` as `text + "\n\n[Attached files:\n1. basename — uri]"` (no extra tool call needed for discovery).
+  - Consecutive `ToolMessage`s are reconstructed as one assistant `tool_calls` message + matching `tool` result messages.
+  - Media `contentParts` from `read` are flushed as a synthetic `user` role message (`[Media file(s) you just read …]`) after the tool batch — preserves provider compatibility.
+  - Loop cap is 18 turns; mid-loop payload guard (`context_budget.dart: trimLlmMessages`) handles screen/media bloat inside a single run (see below).
 
 ## The LLM client — `lib/llm/llm_client.dart`
 
@@ -83,7 +96,7 @@ The UI stores a short tool preview for rendering (truncated), while the complete
 - `chat()` — single JSON response, parses `choices[0].message.tool_calls` + `reasoning`/`reasoning_details`;
 - `chatStream()` — SSE (`Accept: text/event-stream`, `stream:true`), forwards `content` deltas via `onTextDelta`, reasoning deltas via `onReasoningDelta`, and accumulates fragmented `tool_calls[].function.arguments` until `[DONE]`.
 
-`LlmMessage { content, toolCalls, reasoning, reasoningDetails }` is the parsed response. `_sseDataEvents` handles UTF-8 chunk reassembly and comment keepalives. API key + baseUrl + model come from `LlmConfig`, built at runtime from `AppSettingsService` (SQLite-backed settings; no more compile-time dart-defines).
+`LlmMessage { content, toolCalls, reasoning, reasoningDetails }` is the parsed response. `_sseDataEvents` handles UTF-8 chunk reassembly and comment keepalives. API key + baseUrl + model come from `LlmConfig`, built at runtime from `AppSettingsService` (SQLite-backed settings).
 
 **Resilience (added after free-model flakiness):**
 
@@ -92,20 +105,27 @@ The UI stores a short tool preview for rendering (truncated), while the complete
 - Retry covers only time-to-response-headers for streams; mid-stream failures surface as `LlmException(transport: true)` ("Stream interrupted") and cannot be transparently resumed.
 - `LlmException.transport` marks infra-side failures (connection lost, timeouts, 429/5xx) vs agent/tool mistakes — consumed by the UI error policy (below).
 
-Keys are configured in-app (header gear icon → Settings sheet) and stored
-AES-GCM encrypted in the app-settings table.
+Keys are configured in-app (header gear icon → Settings sheet, Global tab) and stored AES-GCM encrypted in the app-settings table.
 
 ## The file & workspace tools — `lib/tools/`
 
-- **`read` (`file_tools.dart:readTool`)** — reads a bounded range. For text files: byte `offset`/`length` (default 512, max 512 KB) via `RandomAccessFile`. For structured files (PDF/DOCX/XLSX/PPTX): delegates to `readStructuredDocument` → `LogicalDocument.read(offset, length)` where `offset` is a logical unit index and `length` is a character budget (clamped to 256 KB). Path traversal is guarded via `path.relative` against `workspace.root`. Structured reads are memoized per-file in a registry-scoped map.
+- **`read` (`file_tools.dart:readTool`)** — three branches:
+  1. **Media** (`kMediaFormats`, `kMaxMediaBytes = 20 MiB`): `jpg/jpeg/png/webp/gif` → `image_url` data URL, `wav/mp3` → `input_audio {data, format}`, `mp4/webm/mov` → `video_url` data URL. Whole-file read, base64-encoded into `ToolCallResult.contentParts`; `output` stays a short summary (persisted/displayed). Capability-gated via `supportsInput(modality)` — `unsupported_modality` failure tells the model to switch models. 20 MiB pre-check is exact (`File.lengthSync`).
+  2. **Structured** (`PDF/DOCX/XLSX/PPTX`): delegates to `readStructuredDocument` → `LogicalDocument.read(offset, length)` where `offset` is a logical unit index and `length` is a character budget (clamped to 256 KB). Path traversal is guarded via `path.relative` against `workspace.root`. Structured reads are memoized per-file in a registry-scoped map.
+  3. **Text**: byte `offset`/`length` (default 512, max 512 KB) via `RandomAccessFile`.
+
+  Path resolution: `WorkingDirectory { root, current }` is the shared mutable cursor (mutated by `cd`). `_resolveWorkspaceFile` enforces `path.relative` against `workspace.root`; `_resolveReadableFile` allows an explicit escape for **file_picker cache copies** (`/data/.../cache/file_picker/...`) and any URI in `attachedFileUris` (user-picked, so trusted) even though it lives outside `/storage/emulated/0`.
+
 - **`workspace` (`workspace_tool.dart`)** — router with `action` enum `pwd|cd|list|find` multiplexing `listTool`/`findTool`/`cdTool` (+ `pwd`). Relative paths resolve from `workspace.current`; absolute paths must stay inside `workspace.root`. `WorkingDirectory { root, current }` is the shared mutable cursor (mutated by `cd`).
   - `list` — non-recursive, optional `pattern` RegExp filter, returns paths relative to `current`.
   - `find` — recursive glob (`*`/`?`, case-insensitive) with `type: file|dir`, `max_depth` (default 3, max 32), cap 500 results, skips inaccessible branches and reports them.
   - `cd` — validates target is a directory, then mutates `workspace.current`.
 
+- **`attached_files` (`attached_files_tool.dart`)** — zero-param lister: `attached_files` → `No files attached…` or `Attached files: N\n1. basename — uri`. Reads from `getAttachedFiles` (the conversation's global inventory). Lets the model discover non-pending history without guessing.
+
 ## Structured document readers — `lib/internal/document_reading/`
 
-- **`document_reader.dart`** — router by extension (`pdf`, `docx`/`docm`, `xlsx`/`xlsm`, `pptx`/`pptm`); legacy `doc/xls/ppt` and images throw `UnsupportedError` (future vision path). `readStructuredDocument` loads once; `readStructuredFile` paginates.
+- **`document_reader.dart`** — router by extension (`pdf`, `docx`/`docm`, `xlsx`/`xlsm`, `pptx`/`pptm`); legacy `doc/xls/ppt` and non-media images throw `UnsupportedError`. `readStructuredDocument` loads once; `readStructuredFile` paginates.
 - **`document_models.dart`** — `LogicalDocument { format, units }` + `LogicalDocumentUnit { label, text }` + `LogicalRead { start, end, total, hasMore, nextOffset, output }`. Budget respects character count, with one-unit overlap when `end-offset > 1` for continuity. `toToolOutput` formats the tool response.
 - **`open_xml_reader.dart`** — `_OpenXmlPackage` (zip via `archive`, XML via `xml`) with guards `_maxPackageBytes` (64 MB), `_maxPackageEntries` (2000), `_maxXmlPartBytes` (16 MB). Parsers: `_wordParagraphText`/`_wordTableRows` for DOCX, `_readSharedStrings`/`_cellValue` for XLSX (chunked into 1800-char row groups), slide `p` extraction for PPTX.
 - **`pdf_reader.dart`** — `ReadPdfText.getPDFtextPaginated` → one `LogicalDocumentUnit` per page.
@@ -153,56 +173,58 @@ Missing/failed channel calls are mapped to "no permission" rather than crashing.
 
 ## The model catalog — `lib/services/model_catalog.dart` + `lib/models/model_option.dart`
 
-- `ModelCatalogService { load(baseUrl, apiKey) }` — `GET {baseUrl}/models?output_modalities=text`, parses `data[].id/name`, maps provider from `id` prefix (`qwen/… → Qwen`). Static `_cache` + `_inFlight` dedup; fallback is `kFallbackModels` + `kDefaultModelId`; the last user-picked model persists in the settings table.
-- `ModelOption { id, name, provider }` → consumed by `ModelPicker`.
+- `ModelCatalogService { load(baseUrl, apiKey) }` — `GET {baseUrl}/models`, parses `data[].id/name` + `architecture.input_modalities` (e.g. `["text","image","audio","file"]`, default `["text"]` when absent). Static `_cache` + `_inFlight` dedup; `supportsInput(modelId, modality)` consults all cached catalogs (`true`/`false`/`null` = unknown endpoint). Fallback is `kFallbackModels` + `kDefaultModelId`; the last user-picked model persists in the settings table. Provider mapped from `id` prefix (`qwen/… → Qwen`).
+- `ModelOption { id, name, provider, inputModalities }` → consumed by `ModelPicker` (searchable dialog, header + list rows use marquee ` _ScrollingModelName` for long names).
 
 ## The UI — `lib/main.dart` + `lib/widgets/` + `lib/theme/`
 
 `ChatScreen` (with `WidgetsBindingObserver`) owns:
 
 - `ErrandDatabase.instance` + two watch subscriptions (`watchConversationSummaries`, `watchPinnedConversations`);
-- `_messages`, `_activeConversation`, `_workingDirectory`, `_modelCatalog`, `_llm`, `_selectedModel`/`_models`, `_controller`/`_scroll`;
-- streaming bookkeeping: `_workingMessageId`, `_workingText` (StringBuffer), `_workingFlushTimer` (40 ms), `_persistTimer` (600 ms), `_scrollPending`.
+- `_messages`, `_activeConversation`, `_pendingAttachments` (staged), `_workingDirectory`, `_modelCatalog`, `_llm`, `_selectedModel`/`_models`, `_controller`/`_scroll`;
+- streaming bookkeeping: `_workingMessageId`, `_workingText` (StringBuffer), `_workingFlushTimer` (40 ms), `_persistTimer` (600 ms), `_scrollPending`, `_pendingAttachments`.
 
 Flow:
 
-- `_send()` appends `UserMessage` + `AssistantMessage("…working")`, builds a `Conversation` snapshot (without the working bubble), and runs `AgentLoop` with `ToolRegistry.defaults(currentDir: root, workingDirectory)` + `systemPromptBuilder` + `onEvent`/`onTextDelta`/`onReasoningDelta`. Tool events become `ToolMessage`s via `_appendToolMessage` (finalizes prior streamed text, inserts tool, creates fresh working bubble). Deltas flush via `_flushWorkingText` → `SelectableText`. Final answer replaces the working bubble via `_replaceWorking`.
+- **Attachments**: `+` → `Attach file` sheet (`file_picker`, `allowMultiple: true`, `file_picker: ^10.1.2`) → `List<String> _pendingAttachments` (in-memory staging, deduped against history). `_buildPendingAttachments` renders a `kInputBg` card above the composer (`Attached — will send with next message`, ordered `1. basename` rows, `×` → `_detachPending`). On `_send()`, the pending list plus any `editBase` (preserved from edited `UserMessage.attachedUris` or legacy suffix) is snapshotted into `UserMessage(attachedUris: snapshot)` and appended to the conversation's global `attachedFileUris` (for `Local` tab/history), then staging is cleared. Edited messages strip/recover the legacy `[Attached files:]` suffix via `_stripAttachedBlock`/`_extractAttachedUris`.
+- **Settings sheet** (`lib/widgets/settings_sheet.dart`): `DefaultTabController(length:2)` → `Global` (OpenRouter/Tavily keys + base URL, AES-GCM) vs `Local` (attached files for current conversation — history + pending, deduped, with `+ Attach` and per-row remove). `TabBar.dividerColor: transparent`.
+- `_send()` appends `UserMessage` (with `attachedUris`) + `AssistantMessage("…working")`, builds a `Conversation` snapshot (without the working bubble), and runs `AgentLoop` with `ToolRegistry.defaults(..., supportsInput, getAttachedFiles)` + `systemPromptBuilder` (includes `WorkingDirectory.current`, screen state, and `attachedFileUris` inventory) + `onEvent`/`onTextDelta`/`onReasoningDelta`. Tool events become `ToolMessage`s via `_appendToolMessage` (finalizes prior streamed text, inserts tool, creates fresh working bubble). Deltas flush via `_flushWorkingText` → `SelectableText`. Final answer replaces the working bubble via `_replaceWorking`.
 - **Error policy**: exceptions from the loop (`LlmException`, transport or otherwise) go to `_failWorking` — the working bubble is removed and a SnackBar shows the message. Infra errors are never added to `_messages`, never persisted, never sent in history.
 - `_persistConversation()` saves the active conversation (excluding the in-flight working bubble) to Drift; `_schedulePersist` debounces, `_persistNow` flushes. `_sortedConversations` sorts by `updatedAt` desc for the sidebar.
-- Sidebar (`ChatSidebar`) shows pinned favourites + recent (watch-driven, sorted), with rename/pin/delete options, slide-in animation and scrim. `ChatComposer` has add/context actions + send (gated by `canSend`). `MessageBubbles` renders user bubbles as `SelectableText`, assistant bubbles as `GptMarkdown` (tables/code/LaTeX; list-wide `SelectionArea` provides copy), and `ToolMessageBubble` `ExpansionTile`s (header truncated, output truncated for display only) with an Open button on successful open-style intent calls that replays the persisted args via `replayIntentAction`. Empty assistant turns are suppressed in rendering (and dropped from persistence going forward). `ModelPicker` is a searchable dialog with marquee for long names. Theme is `AppColors` + dark `ColorScheme` + `ThemeData(useMaterial3:true)`.
+- Sidebar (`ChatSidebar`) shows pinned favourites + recent (watch-driven, sorted), with rename/pin/delete options, slide-in animation and scrim. `ChatComposer` has add/context actions + send (gated by `canSend`). `MessageBubbles` renders user bubbles as `SelectableText` plus an **attachment card** (`kInputBg`, `kBorder`, ordered `1. basename` rows) when `UserMessage.attachedUris` non-empty, assistant bubbles as `GptMarkdown` (tables/code/LaTeX; list-wide `SelectionArea` provides copy), and `ToolMessageBubble` `ExpansionTile`s (header truncated, output truncated for display only) with an Open button on successful open-style intent calls that replays the persisted args via `replayIntentAction`. Empty assistant turns are suppressed in rendering (and dropped from persistence going forward). `ModelPicker` rows use marquee for long names (no `ellipsis` truncation). Theme is `AppColors` + dark `ColorScheme` + `ThemeData(useMaterial3:true)`.
 
 Storage permission is checked on start and on `AppLifecycleState.resumed`, with a one-at-a-time dialog prompt.
 
 ## Persistence — `lib/services/database.dart`
 
-Drift database `ErrandDatabase` (4 tables):
+Drift database `ErrandDatabase` (4 tables + v4):
 
 - `Conversations { id PK, localSystemPrompt?, title, currentDir, provider?, model?, isPinned, createdAt, updatedAt }`
-- `ConversationMessages { localId autoinc PK, conversationId FK→Conversations.id, messageId, sortOrder, messageType (user/assistant/tool/error), messageText, toolName?, toolArgumentsJson?, result?, reasoning?, reasoningDetailsJson?, error? }`
-- `ConversationAttachments { conversationId FK, uri, PK(conversationId, uri) }`
+- `ConversationMessages { localId autoinc PK, conversationId FK→Conversations.id, messageId, sortOrder, messageType (user/assistant/tool/error), messageText, toolName?, toolArgumentsJson?, result?, reasoning?, reasoningDetailsJson?, error?, attachedUrisJson? }` — `attachedUrisJson` (v4) stores `UserMessage.attachedUris` as JSON array.
+- `ConversationAttachments { conversationId FK, uri, PK(conversationId, uri) }` — global inventory per conversation (from Settings → Local + message history).
 - `AppSettings { key PK, value }` — generic runtime KV store: encrypted API secrets (OpenRouter/Tavily keys, base-URL override) + plain preferences (voice locale, last-selected model, a11y prompt flag). Encryption lives in `SecretStore` (AES-256-GCM, key file at `<app-support>/errand.key`, outside the DB); `AppSettingsService` is the typed access layer with an in-memory cache. Replaces the former shared_preferences usage.
 
 Key ops:
 
-- `saveConversation(Conversation)` — `transaction`: `insertOnConflictUpdate` conversation row, then merge messages by `messageId` (new rows appended after max `sortOrder`, known rows updated in place — window-safe), attachments rewritten. Backed by a UNIQUE index on `(conversation_id, message_id)` and a `(conversation_id, sort_order)` lookup index (schema v2).
+- `saveConversation(Conversation)` — `transaction`: `insertOnConflictUpdate` conversation row, then merge messages by `messageId` (new rows appended after max `sortOrder`, known rows updated in place — window-safe), attachments rewritten. Backed by a UNIQUE index on `(conversation_id, message_id)` and a `(conversation_id, sort_order)` lookup index (schema v2). Message companion now includes `attachedUrisJson` for `UserMessage`.
 - `deleteConversation`, `pinConversation` (toggle), `touchConversation` (bump `updatedAt`).
 - `loadConversation(id)` / `_loadMessages` / `_loadAttachmentUris`, plus `insertMessage`/`replaceMessage`/`deleteMessage`.
 - `watchConversationSummaries()` / `watchPinnedConversations()` — ordered streams for the sidebar.
 - `getSetting(key)` / `setSetting(key, value)` / `deleteSetting(key)` — raw KV upserts/removals consumed by `AppSettingsService`.
 
-`schemaVersion = 3`, `NativeDatabase` (or `drift_flutter` on device), `inMemory()` for tests. v1→v2 migration dedupes message rows, then creates the two indexes above; v2→v3 adds the app-settings table.
+`schemaVersion = 4`, `NativeDatabase` (or `drift_flutter` on device), `inMemory()` for tests. v1→v2 migration dedupes message rows, then creates the two indexes above; v2→v3 adds the app-settings table; v3→v4 adds `attachedUrisJson`.
 
 ## Reading order
 
 1. `lib/types/message.dart`, `lib/types/conversation.dart`, `lib/types/tool.dart`
-2. `lib/agent/tool.dart` → `tool_registry.dart` → `agent_loop.dart`
-3. `lib/services/workspace.dart` + `lib/tools/file_tools.dart` + `lib/tools/workspace_tool.dart`
+2. `lib/agent/tool.dart` → `tool_registry.dart` → `agent_loop.dart` (+ `context_budget.dart`)
+3. `lib/services/workspace.dart` + `lib/tools/file_tools.dart` (incl. media branch) + `lib/tools/workspace_tool.dart` + `lib/tools/attached_files_tool.dart`
 4. `lib/internal/document_reading/` (models → reader → open_xml/pdf)
 5. `lib/tools/web_tools.dart` + `lib/services/tavily_client.dart`
 6. `lib/tools/intent_tool.dart` + `lib/services/intent_service.dart` + `MainActivity.kt` (intent channel)
 7. `lib/tools/screen_tool.dart` + `lib/tools/act_tool.dart` + `lib/services/a11y_service.dart` + `ErrandAccessibilityService.kt` (a11y channel)
 8. `lib/llm/llm_client.dart`
-9. `lib/services/database.dart` + `lib/services/model_catalog.dart`
+9. `lib/services/database.dart` + `lib/services/model_catalog.dart` + `lib/models/model_option.dart`
 10. `lib/main.dart` + `lib/widgets/` + `lib/theme/app_colors.dart`
 
 ## The accessibility tools — `screen` + `act` (P2)
@@ -229,14 +251,19 @@ detected via AppOps and surfaced as enablement guidance.
   by word-boundary matching, reporting the matched pattern. No coordinate
   taps exist at all.
 
+## Multimodality — `read` + `attached_files` (P3)
+
+- **`read` media branch** (`lib/tools/file_tools.dart`, `kMediaFormats`, `kMaxMediaBytes`) — image/audio/video whole-file read into `ToolCallResult.contentParts` as OpenAI-compatible `image_url` / `input_audio` / `video_url` data URLs. Capability-gated via `ModelCatalogService.supportsInput(modelId, modality)` (parsed from `architecture.input_modalities`). `file_picker: ^10.1.2` supplies the URIs.
+- **`attached_files` tool** (`lib/tools/attached_files_tool.dart`) — lists the conversation's global inventory (`Conversation.attachedFileUris`) so the model can discover history without guessing.
+- **Staging vs history**: `ChatScreen._pendingAttachments` (in-memory, shown as pre-send card) → on send snapshotted into `UserMessage.attachedUris` (`ConversationMessages.attachedUrisJson`, v4) + appended to `ConversationAttachments` (global). `_toLlmHistory` renders `UserMessage.attachedUris` as the `[Attached files: …]` text list; `_llmMessageChars` counts `List` content (base64) for the payload guard.
+
 ## Next steps
 
-- **P2 — AccessibilityService**: Tier S (read + globals) and Tier A Draft-mode
-  (tap/type/scroll with commit refusal) **shipped** — see `next_plan.md` §P2
-  for tier list, Play-policy findings, and remaining deferred items (plan-
-  preview card, coordinate fallback for empty-semantics apps).
 - Stream-stall watchdog for `chatStream` (inactivity timeout per SSE event; `_streamTimeout` only covers time-to-headers).
-- Per-turn context re-truncation inside long agent runs (truncation currently happens once at run start; maxTurns is 18).
+- Per-turn context re-truncation inside long agent runs (truncation currently happens once at run start; mid-loop `trimLlmMessages` handles media/screen bloat but full compaction is still TODO; maxTurns is 18).
 - Harden `_OpenXmlPackage.load` (streaming zip decode, pre-decode size check) and unify `UnsupportedError` → `ToolCallResult.failure` mapping.
-- P3 — image multimodality (build on `attachedFileUris`), safe-edit tool (`write`/`edit_file` with diff preview + undo), local retrieval (embeddings/FTS).
+- Safe-edit tool (`write`/`edit_file` with diff preview + undo) — needs the write-policy decision originally blocking it.
+- Local retrieval (embeddings/FTS) over recent docs for context budgeting.
 - Evaluate SAF as an alternative to `MANAGE_EXTERNAL_STORAGE` for Play distribution.
+- P4 — hardening release + guided refactor (see `next_plan.md` §P4: v0.2.5 memory table + Play hygiene, v0.3.0 service-by-service walkthrough in dependency order).
+

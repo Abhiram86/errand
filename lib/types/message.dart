@@ -13,7 +13,13 @@ sealed class Message {
 }
 
 class UserMessage extends Message {
-  const UserMessage({required super.id, required super.text});
+  final List<String> attachedUris;
+
+  const UserMessage({
+    required super.id,
+    required super.text,
+    this.attachedUris = const [],
+  });
 }
 
 class AssistantMessage extends Message {

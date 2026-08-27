@@ -11,6 +11,32 @@ import 'package:path/path.dart' as path;
 
 const kMaxReadBytes = 512 * 1024;
 
+/// Media files are read whole and base64-encoded into content parts; this
+/// caps the raw (pre-base64) size. 20MB matches the strictest common
+/// provider payload limit.
+const kMaxMediaBytes = 20 * 1024 * 1024;
+
+/// The "big" formats per modality — the ones every multimodal provider
+/// accepts. Anything else falls through to the text/structured readers and
+/// fails honestly there.
+const kMediaFormats = <String, ({String modality, String mime, String? format})>{
+  // Images: universally supported vision MIME types.
+  '.jpg': (modality: 'image', mime: 'image/jpeg', format: null),
+  '.jpeg': (modality: 'image', mime: 'image/jpeg', format: null),
+  '.png': (modality: 'image', mime: 'image/png', format: null),
+  '.webp': (modality: 'image', mime: 'image/webp', format: null),
+  '.gif': (modality: 'image', mime: 'image/gif', format: null),
+  // Audio: input_audio takes raw base64 plus a format tag. wav/mp3 are the
+  // OpenAI-compatible baseline; m4a/aac/ogg/flac only on some providers
+  // (e.g. Gemini) — kept out of the big set on purpose.
+  '.wav': (modality: 'audio', mime: 'audio/wav', format: 'wav'),
+  '.mp3': (modality: 'audio', mime: 'audio/mpeg', format: 'mp3'),
+  // Video: OpenRouter-style video_url with a data URL.
+  '.mp4': (modality: 'video', mime: 'video/mp4', format: null),
+  '.webm': (modality: 'video', mime: 'video/webm', format: null),
+  '.mov': (modality: 'video', mime: 'video/quicktime', format: null),
+};
+
 class WorkingDirectory {
   final Directory root;
   Directory current;
@@ -18,18 +44,29 @@ class WorkingDirectory {
   WorkingDirectory(this.root, {Directory? current}) : current = current ?? root;
 }
 
-Tool readTool(WorkingDirectory workspace) {
+Tool readTool(
+  WorkingDirectory workspace, {
+  /// Reports whether the CURRENT model claims support for an input modality
+  /// ("image"/"audio"/"video"). Null = unknown (endpoint doesn't report
+  /// architecture) — allow the attempt. Wired from ModelCatalogService in
+  /// main.dart so the tool can fail honestly before burning a turn.
+  bool Function(String modality)? supportsInput,
+  List<String> Function()? getAttachedFiles,
+}) {
   final structuredDocuments = <String, Future<LogicalDocument?>>{};
 
   return Tool(
     name: 'read',
     description:
         'Reads a chunk of a file inside the granted workspace. Supports text '
-        'files plus PDF, DOCX, XLSX, and PPTX extraction. For text files, '
-        'offset and length are byte-based. For structured files, offset is a '
-        'logical page/slide/section offset and length is a character budget; '
-        'structured pages overlap between reads. Path is relative to the '
-        'workspace or an absolute path inside it.',
+        'files plus PDF, DOCX, XLSX, and PPTX extraction, and media files '
+        '(images: jpg/png/webp/gif; audio: wav/mp3; video: mp4/webm/mov) '
+        'which are delivered to you as visual/audio content when the current '
+        'model supports that modality — read them without offset/length. For '
+        'text files, offset and length are byte-based. For structured files, '
+        'offset is a logical page/slide/section offset and length is a '
+        'character budget; structured pages overlap between reads. Path is '
+        'relative to the workspace or an absolute path inside it.',
     parameters: {
       'type': 'object',
       'properties': {
@@ -88,7 +125,7 @@ Tool readTool(WorkingDirectory workspace) {
         );
       }
 
-      final file = _resolveWorkspaceFile(workspace, rawPath);
+      final file = await _resolveReadableFile(workspace, rawPath, getAttachedFiles);
       if (file == null || !await file.exists()) {
         return ToolCallResult.failure(
           call.id,
@@ -97,6 +134,14 @@ Tool readTool(WorkingDirectory workspace) {
       }
 
       try {
+        // -- Media branch (P3): whole-file read delivered as content parts --
+        final media = kMediaFormats[path.extension(file.path).toLowerCase()];
+        if (media != null) {
+          return _readMediaFile(
+            call, file, media, supportsInput,
+          );
+        }
+
         final document = await structuredDocuments.putIfAbsent(
           file.path,
           () => readStructuredDocument(file),
@@ -315,6 +360,103 @@ Tool listTool(WorkingDirectory workspace) => Tool(
     );
   },
 );
+
+/// Reads a media file whole and returns it as OpenAI-compatible content
+/// parts. [output] stays a short text summary (the durable record shown in
+/// the UI and persisted); the bytes ride in [ToolCallResult.contentParts] as:
+/// - images:  `{type:"image_url", image_url:{url:"data:<mime>;base64,..."}}`
+/// - audio:   `{type:"input_audio", input_audio:{data:"<base64>", format:..}}`
+/// - video:   `{type:"video_url", video_url:{url:"data:<mime>;base64,..."}}`
+ToolCallResult _readMediaFile(
+  ToolCall call,
+  File file,
+  ({String modality, String mime, String? format}) media,
+  bool Function(String modality)? supportsInput,
+) {
+  final claimed = supportsInput?.call(media.modality);
+  if (claimed == false) {
+    return ToolCallResult.failure(
+      call.id,
+      'This file is a ${media.modality} (${path.basename(file.path)}), but the '
+      'current model does not support ${media.modality} input. Tell the user to '
+      'switch to a model with ${media.modality} support (e.g. filter the model '
+      'picker) and retry.',
+      type: 'unsupported_modality',
+    );
+    // claimed == null means the endpoint doesn't report architecture — let it
+    // ride; the provider will error honestly if it truly can't.
+  }
+
+  final size = file.lengthSync();
+  if (size > kMaxMediaBytes) {
+    return ToolCallResult.failure(
+      call.id,
+      'Media file too large: ${(size / 1048576).round()}MB, must be <= '
+      '${kMaxMediaBytes ~/ 1048576}MB.',
+    );
+  }
+
+  final bytes = file.readAsBytesSync();
+  final base64Data = base64Encode(bytes);
+
+  Map<String, dynamic> part;
+  switch (media.modality) {
+    case 'image':
+      part = {
+        'type': 'image_url',
+        'image_url': {'url': 'data:${media.mime};base64,$base64Data'},
+      };
+    case 'audio':
+      part = {
+        'type': 'input_audio',
+        'input_audio': {'data': base64Data, 'format': media.format},
+      };
+    case 'video':
+      part = {
+        'type': 'video_url',
+        'video_url': {'url': 'data:${media.mime};base64,$base64Data'},
+      };
+    default:
+      return ToolCallResult.failure(
+        call.id,
+        'Unsupported media modality: ${media.modality}',
+      );
+  }
+
+  final kb = (bytes.length / 1024).round();
+  return ToolCallResult(
+    id: call.id,
+    ok: true,
+    output: '${media.modality} file loaded for you: '
+        '"${path.basename(file.path)}" (${media.mime}, $kb KB). It is attached '
+        'to this conversation turn — analyze/describe it directly.',
+    contentParts: [part],
+  );
+}
+
+Future<File?> _resolveReadableFile(
+  WorkingDirectory workspace,
+  String rawPath,
+  List<String> Function()? getAttachedFiles,
+) async {
+  final workspaceFile = _resolveWorkspaceFile(workspace, rawPath);
+  if (workspaceFile != null) return workspaceFile;
+  // Fallback for file_picker cache copies (e.g. /data/user/0/.../cache/file_picker/...)
+  // and any explicitly attached URI — the user picked it, so allow it even
+  // though it lives outside /storage/emulated/0.
+  if (path.isAbsolute(rawPath)) {
+    final attached = getAttachedFiles?.call() ?? const <String>[];
+    final isAttached = attached.contains(rawPath);
+    // Also allow bare /data/... cache paths without needing the callback
+    // (covers legacy attachments before this callback was wired).
+    final isPickerCache =
+        rawPath.startsWith('/data/') && rawPath.contains('/cache/');
+    if ((isAttached || isPickerCache) && await File(rawPath).exists()) {
+      return File(path.normalize(rawPath));
+    }
+  }
+  return null;
+}
 
 File? _resolveWorkspaceFile(WorkingDirectory workspace, String rawPath) {
   final workspacePath = path.normalize(workspace.root.absolute.path);

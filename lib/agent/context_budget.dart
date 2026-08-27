@@ -28,6 +28,9 @@ const String _truncationMarker = '\n[...truncated ';
 /// messages, the full result, reasoning, and JSON-encoded args/details.
 int estimateMessageChars(Message message) {
   var size = message.text.length + _perMessageOverheadChars;
+  if (message is UserMessage && message.attachedUris.isNotEmpty) {
+    size += jsonEncode(message.attachedUris).length;
+  }
   if (message is ToolMessage) {
     size += message.tool.name.length;
     size += jsonEncode(message.tool.args).length;
@@ -162,7 +165,12 @@ String clampResultText(String text) {
 int _llmMessageChars(Map<String, dynamic> message) {
   var size = _perMessageOverheadChars;
   final content = message['content'];
-  if (content is String) size += content.length;
+  if (content is String) {
+    size += content.length;
+  } else if (content is List) {
+    // Multimodal content parts: base64 data URLs dominate the size.
+    size += jsonEncode(content).length;
+  }
   final toolCalls = message['tool_calls'];
   if (toolCalls is List) {
     // Arguments dominate; jsonEncode-length is close enough for a guard.

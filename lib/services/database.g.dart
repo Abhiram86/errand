@@ -715,6 +715,17 @@ class $ConversationMessagesTable extends ConversationMessages
     type: DriftSqlType.string,
     requiredDuringInsert: false,
   );
+  static const VerificationMeta _attachedUrisJsonMeta = const VerificationMeta(
+    'attachedUrisJson',
+  );
+  @override
+  late final GeneratedColumn<String> attachedUrisJson = GeneratedColumn<String>(
+    'attached_uris_json',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
   @override
   List<GeneratedColumn> get $columns => [
     localId,
@@ -729,6 +740,7 @@ class $ConversationMessagesTable extends ConversationMessages
     reasoning,
     reasoningDetailsJson,
     error,
+    attachedUrisJson,
   ];
   @override
   String get aliasedName => _alias ?? actualTableName;
@@ -839,6 +851,15 @@ class $ConversationMessagesTable extends ConversationMessages
         error.isAcceptableOrUnknown(data['error']!, _errorMeta),
       );
     }
+    if (data.containsKey('attached_uris_json')) {
+      context.handle(
+        _attachedUrisJsonMeta,
+        attachedUrisJson.isAcceptableOrUnknown(
+          data['attached_uris_json']!,
+          _attachedUrisJsonMeta,
+        ),
+      );
+    }
     return context;
   }
 
@@ -896,6 +917,10 @@ class $ConversationMessagesTable extends ConversationMessages
         DriftSqlType.string,
         data['${effectivePrefix}error'],
       ),
+      attachedUrisJson: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}attached_uris_json'],
+      ),
     );
   }
 
@@ -919,6 +944,7 @@ class ConversationMessageRow extends DataClass
   final String? reasoning;
   final String? reasoningDetailsJson;
   final String? error;
+  final String? attachedUrisJson;
   const ConversationMessageRow({
     required this.localId,
     required this.conversationId,
@@ -932,6 +958,7 @@ class ConversationMessageRow extends DataClass
     this.reasoning,
     this.reasoningDetailsJson,
     this.error,
+    this.attachedUrisJson,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
@@ -959,6 +986,9 @@ class ConversationMessageRow extends DataClass
     }
     if (!nullToAbsent || error != null) {
       map['error'] = Variable<String>(error);
+    }
+    if (!nullToAbsent || attachedUrisJson != null) {
+      map['attached_uris_json'] = Variable<String>(attachedUrisJson);
     }
     return map;
   }
@@ -989,6 +1019,9 @@ class ConversationMessageRow extends DataClass
       error: error == null && nullToAbsent
           ? const Value.absent()
           : Value(error),
+      attachedUrisJson: attachedUrisJson == null && nullToAbsent
+          ? const Value.absent()
+          : Value(attachedUrisJson),
     );
   }
 
@@ -1014,6 +1047,7 @@ class ConversationMessageRow extends DataClass
         json['reasoningDetailsJson'],
       ),
       error: serializer.fromJson<String?>(json['error']),
+      attachedUrisJson: serializer.fromJson<String?>(json['attachedUrisJson']),
     );
   }
   @override
@@ -1032,6 +1066,7 @@ class ConversationMessageRow extends DataClass
       'reasoning': serializer.toJson<String?>(reasoning),
       'reasoningDetailsJson': serializer.toJson<String?>(reasoningDetailsJson),
       'error': serializer.toJson<String?>(error),
+      'attachedUrisJson': serializer.toJson<String?>(attachedUrisJson),
     };
   }
 
@@ -1048,6 +1083,7 @@ class ConversationMessageRow extends DataClass
     Value<String?> reasoning = const Value.absent(),
     Value<String?> reasoningDetailsJson = const Value.absent(),
     Value<String?> error = const Value.absent(),
+    Value<String?> attachedUrisJson = const Value.absent(),
   }) => ConversationMessageRow(
     localId: localId ?? this.localId,
     conversationId: conversationId ?? this.conversationId,
@@ -1065,6 +1101,9 @@ class ConversationMessageRow extends DataClass
         ? reasoningDetailsJson.value
         : this.reasoningDetailsJson,
     error: error.present ? error.value : this.error,
+    attachedUrisJson: attachedUrisJson.present
+        ? attachedUrisJson.value
+        : this.attachedUrisJson,
   );
   ConversationMessageRow copyWithCompanion(ConversationMessagesCompanion data) {
     return ConversationMessageRow(
@@ -1090,6 +1129,9 @@ class ConversationMessageRow extends DataClass
           ? data.reasoningDetailsJson.value
           : this.reasoningDetailsJson,
       error: data.error.present ? data.error.value : this.error,
+      attachedUrisJson: data.attachedUrisJson.present
+          ? data.attachedUrisJson.value
+          : this.attachedUrisJson,
     );
   }
 
@@ -1107,7 +1149,8 @@ class ConversationMessageRow extends DataClass
           ..write('result: $result, ')
           ..write('reasoning: $reasoning, ')
           ..write('reasoningDetailsJson: $reasoningDetailsJson, ')
-          ..write('error: $error')
+          ..write('error: $error, ')
+          ..write('attachedUrisJson: $attachedUrisJson')
           ..write(')'))
         .toString();
   }
@@ -1126,6 +1169,7 @@ class ConversationMessageRow extends DataClass
     reasoning,
     reasoningDetailsJson,
     error,
+    attachedUrisJson,
   );
   @override
   bool operator ==(Object other) =>
@@ -1142,7 +1186,8 @@ class ConversationMessageRow extends DataClass
           other.result == this.result &&
           other.reasoning == this.reasoning &&
           other.reasoningDetailsJson == this.reasoningDetailsJson &&
-          other.error == this.error);
+          other.error == this.error &&
+          other.attachedUrisJson == this.attachedUrisJson);
 }
 
 class ConversationMessagesCompanion
@@ -1159,6 +1204,7 @@ class ConversationMessagesCompanion
   final Value<String?> reasoning;
   final Value<String?> reasoningDetailsJson;
   final Value<String?> error;
+  final Value<String?> attachedUrisJson;
   const ConversationMessagesCompanion({
     this.localId = const Value.absent(),
     this.conversationId = const Value.absent(),
@@ -1172,6 +1218,7 @@ class ConversationMessagesCompanion
     this.reasoning = const Value.absent(),
     this.reasoningDetailsJson = const Value.absent(),
     this.error = const Value.absent(),
+    this.attachedUrisJson = const Value.absent(),
   });
   ConversationMessagesCompanion.insert({
     this.localId = const Value.absent(),
@@ -1186,6 +1233,7 @@ class ConversationMessagesCompanion
     this.reasoning = const Value.absent(),
     this.reasoningDetailsJson = const Value.absent(),
     this.error = const Value.absent(),
+    this.attachedUrisJson = const Value.absent(),
   }) : conversationId = Value(conversationId),
        messageId = Value(messageId),
        sortOrder = Value(sortOrder),
@@ -1204,6 +1252,7 @@ class ConversationMessagesCompanion
     Expression<String>? reasoning,
     Expression<String>? reasoningDetailsJson,
     Expression<String>? error,
+    Expression<String>? attachedUrisJson,
   }) {
     return RawValuesInsertable({
       if (localId != null) 'local_id': localId,
@@ -1219,6 +1268,7 @@ class ConversationMessagesCompanion
       if (reasoningDetailsJson != null)
         'reasoning_details_json': reasoningDetailsJson,
       if (error != null) 'error': error,
+      if (attachedUrisJson != null) 'attached_uris_json': attachedUrisJson,
     });
   }
 
@@ -1235,6 +1285,7 @@ class ConversationMessagesCompanion
     Value<String?>? reasoning,
     Value<String?>? reasoningDetailsJson,
     Value<String?>? error,
+    Value<String?>? attachedUrisJson,
   }) {
     return ConversationMessagesCompanion(
       localId: localId ?? this.localId,
@@ -1249,6 +1300,7 @@ class ConversationMessagesCompanion
       reasoning: reasoning ?? this.reasoning,
       reasoningDetailsJson: reasoningDetailsJson ?? this.reasoningDetailsJson,
       error: error ?? this.error,
+      attachedUrisJson: attachedUrisJson ?? this.attachedUrisJson,
     );
   }
 
@@ -1293,6 +1345,9 @@ class ConversationMessagesCompanion
     if (error.present) {
       map['error'] = Variable<String>(error.value);
     }
+    if (attachedUrisJson.present) {
+      map['attached_uris_json'] = Variable<String>(attachedUrisJson.value);
+    }
     return map;
   }
 
@@ -1310,7 +1365,8 @@ class ConversationMessagesCompanion
           ..write('result: $result, ')
           ..write('reasoning: $reasoning, ')
           ..write('reasoningDetailsJson: $reasoningDetailsJson, ')
-          ..write('error: $error')
+          ..write('error: $error, ')
+          ..write('attachedUrisJson: $attachedUrisJson')
           ..write(')'))
         .toString();
   }
@@ -2304,6 +2360,7 @@ typedef $$ConversationMessagesTableCreateCompanionBuilder =
       Value<String?> reasoning,
       Value<String?> reasoningDetailsJson,
       Value<String?> error,
+      Value<String?> attachedUrisJson,
     });
 typedef $$ConversationMessagesTableUpdateCompanionBuilder =
     ConversationMessagesCompanion Function({
@@ -2319,6 +2376,7 @@ typedef $$ConversationMessagesTableUpdateCompanionBuilder =
       Value<String?> reasoning,
       Value<String?> reasoningDetailsJson,
       Value<String?> error,
+      Value<String?> attachedUrisJson,
     });
 
 final class $$ConversationMessagesTableReferences
@@ -2417,6 +2475,11 @@ class $$ConversationMessagesTableFilterComposer
     builder: (column) => ColumnFilters(column),
   );
 
+  ColumnFilters<String> get attachedUrisJson => $composableBuilder(
+    column: $table.attachedUrisJson,
+    builder: (column) => ColumnFilters(column),
+  );
+
   $$ConversationsTableFilterComposer get conversationId {
     final $$ConversationsTableFilterComposer composer = $composerBuilder(
       composer: this,
@@ -2505,6 +2568,11 @@ class $$ConversationMessagesTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<String> get attachedUrisJson => $composableBuilder(
+    column: $table.attachedUrisJson,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   $$ConversationsTableOrderingComposer get conversationId {
     final $$ConversationsTableOrderingComposer composer = $composerBuilder(
       composer: this,
@@ -2579,6 +2647,11 @@ class $$ConversationMessagesTableAnnotationComposer
   GeneratedColumn<String> get error =>
       $composableBuilder(column: $table.error, builder: (column) => column);
 
+  GeneratedColumn<String> get attachedUrisJson => $composableBuilder(
+    column: $table.attachedUrisJson,
+    builder: (column) => column,
+  );
+
   $$ConversationsTableAnnotationComposer get conversationId {
     final $$ConversationsTableAnnotationComposer composer = $composerBuilder(
       composer: this,
@@ -2651,6 +2724,7 @@ class $$ConversationMessagesTableTableManager
                 Value<String?> reasoning = const Value.absent(),
                 Value<String?> reasoningDetailsJson = const Value.absent(),
                 Value<String?> error = const Value.absent(),
+                Value<String?> attachedUrisJson = const Value.absent(),
               }) => ConversationMessagesCompanion(
                 localId: localId,
                 conversationId: conversationId,
@@ -2664,6 +2738,7 @@ class $$ConversationMessagesTableTableManager
                 reasoning: reasoning,
                 reasoningDetailsJson: reasoningDetailsJson,
                 error: error,
+                attachedUrisJson: attachedUrisJson,
               ),
           createCompanionCallback:
               ({
@@ -2679,6 +2754,7 @@ class $$ConversationMessagesTableTableManager
                 Value<String?> reasoning = const Value.absent(),
                 Value<String?> reasoningDetailsJson = const Value.absent(),
                 Value<String?> error = const Value.absent(),
+                Value<String?> attachedUrisJson = const Value.absent(),
               }) => ConversationMessagesCompanion.insert(
                 localId: localId,
                 conversationId: conversationId,
@@ -2692,6 +2768,7 @@ class $$ConversationMessagesTableTableManager
                 reasoning: reasoning,
                 reasoningDetailsJson: reasoningDetailsJson,
                 error: error,
+                attachedUrisJson: attachedUrisJson,
               ),
           withReferenceMapper: (p0) => p0
               .map(

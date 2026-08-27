@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:gpt_markdown/gpt_markdown.dart';
+import 'package:path/path.dart' as path;
 
 import '../theme/app_colors.dart';
 import '../tools/intent_tool.dart';
@@ -243,28 +244,71 @@ class MessageBubble extends StatelessWidget {
     // discoverable than tap-to-edit and immune to the SelectionArea
     // swallowing taps on desktop/pointer devices.
     if (isUser) {
-      return Align(
-        alignment: Alignment.centerRight,
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.end,
+      final attached = (message is UserMessage) ? (message as UserMessage).attachedUris : const <String>[];
+      Widget userRow = Row(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          if (onEdit != null)
+            Transform.translate(
+              offset: const Offset(0, -6),
+              child: IconButton(
+                onPressed: onEdit,
+                tooltip: 'Edit',
+                constraints:
+                    const BoxConstraints.tightFor(width: 28, height: 24),
+                padding: EdgeInsets.zero,
+                iconSize: 14,
+                color: kMuted,
+                icon: const Icon(Icons.edit_rounded),
+              ),
+            ),
+          Flexible(child: bubble),
+        ],
+      );
+      if (attached.isEmpty) {
+        return Align(alignment: Alignment.centerRight, child: userRow);
+      }
+      final card = Container(
+        margin: const EdgeInsets.only(top: 4, bottom: 6),
+        constraints: BoxConstraints(
+          maxWidth: MediaQuery.of(context).size.width * 0.78,
+        ),
+        decoration: BoxDecoration(
+          color: kInputBg,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: kBorder),
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (onEdit != null)
-              Transform.translate(
-                offset: const Offset(0, -6),
-                child: IconButton(
-                  onPressed: onEdit,
-                  tooltip: 'Edit',
-                  constraints:
-                      const BoxConstraints.tightFor(width: 28, height: 24),
-                  padding: EdgeInsets.zero,
-                  iconSize: 14,
-                  color: kMuted,
-                  icon: const Icon(Icons.edit_rounded),
+            for (var i = 0; i < attached.length; i++)
+              Padding(
+                padding: EdgeInsets.only(bottom: i == attached.length - 1 ? 0 : 6),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.attach_file_rounded, size: 14, color: kMuted),
+                    const SizedBox(width: 6),
+                    Flexible(
+                      child: Text(
+                        '${i + 1}. ${path.basename(attached[i])}',
+                        style: const TextStyle(color: kText, fontSize: 12, height: 1.2),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
                 ),
               ),
-            Flexible(child: bubble),
           ],
+        ),
+      );
+      return Align(
+        alignment: Alignment.centerRight,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [userRow, card],
         ),
       );
     }

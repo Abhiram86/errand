@@ -35,7 +35,50 @@ void main() {
     expect(requestCount, 1);
     expect(first.single.id, 'openai/gpt-4o-mini');
     expect(first.single.provider, 'openai');
+    // No architecture block → text-only default.
+    expect(first.single.inputModalities, ['text']);
     expect(identical(first, second), isTrue);
+    service.close();
+  });
+
+  test('parses architecture.input_modalities and supportsInput', () async {
+    final client = MockClient((request) async {
+      return http.Response(
+        jsonEncode({
+          'data': [
+            {
+              'id': 'test/vision-model',
+              'name': 'Vision',
+              'architecture': {
+                'input_modalities': ['text', 'image', 'file'],
+                'output_modalities': ['text'],
+              },
+            },
+            {
+              'id': 'test/audio-model',
+              'name': 'Audio',
+              'architecture': {
+                'input_modalities': ['text', 'audio'],
+              },
+            },
+          ],
+        }),
+        200,
+      );
+    });
+    final service = ModelCatalogService(client: client);
+
+    await service.load(
+      baseUrl: 'https://catalog-modality-test.invalid/api/v1',
+      apiKey: 'test-key',
+    );
+
+    expect(ModelCatalogService.supportsInput('test/vision-model', 'image'), isTrue);
+    expect(ModelCatalogService.supportsInput('test/vision-model', 'audio'), isFalse,
+        reason: 'catalog positively knows audio is unsupported');
+    expect(ModelCatalogService.supportsInput('test/audio-model', 'audio'), isTrue);
+    // Unknown model → null ("allow the attempt").
+    expect(ModelCatalogService.supportsInput('unknown/model', 'image'), isNull);
     service.close();
   });
 }

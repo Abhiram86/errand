@@ -61,6 +61,8 @@ class ConversationMessages extends Table {
   TextColumn get reasoningDetailsJson => text().nullable()();
 
   TextColumn get error => text().nullable()();
+
+  TextColumn get attachedUrisJson => text().nullable()();
 }
 
 @DataClassName('ConversationAttachmentRow')
@@ -105,7 +107,7 @@ final class ErrandDatabase extends _$ErrandDatabase {
       ErrandDatabase._(NativeDatabase.memory());
 
   @override
-  int get schemaVersion => 3;
+  int get schemaVersion => 4;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -130,6 +132,9 @@ final class ErrandDatabase extends _$ErrandDatabase {
       if (from < 3) {
         // v3 adds the app-settings key/value store.
         await m.createTable(appSettings);
+      }
+      if (from < 4) {
+        await m.addColumn(conversationMessages, conversationMessages.attachedUrisJson);
       }
     },
   );
@@ -574,13 +579,22 @@ final class ErrandDatabase extends _$ErrandDatabase {
             : null,
       ),
       error: Value(message is ErrorMessage ? message.error : null),
+      attachedUrisJson: Value(
+        message is UserMessage && message.attachedUris.isNotEmpty
+            ? jsonEncode(message.attachedUris)
+            : null,
+      ),
     );
   }
 
   Message _rowToMessage(ConversationMessageRow row) {
     switch (row.messageType) {
       case _userType:
-        return UserMessage(id: row.messageId, text: row.messageText);
+        return UserMessage(
+          id: row.messageId,
+          text: row.messageText,
+          attachedUris: _decodeStringList(row.attachedUrisJson),
+        );
       case _assistantType:
         return AssistantMessage(id: row.messageId, text: row.messageText);
       case _toolType:
@@ -612,6 +626,17 @@ final class ErrandDatabase extends _$ErrandDatabase {
     ToolMessage() => _toolType,
     ErrorMessage() => _errorType,
   };
+
+  static List<String> _decodeStringList(String? json) {
+    if (json == null || json.isEmpty) return const [];
+    try {
+      final decoded = jsonDecode(json);
+      if (decoded is! List) return const [];
+      return decoded.whereType<String>().toList();
+    } on FormatException {
+      return const [];
+    }
+  }
 
   static Map<String, dynamic>? _decodeObject(String? json) {
     if (json == null || json.isEmpty) return null;

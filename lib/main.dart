@@ -4,7 +4,9 @@ import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/services.dart';
+import 'package:path/path.dart' as path;
 import 'package:errand/services/database.dart';
 import 'package:errand/services/a11y_service.dart';
 import 'package:errand/services/app_settings.dart';
@@ -40,8 +42,23 @@ const kSystemPrompt =
     'fix them — NEVER repeat an identical failing call. Two identical failures '
     'in a row mean the approach is wrong: change approach or ask the user.';
 
-String _systemPromptFor(Directory currentDir, {bool screenAccess = false}) {
+String _systemPromptFor(
+  Directory currentDir, {
+  bool screenAccess = false,
+  List<String> attachedFileUris = const [],
+}) {
   var prompt = '$kSystemPrompt\nCurrent working directory: ${currentDir.path}';
+  if (attachedFileUris.isNotEmpty) {
+    final names = [
+      for (final uri in attachedFileUris) path.basename(uri),
+    ];
+    prompt +=
+        '\nAttached files (${names.length}):\n'
+        '${[
+          for (var i = 0; i < names.length; i++) '${i + 1}. ${names[i]}',
+        ].join('\n')}\n'
+        'Use attached_files to see full URIs, then read to open any of them.';
+  }
   if (screenAccess) {
     prompt +=
         '\nScreen access is ENABLED: you can use the "screen" tool to read '
@@ -131,6 +148,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   late Conversation _activeConversation;
   List<Conversation> _conversations = [];
   List<Conversation> _pinnedConversations = [];
+
+  /// Staged files from + → pending card; on send they become
+  /// UserMessage.attachedUris and are also appended to the conversation's
+  /// global inventory (_activeConversation.attachedFileUris) for the Local tab.
+  final List<String> _pendingAttachments = [];
 
   // OPT-07 sidebar pagination: pages beyond the live-watched first page.
   final List<Conversation> _olderConversations = [];
@@ -278,7 +300,36 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   /// Reloads the LLM client + catalog afterwards so new keys take effect
   /// immediately.
   Future<bool> _openSettings() async {
-    final changed = await showSettingsSheet(context);
+    // Local tab shows both history (conversation inventory) and pending.
+    final allAttached = <String>[
+      ..._activeConversation.attachedFileUris,
+      for (final p in _pendingAttachments)
+        if (!_activeConversation.attachedFileUris.contains(p)) p,
+    ];
+    final changed = await showSettingsSheet(
+      context,
+      attachedFiles: List<String>.from(allAttached),
+      onAttachFiles: (paths) async {
+        if (!mounted) return;
+        setState(() {
+          for (final p in paths) {
+            if (!_pendingAttachments.contains(p) &&
+                !_activeConversation.attachedFileUris.contains(p)) {
+              _pendingAttachments.add(p);
+            }
+          }
+        });
+      },
+      onDetachFile: (uri) {
+        if (!mounted) return;
+        // Pending takes precedence; otherwise remove from history.
+        if (_pendingAttachments.contains(uri)) {
+          setState(() => _pendingAttachments.remove(uri));
+        } else {
+          _detachFile(uri);
+        }
+      },
+    );
     if (changed && mounted) {
       setState(() {
         _llm.close();
@@ -476,9 +527,137 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
   }
 
+  // -- Attachments (P3, storage-only for now) -------------------------------
+  //
+  // Attached file URIs live on the Conversation and persist via the existing
+  // conversation_attachments table. Sending them as multimodal content parts
+  // is the next step — today they're context for the agent's read tool.
+
+  Future<void> _attachFiles() async {
+    FilePickerResult? picked;
+    try {
+      picked = await FilePicker.platform.pickFiles(allowMultiple: true);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not open picker: $e')),
+      );
+      return;
+    }
+    final paths = picked?.paths.whereType<String>().toList() ?? const [];
+    if (paths.isEmpty || !mounted) return;
+
+    setState(() {
+      for (final p in paths) {
+        if (!_pendingAttachments.contains(p) &&
+            !_activeConversation.attachedFileUris.contains(p)) {
+          _pendingAttachments.add(p);
+        }
+      }
+    });
+  }
+
+  void _detachFile(String uri) {
+    setState(() => _activeConversation.attachedFileUris.remove(uri));
+    _schedulePersist();
+  }
+
+  void _detachPending(String uri) {
+    setState(() => _pendingAttachments.remove(uri));
+  }
+
+  Widget _buildPendingAttachments() {
+    final uris = _pendingAttachments;
+    return Material(
+      color: kInputBg,
+      child: Container(
+        margin: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+        decoration: BoxDecoration(
+          color: kDarkBg,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: kBorder),
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.attach_file_rounded, size: 13, color: kMuted),
+                const SizedBox(width: 6),
+                Text('Attached — will send with next message',
+                    style: const TextStyle(color: kMuted, fontSize: 11)),
+                const Spacer(),
+                Text('${uris.length}', style: const TextStyle(color: kMuted, fontSize: 11)),
+              ],
+            ),
+            const SizedBox(height: 8),
+            for (var i = 0; i < uris.length; i++)
+              Padding(
+                padding: EdgeInsets.only(bottom: i == uris.length - 1 ? 0 : 6),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        '${i + 1}. ${path.basename(uris[i])}',
+                        style: const TextStyle(color: kText, fontSize: 12),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    InkWell(
+                      onTap: () => _detachPending(uris[i]),
+                      borderRadius: BorderRadius.circular(10),
+                      child: const Padding(
+                        padding: EdgeInsets.all(4),
+                        child: Icon(Icons.close_rounded, size: 14, color: kMuted),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
   void _showMoreActions() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('More actions are coming soon.')),
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: kDarkBg,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 8),
+            Container(
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: kBorder,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            const SizedBox(height: 8),
+            ListTile(
+              leading: const Icon(Icons.attach_file_rounded, color: kText),
+              title: const Text('Attach file', style: TextStyle(color: kText)),
+              subtitle: const Text('Image, audio, video or document',
+                  style: TextStyle(color: kMuted, fontSize: 12)),
+              onTap: () {
+                Navigator.of(sheetContext).pop();
+                _attachFiles();
+              },
+            ),
+            // Future actions slot — add more ListTiles here.
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
     );
   }
 
@@ -619,6 +798,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _workingFlushTimer?.cancel();
     _workingFlushTimer = null;
     _controller.clear();
+    _pendingAttachments.clear();
     setState(() {
       _messages = _welcomeMessages();
       _activeConversation = _newDraftConversation();
@@ -651,6 +831,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       return;
     }
 
+    _pendingAttachments.clear();
     setState(() {
       _activeConversation = loaded;
       _messages = loaded.messages;
@@ -861,21 +1042,54 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     // the (now empty) composer after the message is gone — end it.
     unawaited(SpeechService.instance.stop());
 
-    // Editing an earlier message: the resend replaces it and everything
-    // after it (later messages AND their tool runs).
+    // Preserve attachments from the message being edited (structured field
+    // for new messages, or legacy text suffix for old ones) and merge with
+    // any newly staged files.
+    List<String> editBase = const [];
     if (_editingMessageId != null) {
+      final idx = _messages.indexWhere((m) => m.id == _editingMessageId);
+      if (idx != -1) {
+        final original = _messages[idx];
+        if (original is UserMessage && original.attachedUris.isNotEmpty) {
+          editBase = List<String>.from(original.attachedUris);
+        } else {
+          editBase = _extractAttachedUris(original.text);
+        }
+      }
       await _truncateFrom(_editingMessageId!);
       _editingMessageId = null;
     }
 
-    _startConversation(text);
+    // Attached files are per-message structured data (card + LLM context).
+    // Pending (staged) + editBase are snapshotted into the UserMessage,
+    // then also appended to the conversation's global inventory so the
+    // Local tab/history reflects them.
+    final strippedText = _stripAttachedBlock(text);
+    final pending = List<String>.from(_pendingAttachments);
+    final attachedSnapshot = <String>[...editBase];
+    for (final p in pending) {
+      if (!attachedSnapshot.contains(p)) attachedSnapshot.add(p);
+    }
+
+    _startConversation(strippedText);
     setState(() {
       _messages.add(
         UserMessage(
           id: 'user-${DateTime.now().millisecondsSinceEpoch}',
-          text: text,
+          text: strippedText,
+          attachedUris: attachedSnapshot,
         ),
       );
+      if (attachedSnapshot.isNotEmpty) {
+        // Keep the conversation's global inventory in sync.
+        for (final p in attachedSnapshot) {
+          if (!_activeConversation.attachedFileUris.contains(p)) {
+            _activeConversation.attachedFileUris.add(p);
+          }
+        }
+        _pendingAttachments.clear();
+        _schedulePersist();
+      }
     });
     await _runAgentTurn();
   }
@@ -919,12 +1133,39 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     return null;
   }
 
+  String _stripAttachedBlock(String text) {
+    const marker = '\n\n[Attached files:\n';
+    final idx = text.lastIndexOf(marker);
+    if (idx == -1) return text;
+    final tail = text.substring(idx);
+    if (!tail.trim().endsWith(']')) return text;
+    return text.substring(0, idx).trimRight();
+  }
+
+  List<String> _extractAttachedUris(String text) {
+    const marker = '\n\n[Attached files:\n';
+    final idx = text.lastIndexOf(marker);
+    if (idx == -1) return const [];
+    final tail = text.substring(idx + marker.length);
+    final end = tail.lastIndexOf(']');
+    if (end == -1) return const [];
+    final block = tail.substring(0, end);
+    final uris = <String>[];
+    for (final line in block.split('\n')) {
+      final sep = line.indexOf(' — ');
+      if (sep != -1) {
+        uris.add(line.substring(sep + 3).trim());
+      }
+    }
+    return uris;
+  }
+
   /// Tap on own bubble: load its text into the composer for editing.
   void _editUserMessage(UserMessage message) {
     if (_busy) return;
     setState(() {
       _editingMessageId = message.id;
-      _controller.text = message.text;
+      _controller.text = _stripAttachedBlock(message.text);
     });
   }
 
@@ -983,8 +1224,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     try {
       final conversation = Conversation(
         id: _activeConversation.id,
-        localSystemPrompt:
-            _systemPromptFor(_workingDirectory.current, screenAccess: _a11yAvailable),
+        localSystemPrompt: _systemPromptFor(
+          _workingDirectory.current,
+          screenAccess: _a11yAvailable,
+          attachedFileUris: _activeConversation.attachedFileUris,
+        ),
         messages: _messages
             .where((message) => message.id != _workingMessageId)
             .toList(growable: false),
@@ -1003,9 +1247,17 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         registry: ToolRegistry.defaults(
           currentDir: _workingDirectory.root,
           workingDirectory: _workingDirectory,
+          supportsInput: (modality) =>
+              // null = unknown → allow the attempt; only positive knowledge
+              // of "no image/audio/video support" gates the read.
+              ModelCatalogService.supportsInput(_selectedModel, modality) != false,
+          getAttachedFiles: () => _activeConversation.attachedFileUris,
         ),
-        systemPromptBuilder: () =>
-            _systemPromptFor(_workingDirectory.current, screenAccess: _a11yAvailable),
+        systemPromptBuilder: () => _systemPromptFor(
+          _workingDirectory.current,
+          screenAccess: _a11yAvailable,
+          attachedFileUris: _activeConversation.attachedFileUris,
+        ),
         cancelToken: _cancelToken,
         onEvent: _handleEvent,
         onTextDelta: _handleTextDelta,
@@ -1383,6 +1635,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                     _buildHeader(),
                     Expanded(child: _buildMessageList()),
                     if (kDebugMode) _buildContextFooter(),
+                    if (_pendingAttachments.isNotEmpty) _buildPendingAttachments(),
                     if (_editingMessageId != null) _buildEditingBanner(),
                     _buildComposer(),
                   ],

@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'package:path/path.dart' as path;
+
 import '../llm/llm_client.dart';
 import '../types/conversation.dart';
 import 'context_budget.dart';
@@ -105,6 +107,7 @@ class AgentLoop {
       }
 
       messages.add(message.toJson());
+      final pendingMediaParts = <Map<String, dynamic>>[];
       for (final call in message.toolCalls) {
         final result = await _registry.execute(call);
         _onEvent?.call(
@@ -120,6 +123,23 @@ class AgentLoop {
           'tool_call_id': call.id,
           'content': clampResultText(result.toText()),
         });
+        // Media content parts can't ride the tool role portably across
+        // providers — deliver them as a user message after this batch.
+        pendingMediaParts.addAll(result.contentParts ?? const []);
+      }
+      if (pendingMediaParts.isNotEmpty) {
+        messages.add({
+          'role': 'user',
+          'content': [
+            const {
+              'type': 'text',
+              'text':
+                  '[Media file(s) you just read via a tool are attached above '
+                  'for your analysis.]',
+            },
+            ...pendingMediaParts,
+          ],
+        });
       }
     }
 
@@ -133,7 +153,13 @@ class AgentLoop {
       final message = history[index];
       switch (message) {
         case UserMessage():
-          messages.add({'role': 'user', 'content': message.text});
+          final content = message.attachedUris.isEmpty
+              ? message.text
+              : '${message.text}\n\n[Attached files:\n${[
+                  for (var i = 0; i < message.attachedUris.length; i++)
+                    '${i + 1}. ${path.basename(message.attachedUris[i])} — ${message.attachedUris[i]}',
+                ].join('\n')}]';
+          messages.add({'role': 'user', 'content': content});
         case AssistantMessage():
           messages.add({'role': 'assistant', 'content': message.text});
         case ErrorMessage():

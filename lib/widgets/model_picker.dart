@@ -336,15 +336,9 @@ class _ModelPickerDialogState extends State<_ModelPickerDialog> {
                             selected: isSelected,
                             selectedTileColor: kBubbleAssistant,
                             onTap: () => Navigator.of(context).pop(model.id),
-                            title: Text(
-                              model.name,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: kText,
-                                fontSize: 14,
-                                fontWeight: FontWeight.w600,
-                              ),
+                            title: _ScrollingModelName(
+                              name: model.name,
+                              color: kText,
                             ),
                             subtitle: Text(
                               model.provider,

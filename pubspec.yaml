@@ -47,6 +47,7 @@ dependencies:
   speech_to_text: ^7.4.0
   cryptography: ^2.7.0
   path_provider: ^2.1.5
+  file_picker: ^10.1.2
 
 dev_dependencies:
   flutter_test:

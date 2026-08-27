@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'tool.dart';
 import '../tools/act_tool.dart';
+import '../tools/attached_files_tool.dart';
 import '../tools/file_tools.dart';
 import '../tools/workspace_tool.dart';
 import '../tools/intent_tool.dart';
@@ -23,16 +24,24 @@ class ToolRegistry {
   factory ToolRegistry.defaults({
     required Directory currentDir,
     WorkingDirectory? workingDirectory,
+    bool Function(String modality)? supportsInput,
+    List<String> Function()? getAttachedFiles,
   }) {
     final directory = workingDirectory ?? WorkingDirectory(currentDir);
     return ToolRegistry([
-      readTool(directory),
+      readTool(
+        directory,
+        supportsInput: supportsInput,
+        getAttachedFiles: getAttachedFiles,
+      ),
       workspaceTool(directory),
       webSearchTavilyTool(),
       webFetchTool(),
       intentTool(),
       screenTool(),
       actTool(),
+      if (getAttachedFiles != null)
+        attachedFilesTool(getAttachedFiles: getAttachedFiles),
     ]);
   }
 

@@ -1,6 +1,6 @@
 # Next Plan — Status & Roadmap
 
-> **Updated Aug 22 2026.** P0 (DIY Intent tool), P1 (OPT-07 truncation) and P1.5 (UX batch: stop/copy, rename, edit/regenerate, voice input) are **shipped**. **P2 (AccessibilityService) is the active next focus.** Image multimodality deferred to P3 (build on the unused `attachedFileUris` hook).
+> **Updated Aug 26 2026.** P0, P1, P1.5 and P2 (a11y Tier S + Draft-mode injection) are **shipped — v0.2.0 released**. **P3 (multimodality) is the active focus.** P4 scoped below: 0.2.5 = policy-safe Play hardening + memory tool; 0.3.0 = guided service-by-service refactor.
 
 ---
 
@@ -338,13 +338,80 @@ OCR (~300KB, no camera perm), BiometricPrompt gating for destructive actions.
 
 ---
 
-## 🧭 P3 — Multimodality & beyond (queued after P2)
+## 🧭 P3 — Multimodality & beyond (ACTIVE)
 
 - **Image multimodality** — scope as deferred from P1.5 item 6 above; build
   the attach path on `attachedFileUris`.
 - Safe editing tool (`write`/`edit_file` with diff preview + undo) — needs
   the write-policy decision originally blocking it.
 - Local retrieval (embeddings/FTS) over recent docs for context budgeting.
+
+---
+
+## 🧭 P4 — Hardening release + guided refactor
+
+### P4a — v0.2.5 (small release, after P3)
+
+1. **Play Protect / policy hardening (legal-ish, feature-preserving).**
+   Goal: reduce the chance Play Protect flags Errand as a threat without
+   dropping any capability. Sideload-first app, so this is about reputation
+   hygiene, not Play compliance:
+   - Audit every permission against actual usage; remove anything unused.
+   - Document (in-repo) why each sensitive API is used: a11y service
+     (screen read/injection — user-enabled, disclosure string already
+     honest), MANAGE_EXTERNAL_STORAGE, WRITE_SECURE_SETTINGS,
+     RECORD_AUDIO, IME flag. Keep the accessibility `isAccessibilityTool`
+     question answered truthfully (we are NOT an accessibility tool →
+     accept Restricted-settings friction rather than lie).
+   - Avoid patterns Play Protect heuristics dislike: no dynamic code
+     loading, no reflection into private APIs, no silent installs; keep
+     all injection behind the explicit user-enabled service.
+   - Verify the release build is signed consistently and minified with the
+     current proguard rules; re-check that no debug endpoints ship.
+   - If Play Protect still flags: capture the verdict via
+     `ApplicationExitInfo` / Play Console if ever published, and fall back
+     to documenting "add to Play Protect allowlist" in README.
+2. **Small UX improvements** — ad-hoc list, e.g.: settings sheet polish,
+   better error toasts, composer tweaks found during daily use. Scope
+   flexes; nothing structural.
+3. **Global memory tool + table (schema v4).**
+   - New `memories` table: key/value or freeform rows (id, content, tags?,
+     createdAt/updatedAt) — persistent across conversations.
+   - New `memory` tool for the agent: search/recall, save, update, delete;
+     editable by the user too (simple UI later or via chat command).
+   - System-prompt hook: inject a short "known facts" digest so the agent
+     uses memory without explicit recall calls when relevant.
+
+### P4b — v0.3.0 (big: guided service-by-service refactor)
+
+Context: ~99% of the Dart code is AI-written; the goal is to understand
+and own it, then shrink and harden it — NOT a line-by-line rewrite.
+
+Process (per service):
+1. **Walkthrough** — I explain the service line by line (what each piece
+   does and why it exists).
+2. **Core-algorithm revisit** — together we decide what to cut, merge, or
+   simplify; optimize for reliability and faster response.
+3. **Rewrite service-scoped** — small, contained diffs; tests updated per
+   service before moving on.
+
+Service order (dependency-driven, leaf services first):
+1. `model_catalog.dart` + `models/model_option.dart` (smallest, isolated)
+2. `tavily_client.dart` + web tools
+3. `workspace.dart` + `file_tools.dart` + `workspace_tool.dart`
+4. `internal/document_reading/` (readers)
+5. `intent_service.dart` + `intent_tool.dart`
+6. `llm_client.dart` (+ CancelToken/retry)
+7. `agent/context_budget.dart` + `agent_loop.dart`
+8. `services/database.dart` (schema v4 from P4a included)
+9. `a11y_service.dart` + `ErrandAccessibilityService.kt` + screen/act tools
+10. `main.dart` + widgets last (UI depends on everything above)
+
+Rules of engagement during P4b:
+- No feature changes inside refactor steps — behavior parity verified by
+  the existing test suite (plus new tests where coverage is thin).
+- Any bug found during walkthrough gets fixed inline but noted separately.
+- Each service lands as its own commit so regressions are bisectable.
 
 ---
 

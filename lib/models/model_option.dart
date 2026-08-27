@@ -3,10 +3,19 @@ class ModelOption {
   final String name;
   final String provider;
 
+  /// Input modalities the model accepts, from OpenRouter's
+  /// `architecture.input_modalities`: e.g. ["text", "image", "audio", "video",
+  /// "file"]. May be absent for non-OpenRouter endpoints — treat unknown as
+  /// "not claimed" rather than "unsupported".
+  final List<String> inputModalities;
+
+  bool supportsInput(String modality) => inputModalities.contains(modality);
+
   const ModelOption({
     required this.id,
     required this.name,
     required this.provider,
+    this.inputModalities = const ['text'],
   });
 }
 
