@@ -36,7 +36,13 @@ class ModelCatalogService {
     required String baseUrl,
     required String apiKey,
   }) async {
-    final uri = Uri.parse('$baseUrl/models?output_modalities=text');
+    final Uri uri;
+    try {
+      uri = Uri.parse('$baseUrl/models?output_modalities=text');
+    } on FormatException catch (e) {
+      throw ModelCatalogException('Invalid base URL "$baseUrl": $e');
+    }
+
     http.Response response;
     try {
       response = await _client
@@ -50,6 +56,10 @@ class ModelCatalogService {
           .timeout(_catalogTimeout);
     } on TimeoutException {
       throw ModelCatalogException('Model catalog request timed out after ${_catalogTimeout.inSeconds}s');
+    } on http.ClientException catch (e) {
+      throw ModelCatalogException('Network error: ${e.message}');
+    } catch (e) {
+      throw ModelCatalogException('Network error: $e');
     }
 
     if (response.statusCode != 200) {
@@ -58,36 +68,48 @@ class ModelCatalogService {
       );
     }
 
-    final decoded = jsonDecode(response.body);
+    final dynamic decoded;
+    try {
+      decoded = jsonDecode(response.body);
+    } on FormatException catch (e) {
+      throw ModelCatalogException('Invalid JSON in model catalog response: $e');
+    } catch (e) {
+      throw ModelCatalogException('Failed to parse model catalog response: $e');
+    }
     if (decoded is! Map<String, dynamic> || decoded['data'] is! List) {
       throw const ModelCatalogException('Invalid model catalog response');
     }
 
-    final models = <ModelOption>[];
-    for (final rawModel in decoded['data'] as List) {
-      if (rawModel is! Map) continue;
-      final id = rawModel['id'];
-      if (id is! String || id.isEmpty) continue;
+    try {
+      final models = <ModelOption>[];
+      for (final rawModel in decoded['data'] as List) {
+        if (rawModel is! Map) continue;
+        final id = rawModel['id'];
+        if (id is! String || id.isEmpty) continue;
 
-      final rawName = rawModel['name'];
-      final name = rawName is String && rawName.isNotEmpty ? rawName : id;
-      models.add(
-        ModelOption(
-          id: id,
-          name: name,
-          provider: _providerFor(id),
-          inputModalities: _inputModalitiesFor(rawModel),
-        ),
-      );
+        final rawName = rawModel['name'];
+        final name = rawName is String && rawName.isNotEmpty ? rawName : id;
+        models.add(
+          ModelOption(
+            id: id,
+            name: name,
+            provider: _providerFor(id),
+            inputModalities: _inputModalitiesFor(rawModel),
+          ),
+        );
+      }
+
+      if (models.isEmpty) {
+        throw const ModelCatalogException('Model catalog was empty');
+      }
+
+      final result = List<ModelOption>.unmodifiable(models);
+      _cache[_normalizeBaseUrl(baseUrl)] = result;
+      return result;
+    } catch (e) {
+      if (e is ModelCatalogException) rethrow;
+      throw ModelCatalogException('Failed to process model catalog: $e');
     }
-
-    if (models.isEmpty) {
-      throw const ModelCatalogException('Model catalog was empty');
-    }
-
-    final result = List<ModelOption>.unmodifiable(models);
-    _cache[_normalizeBaseUrl(baseUrl)] = result;
-    return result;
   }
 
   static String _normalizeBaseUrl(String value) {
@@ -112,13 +134,28 @@ class ModelCatalogService {
     return result.contains('text') ? result : ['text', ...result];
   }
 
-  /// Whether [modelId] claims support for an input modality, consulting every
-  /// cached catalog.
+  /// Whether [modelId] claims support for an input modality.
+  ///
+  /// When [baseUrl] is provided (normalized), only that catalog is consulted —
+  /// O(n) in the target catalog. Without it, every cached catalog is scanned
+  /// — O(total). Prefer the baseUrl form on the hot path (tool calls).
   ///
   /// Returns true/false from catalog knowledge; null when the model isn't in
-  /// any cache (custom endpoints that don't report architecture) — callers
-  /// should treat null as "allow the attempt".
-  static bool? supportsInput(String modelId, String modality) {
+  /// the consulted cache(s) (custom endpoints that don't report architecture)
+  /// — callers should treat null as "allow the attempt".
+  static bool? supportsInput(String modelId, String modality, {String? baseUrl}) {
+    if (baseUrl != null) {
+      final key = _normalizeBaseUrl(baseUrl);
+      final models = _cache[key];
+      if (models == null) return null;
+      var seen = false;
+      for (final option in models) {
+        if (option.id != modelId) continue;
+        seen = true;
+        if (option.supportsInput(modality)) return true;
+      }
+      return seen ? false : null;
+    }
     var seen = false;
     for (final models in _cache.values) {
       for (final option in models) {

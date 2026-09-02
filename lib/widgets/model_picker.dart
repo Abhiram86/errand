@@ -104,7 +104,7 @@ class _ScrollingModelNameState extends State<_ScrollingModelName>
     super.initState();
     _controller = AnimationController(
       vsync: this,
-      duration: const Duration(seconds: 9),
+      duration: const Duration(seconds: 7),
     );
   }
 
@@ -153,13 +153,20 @@ class _ScrollingModelNameState extends State<_ScrollingModelName>
           maxLines: 1,
           textDirection: Directionality.of(context),
         )..layout();
+
         final overflow = painter.width - constraints.maxWidth;
         final shouldAnimate = overflow > 0 && constraints.maxWidth > 0;
 
         _syncAnimation(shouldAnimate);
 
         if (!shouldAnimate) {
-          return Text(widget.name, maxLines: 1, style: style);
+          return Text(
+            widget.name,
+            maxLines: 1,
+            softWrap: false,
+            overflow: TextOverflow.clip,
+            style: style,
+          );
         }
 
         return ClipRect(
@@ -172,10 +179,19 @@ class _ScrollingModelNameState extends State<_ScrollingModelName>
               final offset = overflow * _controller.value;
               return Transform.translate(
                 offset: Offset(-offset, 0),
-                child: SizedBox(width: painter.width, child: child),
+                child: child,
               );
             },
-            child: Text(widget.name, maxLines: 1, style: style),
+            child: SizedBox(
+              width: painter.width,
+              child: Text(
+                widget.name,
+                maxLines: 1,
+                softWrap: false,
+                overflow: TextOverflow.visible,
+                style: style,
+              ),
+            ),
           ),
         );
       },

@@ -48,21 +48,39 @@ class TavilyClient {
       throw const TavilyException('Tavily API key is not configured.');
     }
 
+    final Uri uri;
+    try {
+      uri = Uri.parse('https://api.tavily.com$endpoint');
+    } on FormatException catch (e) {
+      throw TavilyException('Invalid Tavily endpoint "$endpoint": $e');
+    }
+
+    final String encodedBody;
+    try {
+      encodedBody = jsonEncode(body);
+    } catch (e) {
+      throw TavilyException('Failed to encode Tavily request: $e');
+    }
+
     http.Response response;
     try {
       response = await _client
           .post(
-            Uri.parse('https://api.tavily.com$endpoint'),
+            uri,
             headers: {
               'Accept': 'application/json',
               'Content-Type': 'application/json',
               'Authorization': 'Bearer $apiKey',
             },
-            body: jsonEncode(body),
+            body: encodedBody,
           )
           .timeout(_tavilyTimeout);
     } on TimeoutException {
       throw TavilyException('Tavily request timed out after ${_tavilyTimeout.inSeconds}s');
+    } on http.ClientException catch (e) {
+      throw TavilyException('Network error: ${e.message}');
+    } catch (e) {
+      throw TavilyException('Network error: $e');
     }
 
     final decoded = _decodeResponse(response.body);

@@ -1,6 +1,6 @@
 # Next Plan — Status & Roadmap
 
-> **Updated Aug 26 2026.** P0, P1, P1.5 and P2 (a11y Tier S + Draft-mode injection) are **shipped — v0.2.0 released**. **P3 (multimodality) is the active focus.** P4 scoped below: 0.2.5 = policy-safe Play hardening + memory tool; 0.3.0 = guided service-by-service refactor.
+> **Updated Aug 28 2026.** P0, P1, P1.5, P2 and **P3 (multimodality) are shipped — v0.2.1**. P4 is next: **P4a = guided refactor (v0.3.0) first, then P4b = hardening + memory (v0.3.1)** — swapped from previous order per Aug 28 plan.
 
 ---
 
@@ -338,19 +338,58 @@ OCR (~300KB, no camera perm), BiometricPrompt gating for destructive actions.
 
 ---
 
-## 🧭 P3 — Multimodality & beyond (ACTIVE)
+## ✅ P3 — Multimodality (SHIPPED Aug 28 2026)
 
-- **Image multimodality** — scope as deferred from P1.5 item 6 above; build
-  the attach path on `attachedFileUris`.
-- Safe editing tool (`write`/`edit_file` with diff preview + undo) — needs
-  the write-policy decision originally blocking it.
-- Local retrieval (embeddings/FTS) over recent docs for context budgeting.
+**Image/audio/video multimodality built *inside* `read` (`lib/tools/file_tools.dart`) — no separate service — as requested Aug 26–28.**
+
+- **Media read inside `read`** — `kMediaFormats` (jpg/jpeg/png/webp/gif · wav/mp3 · mp4/webm/mov, 20 MiB cap) → `ToolCallResult.contentParts` as OpenAI-compatible `image_url` / `input_audio` / `video_url` data URLs. Whole-file, base64, `file_picker` cache-aware (`_resolveReadableFile` allows `/data/.../cache/file_picker` + any `attachedFileUris`). Capability-gated via `ModelCatalogService.supportsInput` (`architecture.input_modalities` → `ModelOption.inputModalities`); unknown endpoints (`null`) allow the attempt, known-unsupported → `unsupported_modality` honest failure. Delivered as synthetic `user` message after tool batch (`lib/agent/agent_loop.dart: pendingMediaParts`) — tool-role media isn't portable. Counted in `context_budget` `List`-content path.
+- **Attach UX** — `+` → `file_picker` (`allowMultiple: true`) → `ChatScreen._pendingAttachments` staging (pre-send card above composer) → on Send snapshotted into `UserMessage.attachedUris` (ordered, `ConversationMessages.attachedUrisJson` col, schema v4) + appended to global `ConversationAttachments` inventory. Card persists under the user bubble (in order), also visible in Settings → `Local` tab (history+pending). Legacy `[Attached files:]` suffix handled for old messages via `_stripAttachedBlock`/`_extractAttachedUris`.
+- **Discovery** — `attached_files` tool (`lib/tools/attached_files_tool.dart`, zero params) lists the global inventory; system prompt also injects `Attached files (n):` when non-empty. `ToolRegistry.defaults(supportsInput, getAttachedFiles)` wires both.
+- **Verified**: `file_picker: ^10.1.2`, `flutter analyze` clean, 81 tests (new `file_tools_media_test.dart` + `model_catalog` modality tests).
+
+*Deferred from original P3 scope:*
+- Safe editing tool (`write`/`edit_file` with diff preview + undo) → **moved to Backlog** (needs write-policy decision, not P3).
+- Local retrieval (embeddings/FTS) → **deferred** (stays backlog, not P3).
+
+**Backlog (from P3):**
+- `write`/`edit_file` + local retrieval — queued after P4; not in P3 ship.
 
 ---
 
-## 🧭 P4 — Hardening release + guided refactor
+## 🧭 P4 — Guided refactor + hardening release (swapped Aug 28: ex-P4b now first)
 
-### P4a — v0.2.5 (small release, after P3)
+### P4a — v0.3.0 (big: guided service-by-service refactor) — NOW FIRST (was P4b)
+
+Context: ~99% of the Dart code is AI-written; the goal is to understand
+and own it, then shrink and harden it — NOT a line-by-line rewrite.
+
+Process (per service):
+1. **Walkthrough** — I explain the service line by line (what each piece
+   does and why it exists).
+2. **Core-algorithm revisit** — together we decide what to cut, merge, or
+   simplify; optimize for reliability and faster response.
+3. **Rewrite service-scoped** — small, contained diffs; tests updated per
+   service before moving on.
+
+Service order (dependency-driven, leaf services first):
+1. `model_catalog.dart` + `models/model_option.dart` (smallest, isolated)
+2. `tavily_client.dart` + web tools
+3. `workspace.dart` + `file_tools.dart` + `workspace_tool.dart`
+4. `internal/document_reading/` (readers)
+5. `intent_service.dart` + `intent_tool.dart`
+6. `llm_client.dart` (+ CancelToken/retry)
+7. `agent/context_budget.dart` + `agent_loop.dart`
+8. `services/database.dart` (schema v4 — now includes P3's `attachedUrisJson`)
+9. `a11y_service.dart` + `ErrandAccessibilityService.kt` + screen/act tools
+10. `main.dart` + widgets last (UI depends on everything above)
+
+Rules of engagement during P4a:
+- No feature changes inside refactor steps — behavior parity verified by
+  the existing test suite (plus new tests where coverage is thin).
+- Any bug found during walkthrough gets fixed inline but noted separately.
+- Each service lands as its own commit so regressions are bisectable.
+
+### P4b — v0.3.1 (small release, after refactor) — NOW SECOND (was v0.2.5)
 
 1. **Play Protect / policy hardening (legal-ish, feature-preserving).**
    Goal: reduce the chance Play Protect flags Errand as a threat without
@@ -374,44 +413,16 @@ OCR (~300KB, no camera perm), BiometricPrompt gating for destructive actions.
 2. **Small UX improvements** — ad-hoc list, e.g.: settings sheet polish,
    better error toasts, composer tweaks found during daily use. Scope
    flexes; nothing structural.
-3. **Global memory tool + table (schema v4).**
+3. **Global memory tool + table (schema v5).**
    - New `memories` table: key/value or freeform rows (id, content, tags?,
      createdAt/updatedAt) — persistent across conversations.
    - New `memory` tool for the agent: search/recall, save, update, delete;
      editable by the user too (simple UI later or via chat command).
    - System-prompt hook: inject a short "known facts" digest so the agent
      uses memory without explicit recall calls when relevant.
+   - Note: was v4 in old plan; now v5 after P3's `attachedUrisJson` consumed v4.
 
-### P4b — v0.3.0 (big: guided service-by-service refactor)
-
-Context: ~99% of the Dart code is AI-written; the goal is to understand
-and own it, then shrink and harden it — NOT a line-by-line rewrite.
-
-Process (per service):
-1. **Walkthrough** — I explain the service line by line (what each piece
-   does and why it exists).
-2. **Core-algorithm revisit** — together we decide what to cut, merge, or
-   simplify; optimize for reliability and faster response.
-3. **Rewrite service-scoped** — small, contained diffs; tests updated per
-   service before moving on.
-
-Service order (dependency-driven, leaf services first):
-1. `model_catalog.dart` + `models/model_option.dart` (smallest, isolated)
-2. `tavily_client.dart` + web tools
-3. `workspace.dart` + `file_tools.dart` + `workspace_tool.dart`
-4. `internal/document_reading/` (readers)
-5. `intent_service.dart` + `intent_tool.dart`
-6. `llm_client.dart` (+ CancelToken/retry)
-7. `agent/context_budget.dart` + `agent_loop.dart`
-8. `services/database.dart` (schema v4 from P4a included)
-9. `a11y_service.dart` + `ErrandAccessibilityService.kt` + screen/act tools
-10. `main.dart` + widgets last (UI depends on everything above)
-
-Rules of engagement during P4b:
-- No feature changes inside refactor steps — behavior parity verified by
-  the existing test suite (plus new tests where coverage is thin).
-- Any bug found during walkthrough gets fixed inline but noted separately.
-- Each service lands as its own commit so regressions are bisectable.
+**Backlog (deferred from P3):** `write`/`edit_file` with diff preview + undo — needs write-policy decision, queued after P4b.
 
 ---
 

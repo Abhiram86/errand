@@ -1250,7 +1250,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           supportsInput: (modality) =>
               // null = unknown → allow the attempt; only positive knowledge
               // of "no image/audio/video support" gates the read.
-              ModelCatalogService.supportsInput(_selectedModel, modality) != false,
+              // Pass normalized baseUrl to hit O(n) single-catalog path.
+              ModelCatalogService.supportsInput(
+                _selectedModel,
+                modality,
+                baseUrl: AppSettingsService.instance.effectiveBaseUrl,
+              ) !=
+              false,
           getAttachedFiles: () => _activeConversation.attachedFileUris,
         ),
         systemPromptBuilder: () => _systemPromptFor(
