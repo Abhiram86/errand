@@ -368,6 +368,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "4.1.2"
+  intl:
+    dependency: transitive
+    description:
+      name: intl
+      sha256: "1ca20c894b1717686a2319b8548763d812bc0aabdac580420a44c5178c57a867"
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.20.3"
   io:
     dependency: transitive
     description:
@@ -648,14 +656,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.5.0"
-  read_pdf_text:
-    dependency: "direct main"
-    description:
-      name: read_pdf_text
-      sha256: "49e8e81636092789d812e01ffe351d9a4258dbea12fc8acde3c10c059044efab"
-      url: "https://pub.dev"
-    source: hosted
-    version: "0.3.1"
   recase:
     dependency: transitive
     description:
@@ -797,6 +797,22 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.4.1"
+  syncfusion_flutter_core:
+    dependency: transitive
+    description:
+      name: syncfusion_flutter_core
+      sha256: cecc21b0ac16cf6a85f9fa58d0a886cc1c0cc704f6e7aaef7c2a4412bde5ae0f
+      url: "https://pub.dev"
+    source: hosted
+    version: "34.2.6"
+  syncfusion_flutter_pdf:
+    dependency: "direct main"
+    description:
+      name: syncfusion_flutter_pdf
+      sha256: c8f4d80e2405744dc261a35d85a2255d4428b0078526583e0783d5905674c044
+      url: "https://pub.dev"
+    source: hosted
+    version: "34.2.6"
   term_glyph:
     dependency: transitive
     description:
