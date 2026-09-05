@@ -63,6 +63,10 @@ class ConversationMessages extends Table {
   TextColumn get error => text().nullable()();
 
   TextColumn get attachedUrisJson => text().nullable()();
+
+  TextColumn get model => text().nullable()();
+
+  TextColumn get provider => text().nullable()();
 }
 
 @DataClassName('ConversationAttachmentRow')
@@ -107,7 +111,7 @@ final class ErrandDatabase extends _$ErrandDatabase {
       ErrandDatabase._(NativeDatabase.memory());
 
   @override
-  int get schemaVersion => 4;
+  int get schemaVersion => 5;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -135,6 +139,10 @@ final class ErrandDatabase extends _$ErrandDatabase {
       }
       if (from < 4) {
         await m.addColumn(conversationMessages, conversationMessages.attachedUrisJson);
+      }
+      if (from < 5) {
+        await m.addColumn(conversationMessages, conversationMessages.model);
+        await m.addColumn(conversationMessages, conversationMessages.provider);
       }
     },
   );
@@ -584,6 +592,8 @@ final class ErrandDatabase extends _$ErrandDatabase {
             ? jsonEncode(message.attachedUris)
             : null,
       ),
+      model: Value(message is AssistantMessage ? message.model : null),
+      provider: Value(message is AssistantMessage ? message.provider : null),
     );
   }
 
@@ -596,7 +606,12 @@ final class ErrandDatabase extends _$ErrandDatabase {
           attachedUris: _decodeStringList(row.attachedUrisJson),
         );
       case _assistantType:
-        return AssistantMessage(id: row.messageId, text: row.messageText);
+        return AssistantMessage(
+          id: row.messageId,
+          text: row.messageText,
+          model: row.model,
+          provider: row.provider,
+        );
       case _toolType:
         return ToolMessage(
           id: row.messageId,

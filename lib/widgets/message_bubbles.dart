@@ -342,6 +342,30 @@ class MessageBubble extends StatelessWidget {
                       icon: const Icon(Icons.refresh_rounded),
                     ),
                   ),
+                if (message is AssistantMessage &&
+                    (message as AssistantMessage).model != null)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 4),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 6,
+                        vertical: 2,
+                      ),
+                      decoration: BoxDecoration(
+                        color: kInputBg,
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: kBorder.withValues(alpha: 0.5)),
+                      ),
+                      child: Text(
+                        (message as AssistantMessage).model!,
+                        style: const TextStyle(
+                          color: kMuted,
+                          fontSize: 9.5,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),

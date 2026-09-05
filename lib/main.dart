@@ -17,6 +17,7 @@ import 'agent/agent_loop.dart';
 import 'agent/context_budget.dart';
 import 'agent/tool_registry.dart';
 import 'llm/llm_client.dart';
+import 'models/llm_provider.dart';
 import 'models/model_option.dart';
 import 'services/model_catalog.dart';
 import 'services/speech_service.dart';
@@ -274,10 +275,16 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   LlmClient _createLlmClient(String model) {
     final settings = AppSettingsService.instance;
+    final provider = settings.activeProvider;
+    final apiKey = provider.id == ProviderPresetType.openRouter.id
+        ? (provider.apiKey ?? settings.openRouterKey ?? '')
+        : (provider.apiKey ?? '');
     return LlmClient(
       config: LlmConfig(
-        baseUrl: settings.effectiveBaseUrl,
-        apiKey: settings.openRouterKey ?? '',
+        baseUrl: provider.baseUrl.isNotEmpty
+            ? provider.baseUrl
+            : provider.defaultBaseUrl,
+        apiKey: apiKey,
         model: model,
       ),
     );
@@ -333,10 +340,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     );
     if (changed && mounted) {
       setState(() {
+        _activeConversation.provider = AppSettingsService.instance.activeProvider.name;
         _llm.close();
         _llm = _createLlmClient(_selectedModel);
       });
-      unawaited(_loadModelCatalog());
+      unawaited(_loadModelCatalog(forceRefresh: false));
     }
     return changed;
   }
@@ -349,10 +357,43 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     setState(() {
       _selectedModel = model;
       _activeConversation.model = model;
-      _activeConversation.provider = _providerForModel(model);
+      _activeConversation.provider = _providerForModel(model) ?? AppSettingsService.instance.activeProvider.name;
       _touchConversation();
     });
     _persistNow();
+  }
+
+  Future<List<ModelOption>> _selectProvider(LlmProvider provider) async {
+    await AppSettingsService.instance.setActiveProvider(provider.id);
+    final cached = ModelCatalogService.getCachedModels(provider.baseUrl);
+    final availableModels = (cached != null && cached.isNotEmpty)
+        ? cached
+        : provider.defaultModels;
+    final firstModel = availableModels.isNotEmpty
+        ? availableModels.first.id
+        : 'gpt-4o';
+
+    _llm.close();
+    _llm = _createLlmClient(firstModel);
+    unawaited(AppSettingsService.instance.setSelectedModel(firstModel));
+
+    setState(() {
+      _selectedModel = firstModel;
+      _activeConversation.model = firstModel;
+      _activeConversation.provider = provider.name;
+      _models = availableModels;
+      _touchConversation();
+    });
+    _persistNow();
+
+    final hasKey = provider.id == ProviderPresetType.openRouter.id
+        ? (provider.hasKey || AppSettingsService.instance.hasOpenRouterKey)
+        : provider.hasKey;
+
+    if (hasKey) {
+      await _loadModelCatalog(forceRefresh: false);
+    }
+    return _models;
   }
 
   @override
@@ -468,14 +509,35 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _loadModelCatalog() async {
+  Future<void> _loadModelCatalog({bool forceRefresh = false}) async {
     final settings = AppSettingsService.instance;
-    if (!settings.hasOpenRouterKey) return;
+    final provider = settings.activeProvider;
+    final hasKey = provider.id == ProviderPresetType.openRouter.id
+        ? (provider.hasKey || settings.hasOpenRouterKey)
+        : provider.hasKey;
+
+    if (!hasKey) {
+      if (mounted) {
+        setState(() {
+          _models = provider.defaultModels;
+        });
+      }
+      return;
+    }
 
     try {
+      final apiKey = provider.id == ProviderPresetType.openRouter.id
+          ? (provider.apiKey ?? settings.openRouterKey ?? '')
+          : (provider.apiKey ?? '');
       final models = await _modelCatalog.load(
-        baseUrl: settings.effectiveBaseUrl,
-        apiKey: settings.openRouterKey!,
+        baseUrl: provider.baseUrl.isNotEmpty
+            ? provider.baseUrl
+            : provider.defaultBaseUrl,
+        apiKey: apiKey,
+        defaultProvider: provider.name,
+        isOpenRouter: provider.id == ProviderPresetType.openRouter.id ||
+            provider.baseUrl.contains('openrouter.ai'),
+        forceRefresh: forceRefresh,
       );
       if (!mounted) return;
 
@@ -486,7 +548,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             ModelOption(
               id: _selectedModel,
               name: _selectedModel,
-              provider: 'Configured model',
+              provider: provider.name,
             ),
         ];
       });
@@ -682,7 +744,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     for (final option in _models) {
       if (option.id == model) return option.provider;
     }
-    return null;
+    return AppSettingsService.instance.activeProvider.name;
   }
 
   void _touchConversation() {
@@ -837,6 +899,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _activeConversation = loaded;
       _messages = loaded.messages;
       _selectedModel = loaded.model ?? AppSettingsService.instance.selectedModel;
+      if (loaded.provider != null) {
+        final match = AppSettingsService.instance.providers.firstWhere(
+          (p) => p.name == loaded.provider || p.id == loaded.provider,
+          orElse: () => AppSettingsService.instance.activeProvider,
+        );
+        AppSettingsService.instance.setActiveProvider(match.id);
+      }
       _llm.close();
       _llm = _createLlmClient(_selectedModel);
       _workingMessageId = null;
@@ -1199,10 +1268,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   /// Shared tail of send / edit-resend / regenerate: adds the …working
   /// bubble and runs the agent loop over the current history.
   Future<void> _runAgentTurn() async {
-    // Checked before any UI churn so a missing key can't leave a phantom
-    // working bubble behind.
-    if (!AppSettingsService.instance.hasOpenRouterKey) {
-      _showToast('Add an OpenRouter API key in Settings to start chatting.');
+    final settings = AppSettingsService.instance;
+    final provider = settings.activeProvider;
+    final hasKey = provider.id == ProviderPresetType.openRouter.id
+        ? (provider.hasKey || settings.hasOpenRouterKey)
+        : provider.hasKey;
+    if (!hasKey) {
+      final pName = provider.name;
+      _showToast('Add an API key for $pName in Settings to start chatting.');
       await _openSettings();
       return;
     }
@@ -1213,7 +1286,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _workingReasoning = false;
     _externalAppWorkDone = false;
     setState(() {
-      _messages.add(AssistantMessage(id: workingId, text: '…working'));
+      _messages.add(AssistantMessage(
+        id: workingId,
+        text: '…working',
+        model: _selectedModel,
+        provider: _activeConversation.provider ?? settings.activeProvider.name,
+      ));
       _busy = true;
     });
     // Foreground service: keeps the process non-cached (and its sockets
@@ -1315,6 +1393,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _messages[index] = AssistantMessage(
         id: id,
         text: '$label · ${_workingElapsedSeconds}s',
+        model: _selectedModel,
+        provider: _activeConversation.provider ??
+            AppSettingsService.instance.activeProvider.name,
       );
     });
   }
@@ -1472,6 +1553,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _messages[index] = AssistantMessage(
         id: _workingMessageId!,
         text: _workingText.toString(),
+        model: _selectedModel,
+        provider: _activeConversation.provider ??
+            AppSettingsService.instance.activeProvider.name,
       );
       _touchConversation();
     });
@@ -1504,6 +1588,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         final message = AssistantMessage(
           id: id ?? 'agent-${DateTime.now().millisecondsSinceEpoch}',
           text: trimmed,
+          model: _selectedModel,
+          provider: _activeConversation.provider ??
+              AppSettingsService.instance.activeProvider.name,
         );
         if (index == -1) {
           _messages.add(message);
@@ -1756,34 +1843,27 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           ),
           const SizedBox(width: 4),
           Expanded(
-            // Nothing to pick without an API key — the gear takes the
-            // picker's place until one is configured.
-            child: AppSettingsService.instance.hasOpenRouterKey
-                ? ModelPicker(
-                    selectedModel: _selectedModel,
-                    models: _models,
-                    enabled: !_busy,
-                    expand: true,
-                    onChanged: _selectModel,
-                  )
-                : Align(
-                    alignment: Alignment.centerLeft,
-                    child: TextButton.icon(
-                      onPressed: _openSettings,
-                      style: TextButton.styleFrom(foregroundColor: kText),
-                      icon: const Icon(Icons.settings_rounded, size: 18),
-                      label: const Text('Set API key'),
-                    ),
-                  ),
-          ),
-          if (AppSettingsService.instance.hasOpenRouterKey)
-            IconButton(
-              onPressed: _openSettings,
-              tooltip: 'Settings',
-              icon: const Icon(Icons.settings_rounded, size: 20),
-              color: kMuted,
-              visualDensity: VisualDensity.compact,
+            child: ModelPicker(
+              selectedModel: _selectedModel,
+              models: _models,
+              enabled: !_busy,
+              expand: true,
+              providerName: AppSettingsService.instance.activeProvider.name,
+              providers: AppSettingsService.instance.providers,
+              activeProvider: AppSettingsService.instance.activeProvider,
+              onProviderChanged: _selectProvider,
+              onManageProviders: _openSettings,
+              onRefresh: () => _loadModelCatalog(forceRefresh: true),
+              onChanged: _selectModel,
             ),
+          ),
+          IconButton(
+            onPressed: _openSettings,
+            tooltip: 'Settings',
+            icon: const Icon(Icons.settings_rounded, size: 20),
+            color: kMuted,
+            visualDensity: VisualDensity.compact,
+          ),
           const SizedBox(width: 4),
           if (_activeConversation.id != null)
           TextButton(

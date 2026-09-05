@@ -23,7 +23,15 @@ class UserMessage extends Message {
 }
 
 class AssistantMessage extends Message {
-  const AssistantMessage({required super.id, required super.text});
+  final String? model;
+  final String? provider;
+
+  const AssistantMessage({
+    required super.id,
+    required super.text,
+    this.model,
+    this.provider,
+  });
 }
 
 class ToolMessage extends Message {

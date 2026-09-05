@@ -1,17 +1,17 @@
+import 'dart:convert';
+
 import 'package:meta/meta.dart';
 
+import '../models/llm_provider.dart';
 import '../models/model_option.dart';
 import 'database.dart';
 import 'secret_store.dart';
 
 /// Typed access layer over the app-settings key/value table.
 ///
-/// Secrets ([openRouterKey], [tavilyKey], [baseUrlOverride]) are AES-GCM
-/// encrypted via [SecretStore] before they touch SQLite; preferences are
-/// stored as plain strings. Values are cached in memory after first read so
-/// per-tool-call lookups don't decrypt repeatedly — call [invalidateCache]
-/// after writes if another isolate could observe stale values (single-isolate
-/// app today, so writes update the cache directly).
+/// Secrets are AES-GCM encrypted via [SecretStore] before they touch SQLite;
+/// preferences are stored as plain strings. Values are cached in memory after
+/// first read so per-tool-call lookups don't decrypt repeatedly.
 final class AppSettingsService {
   /// Production accessor over the real SQLite database.
   static final AppSettingsService instance = AppSettingsService();
@@ -38,32 +38,257 @@ final class AppSettingsService {
   static const _kVoiceLocale = 'pref.voice_input_locale';
   static const _kA11yPromptDismissed = 'pref.a11y_prompt_dismissed';
 
+  static const _kProviders = 'pref.llm_providers_v1';
+  static const _kActiveProviderId = 'pref.active_provider_id';
+  static const _secretProviderKeyPrefix = 'secret.provider.';
+
   String? _openRouterKey;
   String? _tavilyKey;
   String? _baseUrlOverride;
   String? _selectedModel;
   bool _cacheLoaded = false;
 
-  /// Loads all secrets into memory once; safe to call multiple times.
+  List<LlmProvider> _providers = [];
+  String? _activeProviderId;
+
+  /// Loads all secrets and providers into memory once; safe to call multiple times.
   Future<void> ensureLoaded() async {
     await _store.ensureKey();
     if (_cacheLoaded) return;
+
     _openRouterKey = await _readSecret(_kOpenRouterKey);
     _tavilyKey = await _readSecret(_kTavilyKey);
     _baseUrlOverride = await _readSecret(_kBaseUrlOverride);
+
+    await _loadProviders();
     _cacheLoaded = true;
   }
 
+  // -- Provider Management ---------------------------------------------------
+
+  List<LlmProvider> get providers => List.unmodifiable(_providers);
+
+  String get activeProviderId {
+    if (_activeProviderId != null &&
+        _providers.any((p) => p.id == _activeProviderId)) {
+      return _activeProviderId!;
+    }
+    return _providers.isNotEmpty ? _providers.first.id : ProviderPresetType.openRouter.id;
+  }
+
+  LlmProvider get activeProvider {
+    final id = activeProviderId;
+    for (final p in _providers) {
+      if (p.id == id) {
+        if (p.id == ProviderPresetType.openRouter.id && !p.hasKey && hasOpenRouterKey) {
+          return p.copyWith(apiKey: openRouterKey);
+        }
+        return p;
+      }
+    }
+    if (_providers.isNotEmpty) {
+      final first = _providers.first;
+      if (first.id == ProviderPresetType.openRouter.id && !first.hasKey && hasOpenRouterKey) {
+        return first.copyWith(apiKey: openRouterKey);
+      }
+      return first;
+    }
+    return ProviderPresetType.openRouter.createProvider(isDefault: true);
+  }
+
+  bool get hasActiveProviderKey => activeProvider.hasKey;
+
+  Future<void> setActiveProvider(String providerId) async {
+    if (!_providers.any((p) => p.id == providerId)) return;
+    _activeProviderId = providerId;
+    await _db.setSetting(_kActiveProviderId, providerId);
+    for (var i = 0; i < _providers.length; i++) {
+      final p = _providers[i];
+      if (p.isDefault != (p.id == providerId)) {
+        _providers[i] = p.copyWith(isDefault: p.id == providerId);
+      }
+    }
+    await _saveProvidersMetadata();
+  }
+
+  Future<void> saveProvider(
+    LlmProvider provider, {
+    String? apiKey,
+    bool clearKey = false,
+  }) async {
+    final secretKey = '$_secretProviderKeyPrefix${provider.id}.api_key';
+    String? resolvedKey;
+
+    if (clearKey) {
+      resolvedKey = null;
+      await _writeSecret(secretKey, null);
+      if (provider.id == ProviderPresetType.openRouter.id) {
+        _openRouterKey = null;
+        await _writeSecret(_kOpenRouterKey, null);
+      }
+    } else if (apiKey != null) {
+      final trimmed = apiKey.trim();
+      resolvedKey = trimmed.isEmpty ? null : trimmed;
+      await _writeSecret(secretKey, resolvedKey);
+      if (provider.id == ProviderPresetType.openRouter.id) {
+        _openRouterKey = resolvedKey;
+        await _writeSecret(_kOpenRouterKey, resolvedKey);
+      }
+    } else {
+      resolvedKey = provider.apiKey;
+    }
+
+    final updated = provider.copyWith(
+      apiKey: resolvedKey,
+      updatedAt: DateTime.now(),
+    );
+
+    final index = _providers.indexWhere((p) => p.id == provider.id);
+    if (index >= 0) {
+      _providers[index] = updated;
+    } else {
+      _providers.add(updated);
+    }
+
+    if (updated.isDefault) {
+      _activeProviderId = updated.id;
+      await _db.setSetting(_kActiveProviderId, updated.id);
+      for (var i = 0; i < _providers.length; i++) {
+        if (_providers[i].id != updated.id && _providers[i].isDefault) {
+          _providers[i] = _providers[i].copyWith(isDefault: false);
+        }
+      }
+    }
+
+    await _saveProvidersMetadata();
+  }
+
+  Future<void> deleteProvider(String providerId) async {
+    final secretKey = '$_secretProviderKeyPrefix$providerId.api_key';
+    await _writeSecret(secretKey, null);
+    if (providerId == ProviderPresetType.openRouter.id) {
+      _openRouterKey = null;
+      await _writeSecret(_kOpenRouterKey, null);
+    }
+
+    _providers.removeWhere((p) => p.id == providerId);
+
+    if (_providers.isEmpty) {
+      // Re-initialize default presets so user is never left with zero providers
+      _providers = _createDefaultPresets();
+      _activeProviderId = _providers.first.id;
+    } else if (_activeProviderId == providerId) {
+      _activeProviderId = _providers.first.id;
+      _providers[0] = _providers[0].copyWith(isDefault: true);
+      await _db.setSetting(_kActiveProviderId, _activeProviderId!);
+    }
+
+    await _saveProvidersMetadata();
+  }
+
+  Future<void> _loadProviders() async {
+    final rawJson = await _db.getSetting(_kProviders);
+    _activeProviderId = await _db.getSetting(_kActiveProviderId);
+
+    if (rawJson == null || rawJson.trim().isEmpty) {
+      // Initialize the 4 default presets: OpenCode Zen, OpenRouter, Groq, BYOK
+      _providers = _createDefaultPresets();
+
+      // If legacy OpenRouter key or base URL override existed, migrate it
+      if (_openRouterKey != null && _openRouterKey!.isNotEmpty) {
+        final openRouterIndex = _providers.indexWhere(
+          (p) => p.id == ProviderPresetType.openRouter.id,
+        );
+        if (openRouterIndex >= 0) {
+          _providers[openRouterIndex] = _providers[openRouterIndex].copyWith(
+            apiKey: _openRouterKey,
+            baseUrl: _baseUrlOverride ?? ProviderPresetType.openRouter.defaultBaseUrl,
+            isDefault: true,
+          );
+          _activeProviderId = ProviderPresetType.openRouter.id;
+        }
+      }
+
+      _activeProviderId ??= _providers.first.id;
+      await _saveProvidersMetadata();
+      await _db.setSetting(_kActiveProviderId, _activeProviderId!);
+      return;
+    }
+
+    try {
+      final decoded = jsonDecode(rawJson) as List<dynamic>;
+      final list = <LlmProvider>[];
+      for (final item in decoded) {
+        if (item is! Map<String, dynamic>) continue;
+        var p = LlmProvider.fromJson(item);
+        if (p.id == ProviderPresetType.openCodeZen.id &&
+            (p.baseUrl == 'https://api.opencode.com/v1' || p.baseUrl.isEmpty)) {
+          p = p.copyWith(baseUrl: ProviderPresetType.openCodeZen.defaultBaseUrl);
+        }
+        final secretKey = '$_secretProviderKeyPrefix${p.id}.api_key';
+        var key = await _readSecret(secretKey);
+        // Fallback for openrouter legacy key
+        if (p.id == ProviderPresetType.openRouter.id && (key == null || key.isEmpty)) {
+          key = _openRouterKey;
+        }
+        list.add(p.copyWith(apiKey: key));
+      }
+
+      if (list.isEmpty) {
+        _providers = _createDefaultPresets();
+      } else {
+        _providers = list;
+      }
+    } catch (_) {
+      _providers = _createDefaultPresets();
+    }
+
+    if (_activeProviderId == null ||
+        !_providers.any((p) => p.id == _activeProviderId)) {
+      _activeProviderId = _providers.first.id;
+      await _db.setSetting(_kActiveProviderId, _activeProviderId!);
+    }
+  }
+
+  Future<void> _saveProvidersMetadata() async {
+    final serialized = jsonEncode(_providers.map((p) => p.toJson()).toList());
+    await _db.setSetting(_kProviders, serialized);
+  }
+
+  List<LlmProvider> _createDefaultPresets() {
+    return [
+      ProviderPresetType.openCodeZen.createProvider(),
+      ProviderPresetType.openRouter.createProvider(isDefault: true),
+      ProviderPresetType.groq.createProvider(),
+      ProviderPresetType.byok.createProvider(),
+    ];
+  }
+
+  // -- Legacy & Convenience Accessors ----------------------------------------
+
   /// The OpenRouter API key, or null when not configured.
-  String? get openRouterKey => _openRouterKey;
+  String? get openRouterKey {
+    final orProvider = _providers.cast<LlmProvider?>().firstWhere(
+          (p) => p?.id == ProviderPresetType.openRouter.id,
+          orElse: () => null,
+        );
+    return orProvider?.apiKey ?? _openRouterKey;
+  }
 
   bool get hasOpenRouterKey =>
-      _openRouterKey != null && _openRouterKey!.trim().isNotEmpty;
+      openRouterKey != null && openRouterKey!.trim().isNotEmpty;
 
   Future<void> setOpenRouterKey(String? value) async {
     final trimmed = value?.trim();
     _openRouterKey = (trimmed == null || trimmed.isEmpty) ? null : trimmed;
     await _writeSecret(_kOpenRouterKey, _openRouterKey);
+    final orProvider = _providers.cast<LlmProvider?>().firstWhere(
+          (p) => p?.id == ProviderPresetType.openRouter.id,
+          orElse: () => null,
+        );
+    if (orProvider != null) {
+      await saveProvider(orProvider, apiKey: _openRouterKey);
+    }
   }
 
   /// The Tavily API key, or null when not configured.
@@ -77,7 +302,7 @@ final class AppSettingsService {
     await _writeSecret(_kTavilyKey, _tavilyKey);
   }
 
-  /// Optional LLM endpoint override; null/empty → the OpenRouter default.
+  /// Base URL override for active provider or legacy OpenRouter.
   String? get baseUrlOverride {
     final value = _baseUrlOverride;
     return (value == null || value.trim().isEmpty) ? null : value.trim();
@@ -89,16 +314,16 @@ final class AppSettingsService {
     await _writeSecret(_kBaseUrlOverride, _baseUrlOverride);
   }
 
-  /// Base URL for LLM + model-catalog requests.
+  /// Default OpenRouter base URL.
   static const defaultBaseUrl = 'https://openrouter.ai/api/v1';
 
   String get effectiveBaseUrl =>
-      baseUrlOverride ?? defaultBaseUrl;
+      baseUrlOverride ??
+      (activeProvider.baseUrl.isNotEmpty ? activeProvider.baseUrl : defaultBaseUrl);
 
   // -- Preferences ----------------------------------------------------------
 
-  /// Last model picked by the user, so launches stop resetting to the
-  /// built-in default.
+  /// Last model picked by the user.
   String get selectedModel => _selectedModel ?? kDefaultModelId;
 
   Future<void> setSelectedModel(String value) async {
@@ -111,8 +336,7 @@ final class AppSettingsService {
     return _selectedModel;
   }
 
-  /// Speech-recognition locale id persisted across sessions (null = device
-  /// default / not yet picked).
+  /// Speech-recognition locale id persisted across sessions.
   Future<String?> loadVoiceLocaleId() => _db.getSetting(_kVoiceLocale);
 
   Future<void> saveVoiceLocaleId(String? localeId) async {
@@ -140,6 +364,8 @@ final class AppSettingsService {
     _openRouterKey = null;
     _tavilyKey = null;
     _baseUrlOverride = null;
+    _providers = [];
+    _activeProviderId = null;
     _cacheLoaded = false;
   }
 
@@ -151,7 +377,6 @@ final class AppSettingsService {
     try {
       return await _store.decryptString(token);
     } on SecretStoreException {
-      // Key rotated or payload corrupted: treat as unset rather than crash.
       return null;
     }
   }

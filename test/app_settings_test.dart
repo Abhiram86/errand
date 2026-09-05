@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:errand/models/model_option.dart';
 import 'package:errand/services/app_settings.dart';
 import 'package:errand/services/database.dart';
 import 'package:errand/services/secret_store.dart';
@@ -68,7 +69,7 @@ void main() {
   });
 
   test('selected model persists and defaults', () async {
-    expect(settings.selectedModel, equals('nvidia/nemotron-3-ultra-550b-a55b:free'));
+    expect(settings.selectedModel, equals(kDefaultModelId));
     await settings.setSelectedModel('openai/gpt-4o-mini');
 
     final reloaded = AppSettingsService(
