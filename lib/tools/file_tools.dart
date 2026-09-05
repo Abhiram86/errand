@@ -44,6 +44,18 @@ class WorkingDirectory {
   WorkingDirectory(this.root, {Directory? current}) : current = current ?? root;
 }
 
+class _CachedStructuredDocument {
+  final DateTime lastModified;
+  final int fileLength;
+  final LogicalDocument document;
+
+  _CachedStructuredDocument({
+    required this.lastModified,
+    required this.fileLength,
+    required this.document,
+  });
+}
+
 Tool readTool(
   WorkingDirectory workspace, {
   /// Reports whether the CURRENT model claims support for an input modality
@@ -53,7 +65,7 @@ Tool readTool(
   bool Function(String modality)? supportsInput,
   List<String> Function()? getAttachedFiles,
 }) {
-  final structuredDocuments = <String, Future<LogicalDocument?>>{};
+  final structuredDocuments = <String, _CachedStructuredDocument>{};
 
   return Tool(
     name: 'read',
@@ -142,10 +154,32 @@ Tool readTool(
           );
         }
 
-        final document = await structuredDocuments.putIfAbsent(
-          file.path,
-          () => readStructuredDocument(file),
-        );
+        final stat = await file.stat();
+        final cached = structuredDocuments[file.path];
+        LogicalDocument? document;
+
+        if (cached != null &&
+            cached.lastModified == stat.modified &&
+            cached.fileLength == stat.size) {
+          document = cached.document;
+        } else {
+          cached?.document.dispose();
+          document = await readStructuredDocument(file);
+          if (document != null) {
+            if (structuredDocuments.length >= 10) {
+              final oldestKey = structuredDocuments.keys.first;
+              structuredDocuments.remove(oldestKey)?.document.dispose();
+            }
+            structuredDocuments[file.path] = _CachedStructuredDocument(
+              lastModified: stat.modified,
+              fileLength: stat.size,
+              document: document,
+            );
+          } else {
+            structuredDocuments.remove(file.path);
+          }
+        }
+
         final structured = document?.read(offset: offset, length: length);
         if (structured != null) {
           return ToolCallResult(

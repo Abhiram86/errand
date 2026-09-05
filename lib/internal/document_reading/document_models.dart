@@ -14,6 +14,9 @@ class LogicalDocument {
 
   const LogicalDocument({required this.format, required this.units});
 
+  /// Releases any native or package resources held by this document.
+  void dispose() {}
+
   LogicalRead read({required int offset, required int length}) {
     if (units.isEmpty) {
       return LogicalRead(
@@ -24,6 +27,10 @@ class LogicalDocument {
         hasMore: false,
         output: 'No readable text was found.',
       );
+    }
+
+    if (offset < 0) {
+      throw RangeError('Logical offset cannot be negative.');
     }
 
     if (offset >= units.length) {

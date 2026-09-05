@@ -85,6 +85,83 @@ void main() {
     expect(document.units.single.label, 'Slide 1');
     expect(document.units.single.text, 'Quarterly results');
   });
+
+  test('respects PPTX presentation relationship slide order over file name order', () async {
+    final file = await _writePackage({
+      'ppt/presentation.xml': '''
+        <p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+          <p:sldIdLst>
+            <p:sldId id="257" r:id="rId2"/>
+            <p:sldId id="256" r:id="rId1"/>
+          </p:sldIdLst>
+        </p:presentation>
+      ''',
+      'ppt/_rels/presentation.xml.rels': '''
+        <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+          <Relationship Id="rId1" Target="slides/slide1.xml"/>
+          <Relationship Id="rId2" Target="slides/slide2.xml"/>
+        </Relationships>
+      ''',
+      'ppt/slides/slide1.xml': '''
+        <p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+          <p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>Slide One</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld>
+        </p:sld>
+      ''',
+      'ppt/slides/slide2.xml': '''
+        <p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+          <p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>Slide Two</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld>
+        </p:sld>
+      ''',
+    }, suffix: '.pptx');
+
+    final document = await readPptxDocument(file);
+
+    expect(document.units, hasLength(2));
+    // Slide 2 is listed first in sldIdLst
+    expect(document.units[0].label, 'Slide 1');
+    expect(document.units[0].text, 'Slide Two');
+    expect(document.units[1].label, 'Slide 2');
+    expect(document.units[1].text, 'Slide One');
+  });
+
+  test('maps XLSX sheets via workbook relationships correctly when filenames diverge', () async {
+    final file = await _writePackage({
+      'xl/workbook.xml': '''
+        <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+          <sheets>
+            <sheet name="Overview" r:id="rId1"/>
+            <sheet name="Details" r:id="rId2"/>
+          </sheets>
+        </workbook>
+      ''',
+      'xl/_rels/workbook.xml.rels': '''
+        <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+          <Relationship Id="rId1" Target="worksheets/sheet2.xml"/>
+          <Relationship Id="rId2" Target="worksheets/sheet1.xml"/>
+        </Relationships>
+      ''',
+      'xl/worksheets/sheet1.xml': '''
+        <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+          <sheetData><row r="1"><c r="A1"><v>100</v></c></row></sheetData>
+        </worksheet>
+      ''',
+      'xl/worksheets/sheet2.xml': '''
+        <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+          <sheetData><row r="1"><c r="A1"><v>200</v></c></row></sheetData>
+        </worksheet>
+      ''',
+    }, suffix: '.xlsx');
+
+    final document = await readXlsxDocument(file);
+
+    expect(document.units, hasLength(2));
+    // Overview points to sheet2 (value 200)
+    expect(document.units[0].label, contains('Sheet: Overview'));
+    expect(document.units[0].text, contains('A1=200'));
+    // Details points to sheet1 (value 100)
+    expect(document.units[1].label, contains('Sheet: Details'));
+    expect(document.units[1].text, contains('A1=100'));
+  });
 }
 
 Future<File> _writePackage(
