@@ -203,6 +203,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   bool _scrollPending = false;
   bool _permissionDialogOpen = false;
   bool _sidebarOpen = false;
+  bool _externalAppWorkDone = false;
   StreamSubscription<List<Conversation>>? _conversationsSub;
   StreamSubscription<List<Conversation>>? _pinnedConversationsSub;
   Timer? _persistTimer;
@@ -1210,6 +1211,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _workingMessageId = workingId;
     _workingText.clear();
     _workingReasoning = false;
+    _externalAppWorkDone = false;
     setState(() {
       _messages.add(AssistantMessage(id: workingId, text: '…working'));
       _busy = true;
@@ -1324,6 +1326,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _workingFlushTimer = null;
     _workingElapsedTimer?.cancel();
     unawaited(_intentService.stopWorkIndicator());
+    if (_externalAppWorkDone) {
+      unawaited(_intentService.bringToFront());
+    }
     final id = _workingMessageId;
     _workingText.clear();
     if (!mounted) return;
@@ -1358,6 +1363,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         reasoning: final reasoning,
         reasoningDetails: final reasoningDetails,
       ):
+        if (call.name == 'screen' || call.name == 'act') {
+          _externalAppWorkDone = true;
+        }
         final text =
             '${call.name} → ${result.ok ? result.output.split('\n').take(3).join('\n') : result.errorMessage}';
 
@@ -1476,6 +1484,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _workingFlushTimer = null;
     _workingElapsedTimer?.cancel();
     unawaited(_intentService.stopWorkIndicator());
+    if (_externalAppWorkDone) {
+      unawaited(_intentService.bringToFront());
+    }
     final id = _workingMessageId;
     _workingText.clear();
     if (!mounted) return;

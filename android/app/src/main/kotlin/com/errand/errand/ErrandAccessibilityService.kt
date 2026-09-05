@@ -503,6 +503,13 @@ class ErrandAccessibilityService : AccessibilityService() {
             "lock_screen" ->
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) GLOBAL_ACTION_LOCK_SCREEN
                 else return "LOCK_SCREEN needs API 28+"
+            "return_to_errand" -> {
+                val intent = Intent(this, MainActivity::class.java).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                }
+                startActivity(intent)
+                return null
+            }
             else -> return "Unknown global action '$name'"
         }
         return if (performGlobalAction(action)) null else "Global action '$name' failed"

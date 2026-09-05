@@ -2,8 +2,9 @@ package com.errand.errand
 
 import android.Manifest
 import android.accessibilityservice.AccessibilityServiceInfo
-import android.app.AlarmManager
-import android.app.UiModeManager
+import android.app.ActivityOptions
+import android.app.PendingIntent
+import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -11,11 +12,14 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.Settings
+import android.webkit.MimeTypeMap
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import java.io.File
 
 class MainActivity : FlutterActivity() {
 
@@ -95,6 +99,57 @@ class MainActivity : FlutterActivity() {
                                 }
                                 packageManager.getLaunchIntentForPackage(pkg)
                             }
+
+                            action == "open_file" || (action == "open_url" && data != null && (data.startsWith("/") || data.startsWith("file://"))) -> {
+                                val rawPath = data ?: ""
+                                val filePath = if (rawPath.startsWith("file://")) {
+                                    Uri.parse(rawPath).path ?: rawPath.removePrefix("file://")
+                                } else {
+                                    rawPath
+                                }
+                                val file = File(filePath)
+                                if (!file.exists()) {
+                                    result.error("FILE_NOT_FOUND", "File does not exist: ${file.absolutePath}", null)
+                                    return@setMethodCallHandler
+                                }
+
+                                val authority = "${applicationContext.packageName}.fileprovider"
+                                val contentUri = FileProvider.getUriForFile(this, authority, file)
+
+                                val extension = MimeTypeMap.getFileExtensionFromUrl(contentUri.toString())
+                                    .ifEmpty { file.extension }
+                                    .lowercase()
+                                val resolvedType = type ?: MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension) ?: when (extension) {
+                                    "mp3" -> "audio/mpeg"
+                                    "wav" -> "audio/wav"
+                                    "ogg", "oga" -> "audio/ogg"
+                                    "m4a", "aac" -> "audio/mp4"
+                                    "flac" -> "audio/flac"
+                                    "mp4" -> "video/mp4"
+                                    "mkv" -> "video/x-matroska"
+                                    "webm" -> "video/webm"
+                                    "avi" -> "video/avi"
+                                    "jpg", "jpeg" -> "image/jpeg"
+                                    "png" -> "image/png"
+                                    "gif" -> "image/gif"
+                                    "webp" -> "image/webp"
+                                    "svg" -> "image/svg+xml"
+                                    "pdf" -> "application/pdf"
+                                    "txt" -> "text/plain"
+                                    "json" -> "application/json"
+                                    "html" -> "text/html"
+                                    else -> "*/*"
+                                }
+
+                                Intent(Intent.ACTION_VIEW).apply {
+                                    setDataAndType(contentUri, resolvedType)
+                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    clipData = ClipData.newRawUri(null, contentUri)
+                                    pkg?.let { this.`package` = it }
+                                    extras?.forEach { (k, v) -> putExtra(k, v) }
+                                }
+                            }
+
                             action == "email" -> {
                                 val uri = Uri.parse(data ?: "mailto:")
                                 Intent(Intent.ACTION_SENDTO, uri).apply {
@@ -106,38 +161,31 @@ class MainActivity : FlutterActivity() {
                                     pkg?.let { this.`package` = it }
                                 }
                             }
+
                             else -> {
-                                // Custom-action intents (alarm/timer/calendar/share/panels/etc.)
-                                // pass an explicit androidAction; everything else defaults to VIEW.
                                 val act = when {
                                     androidAction != null -> androidAction
-                                    action == "dial" -> Intent.ACTION_DIAL
+                                    action == "dial" || data?.startsWith("tel:") == true -> Intent.ACTION_DIAL
+                                    data?.startsWith("mailto:") == true -> Intent.ACTION_SENDTO
                                     else -> Intent.ACTION_VIEW
                                 }
                                 Intent(act).apply {
-                                    data?.let {
-                                        val uri = Uri.parse(it)
+                                    val uri = data?.let { Uri.parse(it) }
+                                    if (uri != null && type != null) {
+                                        setDataAndType(uri, type)
+                                    } else if (uri != null) {
                                         this.data = uri
-                                        if (uri.scheme?.lowercase() in listOf("http", "https")) {
-                                            addCategory(Intent.CATEGORY_BROWSABLE)
-                                        }
+                                    } else if (type != null) {
+                                        this.type = type
+                                    }
+
+                                    if (uri?.scheme?.lowercase() in listOf("http", "https")) {
+                                        addCategory(Intent.CATEGORY_BROWSABLE)
                                     }
                                     pkg?.let { this.`package` = it }
                                     extras?.forEach { (k, v) ->
-                                        // Only these AlarmClock extras are ints; anything
-                                        // else (e.g. MESSAGE) must stay a String.
-                                        val isIntExtra = k == "android.intent.extra.alarm.HOUR" ||
-                                            k == "android.intent.extra.alarm.MINUTES" ||
-                                            k == "android.intent.extra.alarm.LENGTH"
-                                        if (isIntExtra) {
-                                            // Skip non-numeric values instead of coercing to 0
-                                            // (a coerced LENGTH would set a 0-second timer).
-                                            v.toIntOrNull()?.let { putExtra(k, it) }
-                                        } else {
-                                            putExtra(k, v)
-                                        }
+                                        putExtra(k, v)
                                     }
-                                    type?.let { this.type = it }
                                 }
                             }
                         }
@@ -148,15 +196,11 @@ class MainActivity : FlutterActivity() {
                         }
 
                         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
 
                         // Only pre-check resolvability when explicitly pinned to a package —
                         // resolveActivity is subject to <queries> visibility and returns null
                         // for unqueried handlers even when startActivity would succeed.
                         // For implicit intents we rely on ActivityNotFoundException below.
-                        // ACTION_DELETE (uninstall) and ACTION_SENDTO (email) are excluded:
-                        // their handlers live in other packages (packageinstaller / mail
-                        // apps), so pinning checks against the target package are wrong.
                         val exemptFromPinnedCheck =
                             intent.action == Intent.ACTION_DELETE ||
                                 intent.action == Intent.ACTION_SENDTO
@@ -167,8 +211,47 @@ class MainActivity : FlutterActivity() {
                             return@setMethodCallHandler
                         }
 
-                        startActivity(intent)
-                        result.success("launched")
+                        val queryIntent = Intent(intent.action).apply {
+                            if (intent.data != null && intent.type != null) {
+                                setDataAndType(intent.data, intent.type)
+                            } else if (intent.data != null) {
+                                this.data = intent.data
+                            } else if (intent.type != null) {
+                                this.type = intent.type
+                            }
+                        }
+                        val handlers = if (pkg == null) {
+                            packageManager.queryIntentActivities(queryIntent, PackageManager.MATCH_DEFAULT_ONLY)
+                        } else {
+                            emptyList()
+                        }
+                        val outcome = if (pkg == null && handlers.size > 1) {
+                            "launched (choose app if prompted)"
+                        } else {
+                            "launched"
+                        }
+
+                        val a11y = ErrandAccessibilityService.instance
+                        val launchContext: Context = a11y ?: this
+
+                        @Suppress("DEPRECATION")
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                            val options = ActivityOptions.makeBasic()
+                            options.setPendingIntentBackgroundActivityStartMode(
+                                ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED
+                            )
+                            val pi = PendingIntent.getActivity(
+                                launchContext,
+                                0,
+                                intent,
+                                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                            )
+                            pi.send(launchContext, 0, null, null, null, null, options.toBundle())
+                        } else {
+                            launchContext.startActivity(intent)
+                        }
+
+                        result.success(outcome)
 
                     } catch (e: android.content.ActivityNotFoundException) {
                         result.error("NO_HANDLER", e.message, null)
@@ -177,25 +260,61 @@ class MainActivity : FlutterActivity() {
                     }
                 }
 
+                "bringToFront" -> {
+                    try {
+                        val a11y = ErrandAccessibilityService.instance
+                        val ctx: Context = a11y ?: this
+                        val intent = Intent(ctx, MainActivity::class.java).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                            addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                        }
+                        @Suppress("DEPRECATION")
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                            val options = ActivityOptions.makeBasic()
+                            options.setPendingIntentBackgroundActivityStartMode(
+                                ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED
+                            )
+                            val pi = PendingIntent.getActivity(
+                                ctx,
+                                0,
+                                intent,
+                                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                            )
+                            pi.send(ctx, 0, null, null, null, null, options.toBundle())
+                        } else {
+                            ctx.startActivity(intent)
+                        }
+                        result.success("brought_to_front")
+                    } catch (e: Exception) {
+                        result.error("BRING_TO_FRONT_ERR", e.message, null)
+                    }
+                }
+
                 "canResolve" -> {
                     try {
                         val action = call.argument<String>("action") ?: Intent.ACTION_VIEW
                         val data = call.argument<String>("data")
                         val pkg = call.argument<String>("package")
+                        val type = call.argument<String>("type")
 
-                        val act = when (action) {
-                            "dial" -> Intent.ACTION_DIAL
-                            "email" -> Intent.ACTION_SENDTO
-                            else -> Intent.ACTION_VIEW
+                        val act = when {
+                            action == "dial" || data?.startsWith("tel:") == true -> Intent.ACTION_DIAL
+                            action == "email" || data?.startsWith("mailto:") == true -> Intent.ACTION_SENDTO
+                            else -> action
                         }
 
                         val intent = Intent(act).apply {
-                            data?.let {
-                                val uri = Uri.parse(it)
+                            val uri = data?.let { Uri.parse(it) }
+                            if (uri != null && type != null) {
+                                setDataAndType(uri, type)
+                            } else if (uri != null) {
                                 this.data = uri
-                                if (uri.scheme?.lowercase() in listOf("http", "https")) {
-                                    addCategory(Intent.CATEGORY_BROWSABLE)
-                                }
+                            } else if (type != null) {
+                                this.type = type
+                            }
+                            if (uri?.scheme?.lowercase() in listOf("http", "https")) {
+                                addCategory(Intent.CATEGORY_BROWSABLE)
                             }
                             pkg?.let { this.`package` = it }
                         }
@@ -203,10 +322,6 @@ class MainActivity : FlutterActivity() {
                     } catch (e: Exception) {
                         result.success(false)
                     }
-                }
-
-                "hasWriteSettings" -> {
-                    result.success(Settings.System.canWrite(this))
                 }
 
                 "startWorkIndicator" -> {
@@ -241,39 +356,6 @@ class MainActivity : FlutterActivity() {
                     result.success(null)
                 }
 
-                "nextAlarm" -> {
-                    // System ground truth for alarm verification: works
-                    // regardless of which clock app set the alarm, and
-                    // regardless of what that app's UI shows. Needs no
-                    // accessibility service at all.
-                    val am = getSystemService(Context.ALARM_SERVICE) as AlarmManager
-                    val info = am.nextAlarmClock
-                    if (info == null) {
-                        result.success(
-                            mapOf(
-                                "ok" to true,
-                                "scheduled" to false,
-                                "message" to "No alarm is currently scheduled anywhere on this device.",
-                            )
-                        )
-                    } else {
-                        val time = java.text.SimpleDateFormat(
-                            "EEE MMM d, HH:mm", java.util.Locale.getDefault()
-                        ).format(java.util.Date(info.triggerTime))
-                        val pkg = info.showIntent?.creatorPackage ?: "unknown"
-                        result.success(
-                            mapOf(
-                                "ok" to true,
-                                "scheduled" to true,
-                                "time" to time,
-                                "package" to pkg,
-                                "message" to "SYSTEM GROUND TRUTH — next scheduled alarm: " +
-                                    "$time (set by $pkg).",
-                            )
-                        )
-                    }
-                }
-
                 "hasMicPermission" -> {
                     result.success(
                         ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
@@ -294,110 +376,6 @@ class MainActivity : FlutterActivity() {
                     ActivityCompat.requestPermissions(
                         this, arrayOf(Manifest.permission.RECORD_AUDIO), MIC_PERMISSION_CODE
                     )
-                }
-
-                "requestWriteSettings" -> {
-                    // Already granted — don't open settings, just report granted.
-                    if (Settings.System.canWrite(this)) {
-                        result.success(true)
-                        return@setMethodCallHandler
-                    }
-                    try {
-                        val intent = Intent(
-                            Settings.ACTION_MANAGE_WRITE_SETTINGS,
-                            Uri.parse("package:$packageName")
-                        ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
-                        if (intent.resolveActivity(packageManager) == null) {
-                            // Fallback for OEMs that don't handle package Uri
-                            val fallback = Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS)
-                                .apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
-                            startActivity(fallback)
-                        } else {
-                            startActivity(intent)
-                        }
-                        result.success(false)
-                    } catch (e: Exception) {
-                        result.error("INTENT_ERR", e.message, null)
-                    }
-                }
-
-                "system_toggle" -> {
-                    try {
-                        val setting = call.argument<String>("setting")
-                        val value = call.argument<Int>("value") ?: 0
-
-                        when (setting) {
-                            "dark_mode" -> {
-                                // 1) Try UiModeManager first — no WRITE_SETTINGS needed on most devices.
-                                // Read back after set: some builds silently ignore 3P calls, so
-                                // only report success if the mode actually changed.
-                                try {
-                                    val uiManager = getSystemService(Context.UI_MODE_SERVICE) as UiModeManager
-                                    val mode = if (value > 0) UiModeManager.MODE_NIGHT_YES else UiModeManager.MODE_NIGHT_NO
-                                    uiManager.nightMode = mode
-                                    if (uiManager.nightMode == mode) {
-                                        result.success("Dark mode set to ${if (value > 0) "ON" else "OFF"} via UiModeManager")
-                                        return@setMethodCallHandler
-                                    }
-                                    // Silently ignored — fall through to Settings path.
-                                } catch (_: Exception) {
-                                    // fall through to Settings path
-                                }
-
-                                // 2) System-wide via Settings — requires permission and still
-                                // may be blocked (WRITE_SECURE_SETTINGS). Check permission now.
-                                // (The old AppCompatDelegate reflection path was removed: it
-                                // only changed THIS app's theme, not the system's, and it ran
-                                // unverified — flipping the app dark while reporting failure.)
-                                if (!Settings.System.canWrite(this)) {
-                                    result.error("PERMISSION_MISSING", "WRITE_SETTINGS not granted. Call requestWriteSettings.", null)
-                                    return@setMethodCallHandler
-                                }
-
-                                var ok = false
-                                try {
-                                    ok = Settings.Secure.putInt(contentResolver, "ui_night_mode", if (value > 0) 2 else 1)
-                                } catch (_: SecurityException) {}
-                                if (!ok) {
-                                    try {
-                                        ok = Settings.Global.putInt(contentResolver, "ui_night_mode", if (value > 0) 2 else 1)
-                                    } catch (_: SecurityException) {}
-                                }
-                                if (ok) {
-                                    result.success("Dark mode set to ${if (value > 0) "ON" else "OFF"} via Settings")
-                                    return@setMethodCallHandler
-                                }
-
-                                // 3) All programmatic paths blocked — open system UI.
-                                // This is the honest fallback for stock Android where
-                                // WRITE_SECURE_SETTINGS is required.
-                                try {
-                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                                        val darkIntent = Intent("android.settings.DARK_THEME_SETTINGS")
-                                            .apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
-                                        if (darkIntent.resolveActivity(packageManager) != null) {
-                                            startActivity(darkIntent)
-                                            result.success("System blocks programmatic dark mode. Opened Dark Theme settings — please toggle manually.")
-                                            return@setMethodCallHandler
-                                        }
-                                    }
-                                    val displayIntent = Intent(Settings.ACTION_DISPLAY_SETTINGS)
-                                        .apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
-                                    startActivity(displayIntent)
-                                    result.success("System blocks programmatic dark mode. Opened Display settings — please toggle Dark theme manually.")
-                                } catch (e2: Exception) {
-                                    result.error("TOGGLE_ERR", "System restricts programmatic dark mode (needs WRITE_SECURE_SETTINGS). Open Settings > Display > Dark theme manually. ${e2.message}", null)
-                                }
-                            }
-                            else -> {
-                                result.error("UNKNOWN_SETTING", "Setting '$setting' is not supported.", null)
-                            }
-                        }
-                    } catch (e: SecurityException) {
-                        result.error("PERMISSION_DENIED", "WRITE_SETTINGS permission denied.", null)
-                    } catch (e: Exception) {
-                        result.error("TOGGLE_ERR", e.message, null)
-                    }
                 }
 
                 else -> result.notImplemented()

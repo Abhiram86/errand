@@ -22,9 +22,7 @@ Tool screenTool({A11yService? service}) {
         'to answer "what\'s on my screen" or to check a result after opening an app. '
         'Use action "global" for '
         'system navigation: back, home, recents, notifications shade, quick settings, '
-        'lock_screen. Use action "alarm_status" for SYSTEM ground truth on whether an '
-        'alarm is scheduled and when — always verify alarm tasks this way instead of '
-        'trusting screen contents. Requires the user to have enabled Errand in '
+        'lock_screen. Requires the user to have enabled Errand in '
         'Accessibility settings; if unavailable, tell the user how to enable it '
         'instead of retrying.',
     parameters: {
@@ -32,11 +30,10 @@ Tool screenTool({A11yService? service}) {
       'properties': {
         'action': {
           'type': 'string',
-          'enum': ['read', 'global', 'alarm_status'],
+          'enum': ['read', 'global'],
           'description':
               'read = describe current screen contents; global = perform a '
-              'navigation action (use "name"); alarm_status = system-verified '
-              'next scheduled alarm',
+              'navigation action (use "name")',
         },
         'name': {
           'type': 'string',
@@ -46,9 +43,12 @@ Tool screenTool({A11yService? service}) {
             'recents',
             'notifications',
             'quick_settings',
-            'lock_screen'
+            'lock_screen',
+            'return_to_errand',
           ],
-          'description': 'Navigation action for action:"global"',
+          'description':
+              'Navigation action for action:"global": back, home, recents, '
+              'notifications, quick_settings, lock_screen, return_to_errand.',
         },
         'max_nodes': {
           'type': 'integer',
@@ -111,22 +111,11 @@ Future<ToolCallResult> handleScreenAction(ToolCall call, A11yService svc) async 
       return _read(call, svc);
     case 'global':
       return _global(call, svc);
-    case 'alarm_status':
-      // System ground truth — works even with the a11y service disabled,
-      // so it is handled BEFORE the availability gate. Stateless, so a
-      // fresh IntentService here is fine.
-      final res = await IntentService().nextAlarm();
-      return ToolCallResult(
-        id: call.id,
-        ok: true,
-        output: (res['message'] as String?) ?? 'No alarm information available.',
-      );
     default:
       return ToolCallResult.failure(
         call.id,
-        'Unknown screen action "$action". Valid actions: read, global, '
-        'alarm_status. (Note: "read" here reads THE SCREEN — it belongs to '
-        'this tool, not the intent tool.)',
+        'Unknown screen action "$action". Valid actions: read, global. '
+        '(Note: "read" here reads THE SCREEN — it belongs to this tool, not the intent tool.)',
       );
   }
 }
@@ -203,6 +192,11 @@ Future<ToolCallResult> _global(ToolCall call, A11yService svc) async {
   final name = call.arguments['name'] as String?;
   if (name == null || name.isEmpty) {
     return ToolCallResult.failure(call.id, 'Missing required argument: name (for global)');
+  }
+
+  if (name == 'return_to_errand') {
+    await IntentService().bringToFront();
+    return ToolCallResult(id: call.id, ok: true, output: 'return_to_errand done');
   }
 
   final err = await svc.globalAction(name);

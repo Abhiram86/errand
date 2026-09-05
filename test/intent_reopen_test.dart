@@ -20,6 +20,7 @@ void main() {
   group('isReopenable', () {
     test('accepts open-style successful intent actions', () {
       for (final action in [
+        'open_file',
         'open_url',
         'open_app',
         'open_maps',
