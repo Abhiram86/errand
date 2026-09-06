@@ -168,8 +168,22 @@ int _llmMessageChars(Map<String, dynamic> message) {
   if (content is String) {
     size += content.length;
   } else if (content is List) {
-    // Multimodal content parts: base64 data URLs dominate the size.
-    size += jsonEncode(content).length;
+    // Multimodal content parts: sum part payload lengths directly to avoid
+    // running jsonEncode() on multi-megabyte base64 structures.
+    for (final part in content) {
+      if (part is Map) {
+        final text = part['text'];
+        if (text is String) size += text.length + 20;
+        final img = part['image_url'];
+        if (img is Map && img['url'] is String) size += (img['url'] as String).length + 30;
+        final audio = part['input_audio'];
+        if (audio is Map && audio['data'] is String) size += (audio['data'] as String).length + 30;
+        final video = part['video_url'];
+        if (video is Map && video['url'] is String) size += (video['url'] as String).length + 30;
+      } else {
+        size += 100;
+      }
+    }
   }
   final toolCalls = message['tool_calls'];
   if (toolCalls is List) {
@@ -185,6 +199,18 @@ int _llmMessageChars(Map<String, dynamic> message) {
     }
   }
   return size;
+}
+
+bool _isSyntheticMediaMessage(Map<String, dynamic> message) {
+  final content = message['content'];
+  if (content is List && content.isNotEmpty) {
+    final first = content.first;
+    if (first is Map && first['text'] is String) {
+      final text = first['text'] as String;
+      if (text.startsWith('[Media file(s) you just read')) return true;
+    }
+  }
+  return false;
 }
 
 int estimateLlmMessagesChars(List<Map<String, dynamic>> messages) =>
@@ -233,10 +259,22 @@ List<Map<String, dynamic>> trimLlmMessages(
   if (blocks.isEmpty) return messages;
 
   // The last user-message block is mandatory (the run's instruction).
+  // Exclude synthetic in-loop media delivery blocks so the user's real prompt
+  // is protected.
   var lastUserBlock = -1;
   for (var b = 0; b < blocks.length; b++) {
     for (var m = blocks[b].$1; m < blocks[b].$2; m++) {
-      if (messages[m]['role'] == 'user') lastUserBlock = b;
+      final msg = messages[m];
+      if (msg['role'] == 'user' && !_isSyntheticMediaMessage(msg)) {
+        lastUserBlock = b;
+      }
+    }
+  }
+  if (lastUserBlock == -1) {
+    for (var b = 0; b < blocks.length; b++) {
+      for (var m = blocks[b].$1; m < blocks[b].$2; m++) {
+        if (messages[m]['role'] == 'user') lastUserBlock = b;
+      }
     }
   }
 

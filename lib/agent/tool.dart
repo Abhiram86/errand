@@ -21,13 +21,20 @@ class Tool {
   /// mutation tools should set it true when they are added.
   final bool requiresValidation;
 
+  /// Optional cleanup hook for tools managing native or cached resources.
+  final void Function()? onDispose;
+
   const Tool({
     required this.name,
     required this.description,
     required this.parameters,
     required this.handler,
     this.requiresValidation = false,
+    this.onDispose,
   });
+
+  /// Releases resources held by this tool.
+  void dispose() => onDispose?.call();
 
   Map<String, dynamic> toJson() => {
     'type': 'function',

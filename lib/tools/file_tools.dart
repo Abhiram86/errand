@@ -69,6 +69,12 @@ Tool readTool(
 
   return Tool(
     name: 'read',
+    onDispose: () {
+      for (final cached in structuredDocuments.values) {
+        cached.document.dispose();
+      }
+      structuredDocuments.clear();
+    },
     description:
         'Reads a chunk of a file inside the granted workspace. Supports text '
         'files plus PDF, DOCX, XLSX, and PPTX extraction, and media files '
@@ -104,12 +110,12 @@ Tool readTool(
       'required': ['path'],
     },
     handler: (call) async {
-      final rawPath = call.arguments['path'] as String;
-      final offset = (call.arguments['offset'] as int?) ?? 0;
-      final length = (call.arguments['length'] as int?) ?? 512;
+      final rawPath = (call.arguments['path'] as String?)?.trim();
+      final offset = (call.arguments['offset'] as num?)?.toInt() ?? 0;
+      final length = (call.arguments['length'] as num?)?.toInt() ?? 512;
 
       // Validate arguments.
-      if (rawPath.trim().isEmpty) {
+      if (rawPath == null || rawPath.isEmpty) {
         return ToolCallResult.failure(
           call.id,
           'Invalid path: path cannot be empty.',
@@ -149,7 +155,7 @@ Tool readTool(
         // -- Media branch (P3): whole-file read delivered as content parts --
         final media = kMediaFormats[path.extension(file.path).toLowerCase()];
         if (media != null) {
-          return _readMediaFile(
+          return await _readMediaFile(
             call, file, media, supportsInput,
           );
         }
@@ -290,8 +296,8 @@ Tool listTool(WorkingDirectory workspace) => Tool(
     final rawPath = (call.arguments['path'] as String?)?.trim();
     final pattern = call.arguments['pattern'] as String?;
     final countOnly = (call.arguments['count_only'] as bool?) ?? false;
-    final limit = min((call.arguments['limit'] as int?) ?? kDefaultListLimit, kMaxFindResults);
-    final offset = (call.arguments['offset'] as int?) ?? 0;
+    final limit = min((call.arguments['limit'] as num?)?.toInt() ?? kDefaultListLimit, kMaxFindResults);
+    final offset = (call.arguments['offset'] as num?)?.toInt() ?? 0;
 
     if (offset < 0) {
       return ToolCallResult.failure(
@@ -401,12 +407,12 @@ Tool listTool(WorkingDirectory workspace) => Tool(
 /// - images:  `{type:"image_url", image_url:{url:"data:<mime>;base64,..."}}`
 /// - audio:   `{type:"input_audio", input_audio:{data:"<base64>", format:..}}`
 /// - video:   `{type:"video_url", video_url:{url:"data:<mime>;base64,..."}}`
-ToolCallResult _readMediaFile(
+Future<ToolCallResult> _readMediaFile(
   ToolCall call,
   File file,
   ({String modality, String mime, String? format}) media,
   bool Function(String modality)? supportsInput,
-) {
+) async {
   final claimed = supportsInput?.call(media.modality);
   if (claimed == false) {
     return ToolCallResult.failure(
@@ -421,7 +427,7 @@ ToolCallResult _readMediaFile(
     // ride; the provider will error honestly if it truly can't.
   }
 
-  final size = file.lengthSync();
+  final size = await file.length();
   if (size > kMaxMediaBytes) {
     return ToolCallResult.failure(
       call.id,
@@ -430,7 +436,7 @@ ToolCallResult _readMediaFile(
     );
   }
 
-  final bytes = file.readAsBytesSync();
+  final bytes = await file.readAsBytes();
   final base64Data = base64Encode(bytes);
 
   Map<String, dynamic> part;
@@ -473,20 +479,39 @@ Future<File?> _resolveReadableFile(
   String rawPath,
   List<String> Function()? getAttachedFiles,
 ) async {
-  final workspaceFile = _resolveWorkspaceFile(workspace, rawPath);
+  var cleanPath = rawPath.trim();
+  if (cleanPath.startsWith('file://')) {
+    try {
+      cleanPath = Uri.parse(cleanPath).toFilePath();
+    } catch (_) {
+      cleanPath = cleanPath.substring('file://'.length);
+    }
+  }
+
+  final workspaceFile = _resolveWorkspaceFile(workspace, cleanPath);
   if (workspaceFile != null) return workspaceFile;
   // Fallback for file_picker cache copies (e.g. /data/user/0/.../cache/file_picker/...)
   // and any explicitly attached URI — the user picked it, so allow it even
   // though it lives outside /storage/emulated/0.
-  if (path.isAbsolute(rawPath)) {
+  if (path.isAbsolute(cleanPath)) {
     final attached = getAttachedFiles?.call() ?? const <String>[];
-    final isAttached = attached.contains(rawPath);
+    final isAttached = attached.any((u) {
+      var norm = u.trim();
+      if (norm.startsWith('file://')) {
+        try {
+          norm = Uri.parse(norm).toFilePath();
+        } catch (_) {
+          norm = norm.substring('file://'.length);
+        }
+      }
+      return path.normalize(norm) == path.normalize(cleanPath);
+    });
     // Also allow bare /data/... cache paths without needing the callback
     // (covers legacy attachments before this callback was wired).
     final isPickerCache =
-        rawPath.startsWith('/data/') && rawPath.contains('/cache/');
-    if ((isAttached || isPickerCache) && await File(rawPath).exists()) {
-      return File(path.normalize(rawPath));
+        cleanPath.startsWith('/data/') && cleanPath.contains('/cache/');
+    if ((isAttached || isPickerCache) && await File(cleanPath).exists()) {
+      return File(path.normalize(cleanPath));
     }
   }
   return null;
@@ -629,10 +654,10 @@ Tool findTool(WorkingDirectory workspace) => Tool(
     final rawPath = (call.arguments['path'] as String?)?.trim() ?? '.';
     final pattern = (call.arguments['pattern'] as String?)?.trim();
     final type = (call.arguments['type'] as String?) ?? 'file';
-    final maxDepth = (call.arguments['max_depth'] as int?) ?? 3;
+    final maxDepth = (call.arguments['max_depth'] as num?)?.toInt() ?? 3;
     final countOnly = (call.arguments['count_only'] as bool?) ?? false;
-    final limit = min((call.arguments['limit'] as int?) ?? kDefaultFindLimit, kMaxFindResults);
-    final offset = (call.arguments['offset'] as int?) ?? 0;
+    final limit = min((call.arguments['limit'] as num?)?.toInt() ?? kDefaultFindLimit, kMaxFindResults);
+    final offset = (call.arguments['offset'] as num?)?.toInt() ?? 0;
 
     if (offset < 0) {
       return ToolCallResult.failure(
@@ -675,6 +700,7 @@ Tool findTool(WorkingDirectory workspace) => Tool(
     }
 
     final matcher = _findMatcher(pattern);
+    final matchSubpath = pattern.contains('/');
     final results = <String>[];
     final skippedPaths = <String>[];
     try {
@@ -689,6 +715,7 @@ Tool findTool(WorkingDirectory workspace) => Tool(
         target: target,
         currentDirectory: workspace.current,
         matcher: matcher,
+        matchSubpath: matchSubpath,
         type: type,
         maxDepth: maxDepth,
         results: results,
@@ -751,6 +778,7 @@ Future<void> _collectFindMatches({
   required FileSystemEntity target,
   required Directory currentDirectory,
   required RegExp matcher,
+  required bool matchSubpath,
   required String type,
   required int maxDepth,
   required List<String> results,
@@ -758,21 +786,31 @@ Future<void> _collectFindMatches({
 }) async {
   if (results.length >= kMaxFindResults) return;
 
-  late final FileStat targetStat;
-  try {
-    targetStat = await target.stat();
-  } on FileSystemException {
-    skippedPaths.add(target.path);
-    return;
-  }
-  final targetMatches = type == 'file'
-      ? targetStat.type == FileSystemEntityType.file
-      : targetStat.type == FileSystemEntityType.directory;
-  if (targetMatches && matcher.hasMatch(path.basename(target.path))) {
-    results.add(path.relative(target.path, from: currentDirectory.path));
+  bool isDir = false;
+  bool isFile = false;
+  if (target is Directory) {
+    isDir = true;
+  } else if (target is File) {
+    isFile = true;
+  } else {
+    try {
+      final stat = await target.stat();
+      isDir = stat.type == FileSystemEntityType.directory;
+      isFile = stat.type == FileSystemEntityType.file;
+    } on FileSystemException {
+      skippedPaths.add(target.path);
+      return;
+    }
   }
 
-  if (targetStat.type != FileSystemEntityType.directory || maxDepth == 0) {
+  final targetMatches = type == 'file' ? isFile : isDir;
+  final relativePath = path.relative(target.path, from: currentDirectory.path);
+  final targetName = matchSubpath ? relativePath : path.basename(target.path);
+  if (targetMatches && matcher.hasMatch(targetName)) {
+    results.add(relativePath);
+  }
+
+  if (!isDir || maxDepth == 0) {
     return;
   }
 
@@ -780,6 +818,7 @@ Future<void> _collectFindMatches({
     directory: Directory(target.path),
     currentDirectory: currentDirectory,
     matcher: matcher,
+    matchSubpath: matchSubpath,
     type: type,
     depth: 0,
     maxDepth: maxDepth,
@@ -792,6 +831,7 @@ Future<void> _walkFindDirectory({
   required Directory directory,
   required Directory currentDirectory,
   required RegExp matcher,
+  required bool matchSubpath,
   required String type,
   required int depth,
   required int maxDepth,
@@ -808,27 +848,36 @@ Future<void> _walkFindDirectory({
       if (results.length >= kMaxFindResults) return;
 
       final childDepth = depth + 1;
-      late final FileStat stat;
-      try {
-        stat = await entity.stat();
-      } on FileSystemException {
-        skippedPaths.add(entity.path);
-        continue;
+      bool isDir = false;
+      bool isFile = false;
+      if (entity is Directory) {
+        isDir = true;
+      } else if (entity is File) {
+        isFile = true;
+      } else {
+        try {
+          final stat = await entity.stat();
+          isDir = stat.type == FileSystemEntityType.directory;
+          isFile = stat.type == FileSystemEntityType.file;
+        } on FileSystemException {
+          skippedPaths.add(entity.path);
+          continue;
+        }
       }
 
-      final isMatchType = type == 'file'
-          ? stat.type == FileSystemEntityType.file
-          : stat.type == FileSystemEntityType.directory;
-      if (isMatchType && matcher.hasMatch(path.basename(entity.path))) {
-        results.add(path.relative(entity.path, from: currentDirectory.path));
+      final isMatchType = type == 'file' ? isFile : isDir;
+      final relativePath = path.relative(entity.path, from: currentDirectory.path);
+      final testName = matchSubpath ? relativePath : path.basename(entity.path);
+      if (isMatchType && matcher.hasMatch(testName)) {
+        results.add(relativePath);
       }
 
-      if (stat.type == FileSystemEntityType.directory &&
-          childDepth < maxDepth) {
+      if (isDir && childDepth < maxDepth) {
         await _walkFindDirectory(
           directory: Directory(entity.path),
           currentDirectory: currentDirectory,
           matcher: matcher,
+          matchSubpath: matchSubpath,
           type: type,
           depth: childDepth,
           maxDepth: maxDepth,

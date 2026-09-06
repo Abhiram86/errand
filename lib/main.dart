@@ -871,6 +871,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _workingFlushTimer = null;
     _controller.clear();
     _pendingAttachments.clear();
+    _workingDirectory.current = _workingDirectory.root;
     setState(() {
       _messages = _welcomeMessages();
       _activeConversation = _newDraftConversation();
@@ -904,6 +905,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
 
     _pendingAttachments.clear();
+    _workingDirectory.current = loaded.currentDir;
     setState(() {
       _activeConversation = loaded;
       _messages = loaded.messages;
@@ -1332,23 +1334,25 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         updatedAt: _activeConversation.updatedAt,
       );
 
+      final registry = ToolRegistry.defaults(
+        currentDir: _workingDirectory.root,
+        workingDirectory: _workingDirectory,
+        supportsInput: (modality) =>
+            // null = unknown → allow the attempt; only positive knowledge
+            // of "no image/audio/video support" gates the read.
+            // Pass normalized baseUrl to hit O(n) single-catalog path.
+            ModelCatalogService.supportsInput(
+              _selectedModel,
+              modality,
+              baseUrl: AppSettingsService.instance.effectiveBaseUrl,
+            ) !=
+            false,
+        getAttachedFiles: () => _activeConversation.attachedFileUris,
+      );
+
       final loop = AgentLoop(
         llm: _llm,
-        registry: ToolRegistry.defaults(
-          currentDir: _workingDirectory.root,
-          workingDirectory: _workingDirectory,
-          supportsInput: (modality) =>
-              // null = unknown → allow the attempt; only positive knowledge
-              // of "no image/audio/video support" gates the read.
-              // Pass normalized baseUrl to hit O(n) single-catalog path.
-              ModelCatalogService.supportsInput(
-                _selectedModel,
-                modality,
-                baseUrl: AppSettingsService.instance.effectiveBaseUrl,
-              ) !=
-              false,
-          getAttachedFiles: () => _activeConversation.attachedFileUris,
-        ),
+        registry: registry,
         systemPromptBuilder: () => _systemPromptFor(
           _workingDirectory.current,
           screenAccess: _a11yAvailable,
@@ -1359,8 +1363,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         onTextDelta: _handleTextDelta,
         onReasoningDelta: _handleReasoningDelta,
       );
-      final answer = await loop.run(conversation);
-      _replaceWorking(answer);
+      try {
+        final answer = await loop.run(conversation);
+        _replaceWorking(answer);
+      } finally {
+        registry.dispose();
+      }
     } on LlmStoppedException {
       // Stop pressed: keep whatever streamed so far as the final answer.
       _finishStopped();

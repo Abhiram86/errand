@@ -260,5 +260,28 @@ void main() {
       // The mandatory tail stays even though it alone exceeds target.
       expect(estimateLlmMessagesChars(trimmed), greaterThan(kContextTarget));
     });
+
+    test('protects real user prompt over synthetic media delivery user messages', () {
+      final bigDataUrl = 'data:image/png;base64,${'A' * 250000}';
+      final messages = [
+        sys(),
+        usr('Real user question about photo'),
+        asstToolCall('c1'),
+        toolResult('c1', 'image loaded'),
+        {
+          'role': 'user',
+          'content': [
+            {'type': 'text', 'text': '[Media file(s) you just read via a tool are attached above for your analysis.]'},
+            {'type': 'image_url', 'image_url': {'url': bigDataUrl}},
+          ],
+        },
+      ];
+      final trimmed = trimLlmMessages(messages);
+      // Real user prompt must be protected and kept.
+      final userPrompts = trimmed
+          .where((m) => m['role'] == 'user' && m['content'] is String)
+          .map((m) => m['content']);
+      expect(userPrompts, contains('Real user question about photo'));
+    });
   });
 }

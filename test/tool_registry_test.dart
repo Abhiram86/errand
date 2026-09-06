@@ -207,4 +207,69 @@ void main() {
     expect(found.output, contains('inside.pdf'));
     expect(found.output, contains(nested.path));
   });
+
+  test('read supports file:// URIs and accepts double num args from LLM JSON', () async {
+    final workspace = await Directory.systemTemp.createTemp('errand_file_uri');
+    final file = File('${workspace.path}/sample.txt');
+    await file.writeAsString('Hello file URI content');
+    addTearDown(() => workspace.delete(recursive: true));
+
+    final registry = ToolRegistry.defaults(currentDir: workspace);
+    final result = await registry.execute(
+      ToolCall(
+        id: 'read-uri',
+        name: 'read',
+        arguments: {
+          'path': 'file://${file.path}',
+          'offset': 0.0,
+          'length': 1024.0,
+        },
+      ),
+    );
+
+    expect(result.ok, isTrue);
+    expect(result.output, contains('Hello file URI content'));
+  });
+
+  test('find matches pattern containing subpaths', () async {
+    final workspace = await Directory.systemTemp.createTemp('errand_subpath');
+    final sub = Directory('${workspace.path}/sub');
+    await sub.create();
+    await File('${sub.path}/target.txt').writeAsString('text');
+    await File('${workspace.path}/other.txt').writeAsString('text');
+    addTearDown(() => workspace.delete(recursive: true));
+
+    final registry = ToolRegistry.defaults(currentDir: workspace);
+    final result = await registry.execute(
+      const ToolCall(
+        id: 'find-sub',
+        name: 'workspace',
+        arguments: {
+          'action': 'find',
+          'path': '.',
+          'pattern': 'sub/*.txt',
+        },
+      ),
+    );
+
+    expect(result.ok, isTrue);
+    expect(result.output, contains('target.txt'));
+    expect(result.output, isNot(contains('other.txt')));
+  });
+
+  test('ToolRegistry.dispose triggers tool cleanup', () {
+    var disposed = false;
+    final tool = Tool(
+      name: 'cleanup',
+      description: 'test cleanup',
+      parameters: const {},
+      handler: (c) async => ToolCallResult(id: c.id, ok: true, output: ''),
+      onDispose: () => disposed = true,
+    );
+
+    final registry = ToolRegistry([tool]);
+    expect(disposed, isFalse);
+    registry.dispose();
+    expect(disposed, isTrue);
+  });
 }

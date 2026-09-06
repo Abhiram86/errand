@@ -108,8 +108,27 @@ class AgentLoop {
 
       messages.add(message.toJson());
       final pendingMediaParts = <Map<String, dynamic>>[];
-      for (final call in message.toolCalls) {
-        final result = await _registry.execute(call);
+
+      // Run stateless read/search tools concurrently for performance;
+      // sequence stateful actions (screen navigation, clicks, directory change).
+      final isAnyStateful = message.toolCalls.any((call) {
+        if (call.name == 'act') return true;
+        if (call.name == 'workspace' && call.arguments['action'] == 'cd') return true;
+        if (call.name == 'screen' && call.arguments['action'] == 'global') return true;
+        return false;
+      });
+
+      final results = isAnyStateful
+          ? <ToolCallResult>[
+              for (final call in message.toolCalls) await _registry.execute(call),
+            ]
+          : await Future.wait(
+              message.toolCalls.map((call) => _registry.execute(call)),
+            );
+
+      for (var i = 0; i < message.toolCalls.length; i++) {
+        final call = message.toolCalls[i];
+        final result = results[i];
         _onEvent?.call(
           AgentToolCall(
             call,
@@ -161,7 +180,48 @@ class AgentLoop {
                 ].join('\n')}]';
           messages.add({'role': 'user', 'content': content});
         case AssistantMessage():
-          messages.add({'role': 'assistant', 'content': message.text});
+          // If immediately followed by ToolMessages, merge this assistant's text
+          // into the assistant tool_calls message to prevent consecutive assistant messages.
+          if (index + 1 < history.length && history[index + 1] is ToolMessage) {
+            final toolMessages = <ToolMessage>[];
+            var j = index + 1;
+            while (j < history.length && history[j] is ToolMessage) {
+              toolMessages.add(history[j] as ToolMessage);
+              j++;
+            }
+            index = j - 1;
+
+            messages.add({
+              'role': 'assistant',
+              if (message.text.isNotEmpty) 'content': message.text,
+              if (toolMessages.first.reasoning != null &&
+                  toolMessages.first.reasoning!.isNotEmpty)
+                'reasoning': toolMessages.first.reasoning,
+              if (toolMessages.first.reasoningDetails.isNotEmpty)
+                'reasoning_details': toolMessages.first.reasoningDetails,
+              'tool_calls': [
+                for (final toolMessage in toolMessages)
+                  {
+                    'id': toolMessage.id,
+                    'type': 'function',
+                    'function': {
+                      'name': toolMessage.tool.name,
+                      'arguments': jsonEncode(toolMessage.tool.args),
+                    },
+                  },
+              ],
+            });
+            messages.addAll([
+              for (final toolMessage in toolMessages)
+                {
+                  'role': 'tool',
+                  'tool_call_id': toolMessage.id,
+                  'content': toolMessage.result,
+                },
+            ]);
+          } else {
+            messages.add({'role': 'assistant', 'content': message.text});
+          }
         case ErrorMessage():
           messages.add({
             'role': 'user',

@@ -47,6 +47,13 @@ class ToolRegistry {
 
   List<Tool> get all => _tools.values.toList();
 
+  /// Releases resources held by registered tools (e.g. cached open documents).
+  void dispose() {
+    for (final tool in _tools.values) {
+      tool.dispose();
+    }
+  }
+
   Future<ToolCallResult> execute(ToolCall call) async {
     final tool = _tools[call.name];
     if (tool == null) {
