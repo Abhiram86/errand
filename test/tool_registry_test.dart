@@ -257,6 +257,56 @@ void main() {
     expect(result.output, isNot(contains('other.txt')));
   });
 
+  test('find matches pattern containing subpaths when searching inside subdirectory', () async {
+    final workspace = await Directory.systemTemp.createTemp('errand_subdir_subpath');
+    final sub = Directory('${workspace.path}/src');
+    final nested = Directory('${sub.path}/components');
+    await nested.create(recursive: true);
+    await File('${nested.path}/button.dart').writeAsString('button');
+    await File('${sub.path}/main.dart').writeAsString('main');
+    addTearDown(() => workspace.delete(recursive: true));
+
+    final registry = ToolRegistry.defaults(currentDir: workspace);
+    final result = await registry.execute(
+      const ToolCall(
+        id: 'find-sub-relative',
+        name: 'workspace',
+        arguments: {
+          'action': 'find',
+          'path': 'src',
+          'pattern': 'components/*.dart',
+        },
+      ),
+    );
+
+    expect(result.ok, isTrue);
+    expect(result.output, contains('src/components/button.dart'));
+    expect(result.output, isNot(contains('main.dart')));
+  });
+
+  test('find on a single file path succeeds without directory listing error', () async {
+    final workspace = await Directory.systemTemp.createTemp('errand_single_file_find');
+    final file = File('${workspace.path}/specific.txt');
+    await file.writeAsString('content');
+    addTearDown(() => workspace.delete(recursive: true));
+
+    final registry = ToolRegistry.defaults(currentDir: workspace);
+    final result = await registry.execute(
+      const ToolCall(
+        id: 'find-file',
+        name: 'workspace',
+        arguments: {
+          'action': 'find',
+          'path': 'specific.txt',
+          'pattern': 'specific.txt',
+        },
+      ),
+    );
+
+    expect(result.ok, isTrue);
+    expect(result.output, contains('specific.txt'));
+  });
+
   test('ToolRegistry.dispose triggers tool cleanup', () {
     var disposed = false;
     final tool = Tool(

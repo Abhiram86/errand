@@ -2,30 +2,363 @@ import 'dart:convert';
 
 import '../types/message.dart';
 
-/// Total assumed context window, in characters (~tokens x 4).
-const int kContextWindowChars = 256 * 1024;
+/// Default native context window assumptions (in tokens).
+const int kDefaultContextSizeTokens = 128000;
 
-/// Truncation kicks in above this many estimated characters; below it the
-/// history is sent untouched (apart from per-result clamping).
-const int kContextSoftLimit = 200 * 1024;
-
-/// After truncation the kept history should fit within this budget, leaving
-/// headroom for the completion and tool schemas inside the 256K window.
-const int kContextTarget = 110 * 1024;
-
-/// A single tool result larger than this is head-clamped regardless of the
-/// total budget, so one giant `read` cannot dominate the context.
+/// Head-clamp ceiling for a single tool result (in characters).
+/// Prevents a single massive `read` or shell output from instantly blowing the budget.
 const int kMaxToolResultChars = 32 * 1024;
 
-/// Rough per-message JSON envelope overhead (role, ids, formatting).
-const int _perMessageOverheadChars = 40;
+/// Legacy character constants maintained for backward compatibility.
+const int kContextWindowChars = 256 * 1024;
+const int kContextSoftLimit = 200 * 1024;
+const int kContextTarget = 110 * 1024;
 
+const int _perMessageOverheadChars = 40;
+const int _perMessageOverheadTokens = 10;
 const String _truncationMarker = '\n[...truncated ';
 
-/// Estimates the characters a [Message] contributes to the LLM payload.
-///
-/// Mirrors what `_toLlmHistory` actually serializes: text plus, for tool
-/// messages, the full result, reasoning, and JSON-encoded args/details.
+/// Marker string used at the start of compacted context user messages.
+const String kCompactedContextMarker = '[COMPACTED PREVIOUS CONTEXT & TOOL EXECUTION STATE]';
+
+/// Represents the dynamic context budget computed from native model context limits.
+class ContextBudget {
+  /// The native context limit of the model in tokens (e.g. 128000, 200000, 1048576).
+  final int contextSize;
+
+  /// Dynamic reserved headroom for generation, reasoning, and tool schemas.
+  /// Formulated as: min(16,000, 0.25 * contextSize).
+  final int reservedTokens;
+
+  /// Optional override threshold (useful for testing or constrained runs).
+  final int? overrideThreshold;
+
+  ContextBudget({required this.contextSize, this.overrideThreshold})
+      : reservedTokens = computeReservedTokens(contextSize);
+
+  /// Computes the dynamic reserved tokens headroom: min(16k tokens, 25% of ctx size).
+  static int computeReservedTokens(int contextSize) {
+    if (contextSize <= 0) return 4000;
+    final quarter = (contextSize * 0.25).round();
+    return quarter < 16000 ? quarter : 16000;
+  }
+
+  /// Theoretical native threshold: contextSize - reservedTokens (approx. 75% for models <= 64k).
+  int get nativeCompactionThreshold => contextSize - reservedTokens;
+
+  /// The usage threshold above which history must be compacted before the next step.
+  /// Defaults to [nativeCompactionThreshold] (contextSize - reservedTokens).
+  int get compactionThreshold => overrideThreshold ?? nativeCompactionThreshold;
+
+  /// Target token budget after compaction or trimming.
+  int get targetTokens => (compactionThreshold * 0.5).round();
+
+  /// Whether the given estimated [currentTokens] requires compaction.
+  bool shouldCompact(int currentTokens) => currentTokens > compactionThreshold;
+
+  static final ContextBudget defaultBudget = ContextBudget(
+    contextSize: kDefaultContextSizeTokens,
+  );
+}
+
+// ---- Token Estimation Helpers ----------------------------------------------
+
+/// Rough token estimation for text content (~3.8 characters per token).
+int estimateTextTokens(String text) {
+  if (text.isEmpty) return 0;
+  return (text.length / 3.8).ceil();
+}
+
+/// Estimates tokens contributed by a high-level [Message].
+int estimateMessageTokens(Message message) {
+  var tokens = estimateTextTokens(message.text) + _perMessageOverheadTokens;
+  if (message is UserMessage && message.attachedUris.isNotEmpty) {
+    tokens += estimateTextTokens(jsonEncode(message.attachedUris));
+  }
+  if (message is ToolMessage) {
+    tokens += estimateTextTokens(message.tool.name);
+    tokens += estimateTextTokens(jsonEncode(message.tool.args));
+    tokens += estimateTextTokens(message.result);
+    if (message.reasoning != null) {
+      tokens += estimateTextTokens(message.reasoning!);
+    }
+    if (message.reasoningDetails.isNotEmpty) {
+      tokens += estimateTextTokens(jsonEncode(message.reasoningDetails));
+    }
+  }
+  if (message is ErrorMessage) {
+    tokens += estimateTextTokens(message.error);
+  }
+  if (message is CompactedNoticeMessage && message.summary.isNotEmpty) {
+    tokens += estimateTextTokens(message.summary);
+  }
+  return tokens;
+}
+
+/// Estimates tokens for a full [Message] history.
+int estimateHistoryTokens(List<Message> history) =>
+    history.fold(0, (sum, m) => sum + estimateMessageTokens(m));
+
+/// Estimates tokens for a low-level LLM message map (`role`, `content`, `tool_calls`).
+int estimateLlmMessageTokens(Map<String, dynamic> message) {
+  var tokens = _perMessageOverheadTokens;
+  final role = message['role'];
+  if (role is String) tokens += 2;
+
+  final content = message['content'];
+  if (content is String) {
+    tokens += estimateTextTokens(content);
+  } else if (content is List) {
+    for (final part in content) {
+      if (part is Map) {
+        final text = part['text'];
+        if (text is String) tokens += estimateTextTokens(text);
+        if (part['image_url'] != null) tokens += 1500; // Typical vision tile tokens
+        if (part['input_audio'] != null) tokens += 1000;
+        if (part['video_url'] != null) tokens += 2000;
+      } else {
+        tokens += 20;
+      }
+    }
+  }
+
+  final reasoning = message['reasoning'] ?? message['reasoning_content'];
+  if (reasoning is String) {
+    tokens += estimateTextTokens(reasoning);
+  }
+  final reasoningDetails = message['reasoning_details'];
+  if (reasoningDetails is List && reasoningDetails.isNotEmpty) {
+    tokens += estimateTextTokens(jsonEncode(reasoningDetails));
+  }
+
+  final toolCalls = message['tool_calls'];
+  if (toolCalls is List) {
+    for (final call in toolCalls) {
+      if (call is Map) {
+        final fn = call['function'];
+        if (fn is Map) {
+          tokens += estimateTextTokens(fn['name']?.toString() ?? '');
+          tokens += estimateTextTokens(fn['arguments']?.toString() ?? '');
+        }
+      }
+    }
+  }
+
+  return tokens;
+}
+
+/// Estimates total tokens for a list of low-level LLM messages.
+int estimateLlmMessagesTokens(List<Map<String, dynamic>> messages) =>
+    messages.fold(0, (sum, m) => sum + estimateLlmMessageTokens(m));
+
+// ---- Compaction Building Blocks --------------------------------------------
+
+/// Prepares the prompt sent to the LLM to compact older conversation history.
+List<Map<String, dynamic>> buildCompactionPrompt(
+  List<Map<String, dynamic>> messagesToCompact,
+) {
+  final formatted = StringBuffer();
+  for (final msg in messagesToCompact) {
+    final role = msg['role'];
+    final content = msg['content'];
+    final toolCalls = msg['tool_calls'];
+    final reasoning = msg['reasoning'] ?? msg['reasoning_content'];
+
+    if (role == 'system') continue;
+
+    if (reasoning is String && reasoning.isNotEmpty) {
+      final snippet = reasoning.length > 1000
+          ? '${reasoning.substring(0, 1000)}... [truncated]'
+          : reasoning;
+      formatted.writeln('[Model Thinking]: $snippet\n');
+    }
+
+    if (role == 'user') {
+      if (content is String) {
+        formatted.writeln('[User]: $content\n');
+      } else if (content is List) {
+        formatted.writeln('[User attached media/content]\n');
+      }
+    } else if (role == 'assistant') {
+      if (content is String && content.isNotEmpty) {
+        formatted.writeln('[Assistant]: $content\n');
+      }
+      if (toolCalls is List) {
+        for (final call in toolCalls) {
+          if (call is Map && call['function'] is Map) {
+            formatted.writeln(
+              '[Assistant called tool]: ${call['function']['name']}(${call['function']['arguments']})\n',
+            );
+          }
+        }
+      }
+    } else if (role == 'tool') {
+      final text = content is String ? content : '';
+      final snippet = text.length > 2000
+          ? '${text.substring(0, 2000)}... [truncated]'
+          : text;
+      formatted.writeln('[Tool result]: $snippet\n');
+    }
+  }
+
+  return [
+    const {
+      'role': 'system',
+      'content':
+          'You are an expert context compactor for an autonomous AI assistant.\n'
+          'Your task is to summarize the preceding conversation history, model thinking, and tool execution log '
+          'into a dense, structured, factual briefing for the ongoing agent loop.\n'
+          'DO NOT lose crucial technical details, exact file paths, identifiers, or error messages.',
+    },
+    {
+      'role': 'user',
+      'content':
+          'Here is the previous conversation history, model thinking, and tool execution log to compact:\n\n'
+          '${formatted.toString()}\n\n'
+          'Summarize the entire conversation history, actions taken, and tool outputs above into a concise, '
+          'structured state briefing with these exact sections:\n'
+          '## 1. Primary User Goal\n'
+          'Brief statement of what the user requested.\n'
+          '## 2. Completed Actions & Findings\n'
+          'Key files read/edited, tools invoked, important observations, command outputs, or error traces.\n'
+          '## 3. Current Progress & Immediate Next Steps\n'
+          'What was accomplished and what the agent should do next.\n\n'
+          'Be concise, dense with facts, and retain exact file paths and technical identifiers.',
+    },
+  ];
+}
+
+/// Builds a deterministic fallback summary when the compaction LLM call fails or times out.
+String buildDeterministicFallbackSummary(
+  List<Map<String, dynamic>> messagesToCompact,
+) {
+  final buffer = StringBuffer();
+  buffer.writeln('## 1. Primary User Goal');
+
+  String? firstUserGoal;
+  final toolsUsed = <String>[];
+  final filesReferenced = <String>{};
+  final errorSnippets = <String>[];
+
+  for (final msg in messagesToCompact) {
+    final role = msg['role'];
+    final content = msg['content'];
+
+    if (role == 'user' && content is String && firstUserGoal == null) {
+      if (!content.startsWith('[Media file')) {
+        if (content.contains('## 1. Primary User Goal')) {
+          final lines = content.split('\n');
+          final idx = lines.indexWhere((l) => l.trim() == '## 1. Primary User Goal');
+          if (idx != -1 && idx + 1 < lines.length) {
+            final goalLine = lines.sublist(idx + 1).firstWhere(
+              (l) => l.trim().isNotEmpty && !l.startsWith('##'),
+              orElse: () => '',
+            );
+            if (goalLine.isNotEmpty) {
+              firstUserGoal = goalLine.trim();
+            }
+          }
+        } else if (!content.startsWith(kCompactedContextMarker) &&
+            !content.startsWith('[Compacted Conversation History')) {
+          firstUserGoal = content.trim();
+        }
+      }
+    }
+
+    final toolCalls = msg['tool_calls'];
+    if (toolCalls is List) {
+      for (final call in toolCalls) {
+        if (call is Map && call['function'] is Map) {
+          final fnName = call['function']['name']?.toString() ?? 'tool';
+          final argsStr = call['function']['arguments']?.toString() ?? '{}';
+          toolsUsed.add('$fnName($argsStr)');
+          try {
+            final args = jsonDecode(argsStr);
+            if (args is Map) {
+              final pathVal = args['path'] ?? args['file'] ?? args['target'];
+              if (pathVal is String) filesReferenced.add(pathVal);
+            }
+          } catch (_) {}
+        }
+      }
+    }
+
+    if (role == 'tool' && content is String) {
+      if (content.toLowerCase().contains('error') || content.toLowerCase().contains('failed')) {
+        final line = content.split('\n').first.trim();
+        if (line.isNotEmpty && errorSnippets.length < 5) {
+          errorSnippets.add(line);
+        }
+      }
+    }
+  }
+
+  buffer.writeln(firstUserGoal ?? 'Continue user request and ongoing task.');
+  buffer.writeln('\n## 2. Completed Actions & Findings');
+  if (filesReferenced.isNotEmpty) {
+    buffer.writeln('Files referenced: ${filesReferenced.join(', ')}');
+  }
+  if (toolsUsed.isNotEmpty) {
+    final recentTools = toolsUsed.length > 8 ? toolsUsed.sublist(toolsUsed.length - 8) : toolsUsed;
+    buffer.writeln('Recent tool invocations: ${recentTools.join('; ')}');
+  }
+  if (errorSnippets.isNotEmpty) {
+    buffer.writeln('Recent error notes: ${errorSnippets.join('; ')}');
+  }
+
+  buffer.writeln('\n## 3. Current Progress & Immediate Next Steps');
+  buffer.writeln('Context was compacted due to token threshold. Resume execution with current step.');
+  return buffer.toString();
+}
+
+/// Applies a compacted summary into the message history, retaining system message and tail.
+List<Map<String, dynamic>> applyCompactedHistory({
+  required Map<String, dynamic> systemMessage,
+  required String summary,
+  required List<Map<String, dynamic>> tailMessages,
+}) {
+  final compactedHeader = {
+    'role': 'user',
+    'content': '$kCompactedContextMarker\n$summary',
+  };
+
+  if (tailMessages.isEmpty) {
+    return [
+      systemMessage,
+      compactedHeader,
+      const {
+        'role': 'assistant',
+        'content':
+            'I have incorporated the compacted conversation history and previous tool execution state. '
+            'Continuing with the task.',
+      },
+    ];
+  }
+
+  if (tailMessages.first['role'] == 'assistant') {
+    return [
+      systemMessage,
+      compactedHeader,
+      ...tailMessages,
+    ];
+  }
+
+  return [
+    systemMessage,
+    compactedHeader,
+    const {
+      'role': 'assistant',
+      'content':
+          'I have incorporated the compacted conversation history and previous tool execution state. '
+          'Continuing with the task.',
+    },
+    ...tailMessages,
+  ];
+}
+
+// ---- Legacy & Character Compatibility Layer --------------------------------
+
+/// Estimates characters for a [Message].
 int estimateMessageChars(Message message) {
   var size = message.text.length + _perMessageOverheadChars;
   if (message is UserMessage && message.attachedUris.isNotEmpty) {
@@ -43,17 +376,15 @@ int estimateMessageChars(Message message) {
   if (message is ErrorMessage) {
     size += message.error.length;
   }
+  if (message is CompactedNoticeMessage && message.summary.isNotEmpty) {
+    size += message.summary.length;
+  }
   return size;
 }
 
-/// Estimates the total characters a history contributes to the LLM payload.
 int estimateHistoryChars(List<Message> history) =>
     history.fold(0, (sum, message) => sum + estimateMessageChars(message));
 
-/// Returns [history] with any oversized tool result head-clamped.
-///
-/// Applied unconditionally: even below the soft limit, a single multi-hundred-
-/// kilobyte `read` output should not crowd out the rest of the conversation.
 List<Message> clampToolResults(List<Message> history) => [
   for (final message in history) _clampToolResult(message),
 ];
@@ -74,11 +405,6 @@ Message _clampToolResult(Message message) {
   );
 }
 
-/// Groups a history into atomic truncation units.
-///
-/// Consecutive `ToolMessage`s form ONE unit: `_toLlmHistory` synthesizes a
-/// single assistant `tool_calls` message from the whole run, so splitting a
-/// run would produce an orphaned tool result or a dangling tool_calls block.
 List<List<Message>> groupIntoUnits(List<Message> history) {
   final units = <List<Message>>[];
   var index = 0;
@@ -99,16 +425,39 @@ List<List<Message>> groupIntoUnits(List<Message> history) {
   return units;
 }
 
-/// Sliding-window truncation over the conversation history.
-///
-/// - Under the soft limit: returns the history with tool results clamped only.
-/// - Over the soft limit: drops whole oldest units (never mid-tool-batch)
-///   until the kept suffix fits [targetLimit]. Everything from the most
-///   recent [UserMessage] onwards is mandatory and always kept, even if that
-///   alone exceeds the target.
-///
-/// Pure/non-destructive: the input list is never mutated and the full
-/// history remains available for persistence and UI rendering.
+/// Groups high-level [Message] history into atomic blocks corresponding to turns/tool batches.
+List<List<Message>> groupHistoryIntoBlocks(List<Message> history) {
+  final blocks = <List<Message>>[];
+  var i = 0;
+  while (i < history.length) {
+    final msg = history[i];
+    if (msg is AssistantMessage && i + 1 < history.length && history[i + 1] is ToolMessage) {
+      final block = <Message>[msg];
+      var j = i + 1;
+      while (j < history.length && history[j] is ToolMessage) {
+        block.add(history[j]);
+        j++;
+      }
+      blocks.add(block);
+      i = j;
+    } else if (msg is ToolMessage) {
+      final block = <Message>[msg];
+      var j = i + 1;
+      while (j < history.length && history[j] is ToolMessage) {
+        block.add(history[j]);
+        j++;
+      }
+      blocks.add(block);
+      i = j;
+    } else {
+      blocks.add([msg]);
+      i++;
+    }
+  }
+  return blocks;
+}
+
+/// Truncates conversation history for payload boundaries.
 List<Message> truncateHistory(
   List<Message> history, {
   int softLimit = kContextSoftLimit,
@@ -121,8 +470,6 @@ List<Message> truncateHistory(
 
   final units = groupIntoUnits(clamped);
 
-  // Index of the unit containing the last user message; every unit from
-  // there to the end is mandatory context for the current turn.
   var lastUserUnit = -1;
   for (var i = 0; i < units.length; i++) {
     if (units[i].first is UserMessage) lastUserUnit = i;
@@ -135,12 +482,9 @@ List<Message> truncateHistory(
     final isMandatory = i >= lastUserUnit && lastUserUnit != -1;
     if (!isMandatory && budget + unitSize > targetLimit) break;
     budget += unitSize;
-    // Collected back-to-front; flattened front-to-back below.
     keptUnits.add(units[i]);
   }
 
-  // Degenerate case: no user message at all and the newest unit already
-  // blows the target — still send something rather than nothing.
   if (keptUnits.isEmpty) keptUnits.add(units.last);
 
   return [
@@ -148,13 +492,6 @@ List<Message> truncateHistory(
   ];
 }
 
-// ---- Mid-loop payload management (P2b) --------------------------------------
-//
-// truncateHistory() runs once per run(), but an agentic turn APPENDS results
-// as the loop progresses — a screen-automation flow adds ~12K per step. These
-// helpers keep the in-loop LLM payload inside the same budget.
-
-/// Head-clamps [text] to [kMaxToolResultChars], mirroring _clampToolResult.
 String clampResultText(String text) {
   if (text.length <= kMaxToolResultChars) return text;
   final dropped = text.length - kMaxToolResultChars;
@@ -168,8 +505,6 @@ int _llmMessageChars(Map<String, dynamic> message) {
   if (content is String) {
     size += content.length;
   } else if (content is List) {
-    // Multimodal content parts: sum part payload lengths directly to avoid
-    // running jsonEncode() on multi-megabyte base64 structures.
     for (final part in content) {
       if (part is Map) {
         final text = part['text'];
@@ -187,7 +522,6 @@ int _llmMessageChars(Map<String, dynamic> message) {
   }
   final toolCalls = message['tool_calls'];
   if (toolCalls is List) {
-    // Arguments dominate; jsonEncode-length is close enough for a guard.
     for (final call in toolCalls) {
       if (call is Map) {
         final fn = call['function'];
@@ -201,7 +535,7 @@ int _llmMessageChars(Map<String, dynamic> message) {
   return size;
 }
 
-bool _isSyntheticMediaMessage(Map<String, dynamic> message) {
+bool isSyntheticMediaMessage(Map<String, dynamic> message) {
   final content = message['content'];
   if (content is List && content.isNotEmpty) {
     final first = content.first;
@@ -216,19 +550,6 @@ bool _isSyntheticMediaMessage(Map<String, dynamic> message) {
 int estimateLlmMessagesChars(List<Map<String, dynamic>> messages) =>
     messages.fold(0, (sum, m) => sum + _llmMessageChars(m));
 
-/// Sliding-window trim over the in-loop LLM payload (raw message maps).
-///
-/// Drops whole oldest blocks until the payload fits [targetLimit]. A block is
-/// one of:
-/// - an assistant `tool_calls` message PLUS its following `tool` results
-///   (never split — orphaned tool results are API errors)
-/// - any standalone assistant/user text message
-///
-/// Protection rules differ from [truncateHistory]: within a single agentic
-/// run almost everything sits AFTER the one starting user message, so
-/// "everything from the last user message is mandatory" would make this a
-/// no-op. Instead only the system prompt and the last USER MESSAGE ITSELF
-/// are protected; stale intermediate tool exchanges are fair game.
 List<Map<String, dynamic>> trimLlmMessages(
   List<Map<String, dynamic>> messages, {
   int softLimit = kContextSoftLimit,
@@ -239,7 +560,6 @@ List<Map<String, dynamic>> trimLlmMessages(
   var start = 0;
   if (messages.isNotEmpty && messages.first['role'] == 'system') start = 1;
 
-  // Partition into block ranges [from, to).
   final blocks = <(int, int)>[];
   var i = start;
   while (i < messages.length) {
@@ -258,14 +578,11 @@ List<Map<String, dynamic>> trimLlmMessages(
   }
   if (blocks.isEmpty) return messages;
 
-  // The last user-message block is mandatory (the run's instruction).
-  // Exclude synthetic in-loop media delivery blocks so the user's real prompt
-  // is protected.
   var lastUserBlock = -1;
   for (var b = 0; b < blocks.length; b++) {
     for (var m = blocks[b].$1; m < blocks[b].$2; m++) {
       final msg = messages[m];
-      if (msg['role'] == 'user' && !_isSyntheticMediaMessage(msg)) {
+      if (msg['role'] == 'user' && !isSyntheticMediaMessage(msg)) {
         lastUserBlock = b;
       }
     }
@@ -280,8 +597,6 @@ List<Map<String, dynamic>> trimLlmMessages(
 
   var total = estimateLlmMessagesChars(messages.sublist(start));
   var dropped = false;
-  // Drop unprotected blocks oldest-first until under target. A protected
-  // block (the last user message) is skipped, not a stopping condition.
   for (var b = 0; b < blocks.length && total > targetLimit; b++) {
     if (b == lastUserBlock) continue;
     final (from, to) = blocks[b];
@@ -289,7 +604,7 @@ List<Map<String, dynamic>> trimLlmMessages(
       total -= _llmMessageChars(messages[m]);
     }
     dropped = true;
-    blocks[b] = (-1, -1); // mark dropped
+    blocks[b] = (-1, -1);
   }
   if (!dropped) return messages;
 

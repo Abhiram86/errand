@@ -59,3 +59,17 @@ class ErrorMessage extends Message {
     required this.error,
   });
 }
+
+class CompactedNoticeMessage extends Message {
+  final String summary;
+  final int beforeTokens;
+  final int afterTokens;
+
+  const CompactedNoticeMessage({
+    required super.id,
+    required super.text,
+    this.summary = '',
+    this.beforeTokens = 0,
+    this.afterTokens = 0,
+  });
+}

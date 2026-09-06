@@ -704,7 +704,8 @@ Tool findTool(WorkingDirectory workspace) => Tool(
     final results = <String>[];
     final skippedPaths = <String>[];
     try {
-      if (!await target.exists()) {
+      final entityType = await FileSystemEntity.type(target.path);
+      if (entityType == FileSystemEntityType.notFound) {
         return ToolCallResult.failure(
           call.id,
           'Path not found: ${target.path}',
@@ -786,26 +787,21 @@ Future<void> _collectFindMatches({
 }) async {
   if (results.length >= kMaxFindResults) return;
 
-  bool isDir = false;
-  bool isFile = false;
-  if (target is Directory) {
-    isDir = true;
-  } else if (target is File) {
-    isFile = true;
-  } else {
-    try {
-      final stat = await target.stat();
-      isDir = stat.type == FileSystemEntityType.directory;
-      isFile = stat.type == FileSystemEntityType.file;
-    } on FileSystemException {
-      skippedPaths.add(target.path);
-      return;
-    }
+  late final FileStat targetStat;
+  try {
+    targetStat = await target.stat();
+  } on FileSystemException {
+    skippedPaths.add(target.path);
+    return;
   }
+  final isDir = targetStat.type == FileSystemEntityType.directory;
+  final isFile = targetStat.type == FileSystemEntityType.file;
 
   final targetMatches = type == 'file' ? isFile : isDir;
   final relativePath = path.relative(target.path, from: currentDirectory.path);
-  final targetName = matchSubpath ? relativePath : path.basename(target.path);
+  final targetName = matchSubpath
+      ? path.relative(target.path, from: target.path)
+      : path.basename(target.path);
   if (targetMatches && matcher.hasMatch(targetName)) {
     results.add(relativePath);
   }
@@ -815,6 +811,7 @@ Future<void> _collectFindMatches({
   }
 
   await _walkFindDirectory(
+    rootTarget: Directory(target.path),
     directory: Directory(target.path),
     currentDirectory: currentDirectory,
     matcher: matcher,
@@ -828,6 +825,7 @@ Future<void> _collectFindMatches({
 }
 
 Future<void> _walkFindDirectory({
+  required Directory rootTarget,
   required Directory directory,
   required Directory currentDirectory,
   required RegExp matcher,
@@ -867,13 +865,16 @@ Future<void> _walkFindDirectory({
 
       final isMatchType = type == 'file' ? isFile : isDir;
       final relativePath = path.relative(entity.path, from: currentDirectory.path);
-      final testName = matchSubpath ? relativePath : path.basename(entity.path);
+      final testName = matchSubpath
+          ? path.relative(entity.path, from: rootTarget.path)
+          : path.basename(entity.path);
       if (isMatchType && matcher.hasMatch(testName)) {
         results.add(relativePath);
       }
 
       if (isDir && childDepth < maxDepth) {
         await _walkFindDirectory(
+          rootTarget: rootTarget,
           directory: Directory(entity.path),
           currentDirectory: currentDirectory,
           matcher: matcher,

@@ -251,6 +251,26 @@ final class ErrandDatabase extends _$ErrandDatabase {
     });
   }
 
+  /// Completely replaces stored messages of [conversationId] with [messages] in
+  /// exact sequential sortOrder (0, 1, 2, ...).
+  /// Used after context compaction to purge older compacted messages from the DB
+  /// and ensure the compacted summary and tail messages have clean chronological sortOrder.
+  Future<void> replaceAllMessages(String conversationId, List<Message> messages) async {
+    await transaction(() async {
+      await (delete(conversationMessages)
+            ..where((m) => m.conversationId.equals(conversationId)))
+          .go();
+      await batch((b) {
+        for (var i = 0; i < messages.length; i++) {
+          b.insert(
+            conversationMessages,
+            _messageCompanion(conversationId, i, messages[i]),
+          );
+        }
+      });
+    });
+  }
+
   /// Deletes a conversation together with its messages and attachments.
   Future<void> deleteConversation(String id) async {
     await transaction(() async {
@@ -579,7 +599,13 @@ final class ErrandDatabase extends _$ErrandDatabase {
       toolArgumentsJson: Value(
         message is ToolMessage ? jsonEncode(message.tool.args) : null,
       ),
-      result: Value(message is ToolMessage ? message.result : null),
+      result: Value(
+        message is ToolMessage
+            ? message.result
+            : message is CompactedNoticeMessage
+                ? message.summary
+                : null,
+      ),
       reasoning: Value(message is ToolMessage ? message.reasoning : null),
       reasoningDetailsJson: Value(
         message is ToolMessage && message.reasoningDetails.isNotEmpty
@@ -630,6 +656,12 @@ final class ErrandDatabase extends _$ErrandDatabase {
           text: row.messageText,
           error: row.error ?? row.messageText,
         );
+      case _compactedType:
+        return CompactedNoticeMessage(
+          id: row.messageId,
+          text: row.messageText,
+          summary: row.result ?? '',
+        );
       default:
         throw FormatException('Unknown message type "${row.messageType}".');
     }
@@ -640,6 +672,7 @@ final class ErrandDatabase extends _$ErrandDatabase {
     AssistantMessage() => _assistantType,
     ToolMessage() => _toolType,
     ErrorMessage() => _errorType,
+    CompactedNoticeMessage() => _compactedType,
   };
 
   static List<String> _decodeStringList(String? json) {
@@ -679,3 +712,4 @@ const _userType = 'user';
 const _assistantType = 'assistant';
 const _toolType = 'tool';
 const _errorType = 'error';
+const _compactedType = 'compacted';

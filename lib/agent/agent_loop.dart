@@ -18,6 +18,16 @@ sealed class AgentEvent {
   const AgentEvent();
 }
 
+class AgentCompacting extends AgentEvent {
+  const AgentCompacting();
+}
+
+class AgentCompacted extends AgentEvent {
+  final String summary;
+  final int tailBlockCount;
+  const AgentCompacted(this.summary, {this.tailBlockCount = 0});
+}
+
 class AgentToolCall extends AgentEvent {
   final ToolCall call;
   final ToolCallResult result;
@@ -33,10 +43,13 @@ class AgentToolCall extends AgentEvent {
 }
 
 class AgentLoop {
-  static const int maxTurns = 18;
+  static const int defaultMaxTurns = 72;
+  static const int maxTurns = defaultMaxTurns;
 
   final LlmClient _llm;
   final ToolRegistry _registry;
+  final ContextBudget budget;
+  final int maxTurnCount;
   final String Function()? systemPromptBuilder;
 
   /// Set by the UI stop button; checked at every turn boundary and between
@@ -45,50 +58,52 @@ class AgentLoop {
   final AgentObserver? _onEvent;
   final AgentTextObserver? onTextDelta;
   final AgentReasoningObserver? onReasoningDelta;
+  final void Function(String summary)? onCompacted;
 
   AgentLoop({
     required this._llm,
     required this._registry,
+    ContextBudget? budget,
+    int? modelContextSize,
+    int? maxTurns,
     this.systemPromptBuilder,
     this.cancelToken,
     this._onEvent,
     this.onTextDelta,
     this.onReasoningDelta,
-  });
+    this.onCompacted,
+  })  : budget = budget ??
+            (modelContextSize != null
+                ? ContextBudget(contextSize: modelContextSize)
+                : ContextBudget.defaultBudget),
+        maxTurnCount = maxTurns ?? defaultMaxTurns;
 
   Future<String> run(Conversation conversation) async {
-    // OPT-07: the LLM payload is truncated to the context budget here, at
-    // the boundary. The full history stays intact on the Conversation for
-    // persistence and UI rendering.
-    final history = truncateHistory(conversation.messages);
+    // OPT-07: individual tool results are head-clamped at the boundary.
+    final history = clampToolResults(conversation.messages);
+    final systemPrompt =
+        conversation.localSystemPrompt ?? systemPromptBuilder?.call();
     final messages = <Map<String, dynamic>>[
-      if (conversation.localSystemPrompt != null)
-        {'role': 'system', 'content': conversation.localSystemPrompt},
+      if (systemPrompt != null)
+        {'role': 'system', 'content': systemPrompt},
       ..._toLlmHistory(history),
     ];
 
-    for (var turn = 0; turn < maxTurns; turn++) {
+    // Check context budget immediately if incoming history exceeds threshold
+    await _compactIfNeeded(messages);
+
+    for (var turn = 0; turn < maxTurnCount; turn++) {
       if (cancelToken?.isCancelled ?? false) throw const LlmStoppedException();
       final systemPromptBuilder = this.systemPromptBuilder;
       if (systemPromptBuilder != null) {
-        if (messages.isNotEmpty && messages[0]['role']=='system') {
+        if (messages.isNotEmpty && messages[0]['role'] == 'system') {
           messages[0]['content'] = systemPromptBuilder();
         } else {
           messages.insert(0, {'role': 'system', 'content': systemPromptBuilder()});
         }
       }
 
-
       final textObserver = onTextDelta;
-      // Mid-loop guard: results appended during this turn bypass
-      // truncateHistory(), so re-trim before every request. Cheap (length
-      // sums only) and a no-op under the soft limit.
-      final trimmed = trimLlmMessages(messages);
-      if (!identical(trimmed, messages)) {
-        messages
-          ..clear()
-          ..addAll(trimmed);
-      }
       final message = textObserver == null
           ? await _llm.chat(
               messages: messages,
@@ -106,7 +121,7 @@ class AgentLoop {
         return message.content ?? '';
       }
 
-      messages.add(message.toJson());
+      messages.add(message.toJson(includeReasoning: true));
       final pendingMediaParts = <Map<String, dynamic>>[];
 
       // Run stateless read/search tools concurrently for performance;
@@ -160,17 +175,140 @@ class AgentLoop {
           ],
         });
       }
+
+      // Mid-chat/mid-step compaction: if tool results + model thinking crossed
+      // the context budget, compact immediately before the next thinking/tool step.
+      await _compactIfNeeded(messages);
     }
 
-    return 'Reached $maxTurns tool-call turns without a final answer.';
+    return 'Reached $maxTurnCount tool-call turns without a final answer.';
+  }
+
+  Future<void> _compactIfNeeded(List<Map<String, dynamic>> messages) async {
+    final currentTokens = estimateLlmMessagesTokens(messages);
+    if (!budget.shouldCompact(currentTokens)) return;
+
+    var start = 0;
+    Map<String, dynamic>? systemMsg;
+    if (messages.isNotEmpty && messages.first['role'] == 'system') {
+      systemMsg = messages.first;
+      start = 1;
+    }
+
+    final nonSystem = messages.sublist(start);
+    if (nonSystem.length < 2) return;
+
+    // Group into atomic blocks (never separating assistant tool calls from tool results or synthetic media)
+    final blocks = <List<Map<String, dynamic>>>[];
+    var i = 0;
+    while (i < nonSystem.length) {
+      final msg = nonSystem[i];
+      final toolCalls = msg['tool_calls'];
+      if (msg['role'] == 'assistant' && toolCalls is List && toolCalls.isNotEmpty) {
+        final block = <Map<String, dynamic>>[msg];
+        var j = i + 1;
+        while (j < nonSystem.length && nonSystem[j]['role'] == 'tool') {
+          block.add(nonSystem[j]);
+          j++;
+        }
+        while (j < nonSystem.length && isSyntheticMediaMessage(nonSystem[j])) {
+          block.add(nonSystem[j]);
+          j++;
+        }
+        blocks.add(block);
+        i = j;
+      } else {
+        blocks.add([msg]);
+        i++;
+      }
+    }
+
+    if (blocks.length < 2) return;
+
+    // Determine how many recent blocks to retain in the tail.
+    // Step down keepCount until tailTokens fits within targetTokens, ensuring
+    // we keep at least 1 tail block so the ongoing active turn is never lost.
+    var keepCount = blocks.length >= 4 ? 2 : 1;
+    var tailBlocks = blocks.sublist(blocks.length - keepCount);
+    var tailTokens = estimateLlmMessagesTokens([for (final b in tailBlocks) ...b]);
+
+    while (keepCount > 1 && tailTokens > budget.targetTokens) {
+      keepCount--;
+      tailBlocks = blocks.sublist(blocks.length - keepCount);
+      tailTokens = estimateLlmMessagesTokens([for (final b in tailBlocks) ...b]);
+    }
+
+    final compactBlocks = blocks.sublist(0, blocks.length - keepCount);
+    if (compactBlocks.isEmpty) return;
+
+    final toCompact = <Map<String, dynamic>>[
+      for (final b in compactBlocks) ...b,
+    ];
+    final tail = <Map<String, dynamic>>[
+      for (final b in tailBlocks) ...b,
+    ];
+
+    _onEvent?.call(const AgentCompacting());
+
+    String summary;
+    try {
+      final compactionPrompt = buildCompactionPrompt(toCompact);
+      final response = await _llm.chat(
+        messages: compactionPrompt,
+        cancelToken: cancelToken,
+      );
+      summary = (response.content ?? '').trim();
+      if (summary.isEmpty) {
+        summary = buildDeterministicFallbackSummary(toCompact);
+      }
+    } on LlmStoppedException {
+      rethrow;
+    } catch (_) {
+      summary = buildDeterministicFallbackSummary(toCompact);
+    }
+
+    final compacted = applyCompactedHistory(
+      systemMessage: systemMsg ?? const {'role': 'system', 'content': 'You are a helpful assistant.'},
+      summary: summary,
+      tailMessages: tail,
+    );
+
+    messages
+      ..clear()
+      ..addAll(compacted);
+
+    onCompacted?.call(summary);
+    _onEvent?.call(AgentCompacted(summary, tailBlockCount: keepCount));
   }
 
   List<Map<String, dynamic>> _toLlmHistory(List<Message> history) {
     final messages = <Map<String, dynamic>>[];
 
-    for (var index = 0; index < history.length; index++) {
-      final message = history[index];
+    // If history contains a CompactedNoticeMessage, older messages prior to it
+    // were already summarized. Start from the latest CompactedNoticeMessage.
+    final lastCompactedIdx =
+        history.lastIndexWhere((m) => m is CompactedNoticeMessage);
+    final effectiveHistory = lastCompactedIdx != -1
+        ? history.sublist(lastCompactedIdx)
+        : history;
+
+    for (var index = 0; index < effectiveHistory.length; index++) {
+      final message = effectiveHistory[index];
       switch (message) {
+        case CompactedNoticeMessage():
+          final summaryContent = message.summary.isNotEmpty
+              ? message.summary
+              : message.text;
+          messages.add({
+            'role': 'user',
+            'content': '$kCompactedContextMarker\n$summaryContent',
+          });
+          messages.add(const {
+            'role': 'assistant',
+            'content':
+                'I have incorporated the compacted conversation history and previous tool execution state. '
+                'Continuing with the task.',
+          });
         case UserMessage():
           final content = message.attachedUris.isEmpty
               ? message.text
@@ -182,11 +320,13 @@ class AgentLoop {
         case AssistantMessage():
           // If immediately followed by ToolMessages, merge this assistant's text
           // into the assistant tool_calls message to prevent consecutive assistant messages.
-          if (index + 1 < history.length && history[index + 1] is ToolMessage) {
+          if (index + 1 < effectiveHistory.length &&
+              effectiveHistory[index + 1] is ToolMessage) {
             final toolMessages = <ToolMessage>[];
             var j = index + 1;
-            while (j < history.length && history[j] is ToolMessage) {
-              toolMessages.add(history[j] as ToolMessage);
+            while (j < effectiveHistory.length &&
+                effectiveHistory[j] is ToolMessage) {
+              toolMessages.add(effectiveHistory[j] as ToolMessage);
               j++;
             }
             index = j - 1;
@@ -229,10 +369,10 @@ class AgentLoop {
           });
         case ToolMessage():
           final toolMessages = <ToolMessage>[message];
-          while (index + 1 < history.length &&
-              history[index + 1] is ToolMessage) {
+          while (index + 1 < effectiveHistory.length &&
+              effectiveHistory[index + 1] is ToolMessage) {
             index++;
-            toolMessages.add(history[index] as ToolMessage);
+            toolMessages.add(effectiveHistory[index] as ToolMessage);
           }
 
           messages.add({

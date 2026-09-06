@@ -12,6 +12,9 @@ class ModelOption {
   /// Whether the catalog response had an explicit architecture modalities list.
   final bool hasExplicitModalities;
 
+  /// Native context window limit in tokens (e.g. 128000, 200000, 1048576).
+  final int? contextLength;
+
   bool? checkModality(String modality) {
     if (inputModalities.contains(modality)) return true;
     if (hasExplicitModalities) return false;
@@ -26,6 +29,7 @@ class ModelOption {
     required this.provider,
     this.inputModalities = const ['text'],
     this.hasExplicitModalities = false,
+    this.contextLength,
   });
 
   Map<String, dynamic> toJson() => {
@@ -34,6 +38,7 @@ class ModelOption {
     'provider': provider,
     'inputModalities': inputModalities,
     'hasExplicitModalities': hasExplicitModalities,
+    if (contextLength != null) 'contextLength': contextLength,
   };
 
   factory ModelOption.fromJson(Map<String, dynamic> json) => ModelOption(
@@ -45,6 +50,7 @@ class ModelOption {
             .toList() ??
         const ['text'],
     hasExplicitModalities: json['hasExplicitModalities'] as bool? ?? false,
+    contextLength: (json['contextLength'] as num?)?.toInt(),
   );
 }
 
@@ -59,6 +65,7 @@ const kFallbackModels = <ModelOption>[
     provider: 'Anthropic',
     inputModalities: ['text', 'image'],
     hasExplicitModalities: true,
+    contextLength: 200000,
   ),
   ModelOption(
     id: 'openai/gpt-4o',
@@ -66,6 +73,7 @@ const kFallbackModels = <ModelOption>[
     provider: 'OpenAI',
     inputModalities: ['text', 'image'],
     hasExplicitModalities: true,
+    contextLength: 128000,
   ),
   ModelOption(
     id: 'google/gemini-2.0-flash-001',
@@ -73,6 +81,7 @@ const kFallbackModels = <ModelOption>[
     provider: 'Google',
     inputModalities: ['text', 'image', 'audio', 'video'],
     hasExplicitModalities: true,
+    contextLength: 1048576,
   ),
   ModelOption(
     id: 'meta-llama/llama-3.3-70b-instruct',
@@ -80,5 +89,6 @@ const kFallbackModels = <ModelOption>[
     provider: 'Meta',
     inputModalities: ['text'],
     hasExplicitModalities: true,
+    contextLength: 128000,
   ),
 ];

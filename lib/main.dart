@@ -20,6 +20,7 @@ import 'llm/llm_client.dart';
 import 'models/llm_provider.dart';
 import 'models/model_option.dart';
 import 'services/model_catalog.dart';
+import 'services/models_dev_service.dart';
 import 'services/speech_service.dart';
 import 'services/workspace.dart';
 import 'tools/file_tools.dart';
@@ -186,6 +187,23 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   /// rule: this flag + [_updateWorkingPlaceholder] own the placeholder
   /// text so writers can't fight each other (that used to flicker).
   bool _workingReasoning = false;
+  bool _workingCompacting = false;
+
+  /// Debug override: set to a positive number (e.g. 8000) during testing to force early compaction.
+  /// Set to 0 to use native model context budgets.
+  static const int _debugCompactionThreshold = 0;
+
+  ContextBudget _getActiveBudget() {
+    final modelContextSize = ModelCatalogService.getContextLength(
+      _selectedModel,
+      baseUrl: AppSettingsService.instance.effectiveBaseUrl,
+    );
+    return ContextBudget(
+      contextSize: modelContextSize,
+      overrideThreshold:
+          _debugCompactionThreshold > 0 ? _debugCompactionThreshold : null,
+    );
+  }
 
   /// Platform-channel service used for the foreground work indicator that
   /// runs alongside every agent turn.
@@ -248,6 +266,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     super.initState();
     _activeConversation = _newDraftConversation();
     _llm = _createLlmClient(_selectedModel);
+    ModelsDevService.preload();
     unawaited(_loadAppConfig());
     unawaited(_refreshA11yState());
     // One-time POST_NOTIFICATIONS grant so the foreground work indicator is
@@ -1242,8 +1261,31 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   /// Tap on own bubble: load its text into the composer for editing.
-  void _editUserMessage(UserMessage message) {
+  Future<void> _editUserMessage(UserMessage message) async {
     if (_busy) return;
+    final currentDraft = _controller.text.trim();
+    if (currentDraft.isNotEmpty && _editingMessageId != message.id) {
+      final discard = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Discard draft?'),
+          content: const Text(
+            'Editing this message will replace the text currently in the composer.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Discard & Edit'),
+            ),
+          ],
+        ),
+      );
+      if (discard != true || !mounted) return;
+    }
     setState(() {
       _editingMessageId = message.id;
       _controller.text = _stripAttachedBlock(message.text);
@@ -1350,9 +1392,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         getAttachedFiles: () => _activeConversation.attachedFileUris,
       );
 
+      final budget = _getActiveBudget();
+
       final loop = AgentLoop(
         llm: _llm,
         registry: registry,
+        budget: budget,
         systemPromptBuilder: () => _systemPromptFor(
           _workingDirectory.current,
           screenAccess: _a11yAvailable,
@@ -1405,7 +1450,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     if (id == null || _workingText.isNotEmpty) return;
     final index = _messages.indexWhere((message) => message.id == id);
     if (index == -1) return;
-    final label = _workingReasoning ? '…thinking' : '…working';
+    final String label;
+    if (_workingCompacting) {
+      label = '…compacting context';
+    } else if (_workingReasoning) {
+      label = '…thinking';
+    } else {
+      label = '…working';
+    }
     setState(() {
       _messages[index] = AssistantMessage(
         id: id,
@@ -1423,6 +1475,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _workingFlushTimer?.cancel();
     _workingFlushTimer = null;
     _workingElapsedTimer?.cancel();
+    _workingCompacting = false;
     unawaited(_intentService.stopWorkIndicator());
     if (_externalAppWorkDone) {
       unawaited(_intentService.bringToFront());
@@ -1461,12 +1514,20 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   void _handleEvent(AgentEvent event) {
     switch (event) {
+      case AgentCompacting():
+        _workingCompacting = true;
+        _updateWorkingPlaceholder();
+      case AgentCompacted(:final summary, :final tailBlockCount):
+        _workingCompacting = false;
+        _handleCompacted(summary, tailBlockCount: tailBlockCount);
+        _updateWorkingPlaceholder();
       case AgentToolCall(
         call: final call,
         result: final result,
         reasoning: final reasoning,
         reasoningDetails: final reasoningDetails,
       ):
+        _workingCompacting = false;
         if (call.name == 'screen' || call.name == 'act') {
           _externalAppWorkDone = true;
         }
@@ -1483,6 +1544,65 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             reasoningDetails: reasoningDetails,
           ),
         );
+    }
+  }
+
+  void _handleCompacted(String summary, {int tailBlockCount = 0}) {
+    if (!mounted) return;
+    if (_messages.isNotEmpty && _messages.first.text.contains(summary)) return;
+
+    final beforeTokens = estimateHistoryTokens(_messages);
+
+    setState(() {
+      final workingId = _workingMessageId;
+      AssistantMessage? workingMsg;
+      if (workingId != null) {
+        final workingIdx = _messages.indexWhere((m) => m.id == workingId);
+        if (workingIdx != -1) {
+          final m = _messages[workingIdx];
+          if (m is AssistantMessage) {
+            workingMsg = m;
+          }
+        }
+      }
+
+      final currentHistory = _messages
+          .where((m) => m.id != workingId)
+          .toList(growable: false);
+
+      final blocks = groupHistoryIntoBlocks(currentHistory);
+      final keepCount = tailBlockCount.clamp(1, blocks.length);
+      final compactedBlocks = blocks.sublist(0, blocks.length - keepCount);
+      final keptTailBlocks = blocks.sublist(blocks.length - keepCount);
+
+      final tailTokens = estimateHistoryTokens([
+        for (final block in keptTailBlocks) ...block,
+      ]);
+
+      final divider = CompactedNoticeMessage(
+        id: _uuid.v4(),
+        text: 'compacted',
+        summary: summary,
+        beforeTokens: beforeTokens,
+        afterTokens: tailTokens,
+      );
+
+      _messages = <Message>[
+        for (final block in compactedBlocks) ...block,
+        divider,
+        for (final block in keptTailBlocks) ...block,
+        ?workingMsg,
+      ];
+
+      _touchConversation();
+    });
+
+    _persistNow();
+
+    if (mounted) {
+      _showToast(
+        'Context compacted: ${_formatTokens(beforeTokens)} → ${_formatTokens(estimateHistoryTokens(_messages))} tokens',
+      );
     }
   }
 
@@ -1590,6 +1710,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _workingFlushTimer?.cancel();
     _workingFlushTimer = null;
     _workingElapsedTimer?.cancel();
+    _workingCompacting = false;
     unawaited(_intentService.stopWorkIndicator());
     if (_externalAppWorkDone) {
       unawaited(_intentService.bringToFront());
@@ -1945,6 +2066,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           }
           final index = _loadingOlderMessages ? i - 1 : i;
           final message = _messages[index];
+          if (message is CompactedNoticeMessage) {
+            return CompactedDividerBubble(
+              key: ValueKey(message.id),
+              message: message,
+            );
+          }
           if (message is ToolMessage) {
             return ToolMessageBubble(
               key: ValueKey(message.id),
@@ -1973,23 +2100,61 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     );
   }
 
-  /// Debug-only: what the NEXT agent run would actually send — the same
-  /// truncateHistory() the loop applies at its boundary — not the raw size
-  /// of whatever happens to be loaded in memory.
+  String _formatTokens(int tokens) {
+    if (tokens >= 1000000) {
+      final m = tokens / 1000000;
+      return m % 1 == 0 ? '${m.round()}M' : '${m.toStringAsFixed(1)}M';
+    }
+    if (tokens >= 1000) {
+      final k = tokens / 1000;
+      return k % 1 == 0 ? '${k.round()}k' : '${k.toStringAsFixed(1)}k';
+    }
+    return '$tokens';
+  }
+
+  /// Displays the current active token usage vs. the dynamic compaction threshold.
   Widget _buildContextFooter() {
-    final sent = estimateHistoryChars(truncateHistory(_messages));
-    final full = estimateHistoryChars(_messages);
+    final budget = _getActiveBudget();
+    final threshold = budget.compactionThreshold;
+
+    final lastCompactedIdx =
+        _messages.lastIndexWhere((m) => m is CompactedNoticeMessage);
+    final activeMessages = lastCompactedIdx != -1
+        ? _messages.sublist(lastCompactedIdx)
+        : _messages;
+    final activeTokens = estimateHistoryTokens(activeMessages);
+
+    final isNearOrOver = activeTokens >= threshold;
+    final hasCompacted = lastCompactedIdx != -1 ||
+        _messages.any(
+          (m) =>
+              m is UserMessage &&
+              (m.text.startsWith(kCompactedContextMarker) ||
+                  m.text.startsWith('[Compacted Conversation History')),
+        );
+
+    final statusSuffix = isNearOrOver
+        ? ' · compacts next'
+        : hasCompacted
+            ? ' · compacted'
+            : '';
+
     return Material(
       color: kInputBg,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 2, 16, 0),
-        child: Align(
-          alignment: Alignment.centerLeft,
+      child: Tooltip(
+        message:
+            'Context: $activeTokens / $threshold tokens (native max: ${_formatTokens(budget.contextSize)})',
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 2, 16, 0),
           child: Text(
-            'ctx ~${sent ~/ 1024}K sent'
-            '${full > sent ? ' · ${full ~/ 1024}K loaded' : ''}'
-            ' · ${_messages.length} msgs',
-            style: const TextStyle(color: kMuted, fontSize: 10),
+            'ctx ${_formatTokens(activeTokens)}/${_formatTokens(threshold)} · ${_messages.length} msgs$statusSuffix',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: isNearOrOver ? const Color(0xFFF59E0B) : kMuted,
+              fontSize: 10,
+              fontWeight: isNearOrOver ? FontWeight.w600 : FontWeight.normal,
+            ),
           ),
         ),
       ),

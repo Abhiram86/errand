@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 
 import '../llm/llm_client.dart' show cleanErrorMessage;
 import '../models/model_option.dart';
+import 'models_dev_service.dart';
 
 const _catalogTimeout = Duration(seconds: 15);
 const _testConnectionTimeout = Duration(seconds: 8);
@@ -318,6 +319,17 @@ class ModelCatalogService {
         final name = rawName is String && rawName.isNotEmpty ? rawName : id;
         final modalityInfo = _inputModalitiesFor(id, rawModel);
 
+        int? contextLength;
+        final rawCtx = rawModel['context_length'] ??
+            (rawModel['top_provider'] is Map
+                ? rawModel['top_provider']['context_length']
+                : null);
+        if (rawCtx is num && rawCtx > 0) {
+          contextLength = rawCtx.toInt();
+        } else {
+          contextLength = ModelsDevService.lookupContextTokens(id);
+        }
+
         models.add(
           ModelOption(
             id: id,
@@ -325,6 +337,7 @@ class ModelCatalogService {
             provider: _providerFor(id, defaultProvider: defaultProvider),
             inputModalities: modalityInfo.modalities,
             hasExplicitModalities: modalityInfo.explicit,
+            contextLength: contextLength,
           ),
         );
       }
@@ -424,6 +437,35 @@ class ModelCatalogService {
       }
     }
     return null;
+  }
+
+  /// Returns the native context window limit in tokens for [modelId], or a safe fallback.
+  static int getContextLength(String modelId, {String? baseUrl}) {
+    if (baseUrl != null) {
+      final key = _normalizeBaseUrl(baseUrl);
+      final models = _cache[key];
+      if (models != null) {
+        for (final option in models) {
+          if (option.id == modelId && option.contextLength != null) {
+            return option.contextLength!;
+          }
+        }
+      }
+    }
+
+    for (final models in _cache.values) {
+      for (final option in models) {
+        if (option.id == modelId && option.contextLength != null) {
+          return option.contextLength!;
+        }
+      }
+    }
+
+    final fromModelsDev = ModelsDevService.lookupContextTokens(modelId);
+    if (fromModelsDev != null) return fromModelsDev;
+
+    // Fallback default context length: 128K tokens
+    return 128000;
   }
 
   static String _providerFor(String id, {String? defaultProvider}) {

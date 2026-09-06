@@ -48,6 +48,10 @@ class _CopyButton extends StatelessWidget {
         );
       },
       tooltip: tooltip,
+      style: IconButton.styleFrom(
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        visualDensity: VisualDensity.compact,
+      ),
       constraints: const BoxConstraints.tightFor(width: 24, height: 24),
       padding: EdgeInsets.zero,
       iconSize: 14,
@@ -222,22 +226,25 @@ class MessageBubble extends StatelessWidget {
           bottomRight: Radius.circular(isUser ? 4 : 18),
         ),
       ),
-      child: isUser
-          ? SelectableText(
-              text,
-              style: const TextStyle(
-                color: kText,
-                fontSize: 15,
-                height: 20 / 15,
-              ),
-            )
-          // Assistant turns render as markdown (bold, tables, code,
-          // LaTeX). Text selection comes from the SelectionArea that
-          // wraps the message list.
-          : GptMarkdown(
-              text,
-              style: const TextStyle(color: kText, fontSize: 15),
-            ),
+      child: AnimatedSize(
+        duration: const Duration(milliseconds: 140),
+        curve: Curves.easeOutCubic,
+        alignment: isUser ? Alignment.topRight : Alignment.topLeft,
+        clipBehavior: Clip.none,
+        child: isUser
+            ? SelectableText(
+                text,
+                style: const TextStyle(
+                  color: kText,
+                  fontSize: 15,
+                  height: 20 / 15,
+                ),
+              )
+            // Assistant turns render as markdown (bold, tables, code,
+            // LaTeX). Text selection comes from the SelectionArea that
+            // wraps the message list.
+            : _StreamingAssistantText(text: text),
+      ),
     );
 
     // User bubbles carry an explicit pen affordance on their left — more
@@ -255,6 +262,10 @@ class MessageBubble extends StatelessWidget {
               child: IconButton(
                 onPressed: onEdit,
                 tooltip: 'Edit',
+                style: IconButton.styleFrom(
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  visualDensity: VisualDensity.compact,
+                ),
                 constraints:
                     const BoxConstraints.tightFor(width: 28, height: 24),
                 padding: EdgeInsets.zero,
@@ -266,9 +277,6 @@ class MessageBubble extends StatelessWidget {
           Flexible(child: bubble),
         ],
       );
-      if (attached.isEmpty) {
-        return Align(alignment: Alignment.centerRight, child: userRow);
-      }
       final card = Container(
         margin: const EdgeInsets.only(top: 4, bottom: 6),
         constraints: BoxConstraints(
@@ -304,16 +312,28 @@ class MessageBubble extends StatelessWidget {
           ],
         ),
       );
-      return Align(
-        alignment: Alignment.centerRight,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [userRow, card],
+      final Widget userContent = attached.isEmpty
+          ? Align(alignment: Alignment.centerRight, child: userRow)
+          : Align(
+              alignment: Alignment.centerRight,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [userRow, card],
+              ),
+            );
+      return TweenAnimationBuilder<double>(
+        tween: Tween<double>(begin: 0.0, end: 1.0),
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOut,
+        builder: (context, opacity, child) => Opacity(
+          opacity: opacity,
+          child: child,
         ),
+        child: userContent,
       );
     }
 
-    return Align(
+    final assistantContent = Align(
       alignment: Alignment.centerLeft,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -332,6 +352,10 @@ class MessageBubble extends StatelessWidget {
                     child: IconButton(
                       onPressed: onRegenerate,
                       tooltip: 'Regenerate',
+                      style: IconButton.styleFrom(
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        visualDensity: VisualDensity.compact,
+                      ),
                       constraints: const BoxConstraints.tightFor(
                         width: 24,
                         height: 24,
@@ -369,6 +393,134 @@ class MessageBubble extends StatelessWidget {
               ],
             ),
           ),
+        ],
+      ),
+    );
+
+    return TweenAnimationBuilder<double>(
+      tween: Tween<double>(begin: 0.0, end: 1.0),
+      duration: const Duration(milliseconds: 180),
+      curve: Curves.easeOut,
+      builder: (context, opacity, child) => Opacity(
+        opacity: opacity,
+        child: child,
+      ),
+      child: assistantContent,
+    );
+  }
+}
+
+class _StreamingAssistantText extends StatelessWidget {
+  final String text;
+
+  const _StreamingAssistantText({required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    final isPlaceholder = text.startsWith('…working') ||
+        text.startsWith('…thinking') ||
+        text.startsWith('…compacting');
+
+    return TweenAnimationBuilder<double>(
+      key: ValueKey(isPlaceholder ? 'placeholder' : 'streamed-text'),
+      tween: Tween<double>(begin: 0.0, end: 1.0),
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOut,
+      builder: (context, opacity, child) => Opacity(
+        opacity: opacity,
+        child: child,
+      ),
+      child: GptMarkdown(
+        text,
+        style: const TextStyle(color: kText, fontSize: 15),
+      ),
+    );
+  }
+}
+
+class CompactedDividerBubble extends StatefulWidget {
+  final CompactedNoticeMessage message;
+
+  const CompactedDividerBubble({super.key, required this.message});
+
+  @override
+  State<CompactedDividerBubble> createState() => _CompactedDividerBubbleState();
+}
+
+class _CompactedDividerBubbleState extends State<CompactedDividerBubble> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final summary = widget.message.summary.trim();
+    final hasSummary = summary.isNotEmpty;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 14),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              const Expanded(
+                child: Divider(color: kBorder, height: 1, thickness: 0.5),
+              ),
+              InkWell(
+                onTap: hasSummary
+                    ? () => setState(() => _expanded = !_expanded)
+                    : null,
+                splashColor: Colors.transparent,
+                highlightColor: Colors.transparent,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        'compacted',
+                        style: TextStyle(
+                          color: kMuted.withValues(alpha: 0.65),
+                          fontSize: 11,
+                          fontWeight: FontWeight.w500,
+                          letterSpacing: 0.4,
+                        ),
+                      ),
+                      if (hasSummary) ...[
+                        const SizedBox(width: 3),
+                        Icon(
+                          _expanded
+                              ? Icons.keyboard_arrow_up_rounded
+                              : Icons.keyboard_arrow_down_rounded,
+                          size: 13,
+                          color: kMuted.withValues(alpha: 0.5),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+              const Expanded(
+                child: Divider(color: kBorder, height: 1, thickness: 0.5),
+              ),
+            ],
+          ),
+          if (_expanded && hasSummary)
+            Container(
+              margin: const EdgeInsets.only(top: 10),
+              padding: const EdgeInsets.all(12),
+              constraints: BoxConstraints(
+                maxWidth: MediaQuery.of(context).size.width * 0.9,
+              ),
+              decoration: BoxDecoration(
+                color: kInputBg,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: kBorder),
+              ),
+              child: GptMarkdown(
+                summary,
+                style: const TextStyle(color: kText, fontSize: 13),
+              ),
+            ),
         ],
       ),
     );

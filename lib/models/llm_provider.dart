@@ -164,24 +164,28 @@ enum ProviderPresetType {
             name: 'Nemotron 3.5 Lightning (Free)',
             provider: 'OpenCode Zen',
             inputModalities: ['text'],
+            contextLength: 131072,
           ),
           ModelOption(
             id: 'claude-sonnet-4-6',
             name: 'Claude Sonnet 4.6',
             provider: 'OpenCode Zen',
             inputModalities: ['text', 'image'],
+            contextLength: 1000000,
           ),
           ModelOption(
             id: 'gpt-5.4',
             name: 'GPT-5.4',
             provider: 'OpenCode Zen',
             inputModalities: ['text', 'image'],
+            contextLength: 1000000,
           ),
           ModelOption(
             id: 'ling-3.0-flash-fin-free',
             name: 'Ling 3.0 Flash (Free)',
             provider: 'OpenCode Zen',
             inputModalities: ['text'],
+            contextLength: 128000,
           ),
         ];
       case ProviderPresetType.openRouter:
@@ -191,24 +195,28 @@ enum ProviderPresetType {
             name: 'Claude 3.7 Sonnet',
             provider: 'Anthropic',
             inputModalities: ['text', 'image'],
+            contextLength: 200000,
           ),
           ModelOption(
             id: 'openai/gpt-4o',
             name: 'GPT-4o',
             provider: 'OpenAI',
             inputModalities: ['text', 'image'],
+            contextLength: 128000,
           ),
           ModelOption(
             id: 'google/gemini-2.0-flash-001',
             name: 'Gemini 2.0 Flash',
             provider: 'Google',
             inputModalities: ['text', 'image', 'audio', 'video'],
+            contextLength: 1048576,
           ),
           ModelOption(
             id: 'meta-llama/llama-3.3-70b-instruct',
             name: 'Llama 3.3 70B Instruct',
             provider: 'Meta',
             inputModalities: ['text'],
+            contextLength: 128000,
           ),
         ];
       case ProviderPresetType.groq:
@@ -218,18 +226,21 @@ enum ProviderPresetType {
             name: 'Llama 3.3 70B Versatile',
             provider: 'Groq',
             inputModalities: ['text'],
+            contextLength: 128000,
           ),
           ModelOption(
             id: 'llama-3.1-8b-instant',
             name: 'Llama 3.1 8B Instant',
             provider: 'Groq',
             inputModalities: ['text'],
+            contextLength: 128000,
           ),
           ModelOption(
             id: 'mixtral-8x7b-32768',
             name: 'Mixtral 8x7B 32k',
             provider: 'Groq',
             inputModalities: ['text'],
+            contextLength: 32768,
           ),
         ];
       case ProviderPresetType.byok:
@@ -239,12 +250,14 @@ enum ProviderPresetType {
             name: 'GPT-4o',
             provider: 'OpenAI',
             inputModalities: ['text', 'image'],
+            contextLength: 128000,
           ),
           ModelOption(
             id: 'gpt-4o-mini',
             name: 'GPT-4o mini',
             provider: 'OpenAI',
             inputModalities: ['text', 'image'],
+            contextLength: 128000,
           ),
         ];
     }
