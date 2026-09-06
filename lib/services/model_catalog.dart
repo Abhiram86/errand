@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import '../llm/llm_client.dart' show cleanErrorMessage;
 import '../models/model_option.dart';
 
 const _catalogTimeout = Duration(seconds: 15);
@@ -208,12 +209,9 @@ class ModelCatalogService {
         );
       }
 
-      final body = response.body.length > 200
-          ? '${response.body.substring(0, 200)}…'
-          : response.body;
       return ConnectionTestResult(
         success: false,
-        message: 'HTTP ${response.statusCode}: $body',
+        message: cleanErrorMessage(response.statusCode, response.body),
       );
     } on TimeoutException {
       return const ConnectionTestResult(
@@ -286,7 +284,7 @@ class ModelCatalogService {
 
     if (response.statusCode != 200) {
       throw ModelCatalogException(
-        'HTTP ${response.statusCode}: ${response.body}',
+        cleanErrorMessage(response.statusCode, response.body),
       );
     }
 
@@ -314,6 +312,7 @@ class ModelCatalogService {
         if (rawModel is! Map) continue;
         final id = rawModel['id'];
         if (id is! String || id.isEmpty) continue;
+        if (_isDeprecated(id, rawModel)) continue;
 
         final rawName = rawModel['name'];
         final name = rawName is String && rawName.isNotEmpty ? rawName : id;
@@ -341,6 +340,29 @@ class ModelCatalogService {
       if (e is ModelCatalogException) rethrow;
       throw ModelCatalogException('Failed to process model catalog: $e');
     }
+  }
+
+  static const Set<String> _knownDeprecatedModelIds = {
+    'deepseek-v4-flash-free',
+  };
+
+  static bool _isDeprecated(String id, Map rawModel) {
+    if (_knownDeprecatedModelIds.contains(id.toLowerCase().trim())) {
+      return true;
+    }
+    final status = rawModel['status']?.toString().toLowerCase().trim();
+    if (status == 'deprecated' || status == 'inactive' || status == 'disabled') {
+      return true;
+    }
+    final deprecated = rawModel['deprecated'];
+    if (deprecated == true || deprecated == 1 || deprecated == 'true') {
+      return true;
+    }
+    final isDeprecated = rawModel['is_deprecated'];
+    if (isDeprecated == true || isDeprecated == 1 || isDeprecated == 'true') {
+      return true;
+    }
+    return false;
   }
 
   static String _normalizeBaseUrl(String value) {

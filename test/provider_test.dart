@@ -147,6 +147,6 @@ void main() {
     expect(zen.baseUrl, 'https://opencode.ai/zen/v1');
     expect(zen.defaultBaseUrl, 'https://opencode.ai/zen/v1');
     expect(zen.defaultModels, isNotEmpty);
-    expect(zen.defaultModels.first.id, 'claude-3-5-sonnet');
+    expect(zen.defaultModels.first.id, 'nemotron-3.5-lightning-free');
   });
 }

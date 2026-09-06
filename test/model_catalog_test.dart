@@ -231,4 +231,35 @@ void main() {
     expect(result.message, contains('401'));
     service.close();
   });
+
+  test('filters deprecated and known dead models while preserving active models', () async {
+    final client = MockClient((request) async {
+      return http.Response(
+        jsonEncode({
+          'data': [
+            {'id': 'claude-sonnet-4-6', 'name': 'Claude Sonnet 4.6'},
+            {'id': 'nemotron-3.5-lightning-free', 'name': 'Nemotron 3.5 Lightning (Free)'},
+            {'id': 'deepseek-v4-flash-free', 'name': 'DeepSeek V4 Flash Free'},
+            {'id': 'old-model-1', 'name': 'Old Model 1', 'status': 'deprecated'},
+            {'id': 'old-model-2', 'name': 'Old Model 2', 'deprecated': true},
+          ],
+        }),
+        200,
+      );
+    });
+    final service = ModelCatalogService(client: client);
+
+    final models = await service.load(
+      baseUrl: 'https://opencode.ai/zen/v1',
+      apiKey: 'zen-key',
+      defaultProvider: 'OpenCode Zen',
+      isOpenRouter: false,
+    );
+
+    expect(models.map((m) => m.id).toList(), [
+      'claude-sonnet-4-6',
+      'nemotron-3.5-lightning-free',
+    ]);
+    service.close();
+  });
 }

@@ -148,4 +148,336 @@ void main() {
     expect(result.toolCalls.single.name, 'read');
     expect(result.toolCalls.single.arguments, {'path': 'README.md'});
   });
+
+  test('chatStream retries on 429 and succeeds on subsequent attempt', () async {
+    var attempts = 0;
+    final successChunks = [
+      utf8.encode(_sseEvent({
+        'choices': [
+          {
+            'delta': {'content': 'Success after retry'},
+          },
+        ],
+      })),
+      utf8.encode('data: [DONE]\n\n'),
+    ];
+
+    final client = LlmClient(
+      config: const LlmConfig(
+        baseUrl: 'https://example.test/v1/',
+        apiKey: 'test-key',
+        model: 'test-model',
+      ),
+      client: _StreamingClient((request) async {
+        attempts++;
+        if (attempts == 1) {
+          return http.StreamedResponse(
+            Stream.value(utf8.encode('Too many requests')),
+            429,
+            headers: const {'retry-after': '0'},
+          );
+        }
+        return http.StreamedResponse(
+          Stream.fromIterable(successChunks),
+          200,
+          headers: const {'content-type': 'text/event-stream'},
+        );
+      }),
+    );
+
+    final deltas = <String>[];
+    final result = await client.chatStream(
+      messages: const [
+        {'role': 'user', 'content': 'Hi'},
+      ],
+      onTextDelta: deltas.add,
+    );
+
+    expect(attempts, 2);
+    expect(result.content, 'Success after retry');
+  });
+
+  test('chatStream handles tool call chunks where subsequent deltas omit index', () async {
+    final chunks = [
+      utf8.encode(
+        _sseEvent({
+          'choices': [
+            {
+              'delta': {
+                'tool_calls': [
+                  {
+                    'index': 0,
+                    'id': 'call_1',
+                    'function': {'name': 'read', 'arguments': '{"pa'},
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+      ),
+      utf8.encode(
+        _sseEvent({
+          'choices': [
+            {
+              'delta': {
+                'tool_calls': [
+                  {
+                    // index omitted by proxy!
+                    'function': {'arguments': 'th": "a.txt"}'},
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+      ),
+      utf8.encode('data: [DONE]\n\n'),
+    ];
+
+    final client = LlmClient(
+      config: const LlmConfig(
+        baseUrl: 'https://example.test/v1',
+        apiKey: 'test-key',
+        model: 'test-model',
+      ),
+      client: _StreamingClient((request) async {
+        return http.StreamedResponse(
+          Stream.fromIterable(chunks),
+          200,
+          headers: const {'content-type': 'text/event-stream'},
+        );
+      }),
+    );
+
+    final result = await client.chatStream(
+      messages: const [
+        {'role': 'user', 'content': 'read a.txt'},
+      ],
+      onTextDelta: (_) {},
+    );
+
+    expect(result.toolCalls, hasLength(1));
+    expect(result.toolCalls.single.id, 'call_1');
+    expect(result.toolCalls.single.name, 'read');
+    expect(result.toolCalls.single.arguments, {'path': 'a.txt'});
+  });
+
+  test('chatStream surfaces string error payload as LlmException', () async {
+    final chunks = [
+      utf8.encode('data: {"error": "Upstream rate limit exceeded"}\n\n'),
+      utf8.encode('data: [DONE]\n\n'),
+    ];
+
+    final client = LlmClient(
+      config: const LlmConfig(
+        baseUrl: 'https://example.test/v1',
+        apiKey: 'test-key',
+        model: 'test-model',
+      ),
+      client: _StreamingClient((request) async {
+        return http.StreamedResponse(
+          Stream.fromIterable(chunks),
+          200,
+          headers: const {'content-type': 'text/event-stream'},
+        );
+      }),
+    );
+
+    expect(
+      () => client.chatStream(
+        messages: const [
+          {'role': 'user', 'content': 'Hi'},
+        ],
+        onTextDelta: (_) {},
+      ),
+      throwsA(
+        isA<LlmException>().having(
+          (e) => e.message,
+          'message',
+          'Upstream rate limit exceeded',
+        ),
+      ),
+    );
+  });
+
+  test('chat throws LlmException when choices is empty', () async {
+    final client = LlmClient(
+      config: const LlmConfig(
+        baseUrl: 'https://example.test/v1',
+        apiKey: 'test-key',
+        model: 'test-model',
+      ),
+      client: _StreamingClient((request) async {
+        return http.StreamedResponse(
+          Stream.value(utf8.encode('{"choices": []}')),
+          200,
+          headers: const {'content-type': 'application/json'},
+        );
+      }),
+    );
+
+    expect(
+      () => client.chat(
+        messages: const [
+          {'role': 'user', 'content': 'Hi'},
+        ],
+      ),
+      throwsA(isA<LlmException>()),
+    );
+  });
+
+  test('chatStream throws when model returns an empty response', () async {
+    final client = LlmClient(
+      config: const LlmConfig(
+        baseUrl: 'https://example.test/v1',
+        apiKey: 'test-key',
+        model: 'test-model',
+      ),
+      client: _StreamingClient((request) async {
+        return http.StreamedResponse(
+          Stream.value(utf8.encode('data: [DONE]\n\n')),
+          200,
+          headers: const {'content-type': 'text/event-stream'},
+        );
+      }),
+    );
+
+    expect(
+      () => client.chatStream(
+        messages: const [
+          {'role': 'user', 'content': 'Hi'},
+        ],
+        onTextDelta: (_) {},
+      ),
+      throwsA(
+        isA<LlmException>().having(
+          (e) => e.message,
+          'message',
+          contains('empty response'),
+        ),
+      ),
+    );
+  });
+
+  test('chatStream catches choice-level error object', () async {
+    final chunks = [
+      utf8.encode(
+        _sseEvent({
+          'choices': [
+            {
+              'index': 0,
+              'error': {'message': 'Provider crashed mid-generation'},
+            },
+          ],
+        }),
+      ),
+    ];
+
+    final client = LlmClient(
+      config: const LlmConfig(
+        baseUrl: 'https://example.test/v1',
+        apiKey: 'test-key',
+        model: 'test-model',
+      ),
+      client: _StreamingClient((request) async {
+        return http.StreamedResponse(
+          Stream.fromIterable(chunks),
+          200,
+          headers: const {'content-type': 'text/event-stream'},
+        );
+      }),
+    );
+
+    expect(
+      () => client.chatStream(
+        messages: const [
+          {'role': 'user', 'content': 'Hi'},
+        ],
+        onTextDelta: (_) {},
+      ),
+      throwsA(
+        isA<LlmException>().having(
+          (e) => e.message,
+          'message',
+          'Provider crashed mid-generation',
+        ),
+      ),
+    );
+  });
+
+  test('chatStream catches finish_reason == error', () async {
+    final chunks = [
+      utf8.encode(
+        _sseEvent({
+          'choices': [
+            {
+              'index': 0,
+              'delta': {'content': 'Partial text'},
+              'finish_reason': 'error',
+            },
+          ],
+        }),
+      ),
+    ];
+
+    final client = LlmClient(
+      config: const LlmConfig(
+        baseUrl: 'https://example.test/v1',
+        apiKey: 'test-key',
+        model: 'test-model',
+      ),
+      client: _StreamingClient((request) async {
+        return http.StreamedResponse(
+          Stream.fromIterable(chunks),
+          200,
+          headers: const {'content-type': 'text/event-stream'},
+        );
+      }),
+    );
+
+    expect(
+      () => client.chatStream(
+        messages: const [
+          {'role': 'user', 'content': 'Hi'},
+        ],
+        onTextDelta: (_) {},
+      ),
+      throwsA(
+        isA<LlmException>().having(
+          (e) => e.message,
+          'message',
+          contains('finish_reason: error'),
+        ),
+      ),
+    );
+  });
+
+  test('cleanErrorMessage formats JSON, HTML, and status codes cleanly', () {
+    expect(
+      cleanErrorMessage(
+        500,
+        '{"error": {"message": "Model is unavailable", "code": "unavailable"}}',
+      ),
+      'HTTP 500: Model is unavailable',
+    );
+
+    expect(
+      cleanErrorMessage(
+        502,
+        '<!DOCTYPE html><html><head><title>502 Bad Gateway</title></head><body>Raw HTML page</body></html>',
+      ),
+      'HTTP 502: Bad Gateway',
+    );
+
+    expect(
+      cleanErrorMessage(429, ''),
+      'HTTP 429: Rate limit exceeded',
+    );
+
+    expect(
+      cleanErrorMessage(401, 'Unauthorized'),
+      'HTTP 401: Unauthorized',
+    );
+  });
 }

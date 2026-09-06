@@ -160,20 +160,26 @@ enum ProviderPresetType {
       case ProviderPresetType.openCodeZen:
         return const [
           ModelOption(
-            id: 'claude-3-5-sonnet',
-            name: 'Claude 3.5 Sonnet',
+            id: 'nemotron-3.5-lightning-free',
+            name: 'Nemotron 3.5 Lightning (Free)',
+            provider: 'OpenCode Zen',
+            inputModalities: ['text'],
+          ),
+          ModelOption(
+            id: 'claude-sonnet-4-6',
+            name: 'Claude Sonnet 4.6',
             provider: 'OpenCode Zen',
             inputModalities: ['text', 'image'],
           ),
           ModelOption(
-            id: 'gpt-4o',
-            name: 'GPT-4o',
+            id: 'gpt-5.4',
+            name: 'GPT-5.4',
             provider: 'OpenCode Zen',
             inputModalities: ['text', 'image'],
           ),
           ModelOption(
-            id: 'deepseek-chat',
-            name: 'DeepSeek V3',
+            id: 'ling-3.0-flash-fin-free',
+            name: 'Ling 3.0 Flash (Free)',
             provider: 'OpenCode Zen',
             inputModalities: ['text'],
           ),

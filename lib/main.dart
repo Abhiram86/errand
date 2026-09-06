@@ -602,9 +602,18 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       picked = await FilePicker.platform.pickFiles(allowMultiple: true);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not open picker: $e')),
-      );
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text(
+              'Could not open picker: $e',
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
       return;
     }
     final paths = picked?.paths.whereType<String>().toList() ?? const [];
@@ -1285,6 +1294,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _workingText.clear();
     _workingReasoning = false;
     _externalAppWorkDone = false;
+    _cancelToken.reset();
     setState(() {
       _messages.add(AssistantMessage(
         id: workingId,
@@ -1349,7 +1359,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         onTextDelta: _handleTextDelta,
         onReasoningDelta: _handleReasoningDelta,
       );
-      _cancelToken.reset();
       final answer = await loop.run(conversation);
       _replaceWorking(answer);
     } on LlmStoppedException {
@@ -1427,13 +1436,19 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     if (conversationId != null && id != null) {
       unawaited(database.deleteMessage(conversationId, id));
     }
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        behavior: SnackBarBehavior.floating,
-        duration: const Duration(seconds: 5),
-      ),
-    );
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(
+            message,
+            maxLines: 3,
+            overflow: TextOverflow.ellipsis,
+          ),
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 4),
+        ),
+      );
   }
 
   void _handleEvent(AgentEvent event) {
@@ -1578,6 +1593,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     // tool turns, stray "\n"). Trim it; if nothing is left, drop the
     // bubble instead of rendering an empty one.
     final trimmed = text.trim();
+    if (trimmed.isEmpty) {
+      _showToast('Model produced no response.');
+    }
     setState(() {
       final index = id == null
           ? -1
@@ -1706,13 +1724,20 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   void _showToast(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        behavior: SnackBarBehavior.floating,
-        duration: const Duration(seconds: 4),
-      ),
-    );
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(
+            message,
+            maxLines: 3,
+            overflow: TextOverflow.ellipsis,
+          ),
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 4),
+        ),
+      );
   }
 
   /// Finalizes a stopped turn: partial streamed text becomes the final

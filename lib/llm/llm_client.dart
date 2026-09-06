@@ -9,9 +9,6 @@ import '../agent/tool.dart';
 /// Shared cancellation flag for an in-flight agent turn. The UI sets it
 /// from the stop button; the client checks it between SSE events and the
 /// loop checks it at turn boundaries.
-/// Shared cancellation flag for an in-flight agent turn. The UI sets it
-/// from the stop button; the client checks it between SSE events and the
-/// loop checks it at turn boundaries.
 ///
 /// Cancellation is ABORTIVE, not just cooperative: HTTP clients backing
 /// in-flight requests are registered here and [cancel] closes them, which
@@ -70,11 +67,13 @@ class LlmMessage {
 
   bool get hasToolCalls => toolCalls.isNotEmpty;
 
-  Map<String, dynamic> toJson() => {
+  Map<String, dynamic> toJson({bool includeReasoning = false}) => {
     'role': 'assistant',
     if (content != null && content!.isNotEmpty) 'content': content,
-    if (reasoning != null && reasoning!.isNotEmpty) 'reasoning': reasoning,
-    if (reasoningDetails.isNotEmpty) 'reasoning_details': reasoningDetails,
+    if (includeReasoning && reasoning != null && reasoning!.isNotEmpty)
+      'reasoning': reasoning,
+    if (includeReasoning && reasoningDetails.isNotEmpty)
+      'reasoning_details': reasoningDetails,
     if (hasToolCalls) 'tool_calls': toolCalls.map((t) => t.toJson()).toList(),
   };
 }
@@ -93,26 +92,33 @@ class LlmConfig {
 
 class LlmClient {
   final LlmConfig config;
-  final http.Client _client;
+  final http.Client? _injectedClient;
 
-  /// True when [LlmClient] created [_client] itself (production). In that
-  /// case each request gets a short-lived client so [CancelToken.cancel]
+  /// True when [LlmClient] created client connections itself (production).
+  /// In that case each request gets a short-lived client so [CancelToken.cancel]
   /// can close it and abort in-flight work. An injected client (tests,
   /// shared usage) is reused as-is instead.
   final bool _ownsClient;
 
   LlmClient({required this.config, http.Client? client})
-    : _client = client ?? http.Client(),
+    : _injectedClient = client,
       _ownsClient = client == null;
 
   /// Client for one call/attempt: fresh + abortable when we own the
   /// lifecycle, otherwise the injected instance.
   http.Client _clientForCall() =>
-      _ownsClient ? http.Client() : _client;
+      _injectedClient ?? http.Client();
 
   static const _timeout = Duration(seconds: 30);
   static const _streamTimeout = Duration(seconds: 60);
   static const _maxAttempts = 3;
+
+  Uri _chatCompletionsUri() {
+    final base = config.baseUrl.endsWith('/')
+        ? config.baseUrl.substring(0, config.baseUrl.length - 1)
+        : config.baseUrl;
+    return Uri.parse('$base/chat/completions');
+  }
 
   Future<LlmMessage> chat({
     required List<Map<String, dynamic>> messages,
@@ -123,7 +129,7 @@ class LlmClient {
     final body = _buildBody(messages: messages, tools: tools);
 
     final res = await _postWithRetry(
-      Uri.parse('${config.baseUrl}/chat/completions'),
+      _chatCompletionsUri(),
       {
         HttpHeaders.contentTypeHeader: 'application/json',
         HttpHeaders.authorizationHeader: 'Bearer ${config.apiKey}',
@@ -133,23 +139,40 @@ class LlmClient {
     );
 
     if (res.statusCode != 200) {
-      final truncated = res.body.length > 800 ? '${res.body.substring(0, 800)}…[truncated]' : res.body;
       throw LlmException(
-        'HTTP ${res.statusCode}: $truncated',
+        cleanErrorMessage(res.statusCode, res.body),
         transport: res.statusCode == 429 || res.statusCode >= 500,
       );
     }
 
-    final data = jsonDecode(res.body) as Map<String, dynamic>;
-    final choice = (data['choices'] as List).first as Map<String, dynamic>;
-    final message = choice['message'] as Map<String, dynamic>;
+    final dynamic rawData = jsonDecode(res.body);
+    if (rawData is! Map<String, dynamic>) {
+      throw LlmException('Invalid response: expected JSON object');
+    }
+    final choices = rawData['choices'];
+    if (choices is! List || choices.isEmpty) {
+      throw LlmException('No choices returned in response');
+    }
+    final firstChoice = choices.first;
+    if (firstChoice is! Map<String, dynamic>) {
+      throw LlmException('Invalid choice: expected JSON object');
+    }
+    final message = firstChoice['message'];
+    if (message is! Map<String, dynamic>) {
+      throw LlmException('Invalid message: expected JSON object');
+    }
 
     final toolCalls = _parseToolCalls(
       message['tool_calls'] as List<dynamic>? ?? const [],
     );
 
+    final text = message['content'] as String?;
+    if ((text == null || text.trim().isEmpty) && toolCalls.isEmpty) {
+      throw LlmException('Model returned an empty response', transport: true);
+    }
+
     return LlmMessage(
-      content: message['content'] as String?,
+      content: text,
       toolCalls: toolCalls,
       reasoning: _readReasoning(message),
       reasoningDetails: _parseReasoningDetails(message['reasoning_details']),
@@ -178,7 +201,7 @@ class LlmClient {
             .timeout(_timeout);
         final transient = res.statusCode == 429 || res.statusCode >= 500;
         if (!transient || attempt >= _maxAttempts) return res;
-        await _backoff(attempt, res.headers['retry-after']);
+        await _backoff(attempt, res.headers['retry-after'], cancelToken);
       } on LlmStoppedException {
         rethrow;
       } on TimeoutException {
@@ -189,21 +212,28 @@ class LlmClient {
             transport: true,
           );
         }
-        await _backoff(attempt, null);
+        await _backoff(attempt, null, cancelToken);
       } on SocketException catch (e) {
         _rethrowIfCancelled(cancelToken);
         if (attempt >= _maxAttempts) {
           throw LlmException('Connection lost: ${e.message}', transport: true);
         }
-        await _backoff(attempt, null);
+        await _backoff(attempt, null, cancelToken);
+      } on HttpException catch (e) {
+        _rethrowIfCancelled(cancelToken);
+        if (attempt >= _maxAttempts) {
+          throw LlmException('Connection lost: ${e.message}', transport: true);
+        }
+        await _backoff(attempt, null, cancelToken);
       } on http.ClientException catch (e) {
         _rethrowIfCancelled(cancelToken);
         if (attempt >= _maxAttempts) {
           throw LlmException('Connection lost: ${e.message}', transport: true);
         }
-        await _backoff(attempt, null);
+        await _backoff(attempt, null, cancelToken);
       } finally {
         cancelToken?.unregister(client);
+        if (_ownsClient) client.close();
       }
     }
   }
@@ -215,16 +245,31 @@ class LlmClient {
     if (cancelToken?.isCancelled ?? false) throw const LlmStoppedException();
   }
 
-  Future<void> _backoff(int attempt, String? retryAfter) async {
+  Future<void> _backoff(
+    int attempt,
+    String? retryAfter,
+    CancelToken? cancelToken,
+  ) async {
+    if (cancelToken?.isCancelled ?? false) throw const LlmStoppedException();
     final seconds = int.tryParse(retryAfter ?? '');
     final delay = seconds != null && seconds > 0
         ? Duration(seconds: seconds)
         : Duration(milliseconds: 800 * (1 << (attempt - 1)));
-    await Future<void>.delayed(delay);
+    final stopwatch = Stopwatch()..start();
+    while (stopwatch.elapsed < delay) {
+      if (cancelToken?.isCancelled ?? false) throw const LlmStoppedException();
+      final remaining = delay - stopwatch.elapsed;
+      final step = remaining < const Duration(milliseconds: 100)
+          ? remaining
+          : const Duration(milliseconds: 100);
+      await Future<void>.delayed(step);
+    }
+    if (cancelToken?.isCancelled ?? false) throw const LlmStoppedException();
   }
 
-  /// Stream send with retry — only covers the phase until response headers
-  /// arrive; mid-stream failures cannot be transparently resumed.
+  /// Stream send with retry — covers the phase until response headers
+  /// arrive (transient 429/5xx, timeouts, socket drops); mid-stream failures
+  /// cannot be transparently resumed.
   /// [buildRequest] is invoked per attempt because an [http.Request] can only
   /// be finalized once. All attempts share [client] so a cancel closes the
   /// in-flight attempt instantly.
@@ -238,21 +283,33 @@ class LlmClient {
         throw const LlmStoppedException();
       }
       try {
-        return await client.send(buildRequest()).timeout(_streamTimeout);
+        final response =
+            await client.send(buildRequest()).timeout(_streamTimeout);
+        final transient =
+            response.statusCode == 429 || response.statusCode >= 500;
+        if (!transient || attempt >= _maxAttempts) {
+          return response;
+        }
+        await response.stream.drain<void>().catchError((_) {});
+        await _backoff(attempt, response.headers['retry-after'], cancelToken);
       } on LlmStoppedException {
         rethrow;
       } on TimeoutException {
         _rethrowIfCancelled(cancelToken);
         if (attempt >= _maxAttempts) rethrow;
-        await _backoff(attempt, null);
+        await _backoff(attempt, null, cancelToken);
       } on SocketException {
         _rethrowIfCancelled(cancelToken);
         if (attempt >= _maxAttempts) rethrow;
-        await _backoff(attempt, null);
+        await _backoff(attempt, null, cancelToken);
+      } on HttpException {
+        _rethrowIfCancelled(cancelToken);
+        if (attempt >= _maxAttempts) rethrow;
+        await _backoff(attempt, null, cancelToken);
       } on http.ClientException {
         _rethrowIfCancelled(cancelToken);
         if (attempt >= _maxAttempts) rethrow;
-        await _backoff(attempt, null);
+        await _backoff(attempt, null, cancelToken);
       }
     }
   }
@@ -290,7 +347,7 @@ class LlmClient {
         response = await _sendStreamWithRetry(client, () {
           return http.Request(
             'POST',
-            Uri.parse('${config.baseUrl}/chat/completions'),
+            _chatCompletionsUri(),
           )
             ..headers[HttpHeaders.contentTypeHeader] = 'application/json'
             ..headers[HttpHeaders.authorizationHeader] =
@@ -308,23 +365,84 @@ class LlmClient {
       } on SocketException catch (e) {
         _rethrowIfCancelled(cancelToken);
         throw LlmException('Connection lost: ${e.message}', transport: true);
+      } on HttpException catch (e) {
+        _rethrowIfCancelled(cancelToken);
+        throw LlmException('Connection lost: ${e.message}', transport: true);
       } on http.ClientException catch (e) {
         _rethrowIfCancelled(cancelToken);
         throw LlmException('Connection lost: ${e.message}', transport: true);
       }
     if (response.statusCode != 200) {
       final body = await response.stream.bytesToString();
-      final truncated = body.length > 800 ? '${body.substring(0, 800)}…[truncated]' : body;
       throw LlmException(
-        'HTTP ${response.statusCode}: $truncated',
+        cleanErrorMessage(response.statusCode, body),
         transport: response.statusCode == 429 || response.statusCode >= 500,
       );
+    }
+
+    final contentType = response.headers[HttpHeaders.contentTypeHeader] ??
+        response.headers['content-type'] ??
+        '';
+
+    if (!contentType.contains('text/event-stream') &&
+        (contentType.contains('application/json') ||
+            contentType.contains('text/json'))) {
+      final body = await response.stream.bytesToString();
+      final dynamic decoded;
+      try {
+        decoded = jsonDecode(body);
+      } on FormatException catch (e) {
+        throw LlmException('Malformed response: $e', transport: true);
+      }
+
+      if (decoded is Map<String, dynamic>) {
+        final error = decoded['error'];
+        if (error is Map && error['message'] != null) {
+          throw LlmException(error['message'].toString());
+        } else if (error is String && error.isNotEmpty) {
+          throw LlmException(error);
+        } else if (decoded['detail'] != null) {
+          throw LlmException(decoded['detail'].toString());
+        }
+
+        final choices = decoded['choices'];
+        if (choices is List && choices.isNotEmpty) {
+          final firstChoice = choices.first;
+          if (firstChoice is Map<String, dynamic>) {
+            final message = firstChoice['message'];
+            if (message is Map<String, dynamic>) {
+              final text = message['content'] as String?;
+              if (text != null && text.isNotEmpty) {
+                onTextDelta(text);
+              }
+              final reasoningText = _readReasoning(message);
+              if (reasoningText != null && reasoningText.isNotEmpty) {
+                onReasoningDelta?.call();
+              }
+              final toolCalls = _parseToolCalls(
+                message['tool_calls'] as List<dynamic>? ?? const [],
+              );
+              if ((text == null || text.isEmpty) && toolCalls.isEmpty) {
+                throw LlmException('Model returned an empty response', transport: true);
+              }
+              return LlmMessage(
+                content: (text == null || text.isEmpty) ? null : text,
+                reasoning: reasoningText,
+                reasoningDetails: _parseReasoningDetails(message['reasoning_details']),
+                toolCalls: toolCalls,
+              );
+            }
+          }
+        }
+      }
+      throw LlmException('Unexpected non-streaming response: $body', transport: true);
     }
 
     final content = StringBuffer();
     final reasoning = StringBuffer();
     final reasoningDetails = <Map<String, dynamic>>[];
     final streamedToolCalls = <int, _StreamToolCall>{};
+    var lastToolCallIndex = 0;
 
     try {
       await for (final event in _sseDataEvents(response.stream)) {
@@ -333,57 +451,101 @@ class LlmClient {
         }
         if (event == '[DONE]') break;
 
-        final data = jsonDecode(event) as Map<String, dynamic>;
+        final Map<String, dynamic> data;
+        try {
+          final decoded = jsonDecode(event);
+          if (decoded is! Map<String, dynamic>) continue;
+          data = decoded;
+        } on FormatException catch (e) {
+          throw LlmException('Malformed streaming event: $e', transport: true);
+        }
+
         final error = data['error'];
-        if (error is Map<String, dynamic>) {
+        if (error is String && error.isNotEmpty) {
+          throw LlmException(error);
+        } else if (error is Map<String, dynamic>) {
           throw LlmException(error['message']?.toString() ?? 'Streaming error');
         }
 
-      final choices = data['choices'] as List<dynamic>? ?? const [];
-      if (choices.isEmpty) continue;
-      final choice = choices.first as Map<String, dynamic>;
-      final delta = choice['delta'] as Map<String, dynamic>? ?? const {};
+        final detail = data['detail'];
+        if (detail is String && detail.isNotEmpty) {
+          throw LlmException(detail);
+        }
 
-      final reasoningDelta = _readReasoning(delta);
-      final reasoningDetailDelta = _parseReasoningDetails(
-        delta['reasoning_details'],
-      );
-      if (reasoningDelta != null && reasoningDelta.isNotEmpty) {
-        reasoning.write(reasoningDelta);
-      }
-      if ((reasoningDelta != null && reasoningDelta.isNotEmpty) ||
-          reasoningDetailDelta.isNotEmpty) {
-        onReasoningDelta?.call();
-      }
-      _appendReasoningDetails(reasoningDetails, reasoningDetailDelta);
+        final messageField = data['message'];
+        if (messageField is String && messageField.isNotEmpty && data['choices'] == null) {
+          throw LlmException(messageField);
+        }
 
-      final text = delta['content'];
-      if (text is String && text.isNotEmpty) {
-        content.write(text);
-        onTextDelta(text);
-      }
+        final choices = data['choices'] as List<dynamic>? ?? const [];
+        if (choices.isEmpty) continue;
+        final choice = choices.first as Map<String, dynamic>;
 
-      final rawToolCalls = delta['tool_calls'] as List<dynamic>? ?? const [];
-      for (final raw in rawToolCalls) {
-        final toolCall = raw as Map<String, dynamic>;
-        final index =
-            (toolCall['index'] as num?)?.toInt() ?? streamedToolCalls.length;
-        final accumulated = streamedToolCalls.putIfAbsent(
-          index,
-          _StreamToolCall.new,
+        final choiceError = choice['error'];
+        if (choiceError is Map<String, dynamic>) {
+          throw LlmException(choiceError['message']?.toString() ?? 'Streaming error');
+        } else if (choiceError is String && choiceError.isNotEmpty) {
+          throw LlmException(choiceError);
+        }
+
+        final finishReason = choice['finish_reason'] as String?;
+        if (finishReason == 'error') {
+          throw LlmException('Model generation failed upstream (finish_reason: error)');
+        }
+        if (finishReason == 'content_filter') {
+          throw LlmException('Generation stopped by content filter');
+        }
+
+        final delta = choice['delta'] as Map<String, dynamic>? ?? const {};
+
+        final reasoningDelta = _readReasoning(delta);
+        final reasoningDetailDelta = _parseReasoningDetails(
+          delta['reasoning_details'],
         );
-        accumulated.id ??= toolCall['id'] as String?;
+        if (reasoningDelta != null && reasoningDelta.isNotEmpty) {
+          reasoning.write(reasoningDelta);
+        }
+        if ((reasoningDelta != null && reasoningDelta.isNotEmpty) ||
+            reasoningDetailDelta.isNotEmpty) {
+          onReasoningDelta?.call();
+        }
+        _appendReasoningDetails(reasoningDetails, reasoningDetailDelta);
 
-        final function = toolCall['function'] as Map<String, dynamic>?;
-        if (function == null) continue;
-        accumulated.name ??= function['name'] as String?;
-        final arguments = function['arguments'] as String?;
-        if (arguments != null) accumulated.arguments.write(arguments);
-      }
+        final text = delta['content'];
+        if (text is String && text.isNotEmpty) {
+          content.write(text);
+          onTextDelta(text);
+        }
+
+        final rawToolCalls = delta['tool_calls'] as List<dynamic>? ?? const [];
+        for (final raw in rawToolCalls) {
+          if (raw is! Map<String, dynamic>) continue;
+          final toolCall = raw;
+          final parsedIndex = (toolCall['index'] as num?)?.toInt();
+          final index = parsedIndex ??
+              (streamedToolCalls.isNotEmpty
+                  ? lastToolCallIndex
+                  : streamedToolCalls.length);
+          lastToolCallIndex = index;
+          final accumulated = streamedToolCalls.putIfAbsent(
+            index,
+            _StreamToolCall.new,
+          );
+          accumulated.id ??= toolCall['id'] as String?;
+
+          final function = toolCall['function'] as Map<String, dynamic>?;
+          if (function == null) continue;
+          accumulated.name ??= function['name'] as String?;
+          final arguments = function['arguments'] as String?;
+          if (arguments != null) accumulated.arguments.write(arguments);
+        }
       }
     } on LlmStoppedException {
       rethrow;
     } on SocketException catch (e) {
+      _rethrowIfCancelled(cancelToken);
+      throw LlmException('Stream interrupted: ${e.message}', transport: true);
+    } on HttpException catch (e) {
       _rethrowIfCancelled(cancelToken);
       throw LlmException('Stream interrupted: ${e.message}', transport: true);
     } on http.ClientException catch (e) {
@@ -397,9 +559,13 @@ class LlmClient {
       if (call != null) toolCalls.add(call);
     }
 
+    if (content.isEmpty && toolCalls.isEmpty) {
+      throw LlmException('Model returned an empty response', transport: true);
+    }
+
     return LlmMessage(
-      content: content.length == 0 ? null : content.toString(),
-      reasoning: reasoning.length == 0 ? null : reasoning.toString(),
+      content: content.isEmpty ? null : content.toString(),
+      reasoning: reasoning.isEmpty ? null : reasoning.toString(),
       reasoningDetails: reasoningDetails,
       toolCalls: toolCalls,
     );
@@ -473,19 +639,39 @@ class LlmClient {
   ];
 
   ToolCall _parseToolCall(Map<String, dynamic> call) {
+    final id = call['id'] as String? ?? '';
     final fn = call['function'] as Map<String, dynamic>? ?? const {};
-    final arguments = jsonDecode(fn['arguments'] as String? ?? '{}');
-    if (arguments is! Map<String, dynamic>) {
-      throw LlmException('Tool arguments must be a JSON object');
+    final name = fn['name'] as String? ?? '';
+    final rawArgs = fn['arguments'];
+    Map<String, dynamic> arguments;
+    if (rawArgs is Map<String, dynamic>) {
+      arguments = rawArgs;
+    } else if (rawArgs is Map) {
+      arguments = Map<String, dynamic>.from(rawArgs);
+    } else {
+      try {
+        final parsed = jsonDecode(
+          rawArgs is String && rawArgs.trim().isNotEmpty ? rawArgs : '{}',
+        );
+        if (parsed is Map<String, dynamic>) {
+          arguments = parsed;
+        } else if (parsed is Map) {
+          arguments = Map<String, dynamic>.from(parsed);
+        } else {
+          throw LlmException('Tool arguments must be a JSON object');
+        }
+      } on FormatException catch (e) {
+        throw LlmException('Malformed tool arguments: $e');
+      }
     }
     return ToolCall(
-      id: call['id'] as String,
-      name: fn['name'] as String,
+      id: id,
+      name: name,
       arguments: arguments,
     );
   }
 
-  void close() => _client.close();
+  void close() => _injectedClient?.close();
 }
 
 /// Extracts complete SSE data payloads from a streamed response.
@@ -499,7 +685,7 @@ Stream<String> _sseDataEvents(Stream<List<int>> bytes) async* {
 
   await for (final line in lines) {
     if (line.isEmpty) {
-      if (data.length > 0) {
+      if (data.isNotEmpty) {
         yield data.toString();
         data.clear();
       }
@@ -510,13 +696,13 @@ Stream<String> _sseDataEvents(Stream<List<int>> bytes) async* {
 
     var value = line.substring(5);
     if (value.startsWith(' ')) value = value.substring(1);
-    if (data.length > 0) data.write('\n');
+    if (data.isNotEmpty) data.write('\n');
     data.write(value);
   }
 
   // Server may omit the final blank line before closing the stream.
   // Treat any buffered data as one last event (covers `data: [DONE]` without `\n\n`).
-  if (data.length > 0) yield data.toString();
+  if (data.isNotEmpty) yield data.toString();
 }
 
 class _StreamToolCall {
@@ -532,11 +718,21 @@ class _StreamToolCall {
     // is rejected as malformed history. Drop incomplete calls instead.
     if (id == null || id!.isEmpty) return null;
     if (name == null || name!.isEmpty) return null;
-    final decoded = jsonDecode(
-      arguments.length == 0 ? '{}' : arguments.toString(),
-    );
-    if (decoded is! Map<String, dynamic>) {
-      throw LlmException('Tool arguments must be a JSON object');
+    final rawArgs = arguments.toString().trim();
+    Map<String, dynamic> decoded;
+    try {
+      final parsed = jsonDecode(rawArgs.isEmpty ? '{}' : rawArgs);
+      if (parsed == null) {
+        decoded = const {};
+      } else if (parsed is Map<String, dynamic>) {
+        decoded = parsed;
+      } else if (parsed is Map) {
+        decoded = Map<String, dynamic>.from(parsed);
+      } else {
+        throw LlmException('Tool arguments for $name must be a JSON object');
+      }
+    } on FormatException catch (e) {
+      throw LlmException('Malformed tool arguments for $name: $e');
     }
     return ToolCall(
       id: id!,
@@ -566,3 +762,116 @@ class LlmException implements Exception {
   @override
   String toString() => message;
 }
+
+/// Formats HTTP status codes and response bodies (HTML error pages, raw JSON
+/// dumps, or plain text) into concise, human-readable error messages.
+String cleanErrorMessage(int statusCode, String rawBody) {
+  final trimmed = rawBody.trim();
+  if (trimmed.isEmpty) {
+    return 'HTTP $statusCode: ${_httpStatusMessage(statusCode)}';
+  }
+
+  // 1. HTML error page (Cloudflare, Nginx, hosting proxies)
+  if (trimmed.startsWith('<') ||
+      trimmed.contains('<html') ||
+      trimmed.contains('<!DOCTYPE')) {
+    final titleMatch = RegExp(
+      r'<title>(.*?)</title>',
+      caseSensitive: false,
+      dotAll: true,
+    ).firstMatch(trimmed);
+    if (titleMatch != null) {
+      var title = titleMatch.group(1)!.replaceAll(RegExp(r'\s+'), ' ').trim();
+      title = title.replaceFirst(
+        RegExp('^$statusCode\\s*[:-]?\\s*', caseSensitive: false),
+        '',
+      );
+      if (title.isNotEmpty) {
+        return 'HTTP $statusCode: $title';
+      }
+    }
+    final h1Match = RegExp(
+      r'<h1>(.*?)</h1>',
+      caseSensitive: false,
+      dotAll: true,
+    ).firstMatch(trimmed);
+    if (h1Match != null) {
+      var h1 = h1Match.group(1)!.replaceAll(RegExp(r'\s+'), ' ').trim();
+      h1 = h1.replaceFirst(
+        RegExp('^$statusCode\\s*[:-]?\\s*', caseSensitive: false),
+        '',
+      );
+      if (h1.isNotEmpty) {
+        return 'HTTP $statusCode: $h1';
+      }
+    }
+    return 'HTTP $statusCode: ${_httpStatusMessage(statusCode)}';
+  }
+
+  // 2. JSON error responses
+  try {
+    final decoded = jsonDecode(trimmed);
+    if (decoded is Map) {
+      final error = decoded['error'];
+      String? msg;
+      if (error is Map && error['message'] != null) {
+        msg = error['message'].toString().trim();
+      } else if (error is String && error.trim().isNotEmpty) {
+        msg = error.trim();
+      } else if (decoded['message'] != null) {
+        msg = decoded['message'].toString().trim();
+      } else if (decoded['detail'] != null) {
+        msg = decoded['detail'].toString().trim();
+      }
+      if (msg != null && msg.isNotEmpty) {
+        if (statusCode >= 400 &&
+            !msg.startsWith('HTTP') &&
+            !msg.startsWith('$statusCode')) {
+          return 'HTTP $statusCode: $msg';
+        }
+        return msg;
+      }
+    }
+  } catch (_) {
+    // Not JSON
+  }
+
+  // 3. Short plain text responses
+  final firstLine = trimmed.split('\n').first.trim();
+  if (firstLine.isNotEmpty && firstLine.length <= 150) {
+    if (firstLine.startsWith('HTTP') || firstLine.startsWith('$statusCode')) {
+      return firstLine;
+    }
+    return 'HTTP $statusCode: $firstLine';
+  }
+
+  return 'HTTP $statusCode: ${_httpStatusMessage(statusCode)}';
+}
+
+String _httpStatusMessage(int statusCode) {
+  switch (statusCode) {
+    case 400:
+      return 'Bad request';
+    case 401:
+      return 'Unauthorized: Invalid API key';
+    case 403:
+      return 'Access forbidden';
+    case 404:
+      return 'Endpoint or model not found';
+    case 408:
+      return 'Request timeout';
+    case 429:
+      return 'Rate limit exceeded';
+    case 500:
+      return 'Internal server error';
+    case 502:
+      return 'Bad Gateway: upstream service unavailable';
+    case 503:
+      return 'Service temporarily unavailable';
+    case 504:
+      return 'Gateway timeout';
+    default:
+      return statusCode >= 500 ? 'Server error' : 'Request failed';
+  }
+}
+
