@@ -529,6 +529,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   /// _systemPromptFor async.
   Future<void> _refreshA11yState() async {
     try {
+      if (await _a11yService.hasSecureSettings()) {
+        await _a11yService.enable();
+      }
       final enabled = await _a11yService.isEnabled();
       if (!mounted) return;
       if (enabled != _a11yAvailable) {

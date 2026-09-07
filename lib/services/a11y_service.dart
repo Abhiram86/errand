@@ -27,9 +27,38 @@ class A11yService {
     }
   }
 
+  /// True if the app holds the privileged WRITE_SECURE_SETTINGS permission
+  /// (e.g. granted via ADB or Shizuku).
+  Future<bool> hasSecureSettings() async {
+    try {
+      return await _channel.invokeMethod<bool>('hasSecureSettings') ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Shuts down the running accessibility service via disableSelf() so
+  /// banking apps like YONO SBI are not blocked when screen access is idle.
+  Future<bool> disable() async {
+    try {
+      return await _channel.invokeMethod<bool>('disable') ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Enables the service programmatically if WRITE_SECURE_SETTINGS is granted,
+  /// or opens Settings > Accessibility.
+  Future<String?> enable() async {
+    try {
+      return await _channel.invokeMethod<String>('enable');
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Opens Settings > Accessibility (downloaded apps section) so the user can
-  /// enable the service manually. Programmatic enablement is impossible by
-  /// design.
+  /// enable the service manually.
   Future<void> openSettings() async {
     await _channel.invokeMethod<void>('openSettings');
   }

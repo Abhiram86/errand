@@ -392,6 +392,25 @@ class MainActivity : FlutterActivity() {
             when (call.method) {
                 "isEnabled" -> result.success(ErrandAccessibilityService.isConnected())
                 "isRestricted" -> result.success(ErrandAccessibilityService.isRestricted(this))
+                "hasSecureSettings" -> result.success(ErrandAccessibilityService.hasSecureSettings(this))
+                "disable" -> {
+                    val ok = ErrandAccessibilityService.disable()
+                    result.success(ok)
+                }
+                "enable" -> {
+                    if (ErrandAccessibilityService.enableProgrammatically(this)) {
+                        result.success("enabled_programmatically")
+                    } else {
+                        try {
+                            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                                .apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+                            startActivity(intent)
+                            result.success("opened_settings")
+                        } catch (e: Exception) {
+                            result.error("SETTINGS_ERR", e.message, null)
+                        }
+                    }
+                }
                 "openSettings" -> {
                     try {
                         // Deep link straight to our own service toggle when possible;
@@ -545,5 +564,12 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+    }
+
+    override fun onDestroy() {
+        try {
+            ErrandAccessibilityService.disable()
+        } catch (_: Exception) {}
+        super.onDestroy()
     }
 }
