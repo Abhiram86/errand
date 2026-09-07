@@ -4,7 +4,7 @@ This document maps the current implementation: a streaming chat UI, an OpenAI-co
 
 ## Big picture
 
-The app keeps the conversation (and its persistence) on the phone and sends the history to the configured LLM. The LLM can call the registered file/web tools; tool results are fed back into the same loop until the model returns a final answer or 18 turns are reached. Streaming deltas and reasoning are forwarded to the UI live.
+The app keeps the conversation (and its persistence) on the phone and sends the history to the configured LLM. The LLM can call the registered file/web tools; tool results are fed back into the same loop until the model returns a final answer or 72 turns are reached. Streaming deltas and reasoning are forwarded to the UI live. History is budgeted in tokens against the selected model's native context window (`ContextBudget`), with automatic LLM-driven compaction when it overflows.
 
 ```text
 chat UI (lib/main.dart: ChatScreen)
@@ -16,7 +16,7 @@ agent loop (lib/agent/agent_loop.dart) ──────────┐
      │  _toLlmHistory() + systemPromptBuilder      │
      │  UserMessage.attachedUris → text list      │  media via synthetic user message
      │  ToolCallResult.contentParts → user role   │
-     │  up to 18 turns, onTextDelta/onReasoning   │
+     │  up to 72 turns, pre/mid-step _compactIfNeeded, onTextDelta/onReasoning │
      ▼                                             │
 LLM client (lib/llm/llm_client.dart)  ◀── HTTP/SSE ─┤ OpenRouter / HF / custom
      ▲  POST /chat/completions (stream:true)      │  baseUrl (AppSettingsService)
@@ -38,11 +38,11 @@ tool registry (lib/agent/tool_registry.dart)
    (root+current)      File/Dir   MANAGE_EXTERNAL_STORAGE   │
           │                  │       TavilyClient              ▼
           │                  │       (api.tavily.com)    MainActivity.kt
-          ▼                  │                     second handler: launch /
-   document readers          │                     canResolve / hasWriteSettings /
-     PDF · DOCX/XLSX/PPTX    │                     requestWriteSettings / system_toggle
-     → LogicalDocument       │                     (UiModeManager dark mode w/ read-back,
-       (paged, char-budgeted)│                      settings-panel fallbacks)
+          ▼                  │                     second handler: launch (FileProvider
+   document readers          │                     media, BAL-safe PendingIntent, chooser detect) /
+     PDF · DOCX/XLSX/PPTX    │                     canResolve / bringToFront
+     → LogicalDocument       │                     (dark-mode toggle + WRITE_SETTINGS flow removed;
+       (paged, char-budgeted)│                      a11y act handles UI toggles instead)
 
 a11y (P2) ──▶ ErrandAccessibilityService (channel "a11y")
              screen (read outline, globals) + act (tap/type/scroll, Draft policy)
@@ -73,6 +73,7 @@ model catalog (lib/services/model_catalog.dart → lib/models/model_option.dart)
 - `UserMessage { text, attachedUris }` — user input; `attachedUris` is the ordered list of file URIs bound to this turn (persisted per-message, rendered as a card under the bubble);
 - `AssistantMessage` — model responses (including streaming working bubble);
 - `ToolMessage` — tool name, args (`ToolInvocation`), call ID, display preview (`text`), full `result`, plus `reasoning`/`reasoningDetails`;
+- `CompactedNoticeMessage { text, summary }` — system divider marking an LLM-compaction point; `_toLlmHistory` starts from the latest one (older turns were summarized) and re-emits its summary as the `[COMPACTED …]` briefing;
 - `ErrorMessage` — legacy typed error turn (transport errors are no longer inserted as messages; they surface as SnackBars via `_failWorking`).
 
 ChatScreen keeps `List<String> _pendingAttachments` (`lib/main.dart`) as the **staged** state between `+` → `Attach file` and `Send`. On send it is snapshotted into `UserMessage.attachedUris` and also appended to the conversation's global `attachedFileUris` (deduped), then cleared. The pre-send pending card (`_buildPendingAttachments`) and the post-send message card (`lib/widgets/message_bubbles.dart: MessageBubble`) both render in order.
@@ -81,13 +82,16 @@ ChatScreen keeps `List<String> _pendingAttachments` (`lib/main.dart`) as the **s
 
 ## The agent — `lib/agent/`
 
-- **`tool.dart`** defines the LLM-facing `Tool` schema (`name`, `description`, `parameters`, `handler`) and parsed `ToolCall` (`id`, `name`, `arguments`). `ToolCall.toJson()` serializes arguments as a JSON string as required by OpenAI-compatible APIs. `requiresValidation` is internal metadata for future mutation tools.
-- **`tool_registry.dart`** registers the current tools and safely executes a call, converting handler exceptions into `ToolCallResult.failure`. `ToolRegistry.defaults({currentDir, workingDirectory, supportsInput, getAttachedFiles})` currently contains `read` + `workspace` (`list`/`find`/`cd`/`pwd`) + `websearch` + `webfetch` + `intent` + `screen` + `act` + `attached_files`. `supportsInput` (from `ModelCatalogService.supportsInput`) lets `read` fail honestly when the current model lacks `image`/`audio`/`video` support; `getAttachedFiles` lets `read` resolve file-picker cache paths outside the workspace and lets `attached_files` list the conversation inventory.
-- **`agent_loop.dart`** exposes `run(Conversation)`. It builds the LLM message array (`system` + `_toLlmHistory`), injects the live system prompt each turn, and drives streaming (`chatStream`) or non-streaming (`chat`) via `LlmClient`. 
+- **`tool.dart`** defines the LLM-facing `Tool` schema (`name`, `description`, `parameters`, `handler`) and parsed `ToolCall` (`id`, `name`, `arguments`). `ToolCall.toJson()` serializes arguments as a JSON string as required by OpenAI-compatible APIs. `requiresValidation` is internal metadata for future mutation tools; `onDispose`/`dispose()` releases tool-held resources (e.g. cached open documents).
+- **`tool_registry.dart`** registers the current tools and safely executes a call, converting handler exceptions into `ToolCallResult.failure`. `ToolRegistry.defaults({currentDir, workingDirectory, supportsInput, getAttachedFiles})` currently contains `read` + `workspace` (`list`/`find`/`cd`/`pwd`) + `websearch` + `webfetch` + `intent` + `screen` + `act` + `attached_files`. `supportsInput` (from `ModelCatalogService.supportsInput`) lets `read` fail honestly when the current model lacks `image`/`audio`/`video` support; `getAttachedFiles` lets `read` resolve file-picker cache paths outside the workspace and lets `attached_files` list the conversation inventory. `dispose()` fans out to every tool.
+- **`agent_loop.dart`** exposes `run(Conversation)`. It builds the LLM message array (`system` + `_toLlmHistory`), injects the live system prompt each turn, and drives streaming (`chatStream`) or non-streaming (`chat`) via `LlmClient`.
   - `UserMessage.attachedUris` is rendered in `_toLlmHistory` as `text + "\n\n[Attached files:\n1. basename — uri]"` (no extra tool call needed for discovery).
-  - Consecutive `ToolMessage`s are reconstructed as one assistant `tool_calls` message + matching `tool` result messages.
+  - An `AssistantMessage` immediately followed by `ToolMessage`s is merged into the synthesized assistant `tool_calls` message (carrying its text + first reasoning block); standalone consecutive `ToolMessage`s are reconstructed the same way. Either shape avoids back-to-back `assistant` roles, which strict providers reject.
   - Media `contentParts` from `read` are flushed as a synthetic `user` role message (`[Media file(s) you just read …]`) after the tool batch — preserves provider compatibility.
-  - Loop cap is 18 turns; mid-loop payload guard (`context_budget.dart: trimLlmMessages`) handles screen/media bloat inside a single run (see below).
+  - Loop cap is `defaultMaxTurns = 72` (ctor-overridable `maxTurnCount`); live turns carry reasoning via `toJson(includeReasoning: true)`.
+  - Tool batches run **concurrently** (`Future.wait`) when stateless, sequentially when any call is stateful (`act`, `workspace cd`, `screen global`) — shared `WorkingDirectory`/screen state would race otherwise.
+  - `_compactIfNeeded` runs **before the first turn and after every tool batch**: when `estimateLlmMessagesTokens` exceeds the model's `ContextBudget.compactionThreshold`, old blocks are LLM-summarized (deterministic fallback on failure/timeout) into a `[COMPACTED …]` user message + ack, keeping only the newest 1–2 tail blocks. The summarizer call is capped by `compactionTimeout` (60s default, ctor-overridable) so a saturated endpoint falls back instead of wedging the turn. A 1-block tail that still exceeds small-window targets is shrunk via `fitTailToTarget` (oldest tool contents head-trimmed to a 1K floor, newest spared till last, structure intact — never block drops). Stop during compaction rethrows with no divider written (nothing compacted); the UI placeholder flag is reset by the normal fail/stop paths. Emits `AgentCompacting`/`AgentCompacted` (UI divider + merge-save).
+- **`context_budget.dart`** — token-based dynamic budget (replaced the 256K/200K/110K char constants, Sep 2026; char helpers kept as a compat layer). `ContextBudget{contextSize, reservedTokens: min(16K, 25% ctx)}` → `compactionThreshold = contextSize − reserved`, `targetTokens = 50%`. `contextSize` resolves per model: `ModelOption.contextLength` (catalog `context_length` → `ModelsDevService` fallback → 128K default). Estimation is `~3.8 chars/token` with flat vision/audio/video tile rates; media `List` parts are summed directly (no multi-MB `jsonEncode`). Builders: `buildCompactionPrompt` (structured Goal/Actions/Next-steps briefing), `buildDeterministicFallbackSummary` (first goal + files + recent tools + errors), `applyCompactedHistory` (system + compacted header + ack + tail). Legacy `truncateHistory`/`trimLlmMessages` (char-based, atomic tool-batch units, synthetic-media-aware mandatory tail) remain for the debug footer and tests.
 
 ## The LLM client — `lib/llm/llm_client.dart`
 
@@ -140,21 +144,20 @@ Keys are configured in-app (header gear icon → Settings sheet, Global tab) and
 
 One LLM tool (`intent`) covering Android app/web/system actions. Layered design: **curated actions → generic `android_action` escape hatch → honest failure**. No per-app pattern matching anywhere.
 
-**Curated actions** (schema enum): `open_url`, `search`, `open_app`, `open_maps`, `dial`, `email`, `alarm`, `timer`, `calendar_event`, `media_play`, `share`, `wallpaper`, `uninstall`, `settings_panel` (+`panel`), `settings` (+`page`), `system` (+`setting`/`value`), `intent`.
+**Core actions** (schema enum, unified Sep 2026 — was 17 curated): `open_file`, `open_url`, `open_app`, `settings` (+`page`), `intent`. Legacy actions still route for old conversations: `search`/`dial`/`open_maps`/`email` synthesize an `open_url` (`google.com/search`, `tel:`, `geo:`, `mailto:`); `calendar_event`/`media_play`/`share`/`wallpaper`/`uninstall`/`settings_panel` fall through to `_genericIntent`. `alarm`/`timer`/`system` (dark-mode toggle) were removed — dark-mode-style toggles are done via the `act` tool instead.
 
-- `_genericIntent` maps curated names to real Android action constants (`_androidActions`/`_panelActions`) and builds validated extras: alarm parses `"HH:mm"` into `android.intent.extra.alarm.HOUR/MINUTES` (range-checked), timer minutes→seconds, share defaults MIME to `text/plain`, uninstall strips the package constraint (the uninstaller lives in `com.android.packageinstaller`; pinning the target package would break resolution).
-- **URL safety** (`_openUrl`): auto-prefixes `https://` only for domain-like hosts (`_looksLikeWebHost`); blocks `javascript:`/`file:`; anything else fails with guidance pointing at `android_action`/`settings`. This prevents the model from "opening" settings names as web URLs.
+- `_genericIntent` maps curated names to real Android action constants and builds validated extras: share defaults MIME to `text/plain`, uninstall strips the package constraint (the uninstaller lives in `com.android.packageinstaller`; pinning the target package would break resolution).
+- **URL safety** (`_openUrl`): auto-prefixes `https://` only for domain-like hosts (`_looksLikeWebHost`); blocks `javascript:`/`file:`; anything else fails with guidance pointing at `android_action`/`settings`. This prevents the model from "opening" settings names as web URLs. `open_file` takes an absolute device path and is served via `FileProvider` (see native side).
 - **Generic escape hatch**: `action:"intent"` accepts a raw `android_action` string (e.g. `android.settings.DISPLAY_SETTINGS`, third-party `com.someapp.action.SYNC`) — new apps/actions need zero code changes.
-- **UI reopen** (`isReopenable` + `replayIntentAction`): successful open-style intents (`open_url`/`open_app`/`open_maps`/`search`/`dial`/`media_play`/`email`/`share`/`wallpaper`/`settings`/`settings_panel`) render an Open button on the tool bubble that re-fires the persisted args through the same handler. Side-effect actions (alarm/timer/calendar, system toggle, uninstall, raw `intent`) stay button-less. Derived entirely from already-persisted data — no schema change, works for old conversations.
-- All handlers are `async` and `await` the channel, so native errors (`NO_HANDLER`, `NO_PKG`, `INTENT_ERR`) become `ToolCallResult.failure` instead of fake success.
+- **UI reopen** (`isReopenable` + `replayIntentAction`): successful open-style intents (`open_file`/`open_url`/`open_app`/`settings` + legacy open-style actions) render an Open button on the tool bubble that re-fires the persisted args through the same handler. Side-effect/raw actions stay button-less unless view-style (`VIEW`/`MAIN`/`DIAL`/`SENDTO`/media-search or `android.settings.*`). Derived entirely from already-persisted data — no schema change, works for old conversations.
+- All handlers are `async` and `await` the channel, so native errors (`NO_HANDLER`, `NO_PKG`, `FILE_NOT_FOUND`, `INTENT_ERR`) become `ToolCallResult.failure` instead of fake success.
 
 **Native side** (`MainActivity.kt`, channel `"intent"`):
 
-- `launch` — builds the intent per action (`getLaunchIntentForPackage`, `ACTION_SENDTO mailto:` with `EXTRA_SUBJECT/TEXT` + query-param fallback, `ACTION_DIAL` for dial, explicit `androidAction` otherwise), adds `FLAG_ACTIVITY_NEW_TASK | FLAG_ACTIVITY_CLEAR_TOP`, adds `CATEGORY_BROWSABLE` for http(s). `resolveActivity` pre-check runs only when a package is explicitly pinned — implicit intents rely on `ActivityNotFoundException` (avoids `<queries>` visibility false-negatives on API 30+).
-- `canResolve` — same mapping for pre-flight checks.
-- `hasWriteSettings` / `requestWriteSettings` — idempotent `WRITE_SETTINGS` flow (returns granted-state; OEM fallback without package Uri).
-- `system_toggle` — dark mode tries `UiModeManager.setNightMode()` first **with read-back verification** (some builds silently ignore 3P calls), then permission-gated `Settings.Secure/Global.putInt("ui_night_mode")`, finally opens `DARK_THEME_SETTINGS`/Display settings honestly. Note: system-wide night mode is effectively gated behind privileged `MODIFY_DAY_NIGHT_MODE`/`WRITE_SECURE_SETTINGS`; the adb-grantable path is `adb shell pm grant com.errand.errand android.permission.WRITE_SECURE_SETTINGS`.
-- Manifest `<queries>` covers http(s)/geo/tel/mailto/spotify/whatsapp/tg schemes, alarm/calendar/share/delete/media-search actions, settings panels, and pinned packages (spotify/maps/chrome).
+- `launch` — builds the intent per action (`getLaunchIntentForPackage`; `open_file`/absolute paths via `FileProvider.getUriForFile` + `ClipData` grant + extension→MIME resolution with `FILE_NOT_FOUND` honest failure; `ACTION_SENDTO mailto:` with `EXTRA_SUBJECT/TEXT` + query-param fallback; `tel:`/`mailto:` scheme-sniffed to `DIAL`/`SENDTO`; explicit `androidAction` otherwise), adds `FLAG_ACTIVITY_NEW_TASK` (no `CLEAR_TOP`, so background apps survive), adds `CATEGORY_BROWSABLE` for http(s). Launched via `PendingIntent` with `MODE_BACKGROUND_ACTIVITY_START_ALLOWED` on Android 14+ (a11y-service context fallback) so backgrounded starts aren't blocked. `resolveActivity` pre-check runs only when a package is explicitly pinned — implicit intents rely on `ActivityNotFoundException` (avoids `<queries>` visibility false-negatives on API 30+). `queryIntentActivities` detects multi-handler targets and reports `launched (choose app if prompted)` so the agent knows a chooser sheet appeared.
+- `canResolve` — passes the raw action through (plus `tel:`/`mailto:` sniffing) with optional `type` for `setDataAndType` checks.
+- `bringToFront` — `REORDER_TO_FRONT + SINGLE_TOP` (same BAL-safe path) restores Errand after `screen`/`act` work in other apps; fired from `_replaceWorking`/`_failWorking` when `_externalAppWorkDone`.
+- Manifest `<queries>` covers http(s)/`VIEW */*` file viewing, geo, `tel`/`DIAL`, `mailto`/`SENDTO`, spotify/whatsapp/tg deeplinks, calendar `INSERT`/share `SEND`, and pinned packages (spotify/maps/chrome). Includes the `FileProvider` declaration (`file_paths.xml`). Alarm/timer/panel/delete queries were pruned with the removed actions.
 
 **Error policy** (deliberate split):
 
@@ -173,8 +176,9 @@ Missing/failed channel calls are mapped to "no permission" rather than crashing.
 
 ## The model catalog — `lib/services/model_catalog.dart` + `lib/models/model_option.dart`
 
-- `ModelCatalogService { load(baseUrl, apiKey) }` — `GET {baseUrl}/models`, parses `data[].id/name` + `architecture.input_modalities` (e.g. `["text","image","audio","file"]`, default `["text"]` when absent). Static `_cache` + `_inFlight` dedup; `supportsInput(modelId, modality)` consults all cached catalogs (`true`/`false`/`null` = unknown endpoint). Fallback is `kFallbackModels` + `kDefaultModelId`; the last user-picked model persists in the settings table. Provider mapped from `id` prefix (`qwen/… → Qwen`).
-- `ModelOption { id, name, provider, inputModalities }` → consumed by `ModelPicker` (searchable dialog, header + list rows use marquee ` _ScrollingModelName` for long names).
+- `ModelCatalogService { load(baseUrl, apiKey) }` — `GET {baseUrl}/models`, parses `data[].id/name` + `architecture.input_modalities` (e.g. `["text","image","audio","file"]`, default `["text"]` when absent) + `context_length` (else `ModelsDevService` offline lookup, else null). Static `_cache` + `_inFlight` dedup; `supportsInput(modelId, modality, {baseUrl})` hits a single normalized catalog in O(n) when `baseUrl` is given (`true`/`false`/`null` = unknown endpoint). Deprecated entries (`status`/`deprecated` flags + known-dead ids) are filtered. Fallback is `kFallbackModels` + `kDefaultModelId`; the last user-picked model persists in the settings table. Provider mapped from `id` prefix (`qwen/… → Qwen`).
+- `ModelOption { id, name, provider, inputModalities, hasExplicitModalities, contextLength? }` → consumed by `ModelPicker` (searchable dialog, header + list rows use marquee ` _ScrollingModelName` for long names) and by `AgentLoop` budget resolution (`getContextLength` → per-model `ContextBudget`).
+- `ModelsDevService` — offline `models.dev` snapshot resolving native context-window tokens per model id for the dynamic budget when the catalog omits `context_length`.
 
 ## The UI — `lib/main.dart` + `lib/widgets/` + `lib/theme/`
 
@@ -191,7 +195,7 @@ Flow:
 - `_send()` appends `UserMessage` (with `attachedUris`) + `AssistantMessage("…working")`, builds a `Conversation` snapshot (without the working bubble), and runs `AgentLoop` with `ToolRegistry.defaults(..., supportsInput, getAttachedFiles)` + `systemPromptBuilder` (includes `WorkingDirectory.current`, screen state, and `attachedFileUris` inventory) + `onEvent`/`onTextDelta`/`onReasoningDelta`. Tool events become `ToolMessage`s via `_appendToolMessage` (finalizes prior streamed text, inserts tool, creates fresh working bubble). Deltas flush via `_flushWorkingText` → `SelectableText`. Final answer replaces the working bubble via `_replaceWorking`.
 - **Error policy**: exceptions from the loop (`LlmException`, transport or otherwise) go to `_failWorking` — the working bubble is removed and a SnackBar shows the message. Infra errors are never added to `_messages`, never persisted, never sent in history.
 - `_persistConversation()` saves the active conversation (excluding the in-flight working bubble) to Drift; `_schedulePersist` debounces, `_persistNow` flushes. `_sortedConversations` sorts by `updatedAt` desc for the sidebar.
-- Sidebar (`ChatSidebar`) shows pinned favourites + recent (watch-driven, sorted), with rename/pin/delete options, slide-in animation and scrim. `ChatComposer` has add/context actions + send (gated by `canSend`). `MessageBubbles` renders user bubbles as `SelectableText` plus an **attachment card** (`kInputBg`, `kBorder`, ordered `1. basename` rows) when `UserMessage.attachedUris` non-empty, assistant bubbles as `GptMarkdown` (tables/code/LaTeX; list-wide `SelectionArea` provides copy), and `ToolMessageBubble` `ExpansionTile`s (header truncated, output truncated for display only) with an Open button on successful open-style intent calls that replays the persisted args via `replayIntentAction`. Empty assistant turns are suppressed in rendering (and dropped from persistence going forward). `ModelPicker` rows use marquee for long names (no `ellipsis` truncation). Theme is `AppColors` + dark `ColorScheme` + `ThemeData(useMaterial3:true)`.
+- Sidebar (`ChatSidebar`) shows pinned favourites + recent (watch-driven, sorted), with rename/pin/delete options, slide-in animation and scrim. `ChatComposer` has add/context actions + send (gated by `canSend`); drafts survive an accidental edit-tap (composer text is never overwritten while non-empty). `MessageBubbles` renders user bubbles as `SelectableText` plus an **attachment card** (`kInputBg`, `kBorder`, ordered `1. basename` rows) when `UserMessage.attachedUris` non-empty, assistant bubbles as `GptMarkdown` (tables/code/LaTeX; list-wide `SelectionArea` provides copy), `ToolMessageBubble` `ExpansionTile`s (header truncated, output truncated for display only) with an Open button on successful open-style intent calls that replays the persisted args via `replayIntentAction`, and `CompactedDividerBubble` system dividers marking compaction points (`CompactedNoticeMessage`, persisted as `compacted` rows). Streaming uses height-eased + fade-in animation; the debug footer shows token-based budget state. Empty assistant turns are suppressed in rendering (and dropped from persistence going forward). `ModelPicker` rows use marquee for long names (no `ellipsis` truncation). Theme is `AppColors` + dark `ColorScheme` + `ThemeData(useMaterial3:true)`.
 
 Storage permission is checked on start and on `AppLifecycleState.resumed`, with a one-at-a-time dialog prompt.
 
@@ -200,13 +204,14 @@ Storage permission is checked on start and on `AppLifecycleState.resumed`, with 
 Drift database `ErrandDatabase` (4 tables + v4):
 
 - `Conversations { id PK, localSystemPrompt?, title, currentDir, provider?, model?, isPinned, createdAt, updatedAt }`
-- `ConversationMessages { localId autoinc PK, conversationId FK→Conversations.id, messageId, sortOrder, messageType (user/assistant/tool/error), messageText, toolName?, toolArgumentsJson?, result?, reasoning?, reasoningDetailsJson?, error?, attachedUrisJson? }` — `attachedUrisJson` (v4) stores `UserMessage.attachedUris` as JSON array.
+- `ConversationMessages { localId autoinc PK, conversationId FK→Conversations.id, messageId, sortOrder, messageType (user/assistant/tool/error/compacted), messageText, toolName?, toolArgumentsJson?, result?, reasoning?, reasoningDetailsJson?, error?, attachedUrisJson? }` — `attachedUrisJson` (v4) stores `UserMessage.attachedUris` as JSON array; `compacted` rows store the `CompactedNoticeMessage` summary in `result`.
 - `ConversationAttachments { conversationId FK, uri, PK(conversationId, uri) }` — global inventory per conversation (from Settings → Local + message history).
 - `AppSettings { key PK, value }` — generic runtime KV store: encrypted API secrets (OpenRouter/Tavily keys, base-URL override) + plain preferences (voice locale, last-selected model, a11y prompt flag). Encryption lives in `SecretStore` (AES-256-GCM, key file at `<app-support>/errand.key`, outside the DB); `AppSettingsService` is the typed access layer with an in-memory cache. Replaces the former shared_preferences usage.
 
 Key ops:
 
 - `saveConversation(Conversation)` — `transaction`: `insertOnConflictUpdate` conversation row, then merge messages by `messageId` (new rows appended after max `sortOrder`, known rows updated in place — window-safe), attachments rewritten. Backed by a UNIQUE index on `(conversation_id, message_id)` and a `(conversation_id, sort_order)` lookup index (schema v2). Message companion now includes `attachedUrisJson` for `UserMessage`.
+- `replaceAllMessages(conversationId, messages)` — full delete + sequential reinsert (`sortOrder` 0..n). Currently uncalled (compaction merge-saves its divider and retains pre-divider rows as a never-re-sent audit trail); carries a window-safety contract — argument must be the COMPLETE history, never a loaded subset.
 - `deleteConversation`, `pinConversation` (toggle), `touchConversation` (bump `updatedAt`).
 - `loadConversation(id)` / `_loadMessages` / `_loadAttachmentUris`, plus `insertMessage`/`replaceMessage`/`deleteMessage`.
 - `watchConversationSummaries()` / `watchPinnedConversations()` — ordered streams for the sidebar.
@@ -255,15 +260,15 @@ detected via AppOps and surfaced as enablement guidance.
 
 - **`read` media branch** (`lib/tools/file_tools.dart`, `kMediaFormats`, `kMaxMediaBytes`) — image/audio/video whole-file read into `ToolCallResult.contentParts` as OpenAI-compatible `image_url` / `input_audio` / `video_url` data URLs. Capability-gated via `ModelCatalogService.supportsInput(modelId, modality)` (parsed from `architecture.input_modalities`). `file_picker: ^10.1.2` supplies the URIs.
 - **`attached_files` tool** (`lib/tools/attached_files_tool.dart`) — lists the conversation's global inventory (`Conversation.attachedFileUris`) so the model can discover history without guessing.
-- **Staging vs history**: `ChatScreen._pendingAttachments` (in-memory, shown as pre-send card) → on send snapshotted into `UserMessage.attachedUris` (`ConversationMessages.attachedUrisJson`, v4) + appended to `ConversationAttachments` (global). `_toLlmHistory` renders `UserMessage.attachedUris` as the `[Attached files: …]` text list; `_llmMessageChars` counts `List` content (base64) for the payload guard.
+- **Staging vs history**: `ChatScreen._pendingAttachments` (in-memory, shown as pre-send card) → on send snapshotted into `UserMessage.attachedUris` (`ConversationMessages.attachedUrisJson`, v4) + appended to `ConversationAttachments` (global). `_toLlmHistory` renders `UserMessage.attachedUris` as the `[Attached files: …]` text list; `estimateLlmMessageTokens` sums `List` part payloads directly (flat vision/audio/video tile rates when opaque) for the budget guard.
 
 ## Next steps
 
 - Stream-stall watchdog for `chatStream` (inactivity timeout per SSE event; `_streamTimeout` only covers time-to-headers).
-- Per-turn context re-truncation inside long agent runs (truncation currently happens once at run start; mid-loop `trimLlmMessages` handles media/screen bloat but full compaction is still TODO; maxTurns is 18).
-- Harden `_OpenXmlPackage.load` (streaming zip decode, pre-decode size check) and unify `UnsupportedError` → `ToolCallResult.failure` mapping.
+- ✅ Done Sep 2026: per-model dynamic budget + pre/mid-step auto-compaction (was: entry-only truncation, `maxTurns` 18, full compaction TODO) — see `context_budget.dart: ContextBudget`.
+- ✅ Done Sep 2026: Office/PDF streaming hardening (`_StreamingOpenXmlPackage` guards, lazy `PooledPdfDocument` pages, `structuredDocuments` LRU + stat invalidation).
 - Safe-edit tool (`write`/`edit_file` with diff preview + undo) — needs the write-policy decision originally blocking it.
 - Local retrieval (embeddings/FTS) over recent docs for context budgeting.
 - Evaluate SAF as an alternative to `MANAGE_EXTERNAL_STORAGE` for Play distribution.
-- P4 — hardening release + guided refactor (see `next_plan.md` §P4: v0.2.5 memory table + Play hygiene, v0.3.0 service-by-service walkthrough in dependency order).
+- P4 — hardening release + guided refactor (see `next_plan.md` §P4 + `refactor.md` progress log).
 

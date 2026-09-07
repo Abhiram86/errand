@@ -253,8 +253,17 @@ final class ErrandDatabase extends _$ErrandDatabase {
 
   /// Completely replaces stored messages of [conversationId] with [messages] in
   /// exact sequential sortOrder (0, 1, 2, ...).
-  /// Used after context compaction to purge older compacted messages from the DB
-  /// and ensure the compacted summary and tail messages have clean chronological sortOrder.
+  ///
+  /// WINDOW-SAFETY CONTRACT: [messages] must be the conversation's COMPLETE
+  /// history — never a loaded window subset. Anything absent is permanently
+  /// deleted. Prefer [saveConversation] (merge by messageId) whenever older
+  /// pages may be unloaded; reserve this for explicit purges with proven
+  /// completeness.
+  ///
+  /// Currently uncalled: compaction persists its divider via [saveConversation]
+  /// merge and retains pre-divider rows as an audit trail (never re-sent
+  /// thanks to the effective-history slice). Kept for a future explicit
+  /// DB-hygiene pass.
   Future<void> replaceAllMessages(String conversationId, List<Message> messages) async {
     await transaction(() async {
       await (delete(conversationMessages)

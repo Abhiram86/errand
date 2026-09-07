@@ -12,26 +12,28 @@ conversations are stored locally (Drift/SQLite) with no cloud sync.
 
 ## Features
 
-- **Agent loop** (`lib/agent/`) — OpenAI-compatible tool-calling, up to 18
-  turns per request, live streaming of text and reasoning deltas.
+- **Agent loop** (`lib/agent/`) — OpenAI-compatible tool-calling, up to 72
+  turns per request, live streaming of text and reasoning deltas, with
+  automatic LLM-driven context compaction past the model's token budget.
 - **Tools**
   - `read` — bounded byte-range reads for text; logical pagination for PDF,
     DOCX, XLSX, PPTX (zip-bomb and size guarded).
   - `workspace` — `pwd` / `cd` / `list` / `find` over `/storage/emulated/0`
     with path-traversal guards.
   - `websearch` / `webfetch` — Tavily search + Markdown extraction.
-  - `intent` — 17 curated Android actions (open URLs/apps/maps, dial, email,
-    alarms/timers, calendar events, media playback, share, wallpaper,
-    uninstall, settings pages/panels, dark-mode toggle) plus a generic raw
-    `android_action` escape hatch.
+  - `intent` — 5 core Android actions (`open_file` via FileProvider,
+    `open_url`, `open_app`, `settings`, raw `android_action` hatch) with
+    backward-compatible routing for legacy actions; UI toggles live in
+    `act` now.
   - `screen` / `act` — optional accessibility-backed screen reading (compact
     outline of the active window) and Draft-mode interaction: tap labeled
     controls, type into focused fields, scroll. Commit-looking actions
     (Send/Pay/Delete…) are refused — Errand prepares, the user sends.
     Requires enabling Errand in Accessibility settings.
-- **Context management** — history truncation against a 200K-char soft limit
-  with atomic tool batches, message windowing (newest 50 on open, paged
-  scroll-up), and sidebar pagination.
+- **Context management** — token-based per-model budget (`ContextBudget`,
+  reserve `min(16K, 25%)`) with automatic pre-turn + mid-step compaction
+  (deterministic fallback), plus message windowing (newest 50 on open, paged
+  scroll-up) and sidebar pagination.
 - **Chat UI** — Material 3 dark theme, markdown rendering for assistant
   messages (code, tables, LaTeX), text selection, collapsible tool bubbles
   with re-open buttons for launch-style intents, searchable model picker.

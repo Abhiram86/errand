@@ -356,6 +356,67 @@ List<Map<String, dynamic>> applyCompactedHistory({
   ];
 }
 
+// ---- Tail fitting ----------------------------------------------------------
+//
+// keepCount in the compactor floors at 1 tail block so the active turn is
+// never dropped — but one block of multi-KB tool results (screen outlines,
+// reads) can still exceed small-window targets on its own. Trimming whole
+// blocks further is not an option; instead this pass head-trims oversized
+// tool-result CONTENTS inside the tail, keeping block structure (ids, call
+// mapping) intact so the next turn still references valid tool results.
+
+/// Floor (in chars) for intra-tail tool-result trimming.
+const int kTailTrimFloorChars = 1000;
+
+const String _tailTrimMarker = '\n[...trimmed for compaction ';
+
+/// Shrinks an oversized [tail] to fit [budget.targetTokens] without dropping
+/// blocks. Oldest tool results are trimmed first; the newest tool message is
+/// trimmed last since it carries the freshest results. Non-string contents
+/// (media payloads) and non-tool messages are never touched. Best-effort:
+/// returns the tail unchanged when nothing trimmable remains.
+List<Map<String, dynamic>> fitTailToTarget(
+  List<Map<String, dynamic>> tail,
+  ContextBudget budget,
+) {
+  if (estimateLlmMessagesTokens(tail) <= budget.targetTokens) return tail;
+  final fitted = [
+    for (final m in tail) Map<String, dynamic>.from(m),
+  ];
+  String? trimAt(int i) {
+    if (fitted[i]['role'] != 'tool') return null;
+    final content = fitted[i]['content'];
+    if (content is! String) return null;
+    if (content.length <= kTailTrimFloorChars) return null;
+    if (content.contains(_tailTrimMarker)) return null; // already trimmed
+    return content;
+  }
+
+  while (estimateLlmMessagesTokens(fitted) > budget.targetTokens) {
+    var newestTool = -1;
+    for (var i = fitted.length - 1; i >= 0; i--) {
+      if (trimAt(i) != null) {
+        newestTool = i;
+        break;
+      }
+    }
+    if (newestTool == -1) break; // nothing left worth trimming
+    var target = -1;
+    for (var i = 0; i < newestTool; i++) {
+      if (trimAt(i) != null) {
+        target = i;
+        break;
+      }
+    }
+    target = target == -1 ? newestTool : target; // newest only as last resort
+    final content = trimAt(target)!;
+    final dropped = content.length - kTailTrimFloorChars;
+    fitted[target]['content'] =
+        '${content.substring(0, kTailTrimFloorChars)}$_tailTrimMarker$dropped chars]';
+  }
+  return fitted;
+}
+
 // ---- Legacy & Character Compatibility Layer --------------------------------
 
 /// Estimates characters for a [Message].

@@ -14,6 +14,8 @@ The original design (one `intent` tool, second MethodChannel, zero deps) shipped
 
 Plus a **generic escape hatch**: `action:"intent"` accepts raw `android_action` strings (`android.settings.*`, third-party actions) so new apps need zero code changes. Design principle: *curated actions → generic android_action → honest failure*. No per-app pattern matching.
 
+> **Sep 2026 update (`225b599`):** unified to 5 core actions — `open_file` (new, `FileProvider` + MIME resolution), `open_url`, `open_app`, `settings`, `intent` — with backward-compatible routing for legacy actions (`search`/`dial`/`open_maps`/`email` → `open_url`; `calendar_event`/`media_play`/`share`/`wallpaper`/`uninstall`/`settings_panel` → generic). `alarm`/`timer`/`system` (dark-mode toggle) removed; UI toggles go through `act`. Native `launch` is BAL-safe (`PendingIntent` + a11y-context fallback), reports chooser sheets, and `bringToFront` restores Errand after `screen`/`act` work.
+
 ### Hardening beyond original plan
 
 - All handlers `async`/`await` — native errors (`NO_HANDLER`, `NO_PKG`) become real failures instead of fire-and-forget fake success.
@@ -24,6 +26,7 @@ Plus a **generic escape hatch**: `action:"intent"` accepts raw `android_action` 
 - Alarm `"HH:mm"` parsing with range validation; Kotlin int-coercion limited to HOUR/MINUTES/LENGTH extras.
 - Dark mode: `UiModeManager.setNightMode()` **with read-back verification** → permission-gated `Settings.Secure/Global.putInt("ui_night_mode")` → honest fallback opening `DARK_THEME_SETTINGS`. (An earlier AppCompatDelegate reflection step was removed: it only changed the app's own theme, not the system's, and ran unverified.) Research finding: system-wide night mode is gated behind privileged `MODIFY_DAY_NIGHT_MODE`; reliable sideload path is one-time `adb shell pm grant com.errand.errand android.permission.WRITE_SECURE_SETTINGS`.
 - Idempotent permission flow (`hasWriteSettings` / `requestWriteSettings` returns granted-state; no re-opening Settings when already ON).
+- **Sep 2026 update (`225b599`):** the whole dark-mode ladder + `WRITE_SETTINGS` flow + `nextAlarm` ground-truth were removed from the intent channel; UI toggles are `act`-driven now.
 - Manifest `<queries>`: http(s)/geo/tel/mailto/spotify/whatsapp/tg schemes, SET_ALARM/SET_TIMER/SHOW_ALARMS/calendar INSERT/SEND/package DELETE/MEDIA_PLAY_FROM_SEARCH, all four Settings Panels, pinned packages.
 
 ### Known limits (researched, accepted)
@@ -51,6 +54,7 @@ Plus a **generic escape hatch**: `action:"intent"` accepts raw `android_action` 
    head-clamped to 32K regardless (`[...truncated N chars]`). Applied at one
    place: `AgentLoop.run` boundary — non-destructive, full history stays for
    persistence/UI.
+   > **Sep 2026 update (`dbe2757` + fixes):** superseded by token-based `ContextBudget` (per-model `contextSize`, reserve `min(16K, 25%)`, `~3.8 chars/token`, `models.dev` fallback) with pre-turn + mid-step LLM compaction (deterministic fallback under a 60s `compactionTimeout`; oversized tails shrink via `fitTailToTarget`, never block drops). `CompactedNoticeMessage` divider merge-saved via `compacted` rows (pre-divider rows retained, never re-sent). Char-based `truncateHistory`/`trimLlmMessages` kept as compat/tested layer. Loop cap `18 → 72` (ctor-overridable).
 2. **Message windowing**: opening a conversation loads the newest 50 messages
    (`loadConversation(id, messageLimit:)`); scrolling near the top loads the
    previous page (`loadOlderMessages(beforeMessageId:)`) with a spinner and
@@ -287,9 +291,12 @@ final act.
     - Commit-control detection via label/class heuristics (text ∈ {send,
       post, publish, pay…}); if no confident match → silently stays in
       Draft mode (safe-by-default).
-12. **Longer loops — ACTIVE (turn cap exhausted in practice)**. Cap went
-    12 → 18 → still too few: every UI step costs 2–3 turns (read → act →
-    verify), so a 10-step automation needs 20–30+. Plan:
+12. **Longer loops — DONE Sep 2026 (`dbe2757`)**. Cap went
+    12 → 18 → 72 (`defaultMaxTurns`, ctor-overridable `maxTurnCount`), with
+    mandatory mid-run compaction (pre-turn + post-batch `_compactIfNeeded`,
+    newest 1–2 tail blocks kept, rest LLM-summarized with deterministic
+    fallback; persistence/UI history untouched except the persisted
+    `CompactedNoticeMessage` divider). Original plan below, kept for record:
     - Raise `maxTurns` to ~40 (make it an `AgentLoop` constructor param).
     - **Mid-run compaction is mandatory with that** — entry truncation only
       sees persisted history; screen outlines are up to ~24K chars per read,

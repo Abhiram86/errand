@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:errand/agent/agent_loop.dart';
@@ -376,6 +377,144 @@ void main() {
       expect(sentMessages.any((m) => (m['content'] as String?)?.contains('Now solve problem 2') ?? false), isTrue);
     });
   });
+
+  group('fitTailToTarget', () {
+    Map<String, dynamic> toolMsg(String id, String content) => {
+      'role': 'tool',
+      'tool_call_id': id,
+      'content': content,
+    };
+
+    test('returns the identical tail when already under target', () {
+      final budget = ContextBudget(contextSize: 128000);
+      final tail = [
+        {'role': 'user', 'content': 'hi'},
+        toolMsg('t1', 'short result'),
+      ];
+      expect(identical(fitTailToTarget(tail, budget), tail), isTrue);
+    });
+
+    test('trims oldest tool results first, keeps block structure', () {
+      // 4000 ctx -> reserve 1000 -> threshold 3000 -> target 1500 tokens.
+      final budget = ContextBudget(contextSize: 4000);
+      final oldBig = 'O' * 8000; // ~2.1K tokens each; pair blows the target
+      final newBig = 'N' * 8000;
+      final tail = [toolMsg('t-old', oldBig), toolMsg('t-new', newBig)];
+
+      final fitted = fitTailToTarget(tail, budget);
+
+      expect(estimateLlmMessagesTokens(fitted), lessThanOrEqualTo(budget.targetTokens));
+      // Both had to give (pair > target even with one intact), oldest first.
+      expect(fitted[0]['content'] as String, contains('trimmed for compaction'));
+      expect(fitted[1]['content'] as String, contains('trimmed for compaction'));
+      // Structure (ids, mapping) intact; input list unmutated.
+      expect(fitted[0]['tool_call_id'], 't-old');
+      expect(fitted[1]['tool_call_id'], 't-new');
+      expect(tail[0]['content'], oldBig);
+      expect(tail[1]['content'], newBig);
+    });
+
+    test('spares the newest tool message while older ones still give', () {
+      final budget = ContextBudget(contextSize: 4000);
+      final tail = [
+        toolMsg('t-old', 'O' * 8000),
+        toolMsg('t-new', 'fresh result'),
+      ];
+
+      final fitted = fitTailToTarget(tail, budget);
+
+      expect(estimateLlmMessagesTokens(fitted), lessThanOrEqualTo(budget.targetTokens));
+      expect(fitted[0]['content'] as String, contains('trimmed for compaction'));
+      expect(fitted[1]['content'], 'fresh result');
+    });
+
+    test('never touches non-tool messages or media payloads; best-effort otherwise', () {
+      final budget = ContextBudget(contextSize: 4000);
+      final mediaUrl = 'data:image/png;base64,${'A' * 20000}';
+      final tail = [
+        {'role': 'user', 'content': 'look at this'},
+        {
+          'role': 'user',
+          'content': [
+            {'type': 'text', 'text': 'look'},
+            {'type': 'image_url', 'image_url': {'url': mediaUrl}},
+          ],
+        },
+        toolMsg('t1', 'small'),
+      ];
+
+      final fitted = fitTailToTarget(tail, budget);
+
+      // Media payloads (~1500 flat tokens alone) blow this tiny budget with
+      // nothing trimmable — must return best effort, never destructive.
+      expect((fitted[1]['content'] as List)[1]['image_url']['url'], mediaUrl);
+      expect(fitted[2]['content'], 'small');
+    });
+  });
+
+  group('compaction timeout', () {
+    test('hanging summarizer falls back instead of wedging the turn', () async {
+      final mockLlm = HangingCompactionMockLlmClient();
+      AgentCompacted? emitted;
+      final loop = AgentLoop(
+        llm: mockLlm,
+        registry: ToolRegistry([]),
+        budget: ContextBudget(contextSize: 1000, overrideThreshold: 100),
+        compactionTimeout: const Duration(milliseconds: 50),
+        onEvent: (event) {
+          if (event is AgentCompacted) emitted = event;
+        },
+      );
+
+      final conversation = Conversation(
+        id: 'c-timeout',
+        messages: [
+          UserMessage(id: 'u1', text: 'Investigate the login flow. ${'x' * 2000}'),
+          const AssistantMessage(id: 'a1', text: 'On it.'),
+          const UserMessage(id: 'u2', text: 'Continue.'),
+        ],
+        currentDir: Directory('/'),
+      );
+
+      final answer = await loop.run(conversation);
+
+      expect(answer, 'Done after fallback compaction.');
+      expect(emitted, isNotNull);
+      // Deterministic fallback shape, not the (never delivered) LLM summary.
+      expect(emitted!.summary, contains('## 1. Primary User Goal'));
+    });
+  });
+}
+
+class HangingCompactionMockLlmClient extends LlmClient {
+  HangingCompactionMockLlmClient()
+      : super(
+          config: const LlmConfig(
+            baseUrl: 'https://example.com',
+            apiKey: 'test-key',
+            model: 'test-model',
+          ),
+        );
+
+  @override
+  Future<LlmMessage> chat({
+    required List<Map<String, dynamic>> messages,
+    List<Tool> tools = const [],
+    CancelToken? cancelToken,
+  }) async {
+    final isCompaction = messages.any((m) {
+      final content = m['content'];
+      return content is String &&
+          content.contains('Summarize the entire conversation history');
+    });
+    if (isCompaction) {
+      // Never completes on its own (no timer, so no isolate hold) —
+      // AgentLoop.compactionTimeout must rescue the turn.
+      await Completer<void>().future;
+      return const LlmMessage(content: 'too late');
+    }
+    return const LlmMessage(content: 'Done after fallback compaction.');
+  }
 }
 
 class ToolYieldingMockLlmClient extends LlmClient {

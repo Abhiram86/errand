@@ -46,10 +46,17 @@ class AgentLoop {
   static const int defaultMaxTurns = 72;
   static const int maxTurns = defaultMaxTurns;
 
+  /// Upper bound for one compaction round-trip. The inner `chat` call
+  /// retries internally, so without this cap a saturated endpoint wedges the
+  /// turn for minutes before the deterministic fallback runs. Firing maps to
+  /// the fallback summary via the generic catch below (never a throw).
+  static const Duration defaultCompactionTimeout = Duration(seconds: 60);
+
   final LlmClient _llm;
   final ToolRegistry _registry;
   final ContextBudget budget;
   final int maxTurnCount;
+  final Duration compactionTimeout;
   final String Function()? systemPromptBuilder;
 
   /// Set by the UI stop button; checked at every turn boundary and between
@@ -66,6 +73,7 @@ class AgentLoop {
     ContextBudget? budget,
     int? modelContextSize,
     int? maxTurns,
+    Duration? compactionTimeout,
     this.systemPromptBuilder,
     this.cancelToken,
     this._onEvent,
@@ -76,7 +84,8 @@ class AgentLoop {
             (modelContextSize != null
                 ? ContextBudget(contextSize: modelContextSize)
                 : ContextBudget.defaultBudget),
-        maxTurnCount = maxTurns ?? defaultMaxTurns;
+        maxTurnCount = maxTurns ?? defaultMaxTurns,
+        compactionTimeout = compactionTimeout ?? defaultCompactionTimeout;
 
   Future<String> run(Conversation conversation) async {
     // OPT-07: individual tool results are head-clamped at the boundary.
@@ -244,19 +253,24 @@ class AgentLoop {
     final toCompact = <Map<String, dynamic>>[
       for (final b in compactBlocks) ...b,
     ];
-    final tail = <Map<String, dynamic>>[
+    var tail = <Map<String, dynamic>>[
       for (final b in tailBlocks) ...b,
     ];
+    // keepCount floors at 1 block, but one block of multi-KB tool results
+    // can still exceed small-window targets — trim contents, never blocks.
+    tail = fitTailToTarget(tail, budget);
 
     _onEvent?.call(const AgentCompacting());
 
     String summary;
     try {
       final compactionPrompt = buildCompactionPrompt(toCompact);
-      final response = await _llm.chat(
-        messages: compactionPrompt,
-        cancelToken: cancelToken,
-      );
+      final response = await _llm
+          .chat(
+            messages: compactionPrompt,
+            cancelToken: cancelToken,
+          )
+          .timeout(compactionTimeout);
       summary = (response.content ?? '').trim();
       if (summary.isEmpty) {
         summary = buildDeterministicFallbackSummary(toCompact);
