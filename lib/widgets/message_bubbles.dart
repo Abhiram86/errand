@@ -284,192 +284,201 @@ class MessageBubble extends StatelessWidget {
             text.startsWith('…thinking') ||
             text.startsWith('…compacting'));
 
-    final bubble = Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      constraints: BoxConstraints(
-        maxWidth: MediaQuery.of(context).size.width * (isUser ? 0.78 : 0.82),
-      ),
-      decoration: BoxDecoration(
-        color: isUser ? kBubbleUser : kBubbleAssistant,
-        borderRadius: BorderRadius.only(
-          topLeft: const Radius.circular(18),
-          topRight: const Radius.circular(18),
-          bottomLeft: Radius.circular(isUser ? 18 : 4),
-          bottomRight: Radius.circular(isUser ? 4 : 18),
-        ),
-      ),
-      child: AnimatedSize(
-        duration: const Duration(milliseconds: 140),
-        curve: Curves.easeOutCubic,
-        alignment: isUser ? Alignment.topRight : Alignment.topLeft,
-        clipBehavior: Clip.none,
-        child: isUser
-            ? Text(
-                text,
-                style: const TextStyle(
-                  color: kText,
-                  fontSize: 15,
-                  height: 20 / 15,
-                ),
-              )
-            // Assistant turns render as markdown (bold, tables, code,
-            // LaTeX). Text selection comes from the SelectionArea that
-            // wraps the message list.
-            : _StreamingAssistantText(
-                text: text,
-              ),
-      ),
-    );
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // availableWidth is the width inside the message list excluding outer paddings/margins.
+        final availableWidth = constraints.maxWidth.isFinite
+            ? constraints.maxWidth
+            : (MediaQuery.of(context).size.width - 32);
 
-    // User bubbles carry an explicit pen affordance on their left — more
-    // discoverable than tap-to-edit and immune to the SelectionArea
-    // swallowing taps on desktop/pointer devices.
-    if (isUser) {
-      final attached = (message is UserMessage) ? (message as UserMessage).attachedUris : const <String>[];
-      final userRow = Row(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
-          if (onEdit != null)
-            Padding(
-              padding: const EdgeInsets.only(right: 4, bottom: 2),
-              child: IconButton(
-                onPressed: onEdit,
-                tooltip: 'Edit',
-                style: IconButton.styleFrom(
-                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  visualDensity: VisualDensity.compact,
-                ),
-                constraints:
-                    const BoxConstraints.tightFor(width: 24, height: 24),
-                padding: EdgeInsets.zero,
-                iconSize: 14,
-                color: kMuted.withValues(alpha: 0.8),
-                icon: const Icon(Icons.edit_rounded),
-              ),
+        final bubble = Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          constraints: BoxConstraints(
+            maxWidth: isUser ? availableWidth * 0.78 : availableWidth * 0.90,
+          ),
+          decoration: BoxDecoration(
+            color: isUser ? kBubbleUser : kBubbleAssistant,
+            borderRadius: BorderRadius.only(
+              topLeft: const Radius.circular(18),
+              topRight: const Radius.circular(18),
+              bottomLeft: Radius.circular(isUser ? 18 : 4),
+              bottomRight: Radius.circular(isUser ? 4 : 18),
             ),
-          Flexible(child: bubble),
-        ],
-      );
-      final card = Container(
-        margin: const EdgeInsets.only(top: 6),
-        constraints: BoxConstraints(
-          maxWidth: MediaQuery.of(context).size.width * 0.78,
-        ),
-        decoration: BoxDecoration(
-          color: kInputBg,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: kBorder),
-        ),
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            for (var i = 0; i < attached.length; i++)
-              Padding(
-                padding: EdgeInsets.only(bottom: i == attached.length - 1 ? 0 : 6),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.attach_file_rounded, size: 14, color: kMuted),
-                    const SizedBox(width: 6),
-                    Flexible(
-                      child: Text(
-                        '${i + 1}. ${path.basename(attached[i])}',
-                        style: const TextStyle(color: kText, fontSize: 12, height: 1.2),
-                        overflow: TextOverflow.ellipsis,
-                      ),
+          ),
+          child: AnimatedSize(
+            duration: const Duration(milliseconds: 140),
+            curve: Curves.easeOutCubic,
+            alignment: isUser ? Alignment.topRight : Alignment.topLeft,
+            clipBehavior: Clip.none,
+            child: isUser
+                ? Text(
+                    text,
+                    style: const TextStyle(
+                      color: kText,
+                      fontSize: 15,
+                      height: 20 / 15,
                     ),
-                  ],
+                  )
+                // Assistant turns render as markdown (bold, tables, code,
+                // LaTeX). Text selection comes from the SelectionArea that
+                // wraps the message list.
+                : _StreamingAssistantText(
+                    text: text,
+                  ),
+          ),
+        );
+
+        // User bubbles carry an explicit pen affordance on their left — more
+        // discoverable than tap-to-edit and immune to the SelectionArea
+        // swallowing taps on desktop/pointer devices.
+        if (isUser) {
+          final attached = (message is UserMessage) ? (message as UserMessage).attachedUris : const <String>[];
+          final userRow = Row(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              if (onEdit != null)
+                Padding(
+                  padding: const EdgeInsets.only(right: 4, bottom: 2),
+                  child: IconButton(
+                    onPressed: onEdit,
+                    tooltip: 'Edit',
+                    style: IconButton.styleFrom(
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      visualDensity: VisualDensity.compact,
+                    ),
+                    constraints:
+                        const BoxConstraints.tightFor(width: 24, height: 24),
+                    padding: EdgeInsets.zero,
+                    iconSize: 14,
+                    color: kMuted.withValues(alpha: 0.8),
+                    icon: const Icon(Icons.edit_rounded),
+                  ),
                 ),
-              ),
-          ],
-        ),
-      );
-      return Padding(
-        padding: const EdgeInsets.symmetric(vertical: 4),
-        child: Align(
-          alignment: Alignment.centerRight,
-          child: attached.isEmpty
-              ? userRow
-              : Column(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [userRow, card],
-                ),
-        ),
-      );
-    }
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Align(
-        alignment: Alignment.centerLeft,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            bubble,
-            if (!isPlaceholder)
-              Padding(
-                padding: const EdgeInsets.only(top: 2, left: 2),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.center,
-                  children: [
-                    _CopyButton(text: text),
-
-                    if (onRegenerate != null) ...[
-                      const SizedBox(width: 8),
-                      IconButton(
-                        onPressed: onRegenerate,
-                        tooltip: 'Regenerate',
-                        style: IconButton.styleFrom(
-                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                          visualDensity: VisualDensity.compact,
-                        ),
-                        constraints: const BoxConstraints.tightFor(
-                          width: 24,
-                          height: 24,
-                        ),
-                        padding: EdgeInsets.zero,
-                        iconSize: 14,
-                        color: kMuted,
-                        icon: const Icon(Icons.refresh_rounded),
-                      ),
-                    ],
-
-                    if (message is AssistantMessage &&
-                        (message as AssistantMessage).model != null) ...[
-                      const SizedBox(width: 8),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 7,
-                          vertical: 2.5,
-                        ),
-                        decoration: BoxDecoration(
-                          color: kInputBg,
-                          borderRadius: BorderRadius.circular(6),
-                          border: Border.all(
-                            color: kBorder.withValues(alpha: 0.6),
+              Flexible(child: bubble),
+            ],
+          );
+          final card = Container(
+            margin: const EdgeInsets.only(top: 6),
+            constraints: BoxConstraints(
+              maxWidth: availableWidth * 0.78,
+            ),
+            decoration: BoxDecoration(
+              color: kInputBg,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: kBorder),
+            ),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                for (var i = 0; i < attached.length; i++)
+                  Padding(
+                    padding: EdgeInsets.only(bottom: i == attached.length - 1 ? 0 : 6),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.attach_file_rounded, size: 14, color: kMuted),
+                        const SizedBox(width: 6),
+                        Flexible(
+                          child: Text(
+                            '${i + 1}. ${path.basename(attached[i])}',
+                            style: const TextStyle(color: kText, fontSize: 12, height: 1.2),
+                            overflow: TextOverflow.ellipsis,
                           ),
                         ),
-                        child: Text(
-                          (message as AssistantMessage).model!,
-                          style: const TextStyle(
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+          );
+          return Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: attached.isEmpty
+                  ? userRow
+                  : Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [userRow, card],
+                    ),
+            ),
+          );
+        }
+
+        return Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                bubble,
+                if (!isPlaceholder)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2, left: 2),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        _CopyButton(text: text),
+
+                        if (onRegenerate != null) ...[
+                          const SizedBox(width: 8),
+                          IconButton(
+                            onPressed: onRegenerate,
+                            tooltip: 'Regenerate',
+                            style: IconButton.styleFrom(
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                              visualDensity: VisualDensity.compact,
+                            ),
+                            constraints: const BoxConstraints.tightFor(
+                              width: 24,
+                              height: 24,
+                            ),
+                            padding: EdgeInsets.zero,
+                            iconSize: 14,
                             color: kMuted,
-                            fontSize: 10,
-                            fontWeight: FontWeight.w500,
+                            icon: const Icon(Icons.refresh_rounded),
                           ),
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-          ],
-        ),
-      ),
+                        ],
+
+                        if (message is AssistantMessage &&
+                            (message as AssistantMessage).model != null) ...[
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 7,
+                              vertical: 2.5,
+                            ),
+                            decoration: BoxDecoration(
+                              color: kInputBg,
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(
+                                color: kBorder.withValues(alpha: 0.6),
+                              ),
+                            ),
+                            child: Text(
+                              (message as AssistantMessage).model!,
+                              style: const TextStyle(
+                                color: kMuted,
+                                fontSize: 10,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }

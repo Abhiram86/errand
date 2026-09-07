@@ -353,6 +353,7 @@ class AgentLoop {
 
     for (var index = 0; index < effectiveHistory.length; index++) {
       final message = effectiveHistory[index];
+      if (message.id == 'init') continue;
       switch (message) {
         case CompactedNoticeMessage():
           final summaryContent = message.summary.isNotEmpty
