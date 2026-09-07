@@ -599,6 +599,7 @@ class ErrandAccessibilityService : AccessibilityService() {
         val root = rootInActiveWindow
             ?: return mapOf("ok" to false, "error" to "NO_WINDOW",
                 "message" to "No active window content available.")
+
         val needle = label.trim().lowercase()
         if (needle.isEmpty()) {
             recycleQuietly(root)

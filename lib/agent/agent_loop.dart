@@ -135,37 +135,34 @@ class AgentLoop {
 
       // Run stateless read/search tools concurrently for performance;
       // sequence stateful actions (screen navigation, clicks, directory change, app launch).
-      final isAnyStateful = message.toolCalls.any((call) {
-        if (call.name == 'act') return true;
-        if (call.name == 'intent') return true;
-        if (call.name == 'workspace' && call.arguments['action'] == 'cd') return true;
-        if (call.name == 'screen' && call.arguments['action'] == 'global') return true;
-        return false;
-      });
+      final isAnyStateful = message.toolCalls.any(_isStatefulCall);
 
       final results = <ToolCallResult>[];
       if (isAnyStateful) {
-        var aborted = false;
         String? abortReason;
         for (var i = 0; i < message.toolCalls.length; i++) {
           final call = message.toolCalls[i];
-          if (aborted) {
+          // Fail-fast gates DEPENDENT (stateful) followers only: one failure
+          // says nothing about stateless siblings (open 3 URLs, first 404s),
+          // so they still run. The 'skipped' type keeps these markers
+          // distinguishable from real failures in context.
+          if (abortReason != null && _isStatefulCall(call)) {
             results.add(
               ToolCallResult.failure(
                 call.id,
-                'Aborted: previous action in batch failed ($abortReason).',
+                'Skipped: previous action in batch failed ($abortReason).',
+                type: 'skipped',
               ),
             );
             continue;
           }
-          if (i > 0) {
+          if (i > 0 && !_prevAlreadySettled(message, results, i)) {
             await Future<void>.delayed(const Duration(milliseconds: 350));
           }
           final res = await _registry.execute(call);
           results.add(res);
           if (!res.ok) {
-            aborted = true;
-            abortReason = res.errorMessage ?? (res.output.isNotEmpty ? res.output : 'unknown error');
+            abortReason ??= res.errorMessage ?? (res.output.isNotEmpty ? res.output : 'unknown error');
           }
         }
       } else {
@@ -217,6 +214,30 @@ class AgentLoop {
     }
 
     return 'Reached $maxTurnCount tool-call turns without a final answer.';
+  }
+
+  /// True for calls that mutate shared state (screen, foreground app,
+  /// working directory): they must run in order, never concurrently.
+  /// Launches count — an `open_app` changes what subsequent screen reads see.
+  static bool _isStatefulCall(ToolCall call) {
+    if (call.name == 'act') return true;
+    if (call.name == 'intent') return true;
+    if (call.name == 'workspace' && call.arguments['action'] == 'cd') return true;
+    if (call.name == 'screen' && call.arguments['action'] == 'global') return true;
+    return false;
+  }
+
+  /// True when the previous batch call already waited for the screen to
+  /// settle: `act` + `then_read:true` sleeps 400ms and re-reads internally
+  /// on success, so stacking another 350ms inter-call settle just idles.
+  static bool _prevAlreadySettled(
+    LlmMessage message,
+    List<ToolCallResult> results,
+    int i,
+  ) {
+    if (!results[i - 1].ok) return false;
+    final prev = message.toolCalls[i - 1];
+    return prev.name == 'act' && prev.arguments['then_read'] == true;
   }
 
   Future<void> _compactIfNeeded(List<Map<String, dynamic>> messages) async {

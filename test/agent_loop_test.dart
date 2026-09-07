@@ -133,10 +133,11 @@ void main() {
     expect(secondExecuted, isTrue);
   });
 
-  test('AgentLoop short-circuits stateful tool batch when an earlier tool fails', () async {
+  test('AgentLoop skips stateful followers after a batch failure with a typed marker', () async {
     final mockLlm = MockLlmClient();
     var firstExecuted = false;
     var secondExecuted = false;
+    final seenResults = <ToolCallResult>[];
 
     final actTool = Tool(
       name: 'act',
@@ -148,9 +149,10 @@ void main() {
       },
     );
 
-    final secondAct = Tool(
-      name: 'second_act',
-      description: 'second tool in batch',
+    // Stateful follower (screen global): must be skipped, not attempted.
+    final follower = Tool(
+      name: 'screen',
+      description: 'stateful screen tool',
       parameters: const {},
       handler: (c) async {
         secondExecuted = true;
@@ -158,8 +160,14 @@ void main() {
       },
     );
 
-    final registry = ToolRegistry([actTool, secondAct]);
-    final loop = AgentLoop(llm: mockLlm, registry: registry);
+    final registry = ToolRegistry([actTool, follower]);
+    final loop = AgentLoop(
+      llm: mockLlm,
+      registry: registry,
+      onEvent: (event) {
+        if (event is AgentToolCall) seenResults.add(event.result);
+      },
+    );
 
     var turn = 0;
     mockLlm.onChat = (messages) {
@@ -169,7 +177,7 @@ void main() {
           content: null,
           toolCalls: [
             ToolCall(id: 'c1', name: 'act', arguments: {'action': 'tap'}),
-            ToolCall(id: 'c2', name: 'second_act', arguments: {}),
+            ToolCall(id: 'c2', name: 'screen', arguments: {'action': 'global'}),
           ],
         );
       }
@@ -178,7 +186,7 @@ void main() {
 
     final conversation = Conversation(
       id: 'c3',
-      messages: [UserMessage(id: 'u1', text: 'tap twice')],
+      messages: [UserMessage(id: 'u1', text: 'tap then go back')],
       currentDir: Directory('/'),
     );
 
@@ -192,6 +200,117 @@ void main() {
     final toolMsgs = secondTurnMsgs.where((m) => m['role'] == 'tool').toList();
     expect(toolMsgs.length, 2);
     expect(toolMsgs[0]['content'], contains('Element not found'));
-    expect(toolMsgs[1]['content'], contains('Aborted: previous action in batch failed'));
+    expect(toolMsgs[1]['content'], contains('Skipped: previous action in batch failed'));
+    // Typed marker: distinguishable from a real failure in context.
+    expect(seenResults.length, 2);
+    expect(seenResults[1].error?.type, 'skipped');
+  });
+
+  test('AgentLoop still runs stateless siblings after a batch failure', () async {
+    final mockLlm = MockLlmClient();
+    var failedExecuted = false;
+    var siblingExecuted = false;
+
+    final failing = Tool(
+      name: 'act',
+      description: 'stateful act tool',
+      parameters: const {},
+      handler: (c) async {
+        failedExecuted = true;
+        return ToolCallResult.failure(c.id, 'Element not found');
+      },
+    );
+
+    final sibling = Tool(
+      name: 'websearch',
+      description: 'stateless sibling',
+      parameters: const {},
+      handler: (c) async {
+        siblingExecuted = true;
+        return ToolCallResult(id: c.id, ok: true, output: 'sibling result');
+      },
+    );
+
+    final registry = ToolRegistry([failing, sibling]);
+    final loop = AgentLoop(llm: mockLlm, registry: registry);
+
+    var turn = 0;
+    mockLlm.onChat = (messages) {
+      turn++;
+      if (turn == 1) {
+        return const LlmMessage(
+          content: null,
+          toolCalls: [
+            ToolCall(id: 'c1', name: 'act', arguments: {'action': 'tap'}),
+            ToolCall(id: 'c2', name: 'websearch', arguments: {'query': 'x'}),
+          ],
+        );
+      }
+      return const LlmMessage(content: 'Done with partial failure');
+    };
+
+    final conversation = Conversation(
+      id: 'c4',
+      messages: [UserMessage(id: 'u1', text: 'tap and search')],
+      currentDir: Directory('/'),
+    );
+
+    final result = await loop.run(conversation);
+    expect(result, 'Done with partial failure');
+    expect(failedExecuted, isTrue);
+    // Stateless sibling attempted despite the earlier failure — no skip marker.
+    expect(siblingExecuted, isTrue);
+
+    final secondTurnMsgs = mockLlm.receivedMessages[1];
+    final toolMsgs = secondTurnMsgs.where((m) => m['role'] == 'tool').toList();
+    expect(toolMsgs.length, 2);
+    expect(toolMsgs[1]['content'], contains('sibling result'));
+  });
+
+  test('AgentLoop skips the inter-call settle after act then_read', () async {
+    Future<int> runBatch(bool thenRead) async {
+      final mockLlm = MockLlmClient();
+      final instantAct = Tool(
+        name: 'act',
+        description: 'instant stateful tool',
+        parameters: const {},
+        handler: (c) async => ToolCallResult(id: c.id, ok: true, output: 'tapped'),
+      );
+      final loop = AgentLoop(llm: mockLlm, registry: ToolRegistry([instantAct]));
+      var turn = 0;
+      mockLlm.onChat = (messages) {
+        turn++;
+        if (turn == 1) {
+          return LlmMessage(
+            content: null,
+            toolCalls: [
+              ToolCall(id: 'c1', name: 'act', arguments: {
+                'action': 'tap',
+                if (thenRead) 'then_read': true,
+              }),
+              const ToolCall(id: 'c2', name: 'act', arguments: {'action': 'tap'}),
+            ],
+          );
+        }
+        return const LlmMessage(content: 'done');
+      };
+      final sw = Stopwatch()..start();
+      await loop.run(
+        Conversation(
+          id: 'c-settle',
+          messages: [UserMessage(id: 'u1', text: 'tap twice')],
+          currentDir: Directory('/'),
+        ),
+      );
+      sw.stop();
+      return sw.elapsedMilliseconds;
+    }
+
+    final controlMs = await runBatch(false);
+    // Hard floor: the control pays one 350ms inter-call settle.
+    expect(controlMs, greaterThanOrEqualTo(350));
+    final skippedMs = await runBatch(true);
+    // then_read already settled internally — wide moat under the 350ms floor.
+    expect(skippedMs, lessThan(300));
   });
 }
