@@ -529,25 +529,26 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   /// _systemPromptFor async.
   Future<void> _refreshA11yState() async {
     try {
-      if (await _a11yService.hasSecureSettings()) {
-        await _a11yService.enable();
-      }
       final enabled = await _a11yService.isEnabled();
       if (!mounted) return;
       if (enabled != _a11yAvailable) {
         setState(() => _a11yAvailable = enabled);
       }
+      // Mirror of the storage-permission popup: one-time offer when screen
+      // access is off. "Don't ask again" persists; resume re-checks state
+      // but never re-nags after a permanent dismissal.
+      if (!enabled) {
+        await _maybeShowA11yDialog();
+      }
     } catch (_) {}
   }
 
-  Future<void> _maybeShowA11yDialog({bool force = false}) async {
+  Future<void> _maybeShowA11yDialog() async {
     if (_a11yDialogOpen) return;
-    if (!force) {
-      try {
-        if (await AppSettingsService.instance.a11yPromptDismissed()) return;
-      } catch (_) {
-        return; // settings unavailable — don't nag without an escape hatch
-      }
+    try {
+      if (await AppSettingsService.instance.a11yPromptDismissed()) return;
+    } catch (_) {
+      return; // settings unavailable — don't nag without an escape hatch
     }
     if (!mounted) return;
 
@@ -558,36 +559,41 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       await showDialog<void>(
         context: context,
         builder: (dialogContext) => AlertDialog(
-          title: Text(restricted ? 'Allow restricted settings' : 'Screen access needed'),
+          title: const Text('Screen access needed'),
           content: Text(
             restricted
                 ? 'Android blocks Errand\'s screen-access service because the '
                     'app was installed outside an app store ("Restricted '
-                    'setting").\n\n'
-                    '1. Tap "Open App Info" below\n'
-                    '2. Tap the three-dot menu (⋮) at top-right\n'
-                    '3. Tap "Allow restricted settings"\n'
-                    '4. Then return here to turn on screen access.'
-                : 'Errand needs screen access to interact with apps and screen controls.\n\n'
-                    'In Settings:\n'
-                    '• Tap "Downloaded apps" (or "Installed services")\n'
-                    '• Select "Errand" and turn the service ON.',
+                    'setting").\n\n1. Open Settings > Apps > Errand\n'
+                    '2. Tap the three-dot menu > Allow restricted settings\n'
+                    '3. Then enable Errand under Settings > Accessibility.'
+                : 'Errand can read the current screen so it can answer questions '
+                    'about what\'s displayed, navigate system UI, and draft '
+                    'messages in other apps. It only reads while acting on your '
+                    'request, and never presses send for you.\n\nAndroid will open '
+                    'Settings > Accessibility where you can turn the service on.',
           ),
           actions: [
             TextButton(
+              onPressed: () async {
+                Navigator.of(dialogContext).pop();
+                await AppSettingsService.instance.setA11yPromptDismissed(true);
+              },
+              child: const Text("Don't ask again"),
+            ),
+            TextButton(
               onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const Text('Cancel'),
+              child: const Text('Not now'),
             ),
             FilledButton(
               onPressed: () {
                 Navigator.of(dialogContext).pop();
-                if (restricted) {
-                  unawaited(_a11yService.openAppInfo());
-                } else {
-                  unawaited(_a11yService.openSettings());
-                }
+                // No public API deep-links straight to our service toggle
+                // (unlike storage's package-URI intent); the Accessibility
+                // list page is as close as stock Android allows.
+                unawaited(_a11yService.openSettings());
               },
-              child: Text(restricted ? 'Open App Info' : 'Open settings'),
+              child: const Text('Open settings'),
             ),
           ],
         ),
@@ -832,7 +838,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   static List<Message> _welcomeMessages() => [
     const AssistantMessage(
       id: 'init',
-      text: 'Hi! How can I help you today?',
+      text: 'Hi! Ask me to read or list files in shared storage.',
     ),
   ];
 
@@ -1491,7 +1497,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             ) !=
             false,
         getAttachedFiles: () => _activeConversation.attachedFileUris,
-        a11yService: _a11yService,
       );
 
       final budget = _getActiveBudget();
@@ -1518,12 +1523,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     } on LlmStoppedException {
       // Stop pressed: keep whatever streamed so far as the final answer.
       _finishStopped();
-    } on A11yRequiredException {
-      _replaceWorking(
-        'Screen access is required to interact with apps or screen controls. '
-        'Execution paused. Please turn on Errand in Accessibility settings and try again.',
-      );
-      await _maybeShowA11yDialog(force: true);
     } catch (e) {
       // Transport/API failures (connection aborts, timeouts, HTTP 429/5xx)
       // are not the agent's fault — show a transient toast instead of adding

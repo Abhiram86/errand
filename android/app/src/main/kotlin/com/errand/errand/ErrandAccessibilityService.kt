@@ -1,25 +1,19 @@
 package com.errand.errand
 
-import android.Manifest
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.accessibilityservice.InputMethod
 import android.app.AppOpsManager
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.content.pm.ApplicationInfo
-import android.content.pm.PackageManager
 import android.graphics.Path
 import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
-import android.provider.Settings
 import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.inputmethod.EditorInfo
-import androidx.core.content.ContextCompat
 import kotlin.math.abs
 
 /**
@@ -66,78 +60,6 @@ class ErrandAccessibilityService : AccessibilityService() {
             "approve", "authorize", "sign",
         )
 
-        private val RESTRICTED_PACKAGES = setOf(
-            "com.phonepe.app",
-            "com.google.android.apps.nbu.paisa.user",
-            "net.one97.paytm",
-            "in.org.npci.upiapp",
-            "com.sbi.upi",
-            "com.sbi.lotusintouch",
-            "com.sbicard.omnichannel",
-            "com.msf.kbank.mobile",
-            "com.snapwork.hdfc",
-            "com.csam.icici.bank.imobile",
-            "com.axis.mobile",
-            "com.bankofbaroda.mconnect",
-            "com.dreamplug.androidapp",
-            "com.zerodha.kite3",
-            "com.nextbillion.groww",
-            "com.x8bit.bitwarden",
-            "com.onepassword.android",
-            "com.google.android.apps.authenticator2",
-        )
-
-        /**
-         * Returns true if [pkg] is a known banking, payment, or password-manager app.
-         * Errand strictly refuses to inspect or interact with restricted apps.
-         */
-        fun isRestrictedApp(context: Context, pkg: String): Boolean {
-            val lower = pkg.lowercase()
-            if (pkg in RESTRICTED_PACKAGES) return true
-            return lower.contains("sbi") ||
-                lower.contains("bank") ||
-                lower.contains("paytm") ||
-                lower.contains("phonepe") ||
-                lower.contains("upi") ||
-                lower.contains("wallet")
-        }
-
-        /** Shuts down the running accessibility service via disableSelf(). */
-        fun disable(): Boolean {
-            val inst = instance ?: return false
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                inst.disableSelf()
-                return true
-            }
-            return false
-        }
-
-        /** True if the app has been granted WRITE_SECURE_SETTINGS via ADB or Shizuku. */
-        fun hasSecureSettings(context: Context): Boolean {
-            return ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.WRITE_SECURE_SETTINGS
-            ) == PackageManager.PERMISSION_GRANTED
-        }
-
-        /** Programmatically enables this service if WRITE_SECURE_SETTINGS is granted. */
-        fun enableProgrammatically(context: Context): Boolean {
-            if (!hasSecureSettings(context)) return false
-            return try {
-                val cr = context.contentResolver
-                val component = ComponentName(context, ErrandAccessibilityService::class.java).flattenToString()
-                val current = Settings.Secure.getString(cr, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: ""
-                if (!current.split(':').contains(component)) {
-                    val updated = if (current.isEmpty()) component else "$current:$component"
-                    Settings.Secure.putString(cr, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES, updated)
-                    Settings.Secure.putInt(cr, Settings.Secure.ACCESSIBILITY_ENABLED, 1)
-                }
-                true
-            } catch (_: Exception) {
-                false
-            }
-        }
-
         /** True only while the user has enabled (and the system has bound) the service. */
         fun isConnected(): Boolean = instance != null
 
@@ -182,15 +104,6 @@ class ErrandAccessibilityService : AccessibilityService() {
         super.onDestroy()
     }
 
-    override fun onTaskRemoved(rootIntent: Intent?) {
-        try {
-            if (hasSecureSettings(this)) {
-                disable()
-            }
-        } catch (_: Exception) {}
-        super.onTaskRemoved(rootIntent)
-    }
-
     override fun onInterrupt() {}
 
     // Only listening for window changes right now; no background monitoring.
@@ -227,15 +140,6 @@ class ErrandAccessibilityService : AccessibilityService() {
                 "message" to "No active window content available. The foreground app may not expose semantics.",
             )
         try {
-            val pkg = root.packageName?.toString() ?: "unknown"
-            if (isRestrictedApp(this, pkg)) {
-                return mapOf(
-                    "ok" to false,
-                    "error" to "RESTRICTED_APP_REFUSED",
-                    "package" to pkg,
-                    "message" to "Errand strictly refuses to inspect or interact with sensitive/financial app: $pkg",
-                )
-            }
             val dm = resources.displayMetrics
             val viewportW = dm.widthPixels
             val viewportH = dm.heightPixels
@@ -277,6 +181,7 @@ class ErrandAccessibilityService : AccessibilityService() {
                 body.append(line).append('\n')
             }
             elementRefs = refs
+            val pkg = root.packageName?.toString() ?: "unknown"
             val tab = activeTab
             val wins = try { windows } catch (_: Exception) { emptyList() }
             val focusedTitle = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -603,15 +508,6 @@ class ErrandAccessibilityService : AccessibilityService() {
             ?: return mapOf("ok" to false, "error" to "NO_WINDOW",
                 "message" to "No active window content available.")
         try {
-            val pkg = root.packageName?.toString() ?: "unknown"
-            if (isRestrictedApp(this, pkg)) {
-                return mapOf(
-                    "ok" to false,
-                    "error" to "RESTRICTED_APP_REFUSED",
-                    "package" to pkg,
-                    "message" to "Errand strictly refuses to interact with sensitive/financial app: $pkg",
-                )
-            }
             val entry = elementRefs[ref]
                 ?: return mapOf("ok" to false, "error" to "STALE_REF",
                     "message" to "Ref $ref is not known. Re-read the screen; refs are renumbered on every read.")
@@ -703,17 +599,6 @@ class ErrandAccessibilityService : AccessibilityService() {
         val root = rootInActiveWindow
             ?: return mapOf("ok" to false, "error" to "NO_WINDOW",
                 "message" to "No active window content available.")
-
-        val pkg = root.packageName?.toString() ?: "unknown"
-        if (isRestrictedApp(this, pkg)) {
-            recycleQuietly(root)
-            return mapOf(
-                "ok" to false,
-                "error" to "RESTRICTED_APP_REFUSED",
-                "package" to pkg,
-                "message" to "Errand strictly refuses to interact with sensitive/financial app: $pkg",
-            )
-        }
 
         val needle = label.trim().lowercase()
         if (needle.isEmpty()) {
@@ -836,15 +721,6 @@ class ErrandAccessibilityService : AccessibilityService() {
             ?: return mapOf("ok" to false, "error" to "NO_WINDOW",
                 "message" to "No active window content available.")
         try {
-            val pkg = root.packageName?.toString() ?: "unknown"
-            if (isRestrictedApp(this, pkg)) {
-                return mapOf(
-                    "ok" to false,
-                    "error" to "RESTRICTED_APP_REFUSED",
-                    "package" to pkg,
-                    "message" to "Errand strictly refuses to interact with sensitive/financial app: $pkg",
-                )
-            }
             val focus = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
                 ?: return mapOf("ok" to false, "error" to "NO_FOCUS",
                     "message" to "No focused input field. Tap the field's label first " +
@@ -909,15 +785,6 @@ class ErrandAccessibilityService : AccessibilityService() {
             ?: return mapOf("ok" to false, "error" to "NO_WINDOW",
                 "message" to "No active window content available.")
         try {
-            val pkg = root.packageName?.toString() ?: "unknown"
-            if (isRestrictedApp(this, pkg)) {
-                return mapOf(
-                    "ok" to false,
-                    "error" to "RESTRICTED_APP_REFUSED",
-                    "package" to pkg,
-                    "message" to "Errand strictly refuses to interact with sensitive/financial app: $pkg",
-                )
-            }
             val clamped = times.coerceIn(1, MAX_WHEEL_STEPS)
             // Vertical containers expose FORWARD/BACKWARD. Horizontal ones expose
             // SCROLL_LEFT/RIGHT on API 34+; older devices fall back to gestures.

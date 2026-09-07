@@ -1,6 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:errand/agent/tool.dart';
-import 'package:errand/services/a11y_service.dart';
 import 'package:errand/services/intent_service.dart';
 import 'package:errand/tools/intent_tool.dart';
 
@@ -32,25 +31,13 @@ class MockIntentService extends IntentService {
   }
 }
 
-class MockA11yService extends A11yService {
-  bool enabled = true;
-
-  @override
-  Future<bool> isEnabled() async => enabled;
-
-  @override
-  Future<bool> hasSecureSettings() async => false;
-}
-
 void main() {
   late MockIntentService service;
-  late MockA11yService a11yService;
   late Tool tool;
 
   setUp(() {
     service = MockIntentService();
-    a11yService = MockA11yService();
-    tool = intentTool(service: service, a11yService: a11yService);
+    tool = intentTool(service: service);
   });
 
   group('intentTool schema', () {

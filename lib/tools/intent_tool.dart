@@ -1,13 +1,11 @@
 import 'package:flutter/services.dart';
 import 'package:errand/agent/tool.dart';
-import 'package:errand/services/a11y_service.dart';
 import 'package:errand/services/intent_service.dart';
 import 'package:errand/types/message.dart';
 import 'package:errand/types/tool.dart';
 
-Tool intentTool({IntentService? service, A11yService? a11yService}) {
+Tool intentTool({IntentService? service}) {
   final svc = service ?? IntentService();
-  final a11y = a11yService ?? A11yService();
 
   return Tool(
     name: 'intent',
@@ -78,9 +76,7 @@ Tool intentTool({IntentService? service, A11yService? a11yService}) {
     },
     handler: (call) async {
       try {
-        return await handleIntentAction(call, svc, a11yService: a11y);
-      } on A11yRequiredException {
-        rethrow;
+        return await handleIntentAction(call, svc);
       } catch (e) {
         return ToolCallResult.failure(call.id, 'Intent failed: $e');
       }
@@ -92,9 +88,8 @@ Tool intentTool({IntentService? service, A11yService? a11yService}) {
 /// and UI replay ([replayIntentAction]).
 Future<ToolCallResult> handleIntentAction(
   ToolCall call,
-  IntentService svc, {
-  A11yService? a11yService,
-}) async {
+  IntentService svc,
+) async {
   final action = (call.arguments['action'] as String?)?.trim() ?? 'open_url';
 
   switch (action) {

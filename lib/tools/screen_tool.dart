@@ -77,8 +77,6 @@ Tool screenTool({A11yService? service}) {
     handler: (call) async {
       try {
         return await handleScreenAction(call, svc);
-      } on A11yRequiredException {
-        rethrow;
       } catch (e) {
         return ToolCallResult.failure(call.id, 'Screen failed: $e');
       }
@@ -92,8 +90,21 @@ Future<ToolCallResult> handleScreenAction(ToolCall call, A11yService svc) async 
     return ToolCallResult.failure(call.id, 'Missing required argument: action');
   }
 
-  // Availability gate: ensures enabled or throws A11yRequiredException to halt turn.
-  await svc.ensureEnabled();
+  // Availability gate — honest failure with actionable guidance.
+  final enabled = await svc.isEnabled();
+  if (!enabled) {
+    final restricted = await svc.isRestricted();
+    return ToolCallResult.failure(
+      call.id,
+      restricted
+          ? 'Screen access is blocked by Android ("Restricted setting") because '
+              'Errand was installed outside an app store. Fix: Settings > Apps > '
+              'Errand > three-dot menu > Allow restricted settings, then enable '
+              'Errand in Settings > Accessibility.'
+          : 'Screen access is not enabled. Ask the user to open Settings > '
+              'Accessibility > downloaded apps > Errand and turn the service on.',
+    );
+  }
 
   switch (action) {
     case 'read':
