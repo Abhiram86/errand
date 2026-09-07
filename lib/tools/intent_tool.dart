@@ -1,11 +1,13 @@
 import 'package:flutter/services.dart';
 import 'package:errand/agent/tool.dart';
+import 'package:errand/services/a11y_service.dart';
 import 'package:errand/services/intent_service.dart';
 import 'package:errand/types/message.dart';
 import 'package:errand/types/tool.dart';
 
-Tool intentTool({IntentService? service}) {
+Tool intentTool({IntentService? service, A11yService? a11yService}) {
   final svc = service ?? IntentService();
+  final a11y = a11yService ?? A11yService();
 
   return Tool(
     name: 'intent',
@@ -76,7 +78,9 @@ Tool intentTool({IntentService? service}) {
     },
     handler: (call) async {
       try {
-        return await handleIntentAction(call, svc);
+        return await handleIntentAction(call, svc, a11yService: a11y);
+      } on A11yRequiredException {
+        rethrow;
       } catch (e) {
         return ToolCallResult.failure(call.id, 'Intent failed: $e');
       }
@@ -88,9 +92,16 @@ Tool intentTool({IntentService? service}) {
 /// and UI replay ([replayIntentAction]).
 Future<ToolCallResult> handleIntentAction(
   ToolCall call,
-  IntentService svc,
-) async {
+  IntentService svc, {
+  A11yService? a11yService,
+}) async {
   final action = (call.arguments['action'] as String?)?.trim() ?? 'open_url';
+
+  // Actions that launch external apps or settings require accessibility service
+  // so the agent can interact with them and Errand does not navigate away while disabled.
+  if (action == 'open_app' || action == 'settings' || action == 'intent') {
+    await (a11yService ?? A11yService()).ensureEnabled();
+  }
 
   switch (action) {
     case 'open_file':

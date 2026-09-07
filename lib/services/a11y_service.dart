@@ -57,10 +57,28 @@ class A11yService {
     }
   }
 
-  /// Opens Settings > Accessibility (downloaded apps section) so the user can
-  /// enable the service manually.
+  /// Ensures accessibility service is enabled.
+  /// If WRITE_SECURE_SETTINGS is available, auto-enables silently.
+  /// If not enabled, throws [A11yRequiredException].
+  Future<void> ensureEnabled() async {
+    if (await isEnabled()) return;
+    if (await hasSecureSettings()) {
+      await enable();
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      if (await isEnabled()) return;
+    }
+    throw const A11yRequiredException();
+  }
+
+  /// Opens Settings > Accessibility so the user can enable the service manually.
   Future<void> openSettings() async {
     await _channel.invokeMethod<void>('openSettings');
+  }
+
+  /// Opens Errand's App Info page in Android Settings so the user can
+  /// tap the three-dot menu and allow "Restricted settings".
+  Future<void> openAppInfo() async {
+    await _channel.invokeMethod<void>('openAppInfo');
   }
 
   /// Reads the active window as a compact text outline. Identical consecutive
@@ -203,4 +221,14 @@ class A11yService {
     if (enabled) return (true, false);
     return (false, await isRestricted());
   }
+}
+
+/// Thrown when an agent attempts to invoke screen or app automation tools
+/// without the accessibility service being active.
+class A11yRequiredException implements Exception {
+  final String message;
+  const A11yRequiredException([this.message = 'Screen access is required to continue.']);
+
+  @override
+  String toString() => message;
 }

@@ -5,6 +5,7 @@ import android.accessibilityservice.AccessibilityServiceInfo
 import android.app.ActivityOptions
 import android.app.PendingIntent
 import android.content.ClipData
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -413,10 +414,48 @@ class MainActivity : FlutterActivity() {
                 }
                 "openSettings" -> {
                     try {
-                        // Deep link straight to our own service toggle when possible;
-                        // fall back to the accessibility list page.
-                        val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-                            .apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+                        val component = ComponentName(this, ErrandAccessibilityService::class.java).flattenToString()
+                        val fragmentKey = ":settings:fragment_args_key"
+                        val showFragmentArgs = ":settings:show_fragment_args"
+                        val bundle = android.os.Bundle().apply {
+                            putString(fragmentKey, component)
+                        }
+
+                        // Try direct accessibility details intent first (Android 14+ / stock direct)
+                        var launched = false
+                        try {
+                            val directIntent = Intent("android.settings.ACCESSIBILITY_DETAILS_SETTINGS").apply {
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                putExtra(Intent.EXTRA_COMPONENT_NAME, component)
+                                putExtra(fragmentKey, component)
+                                putExtra(showFragmentArgs, bundle)
+                            }
+                            if (directIntent.resolveActivity(packageManager) != null) {
+                                startActivity(directIntent)
+                                launched = true
+                            }
+                        } catch (_: Exception) {}
+
+                        // Fall back to main accessibility settings with component highlight extras
+                        if (!launched) {
+                            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                putExtra(fragmentKey, component)
+                                putExtra(showFragmentArgs, bundle)
+                            }
+                            startActivity(intent)
+                        }
+                        result.success(null)
+                    } catch (e: Exception) {
+                        result.error("SETTINGS_ERR", e.message, null)
+                    }
+                }
+                "openAppInfo" -> {
+                    try {
+                        val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                            data = Uri.fromParts("package", packageName, null)
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
                         startActivity(intent)
                         result.success(null)
                     } catch (e: Exception) {

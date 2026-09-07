@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:errand/agent/tool.dart';
+import 'package:errand/services/a11y_service.dart';
 import 'package:errand/services/intent_service.dart';
 import 'package:errand/tools/intent_tool.dart';
 
@@ -31,13 +32,25 @@ class MockIntentService extends IntentService {
   }
 }
 
+class MockA11yService extends A11yService {
+  bool enabled = true;
+
+  @override
+  Future<bool> isEnabled() async => enabled;
+
+  @override
+  Future<bool> hasSecureSettings() async => false;
+}
+
 void main() {
   late MockIntentService service;
+  late MockA11yService a11yService;
   late Tool tool;
 
   setUp(() {
     service = MockIntentService();
-    tool = intentTool(service: service);
+    a11yService = MockA11yService();
+    tool = intentTool(service: service, a11yService: a11yService);
   });
 
   group('intentTool schema', () {
@@ -180,6 +193,16 @@ void main() {
       final result = await tool.handler(call);
       expect(result.ok, isFalse);
       expect(result.errorMessage, contains('Missing "package"'));
+    });
+
+    test('throws A11yRequiredException if accessibility is disabled', () async {
+      a11yService.enabled = false;
+      final call = const ToolCall(
+        id: 'call-a11y',
+        name: 'intent',
+        arguments: {'action': 'open_app', 'package': 'com.spotify.music'},
+      );
+      expect(() => tool.handler(call), throwsA(isA<A11yRequiredException>()));
     });
   });
 

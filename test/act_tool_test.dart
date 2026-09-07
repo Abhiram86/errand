@@ -94,6 +94,17 @@ void main() {
       expect(res.output, contains('Tapped [1]'));
       expect(res.output, contains('[Screen after action]: UNCHANGED'));
     });
+
+    test('throws A11yRequiredException if accessibility is disabled', () async {
+      final mock = MockA11yService()..enabled = false;
+      final tool = actTool(service: mock);
+      final call = const ToolCall(
+        id: 'call_disabled',
+        name: 'act',
+        arguments: {'action': 'tap', 'ref': 1},
+      );
+      expect(() => tool.handler(call), throwsA(isA<A11yRequiredException>()));
+    });
   });
 }
 

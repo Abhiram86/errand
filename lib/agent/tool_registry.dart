@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'tool.dart';
+import '../services/a11y_service.dart';
 import '../tools/act_tool.dart';
 import '../tools/attached_files_tool.dart';
 import '../tools/file_tools.dart';
@@ -26,6 +27,7 @@ class ToolRegistry {
     WorkingDirectory? workingDirectory,
     bool Function(String modality)? supportsInput,
     List<String> Function()? getAttachedFiles,
+    A11yService? a11yService,
   }) {
     final directory = workingDirectory ?? WorkingDirectory(currentDir);
     return ToolRegistry([
@@ -37,9 +39,9 @@ class ToolRegistry {
       workspaceTool(directory),
       webSearchTavilyTool(),
       webFetchTool(),
-      intentTool(),
-      screenTool(),
-      actTool(),
+      intentTool(a11yService: a11yService),
+      screenTool(service: a11yService),
+      actTool(service: a11yService),
       attachedFilesTool(
         getAttachedFiles: getAttachedFiles ?? () => const [],
       ),

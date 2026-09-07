@@ -77,6 +77,8 @@ Tool screenTool({A11yService? service}) {
     handler: (call) async {
       try {
         return await handleScreenAction(call, svc);
+      } on A11yRequiredException {
+        rethrow;
       } catch (e) {
         return ToolCallResult.failure(call.id, 'Screen failed: $e');
       }
@@ -90,32 +92,8 @@ Future<ToolCallResult> handleScreenAction(ToolCall call, A11yService svc) async 
     return ToolCallResult.failure(call.id, 'Missing required argument: action');
   }
 
-  // Availability gate — auto-enable via WRITE_SECURE_SETTINGS if granted,
-  // or bring Errand to front and open settings.
-  var enabled = await svc.isEnabled();
-  if (!enabled) {
-    if (await svc.hasSecureSettings()) {
-      await svc.enable();
-      await Future<void>.delayed(const Duration(milliseconds: 300));
-      enabled = await svc.isEnabled();
-    }
-  }
-
-  if (!enabled) {
-    final restricted = await svc.isRestricted();
-    await IntentService().bringToFront();
-    await svc.openSettings();
-    return ToolCallResult.failure(
-      call.id,
-      restricted
-          ? 'Screen access is blocked by Android ("Restricted setting") because '
-              'Errand was installed outside an app store. Errand brought itself to the '
-              'foreground: Settings > Apps > Errand > three-dot menu > Allow restricted settings, '
-              'then enable Errand in Settings > Accessibility.'
-          : 'Screen access was paused to protect banking apps. Errand brought itself to the '
-              'foreground and opened Settings. Please toggle Errand ON in Accessibility settings to continue.',
-    );
-  }
+  // Availability gate: ensures enabled or throws A11yRequiredException to halt turn.
+  await svc.ensureEnabled();
 
   switch (action) {
     case 'read':
