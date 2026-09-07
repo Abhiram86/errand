@@ -51,3 +51,9 @@ app.*.map.json
 
 # Android gradle build outputs
 android/build/
+
+# Android signing keys & credentials
+*.jks
+*.keystore
+android/key.properties
+
