@@ -97,12 +97,6 @@ Future<ToolCallResult> handleIntentAction(
 }) async {
   final action = (call.arguments['action'] as String?)?.trim() ?? 'open_url';
 
-  // Actions that launch external apps or settings require accessibility service
-  // so the agent can interact with them and Errand does not navigate away while disabled.
-  if (action == 'open_app' || action == 'settings' || action == 'intent') {
-    await (a11yService ?? A11yService()).ensureEnabled();
-  }
-
   switch (action) {
     case 'open_file':
       return await _openFile(call, svc);

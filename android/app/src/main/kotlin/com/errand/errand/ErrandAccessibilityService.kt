@@ -184,7 +184,9 @@ class ErrandAccessibilityService : AccessibilityService() {
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         try {
-            disable()
+            if (hasSecureSettings(this)) {
+                disable()
+            }
         } catch (_: Exception) {}
         super.onTaskRemoved(rootIntent)
     }

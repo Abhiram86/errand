@@ -194,16 +194,6 @@ void main() {
       expect(result.ok, isFalse);
       expect(result.errorMessage, contains('Missing "package"'));
     });
-
-    test('throws A11yRequiredException if accessibility is disabled', () async {
-      a11yService.enabled = false;
-      final call = const ToolCall(
-        id: 'call-a11y',
-        name: 'intent',
-        arguments: {'action': 'open_app', 'package': 'com.spotify.music'},
-      );
-      expect(() => tool.handler(call), throwsA(isA<A11yRequiredException>()));
-    });
   });
 
   group('settings action', () {

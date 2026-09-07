@@ -607,7 +607,12 @@ class MainActivity : FlutterActivity() {
 
     override fun onDestroy() {
         try {
-            ErrandAccessibilityService.disable()
+            // Only auto-disable if WRITE_SECURE_SETTINGS is granted (so Errand can auto-enable itself).
+            // Calling disableSelf() without secure settings permanently unchecks Errand in Android Settings,
+            // forcing the user to manually re-enable it on every single run.
+            if (ErrandAccessibilityService.hasSecureSettings(this)) {
+                ErrandAccessibilityService.disable()
+            }
         } catch (_: Exception) {}
         super.onDestroy()
     }
