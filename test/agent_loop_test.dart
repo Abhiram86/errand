@@ -132,4 +132,66 @@ void main() {
     expect(firstExecuted, isTrue);
     expect(secondExecuted, isTrue);
   });
+
+  test('AgentLoop short-circuits stateful tool batch when an earlier tool fails', () async {
+    final mockLlm = MockLlmClient();
+    var firstExecuted = false;
+    var secondExecuted = false;
+
+    final actTool = Tool(
+      name: 'act',
+      description: 'stateful act tool',
+      parameters: const {},
+      handler: (c) async {
+        firstExecuted = true;
+        return ToolCallResult.failure(c.id, 'Element not found');
+      },
+    );
+
+    final secondAct = Tool(
+      name: 'second_act',
+      description: 'second tool in batch',
+      parameters: const {},
+      handler: (c) async {
+        secondExecuted = true;
+        return ToolCallResult(id: c.id, ok: true, output: 'should not run');
+      },
+    );
+
+    final registry = ToolRegistry([actTool, secondAct]);
+    final loop = AgentLoop(llm: mockLlm, registry: registry);
+
+    var turn = 0;
+    mockLlm.onChat = (messages) {
+      turn++;
+      if (turn == 1) {
+        return const LlmMessage(
+          content: null,
+          toolCalls: [
+            ToolCall(id: 'c1', name: 'act', arguments: {'action': 'tap'}),
+            ToolCall(id: 'c2', name: 'second_act', arguments: {}),
+          ],
+        );
+      }
+      return const LlmMessage(content: 'Done after failure');
+    };
+
+    final conversation = Conversation(
+      id: 'c3',
+      messages: [UserMessage(id: 'u1', text: 'tap twice')],
+      currentDir: Directory('/'),
+    );
+
+    final result = await loop.run(conversation);
+    expect(result, 'Done after failure');
+    expect(firstExecuted, isTrue);
+    expect(secondExecuted, isFalse);
+
+    expect(mockLlm.receivedMessages.length, greaterThanOrEqualTo(2));
+    final secondTurnMsgs = mockLlm.receivedMessages[1];
+    final toolMsgs = secondTurnMsgs.where((m) => m['role'] == 'tool').toList();
+    expect(toolMsgs.length, 2);
+    expect(toolMsgs[0]['content'], contains('Element not found'));
+    expect(toolMsgs[1]['content'], contains('Aborted: previous action in batch failed'));
+  });
 }

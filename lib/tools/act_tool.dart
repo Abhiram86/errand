@@ -22,12 +22,14 @@ Tool actTool({A11yService? service}) {
     name: 'act',
     description:
         'Interact with the current phone screen: tap a button/link by its exact '
-        'label from the screen outline, type text into the focused input field '
-        '(replaces field content — include any existing text you want to keep), '
-        'or scroll up/down. DRAFT POLICY: Errand prepares, the user sends. Taps on '
-        'final-commit controls (Send/Post/Pay/Delete/Confirm...) are refused — '
-        'tell the user to review and press those themselves. Typing never submits '
-        'anything. Requires screen access to be enabled (same as the screen tool).',
+        'label from the screen outline or numeric "ref", type text into the focused '
+        'input field (replaces field content — include any existing text you want to keep), '
+        'or scroll. Pass then_read:true to automatically receive the updated screen '
+        'outline in the same tool result (saves an entire round-trip turn). DRAFT POLICY: '
+        'Errand prepares, the user sends. Taps on final-commit controls '
+        '(Send/Post/Pay/Delete/Confirm...) are refused — tell the user to review and '
+        'press those themselves. Typing never submits anything. Requires screen '
+        'access to be enabled (same as the screen tool).',
     parameters: {
       'type': 'object',
       'properties': {
@@ -107,6 +109,12 @@ Tool actTool({A11yService? service}) {
               'Scroll direction for action:"scroll" (default down). left/right '
               'for carousels and horizontal sliders.',
         },
+        'then_read': {
+          'type': 'boolean',
+          'description':
+              'Optional: automatically read and include the updated screen outline '
+              'after this action completes. Highly recommended to save a full turn.',
+        },
       },
       'required': ['action'],
     },
@@ -142,21 +150,29 @@ Future<ToolCallResult> handleActAction(ToolCall call, A11yService svc) async {
     );
   }
 
+  final ToolCallResult result;
   switch (action) {
     case 'tap':
-      return _tap(call, svc);
+      result = await _tap(call, svc);
+      break;
     case 'type':
-      return _type(call, svc);
+      result = await _type(call, svc);
+      break;
     case 'scroll':
-      return _scroll(call, svc);
+      result = await _scroll(call, svc);
+      break;
     case 'fill':
-      return _fill(call, svc);
+      result = await _fill(call, svc);
+      break;
     case 'tab':
-      return _tab(call, svc);
+      result = await _tab(call, svc);
+      break;
     case 'long_press':
-      return _longPress(call, svc);
+      result = await _longPress(call, svc);
+      break;
     case 'esc':
-      return _esc(call, svc);
+      result = await _esc(call, svc);
+      break;
     default:
       return ToolCallResult.failure(
           call.id,
@@ -164,6 +180,30 @@ Future<ToolCallResult> handleActAction(ToolCall call, A11yService svc) async {
           '"label"), type (use "text"), scroll (use "direction"), fill '
           '(use "label" + "text"), tab, long_press, esc.');
   }
+
+  if (result.ok && call.arguments['then_read'] == true) {
+    await Future<void>.delayed(const Duration(milliseconds: 400));
+    final readRes = await svc.readScreen(full: false);
+    if (readRes['ok'] == true) {
+      if (readRes['unchanged'] == true) {
+        return ToolCallResult(
+          id: result.id,
+          ok: true,
+          output:
+              '${result.output}\n\n[Screen after action]: UNCHANGED (screen is identical to previous read)',
+        );
+      } else {
+        final outline = readRes['outline'] as String? ?? '';
+        return ToolCallResult(
+          id: result.id,
+          ok: true,
+          output: '${result.output}\n\n[Screen after action]:\n$outline',
+        );
+      }
+    }
+  }
+
+  return result;
 }
 
 // ---- Draft policy ----------------------------------------------------------

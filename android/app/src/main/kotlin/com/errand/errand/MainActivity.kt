@@ -471,6 +471,19 @@ class MainActivity : FlutterActivity() {
                         }
                     }
                 }
+
+                "imeSendEscape" -> {
+                    val svc = ErrandAccessibilityService.instance
+                    if (svc == null) {
+                        result.error("NOT_ENABLED", "Accessibility service is not enabled.", null)
+                    } else {
+                        try {
+                            result.success(svc.imeSendEscape())
+                        } catch (e: Exception) {
+                            result.error("IME_ERR", e.message, null)
+                        }
+                    }
+                }
                 "tapRef" -> {
                     val svc = ErrandAccessibilityService.instance
                     if (svc == null) {

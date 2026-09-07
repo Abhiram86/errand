@@ -428,6 +428,17 @@ Rules of engagement during P4a:
    - System-prompt hook: inject a short "known facts" digest so the agent
      uses memory without explicit recall calls when relevant.
    - Note: was v4 in old plan; now v5 after P3's `attachedUrisJson` consumed v4.
+4. **Large Tool Output File-Caching (replaces 24k char hard clamp).**
+   - Instead of hard-clamping tool outputs to 24k chars (which consumes too much context and still cuts off critical content):
+   - When a tool output exceeds a compact limit (~3–4k chars), spill the full output into a cache file via `path_provider` (`cache/tool_outputs/tool-{id}-output.txt`) with an expiration TTL (ideally ~10 min).
+   - Return only a concise 3–4k char preview along with the created file path:
+     `[Output truncated from N chars. Full output saved to: <filePath>. Use read tool with offset and length to inspect further.]`
+   - If output fits within ~3–4k chars, return it inline directly (no file created).
+   - Wires cleanly with the existing `read` tool's `offset` and `length` pagination without bloating the LLM context window.
+5. **`grep` argument for data-heavy tools (`screen_tool`, `read_tool`, `workspace_tool`).**
+   - Add an optional `grep` argument (case-insensitive substring/regex filter) across `screen` (outline filter), `read` (document/text filter), and `workspace` (`find`/`list` output filter).
+   - Allows the model to pull only matching lines (e.g. `screen read grep:"Total"` or `read path:"..." grep:"API_KEY"`) instead of loading 2–4k tokens of irrelevant content.
+   - Evaluated before caching/truncation, allowing single-turn precision retrieval.
 
 **Backlog (deferred from P3):** `write`/`edit_file` with diff preview + undo — needs write-policy decision, queued after P4b.
 

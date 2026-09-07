@@ -212,7 +212,6 @@ class MessageBubble extends StatelessWidget {
     if (text.isEmpty) return const SizedBox.shrink();
 
     final bubble = Container(
-      margin: const EdgeInsets.symmetric(vertical: 6),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       constraints: BoxConstraints(
         maxWidth: MediaQuery.of(context).size.width * (isUser ? 0.78 : 0.82),
@@ -252,13 +251,13 @@ class MessageBubble extends StatelessWidget {
     // swallowing taps on desktop/pointer devices.
     if (isUser) {
       final attached = (message is UserMessage) ? (message as UserMessage).attachedUris : const <String>[];
-      Widget userRow = Row(
+      final userRow = Row(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
           if (onEdit != null)
-            Transform.translate(
-              offset: const Offset(0, -6),
+            Padding(
+              padding: const EdgeInsets.only(right: 4, bottom: 2),
               child: IconButton(
                 onPressed: onEdit,
                 tooltip: 'Edit',
@@ -267,10 +266,10 @@ class MessageBubble extends StatelessWidget {
                   visualDensity: VisualDensity.compact,
                 ),
                 constraints:
-                    const BoxConstraints.tightFor(width: 28, height: 24),
+                    const BoxConstraints.tightFor(width: 24, height: 24),
                 padding: EdgeInsets.zero,
                 iconSize: 14,
-                color: kMuted,
+                color: kMuted.withValues(alpha: 0.8),
                 icon: const Icon(Icons.edit_rounded),
               ),
             ),
@@ -278,7 +277,7 @@ class MessageBubble extends StatelessWidget {
         ],
       );
       final card = Container(
-        margin: const EdgeInsets.only(top: 4, bottom: 6),
+        margin: const EdgeInsets.only(top: 6),
         constraints: BoxConstraints(
           maxWidth: MediaQuery.of(context).size.width * 0.78,
         ),
@@ -312,15 +311,19 @@ class MessageBubble extends StatelessWidget {
           ],
         ),
       );
-      final Widget userContent = attached.isEmpty
-          ? Align(alignment: Alignment.centerRight, child: userRow)
-          : Align(
-              alignment: Alignment.centerRight,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [userRow, card],
-              ),
-            );
+      final Widget userContent = Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Align(
+          alignment: Alignment.centerRight,
+          child: attached.isEmpty
+              ? userRow
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [userRow, card],
+                ),
+        ),
+      );
       return TweenAnimationBuilder<double>(
         tween: Tween<double>(begin: 0.0, end: 1.0),
         duration: const Duration(milliseconds: 180),
@@ -333,67 +336,73 @@ class MessageBubble extends StatelessWidget {
       );
     }
 
-    final assistantContent = Align(
-      alignment: Alignment.centerLeft,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          bubble,
-          Transform.translate(
-            offset: const Offset(-8, -8),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
+    final assistantContent = Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            bubble,
+            Padding(
+              padding: const EdgeInsets.only(top: 2, left: 2),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
                 _CopyButton(text: text),
-                if (onRegenerate != null)
-                  Transform.translate(
-                    offset: const Offset(-6, 0),
-                    child: IconButton(
-                      onPressed: onRegenerate,
-                      tooltip: 'Regenerate',
-                      style: IconButton.styleFrom(
-                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        visualDensity: VisualDensity.compact,
-                      ),
-                      constraints: const BoxConstraints.tightFor(
-                        width: 24,
-                        height: 24,
-                      ),
-                      padding: EdgeInsets.zero,
-                      iconSize: 14,
-                      color: kMuted,
-                      icon: const Icon(Icons.refresh_rounded),
+
+                if (onRegenerate != null) ...[
+                  const SizedBox(width: 8),
+                  IconButton(
+                    onPressed: onRegenerate,
+                    tooltip: 'Regenerate',
+                    style: IconButton.styleFrom(
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      visualDensity: VisualDensity.compact,
                     ),
+                    constraints: const BoxConstraints.tightFor(
+                      width: 24,
+                      height: 24,
+                    ),
+                    padding: EdgeInsets.zero,
+                    iconSize: 14,
+                    color: kMuted,
+                    icon: const Icon(Icons.refresh_rounded),
                   ),
+                ],
+
                 if (message is AssistantMessage &&
-                    (message as AssistantMessage).model != null)
-                  Padding(
-                    padding: const EdgeInsets.only(left: 4),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 6,
-                        vertical: 2,
+                    (message as AssistantMessage).model != null) ...[
+                  const SizedBox(width: 8),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 7,
+                      vertical: 2.5,
+                    ),
+                    decoration: BoxDecoration(
+                      color: kInputBg,
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(
+                        color: kBorder.withValues(alpha: 0.6),
                       ),
-                      decoration: BoxDecoration(
-                        color: kInputBg,
-                        borderRadius: BorderRadius.circular(6),
-                        border: Border.all(color: kBorder.withValues(alpha: 0.5)),
-                      ),
-                      child: Text(
-                        (message as AssistantMessage).model!,
-                        style: const TextStyle(
-                          color: kMuted,
-                          fontSize: 9.5,
-                          fontWeight: FontWeight.w500,
-                        ),
+                    ),
+                    child: Text(
+                      (message as AssistantMessage).model!,
+                      style: const TextStyle(
+                        color: kMuted,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w500,
                       ),
                     ),
                   ),
+                ],
               ],
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
 

@@ -10,12 +10,11 @@ import android.graphics.Path
 import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
-import android.provider.Settings
 import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.inputmethod.EditorInfo
-import io.flutter.plugin.common.MethodChannel
+import kotlin.math.abs
 
 /**
  * P2a screen-reading + P2b gated-injection accessibility service.
@@ -24,7 +23,7 @@ import io.flutter.plugin.common.MethodChannel
  * and performs global navigation actions.
  * P2b (Tier A, Draft-mode): semantic node actions only — tap-by-label,
  * type-into-focused-field, scroll. NO blind coordinate taps; commit-looking
- * controls are refused at the Dart tool layer (see act_tool.dart).
+ * controls are refused here AND at the Dart tool layer (see act_tool.dart).
  *
  * Lifecycle notes:
  * - Android instantiates this class itself when the user enables it in
@@ -32,9 +31,11 @@ import io.flutter.plugin.common.MethodChannel
  * - The static [instance] lets MainActivity's "a11y" MethodChannel reach the
  *   running service without any extra plumbing. It is null whenever the
  *   service is disabled — that null IS the "not enabled" signal.
+ *
+ * Dart contract (A11yService / channel "a11y"): keep method names, map keys,
+ * and error codes stable. Tools call through that handle only.
  */
 class ErrandAccessibilityService : AccessibilityService() {
-
     companion object {
         @Volatile
         var instance: ErrandAccessibilityService? = null
@@ -45,6 +46,8 @@ class ErrandAccessibilityService : AccessibilityService() {
         private const val MAX_TAP_HOPS = 5
         private const val MAX_REF_DEPTH = 25
         private const val MAX_WHEEL_STEPS = 30
+        /** Max px drift allowed when resolving a numeric ref against the live tree. */
+        private const val REF_BOUNDS_SLOP_PX = 24
 
         /**
          * Mirror of kCommitWords in lib/tools/act_tool.dart (Draft policy).
@@ -87,7 +90,9 @@ class ErrandAccessibilityService : AccessibilityService() {
         serviceInfo = serviceInfo.apply {
             eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
             feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
-            flags = AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or
+            // OR so XML flags (e.g. FLAG_INCLUDE_NOT_IMPORTANT_VIEWS) survive.
+            flags = flags or
+                AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or
                 AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
                 AccessibilityServiceInfo.FLAG_INPUT_METHOD_EDITOR
             notificationTimeout = 100
@@ -124,7 +129,7 @@ class ErrandAccessibilityService : AccessibilityService() {
     fun readScreen(
         maxNodes: Int = 300,
         maxDepth: Int = 15,
-        maxChars: Int = 12000,
+        maxChars: Int = MAX_OUTLINE_CHARS,
         full: Boolean = false,
         probe: Boolean = false,
     ): Map<String, Any?> {
@@ -134,103 +139,103 @@ class ErrandAccessibilityService : AccessibilityService() {
                 "error" to "NO_WINDOW",
                 "message" to "No active window content available. The foreground app may not expose semantics.",
             )
-
-        val dm = resources.displayMetrics
-        val viewportW = dm.widthPixels
-        val viewportH = dm.heightPixels
-
-        val entries = mutableListOf<Entry>()
-        var visited = 0
-        activeTab = null // per-read scratch; see visitNode
-        overlayCandidateFound = null
-        val truncated =
-            visitNode(root, 0, maxDepth, entries) { visited++ < maxNodes }
-
-        // Visual reading order, not tree order.
-        entries.sortWith(compareBy({ it.bounds.top }, { it.bounds.left }))
-
-        val refs = mutableMapOf<Int, RefEntry>()
-        val body = StringBuilder()
-        var refCounter = 0
-        var charsUsed = 0
-        for (e in entries) {
-            val line: String
-            if (e.interactive) {
-                refCounter++
-                refs[refCounter] = RefEntry(label = e.label, cls = e.cls, rect = e.bounds)
-                val off = offScreenTag(e.bounds, viewportW, viewportH)
-                val pos = off ?: "@${e.bounds.left},${e.bounds.top} ${e.bounds.width()}x${e.bounds.height()}"
-                line = "[$refCounter] ${e.cls}" +
-                    (e.vid?.let { " id=$it" } ?: "") +
-                    (e.label?.let { " \"$it\"" } ?: "") +
-                    (if (e.flags.isEmpty()) "" else " [${e.flags.joinToString(",")}]") +
-                    " $pos"
-            } else {
-                line = "${e.cls}" +
-                    (e.label?.let { " \"$it\"" } ?: "") +
-                    (if (e.flags.isEmpty()) "" else " [${e.flags.joinToString(",")}]")
+        try {
+            val dm = resources.displayMetrics
+            val viewportW = dm.widthPixels
+            val viewportH = dm.heightPixels
+            val entries = mutableListOf<Entry>()
+            var visited = 0
+            activeTab = null // per-read scratch; see visitNode
+            overlayCandidateFound = null
+            val truncated = try {
+                visitNode(root, 0, maxDepth, maxChars, entries) { visited++ < maxNodes }
+            } catch (_: Exception) {
+                // Stale tree mid-walk: keep whatever we collected.
+                true
             }
-            if (charsUsed + line.length > maxChars) break
-            charsUsed += line.length + 1
-            body.append(line).append('\n')
-        }
-        elementRefs = refs
-
-        val pkg = root.packageName?.toString() ?: "unknown"
-        val tab = activeTab
-        val wins = try { windows } catch (_: Exception) { emptyList() }
-        val focusedTitle = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            wins.firstOrNull { it.isFocused }?.getTitle()?.toString()?.takeIf { it.isNotBlank() }
-        } else null
-        val header = "Screen: package=$pkg" +
-            (tab?.let { "  active-tab=\"$it\"" } ?: "") +
-            (if (wins.size > 1) "  windows=${wins.size}" else "") +
-            (focusedTitle?.let { "  focused-window=\"$it\"" } ?: "") +
-            "  viewport=${viewportW}x${viewportH}\n" +
-            (overlayCandidateFound?.let {
-                "WARN possible OVERLAY covering screen: $it -- taps may be swallowed; route around or ask the user.\n"
-            } ?: "")
-        val outlineText = header + body
-
-        // Probe mode: effect check only. Does NOT update the stored snapshot,
-        // so a subsequent real read still diffs against the pre-action state.
-        if (probe) {
-            return mapOf("ok" to true, "changed" to (outlineText != lastOutline))
-        }
-
-        // Verification re-reads are the biggest token sink: if nothing changed
-        // since the previous read, say so in one line instead of re-dumping.
-        val unchanged = !full && lastOutline == outlineText
-        lastOutline = outlineText
-        if (unchanged) {
+            // Visual reading order, not tree order.
+            entries.sortWith(compareBy({ it.bounds.top }, { it.bounds.left }))
+            val refs = mutableMapOf<Int, RefEntry>()
+            val body = StringBuilder()
+            var refCounter = 0
+            var charsUsed = 0
+            for (e in entries) {
+                val line: String
+                if (e.interactive) {
+                    refCounter++
+                    refs[refCounter] = RefEntry(label = e.label, cls = e.cls, rect = e.bounds)
+                    val off = offScreenTag(e.bounds, viewportW, viewportH)
+                    val pos = off ?: "@${e.bounds.left},${e.bounds.top} ${e.bounds.width()}x${e.bounds.height()}"
+                    line = "[$refCounter] ${e.cls}" +
+                        (e.vid?.let { " id=$it" } ?: "") +
+                        (e.label?.let { " \"$it\"" } ?: "") +
+                        (if (e.flags.isEmpty()) "" else " [${e.flags.joinToString(",")}]") +
+                        " $pos"
+                } else {
+                    line = "${e.cls}" +
+                        (e.label?.let { " \"$it\"" } ?: "") +
+                        (if (e.flags.isEmpty()) "" else " [${e.flags.joinToString(",")}]")
+                }
+                if (charsUsed + line.length > maxChars) break
+                charsUsed += line.length + 1
+                body.append(line).append('\n')
+            }
+            elementRefs = refs
+            val pkg = root.packageName?.toString() ?: "unknown"
+            val tab = activeTab
+            val wins = try { windows } catch (_: Exception) { emptyList() }
+            val focusedTitle = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                wins.firstOrNull { it.isFocused }?.getTitle()?.toString()?.takeIf { it.isNotBlank() }
+            } else null
+            val header = "Screen: package=$pkg" +
+                (tab?.let { "  active-tab=\"$it\"" } ?: "") +
+                (if (wins.size > 1) "  windows=${wins.size}" else "") +
+                (focusedTitle?.let { "  focused-window=\"$it\"" } ?: "") +
+                "  viewport=${viewportW}x${viewportH}\n" +
+                (overlayCandidateFound?.let {
+                    "WARN possible OVERLAY covering screen: $it -- taps may be swallowed; route around or ask the user.\n"
+                } ?: "")
+            val outlineText = header + body
+            // Probe mode: effect check only. Does NOT update the stored snapshot,
+            // so a subsequent real read still diffs against the pre-action state.
+            if (probe) {
+                return mapOf("ok" to true, "changed" to (outlineText != lastOutline))
+            }
+            // Verification re-reads are the biggest token sink: if nothing changed
+            // since the previous read, say so in one line instead of re-dumping.
+            val unchanged = !full && lastOutline == outlineText
+            lastOutline = outlineText
+            if (unchanged) {
+                return mapOf(
+                    "ok" to true,
+                    "unchanged" to true,
+                    "package" to pkg,
+                    "message" to "Screen is UNCHANGED since your previous read -- everything " +
+                        "reported earlier still applies. Pass full:true only if you believe " +
+                        "this snapshot is stale.",
+                )
+            }
+            val charCapHit = truncated || charsUsed >= maxChars
+            val nodeCapHit = truncated && !charCapHit && visited >= maxNodes
             return mapOf(
                 "ok" to true,
-                "unchanged" to true,
                 "package" to pkg,
-                "message" to "Screen is UNCHANGED since your previous read -- everything " +
-                    "reported earlier still applies. Pass full:true only if you believe " +
-                    "this snapshot is stale.",
+                "outline" to outlineText,
+                "nodes" to visited,
+                "maxNodes" to maxNodes,
+                "charsUsed" to charsUsed,
+                "maxChars" to maxChars,
+                "elements" to refCounter,
+                "capHit" to when {
+                    charCapHit -> "chars"
+                    nodeCapHit -> "nodes"
+                    else -> null
+                },
+                "truncated" to truncated,
             )
+        } finally {
+            recycleQuietly(root)
         }
-
-        val charCapHit = truncated || charsUsed >= maxChars
-        val nodeCapHit = truncated && !charCapHit && visited >= maxNodes
-        return mapOf(
-            "ok" to true,
-            "package" to pkg,
-            "outline" to outlineText,
-            "nodes" to visited,
-            "maxNodes" to maxNodes,
-            "charsUsed" to charsUsed,
-            "maxChars" to maxChars,
-            "elements" to refCounter,
-            "capHit" to when {
-                charCapHit -> "chars"
-                nodeCapHit -> "nodes"
-                else -> null
-            },
-            "truncated" to truncated,
-        )
     }
 
     /**
@@ -240,7 +245,12 @@ class ErrandAccessibilityService : AccessibilityService() {
     private fun trimLabel(raw: String, maxLen: Int = 120): String {
         // Apps like Gmail glue list fields into one contentDescription with
         // empty segments (", , , Spotify, , subject…") — collapse those gaps.
-        val s = raw.replace('\n', ' ').replace(Regex("(),\\s*"), "").trim()
+        val s = raw.replace('\n', ' ')
+            .replace(Regex(",(\\s*,)+"), ",")
+            .replace(Regex("\\s{2,}"), " ")
+            .trim()
+            .trim(',')
+            .trim()
         if (s.length <= maxLen) return s
         val cut = s.lastIndexOf(' ', maxLen)
         return (if (cut > maxLen / 2) s.substring(0, cut) else s.substring(0, maxLen)) + "…"
@@ -274,7 +284,6 @@ class ErrandAccessibilityService : AccessibilityService() {
      * label) against the live tree.
      */
     private var elementRefs: Map<Int, RefEntry> = emptyMap()
-    private var elementRefCount: Int = 0
 
     private data class RefEntry(val label: String?, val cls: String, val rect: Rect)
 
@@ -285,6 +294,13 @@ class ErrandAccessibilityService : AccessibilityService() {
         val label: String?,
         val flags: List<String>,
         val interactive: Boolean,
+    )
+
+    private data class TapCandidate(
+        val node: AccessibilityNodeInfo,
+        val score: Int,
+        val text: String,
+        val bounds: Rect,
     )
 
     /**
@@ -302,29 +318,30 @@ class ErrandAccessibilityService : AccessibilityService() {
         node: AccessibilityNodeInfo,
         depth: Int,
         maxDepth: Int,
+        maxChars: Int,
         entries: MutableList<Entry>,
         budget: () -> Boolean,
     ): Boolean {
-        val bounds = Rect().also { node.getBoundsInScreen(it) }
-        if (depth > maxDepth || charsCollected(entries) >= MAX_OUTLINE_CHARS || !budget()) {
+        val bounds = try {
+            Rect().also { node.getBoundsInScreen(it) }
+        } catch (_: Exception) {
+            return false
+        }
+        if (depth > maxDepth) return false
+        if (charsCollected(entries) >= maxChars || !budget()) {
             return true
         }
-
         val cls = node.className?.toString()?.substringAfterLast('.') ?: "View"
         val vid = node.viewIdResourceName
             ?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
-
         val label = node.text?.toString()?.let(::trimLabel)?.ifBlank { null }
             ?: node.contentDescription?.toString()?.let(::trimLabel)?.ifBlank { null }
             ?: node.hintText?.toString()?.let(::trimLabel)?.ifBlank { null }
-
         if (node.isSelected && activeTab == null) {
             activeTab = label ?: cls
         }
-
         val clickable = node.isClickable
         val interactive = clickable || node.isEditable || node.isScrollable
-
         // Fullscreen-ish clickable above content: the consent-wall /
         // modal-backdrop tell. Scroll/list container classes are excluded --
         // a full-screen RecyclerView is a normal feed, not an overlay.
@@ -338,7 +355,6 @@ class ErrandAccessibilityService : AccessibilityService() {
         ) {
             overlayCandidateFound = overlayCandidateFound ?: cls
         }
-
         val flags = buildList {
             if (clickable) add("clickable")
             if (node.isEditable) add("editable")
@@ -355,7 +371,6 @@ class ErrandAccessibilityService : AccessibilityService() {
                 if (ci.rowIndex >= 0) add("row=${ci.rowIndex}")
             }
         }
-
         if (!node.isVisibleToUser && label == null && !interactive) {
             // Skip invisible structural nodes; keep labeled or actionable ones.
         } else {
@@ -370,11 +385,11 @@ class ErrandAccessibilityService : AccessibilityService() {
                 )
             )
         }
-
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
-            val cut = visitNode(child, depth + 1, maxDepth, entries, budget)
-            child.recycle()
+        val childCount = try { node.childCount } catch (_: Exception) { return false }
+        for (i in 0 until childCount) {
+            val child = try { node.getChild(i) } catch (_: Exception) { null } ?: continue
+            val cut = visitNode(child, depth + 1, maxDepth, maxChars, entries, budget)
+            recycleQuietly(child)
             if (cut) return true
         }
         return false
@@ -394,32 +409,87 @@ class ErrandAccessibilityService : AccessibilityService() {
         else -> null
     }
 
+    private fun recycleQuietly(node: AccessibilityNodeInfo?) {
+        if (node == null) return
+        try {
+            node.recycle()
+        } catch (_: Exception) {
+        }
+    }
+
+    /**
+     * Draft-policy commit-word match. Same split rules as tapByRef so Dart
+     * and native stay aligned. Returns the matched token, or null.
+     */
+    private fun commitMatch(label: String?): String? {
+        if (label == null) return null
+        val words = label.lowercase().split(Regex("[^a-z-]+")).filter { it.isNotEmpty() }
+        return words.firstOrNull { it in COMMIT_WORDS || it.split("-").any(COMMIT_WORDS::contains) }
+    }
+
+    private fun rectClose(a: Rect, b: Rect, slop: Int): Boolean =
+        abs(a.left - b.left) <= slop &&
+            abs(a.top - b.top) <= slop &&
+            abs(a.right - b.right) <= slop &&
+            abs(a.bottom - b.bottom) <= slop
+
     /**
      * Resolves a numeric ref from the last read against the LIVE tree by
-     * matching (bounds, class, label). Returns an obtained node, or null
-     * when the screen changed too much since the read.
+     * matching (bounds, class, label). Exact bounds win; otherwise the
+     * closest node within [REF_BOUNDS_SLOP_PX] (keyboard / inset jitter).
+     * Returns an obtained node, or null when the screen changed too much.
      */
     private fun findNodeByRef(
         node: AccessibilityNodeInfo,
         ref: RefEntry,
-        depth: Int = 0,
     ): AccessibilityNodeInfo? {
-        if (depth > MAX_REF_DEPTH) return null
-        val b = Rect().also { node.getBoundsInScreen(it) }
-        if (b == ref.rect) {
-            val sameCls = node.className?.toString()?.substringAfterLast('.') == ref.cls
-            val l = nodeLabel(node)?.let(::trimLabel)
-            if (sameCls && (ref.label == null || l == ref.label)) {
-                return AccessibilityNodeInfo.obtain(node)
+        var best: AccessibilityNodeInfo? = null
+        var bestDist = Int.MAX_VALUE
+        var exact = false
+
+        fun consider(candidate: AccessibilityNodeInfo, b: Rect) {
+            val sameCls = candidate.className?.toString()?.substringAfterLast('.') == ref.cls
+            if (!sameCls) return
+            val l = nodeLabel(candidate)?.let(::trimLabel)
+            if (ref.label != null && l != ref.label) return
+            if (b == ref.rect) {
+                recycleQuietly(best)
+                best = AccessibilityNodeInfo.obtain(candidate)
+                bestDist = 0
+                exact = true
+                return
+            }
+            if (exact) return
+            if (!rectClose(b, ref.rect, REF_BOUNDS_SLOP_PX)) return
+            val dist = abs(b.centerX() - ref.rect.centerX()) + abs(b.centerY() - ref.rect.centerY())
+            if (dist < bestDist) {
+                recycleQuietly(best)
+                best = AccessibilityNodeInfo.obtain(candidate)
+                bestDist = dist
             }
         }
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
-            val found = findNodeByRef(child, ref, depth + 1)
-            child.recycle()
-            if (found != null) return found
+
+        fun walk(n: AccessibilityNodeInfo, depth: Int): Boolean {
+            if (exact || depth > MAX_REF_DEPTH) return exact
+            try {
+                val b = Rect().also { n.getBoundsInScreen(it) }
+                consider(n, b)
+                if (exact) return true
+                val childCount = n.childCount
+                for (i in 0 until childCount) {
+                    val child = n.getChild(i) ?: continue
+                    val found = walk(child, depth + 1)
+                    recycleQuietly(child)
+                    if (found) return true
+                }
+            } catch (_: Exception) {
+                // Stale node — skip this subtree.
+            }
+            return exact
         }
-        return null
+
+        walk(node, 0)
+        return best
     }
 
     /** Long-click variant of [tapByRef]. */
@@ -437,42 +507,44 @@ class ErrandAccessibilityService : AccessibilityService() {
         val root = rootInActiveWindow
             ?: return mapOf("ok" to false, "error" to "NO_WINDOW",
                 "message" to "No active window content available.")
-        val entry = elementRefs[ref]
-            ?: return mapOf("ok" to false, "error" to "STALE_REF",
-                "message" to "Ref $ref is not known. Re-read the screen; refs are renumbered on every read.")
-        val labelForPolicy = entry.label?.lowercase()
-        if (!longClick && labelForPolicy != null) {
-            val words = labelForPolicy.split(Regex("[^a-z-]+")).filter { it.isNotEmpty() }
-            val matched = words.firstOrNull { it in COMMIT_WORDS || it.split("-").any(COMMIT_WORDS::contains) }
-            if (matched != null) {
-                return mapOf("ok" to false, "error" to "COMMIT_REFUSAL",
-                    "message" to "Refusing to tap [$ref] \"$labelForPolicy\" -- matches commit pattern \"$matched\". " +
-                        "Draft policy: Errand prepares, the USER presses Send/Confirm/Pay/etc.")
+        try {
+            val entry = elementRefs[ref]
+                ?: return mapOf("ok" to false, "error" to "STALE_REF",
+                    "message" to "Ref $ref is not known. Re-read the screen; refs are renumbered on every read.")
+            if (!longClick) {
+                val matched = commitMatch(entry.label)
+                if (matched != null) {
+                    return mapOf("ok" to false, "error" to "COMMIT_REFUSAL",
+                        "message" to "Refusing to tap [$ref] \"${entry.label?.lowercase()}\" -- matches commit pattern \"$matched\". " +
+                            "Draft policy: Errand prepares, the USER presses Send/Confirm/Pay/etc.")
+                }
             }
-        }
-        val target = findNodeByRef(root, entry)
-            ?: return mapOf("ok" to false, "error" to "STALE_REF",
-                "message" to "Element [$ref] (\"${entry.label ?: entry.cls}\") is no longer at its position -- the screen changed. Re-read first.")
-        val touched = mutableListOf(target)
-        var t: AccessibilityNodeInfo = target
-        var hops = 0
-        while (!t.isClickable && hops < MAX_TAP_HOPS) {
-            val parent = t.parent ?: break
-            touched.add(parent)
-            t = parent
-            hops++
-        }
-        val action = if (longClick) AccessibilityNodeInfo.ACTION_LONG_CLICK
-        else AccessibilityNodeInfo.ACTION_CLICK
-        val ok = t.isClickable && t.performAction(action)
-        touched.forEach { it.recycle() }
-        return if (ok) {
-            mapOf("ok" to true,
-                "message" to (if (longClick) "Long-pressed" else "Tapped") +
-                    " [$ref] \"${entry.label ?: entry.cls}\"")
-        } else {
-            mapOf("ok" to false, "error" to "CLICK_FAILED",
-                "message" to "Element [$ref] found but refused the click. Some apps only respond to taps on the parent row -- try tapping a sibling label instead.")
+            val target = findNodeByRef(root, entry)
+                ?: return mapOf("ok" to false, "error" to "STALE_REF",
+                    "message" to "Element [$ref] (\"${entry.label ?: entry.cls}\") is no longer at its position -- the screen changed. Re-read first.")
+            val touched = mutableListOf(target)
+            var t: AccessibilityNodeInfo = target
+            var hops = 0
+            while (!t.isClickable && hops < MAX_TAP_HOPS) {
+                val parent = t.parent ?: break
+                touched.add(parent)
+                t = parent
+                hops++
+            }
+            val action = if (longClick) AccessibilityNodeInfo.ACTION_LONG_CLICK
+            else AccessibilityNodeInfo.ACTION_CLICK
+            val ok = t.isClickable && t.performAction(action)
+            touched.forEach { recycleQuietly(it) }
+            return if (ok) {
+                mapOf("ok" to true,
+                    "message" to (if (longClick) "Long-pressed" else "Tapped") +
+                        " [$ref] \"${entry.label ?: entry.cls}\"")
+            } else {
+                mapOf("ok" to false, "error" to "CLICK_FAILED",
+                    "message" to "Element [$ref] found but refused the click. Some apps only respond to taps on the parent row -- try tapping a sibling label instead.")
+            }
+        } finally {
+            recycleQuietly(root)
         }
     }
 
@@ -519,71 +591,76 @@ class ErrandAccessibilityService : AccessibilityService() {
     //
     // Deliberately narrow: semantic targets only (label text from the screen
     // outline the agent already read), never raw coordinates. The commit-control
-    // refusal lives in act_tool.dart so it stays unit-testable in Dart.
+    // refusal is mirrored here (not only in act_tool.dart) so refs AND labels
+    // cannot bypass Draft policy.
 
     /** Returns {ok, label?, error?, message?}. */
     fun tapByText(label: String, exact: Boolean, occurrence: Int = 1): Map<String, Any?> {
         val root = rootInActiveWindow
             ?: return mapOf("ok" to false, "error" to "NO_WINDOW",
                 "message" to "No active window content available.")
-
         val needle = label.trim().lowercase()
         if (needle.isEmpty()) {
+            recycleQuietly(root)
             return mapOf("ok" to false, "error" to "EMPTY_LABEL",
                 "message" to "Tap target label was empty.")
         }
-
-        // (node, score, matchedText) triples; everything recycled after pick.
-        val candidates = mutableListOf<Triple<AccessibilityNodeInfo, Int, String>>()
-        collectMatchingClickable(root, needle, exact, candidates)
-
-        // Identical labels are common in list UIs (five alarms, five "Off"
-        // switches) — [occurrence] is the 1-based index WITHIN the
-        // best-scoring pool, matching the outline's top-to-bottom order.
-        val bestScore = candidates.maxOfOrNull { it.second }
-        if (bestScore == null) {
-            candidates.forEach { it.first.recycle() }
-            return mapOf("ok" to false, "error" to "NOT_FOUND",
-                "message" to "No clickable element matching \"$label\" on the current screen. " +
-                    "Re-read the screen and use the exact label.")
-        }
-
-        val pool = candidates.filter { it.second == bestScore }
-        if (occurrence !in 1..pool.size) {
-            val msg = "Found ${pool.size} match(es) for \"$label\"; occurrence " +
-                "$occurrence is out of range (1-${pool.size})."
-            candidates.forEach { it.first.recycle() }
-            return mapOf("ok" to false, "error" to "OCCURRENCE_OUT_OF_RANGE",
-                "message" to msg)
-        }
-
-        val picked = pool[occurrence - 1]
-        val clickedText = picked.third
-
-        // Track every node instance we touch so each is recycled exactly once.
-        val touched = mutableListOf(picked.first)
-        var target: AccessibilityNodeInfo = picked.first
-        var hops = 0
-        while (!target.isClickable && hops < 5) {
-            val parent = target.parent ?: break
-            touched.add(parent)
-            target = parent
-            hops++
-        }
-
-        val ok = target.isClickable && target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-        touched.forEach { it.recycle() }
-        candidates.forEach { if (it !== picked) it.first.recycle() }
-
-        val which = if (pool.size > 1) " (match $occurrence of ${pool.size})" else ""
-        return if (ok) {
-            mapOf("ok" to true, "label" to clickedText,
-                "message" to "Tapped \"$clickedText\"$which")
-        } else {
-            mapOf("ok" to false, "error" to "CLICK_FAILED",
-                "message" to "Found \"$clickedText\" but could not click it. Some apps " +
-                    "only respond to taps on the parent ROW — try tapping the row's " +
-                    "title/time label instead of the control itself.")
+        try {
+            val candidates = mutableListOf<TapCandidate>()
+            collectMatchingClickable(root, needle, exact, candidates)
+            // Identical labels are common in list UIs (five alarms, five "Off"
+            // switches) — [occurrence] is the 1-based index WITHIN the
+            // best-scoring pool, matching the outline's top-to-bottom order.
+            val bestScore = candidates.maxOfOrNull { it.score }
+            if (bestScore == null) {
+                candidates.forEach { recycleQuietly(it.node) }
+                return mapOf("ok" to false, "error" to "NOT_FOUND",
+                    "message" to "No clickable element matching \"$label\" on the current screen. " +
+                        "Re-read the screen and use the exact label.")
+            }
+            val pool = candidates.filter { it.score == bestScore }
+                .sortedWith(compareBy({ it.bounds.top }, { it.bounds.left }))
+            if (occurrence !in 1..pool.size) {
+                val msg = "Found ${pool.size} match(es) for \"$label\"; occurrence " +
+                    "$occurrence is out of range (1-${pool.size})."
+                candidates.forEach { recycleQuietly(it.node) }
+                return mapOf("ok" to false, "error" to "OCCURRENCE_OUT_OF_RANGE",
+                    "message" to msg)
+            }
+            val picked = pool[occurrence - 1]
+            val clickedText = picked.text
+            val matched = commitMatch(clickedText)
+            if (matched != null) {
+                candidates.forEach { recycleQuietly(it.node) }
+                return mapOf("ok" to false, "error" to "COMMIT_REFUSAL",
+                    "message" to "Refusing to tap \"$clickedText\" -- matches commit pattern \"$matched\". " +
+                        "Draft policy: Errand prepares, the USER presses Send/Confirm/Pay/etc.")
+            }
+            // Track every node instance we touch so each is recycled exactly once.
+            val touched = mutableListOf(picked.node)
+            var target: AccessibilityNodeInfo = picked.node
+            var hops = 0
+            while (!target.isClickable && hops < MAX_TAP_HOPS) {
+                val parent = target.parent ?: break
+                touched.add(parent)
+                target = parent
+                hops++
+            }
+            val ok = target.isClickable && target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            touched.forEach { recycleQuietly(it) }
+            candidates.forEach { if (it !== picked) recycleQuietly(it.node) }
+            val which = if (pool.size > 1) " (match $occurrence of ${pool.size})" else ""
+            return if (ok) {
+                mapOf("ok" to true, "label" to clickedText,
+                    "message" to "Tapped \"$clickedText\"$which")
+            } else {
+                mapOf("ok" to false, "error" to "CLICK_FAILED",
+                    "message" to "Found \"$clickedText\" but could not click it. Some apps " +
+                        "only respond to taps on the parent ROW — try tapping the row's " +
+                        "title/time label instead of the control itself.")
+            }
+        } finally {
+            recycleQuietly(root)
         }
     }
 
@@ -608,20 +685,26 @@ class ErrandAccessibilityService : AccessibilityService() {
         node: AccessibilityNodeInfo,
         needle: String,
         exact: Boolean,
-        out: MutableList<Triple<AccessibilityNodeInfo, Int, String>>,
+        out: MutableList<TapCandidate>,
     ) {
-        // Any labeled match is a candidate; tapByText() walks up to the nearest
-        // clickable ancestor afterwards (labels often live on child TextViews).
-        val label = nodeLabel(node)
-        if (label != null) {
-            matchScore(label, needle, exact)?.let { score ->
-                out.add(Triple(AccessibilityNodeInfo.obtain(node), score, label))
+        try {
+            // Any labeled match is a candidate; tapByText() walks up to the nearest
+            // clickable ancestor afterwards (labels often live on child TextViews).
+            val label = nodeLabel(node)
+            if (label != null) {
+                matchScore(label, needle, exact)?.let { score ->
+                    val bounds = Rect().also { node.getBoundsInScreen(it) }
+                    out.add(TapCandidate(AccessibilityNodeInfo.obtain(node), score, label, bounds))
+                }
             }
-        }
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
-            collectMatchingClickable(child, needle, exact, out)
-            child.recycle()
+            val childCount = node.childCount
+            for (i in 0 until childCount) {
+                val child = node.getChild(i) ?: continue
+                collectMatchingClickable(child, needle, exact, out)
+                recycleQuietly(child)
+            }
+        } catch (_: Exception) {
+            // Stale node — skip this subtree.
         }
     }
 
@@ -636,36 +719,38 @@ class ErrandAccessibilityService : AccessibilityService() {
         val root = rootInActiveWindow
             ?: return mapOf("ok" to false, "error" to "NO_WINDOW",
                 "message" to "No active window content available.")
-
-        val focus = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
-            ?: return mapOf("ok" to false, "error" to "NO_FOCUS",
-                "message" to "No focused input field. Tap the field's label first " +
-                    "(act tap) or ask the user to focus it.")
-
         try {
-            if (!focus.isEditable) {
-                return mapOf("ok" to false, "error" to "NOT_EDITABLE",
-                    "message" to "The focused element is not an editable field.")
-            }
-            if (focus.isPassword) {
-                return mapOf("ok" to false, "error" to "PASSWORD_FIELD",
-                    "message" to "Refusing to type into a password field.")
-            }
-            val args = Bundle().apply {
-                putCharSequence(
-                    AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
-            }
-            val ok = focus.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
-            return if (ok) {
-                mapOf("ok" to true, "chars" to text.length,
-                    "message" to "Set field content (${text.length} chars). " +
-                        "This does NOT submit — the user sends.")
-            } else {
-                mapOf("ok" to false, "error" to "SET_TEXT_FAILED",
-                    "message" to "Field refused SET_TEXT (some apps don't support it).")
+            val focus = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+                ?: return mapOf("ok" to false, "error" to "NO_FOCUS",
+                    "message" to "No focused input field. Tap the field's label first " +
+                        "(act tap) or ask the user to focus it.")
+            try {
+                if (!focus.isEditable) {
+                    return mapOf("ok" to false, "error" to "NOT_EDITABLE",
+                        "message" to "The focused element is not an editable field.")
+                }
+                if (focus.isPassword) {
+                    return mapOf("ok" to false, "error" to "PASSWORD_FIELD",
+                        "message" to "Refusing to type into a password field.")
+                }
+                val args = Bundle().apply {
+                    putCharSequence(
+                        AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+                }
+                val ok = focus.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+                return if (ok) {
+                    mapOf("ok" to true, "chars" to text.length,
+                        "message" to "Set field content (${text.length} chars). " +
+                            "This does NOT submit — the user sends.")
+                } else {
+                    mapOf("ok" to false, "error" to "SET_TEXT_FAILED",
+                        "message" to "Field refused SET_TEXT (some apps don't support it).")
+                }
+            } finally {
+                recycleQuietly(focus)
             }
         } finally {
-            focus.recycle()
+            recycleQuietly(root)
         }
     }
 
@@ -687,65 +772,92 @@ class ErrandAccessibilityService : AccessibilityService() {
         times: Int = 1,
         nearLabel: String? = null,
     ): Map<String, Any?> {
-        val down = direction != "left" && direction != "right"
+        when (direction) {
+            "up", "down", "left", "right" -> Unit
+            else -> return mapOf(
+                "ok" to false,
+                "error" to "BAD_DIRECTION",
+                "message" to "direction must be up, down, left, or right.",
+            )
+        }
         val root = rootInActiveWindow
             ?: return mapOf("ok" to false, "error" to "NO_WINDOW",
                 "message" to "No active window content available.")
-
-        val clamped = times.coerceIn(1, MAX_WHEEL_STEPS)
-        // Vertical containers expose FORWARD/BACKWARD. Horizontal ones expose
-        // SCROLL_LEFT/RIGHT on API 34+; older devices fall back to gestures.
-        val targetAction = when {
-            direction == "down" -> AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
-            direction == "up" -> AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&
+        try {
+            val clamped = times.coerceIn(1, MAX_WHEEL_STEPS)
+            // Vertical containers expose FORWARD/BACKWARD. Horizontal ones expose
+            // SCROLL_LEFT/RIGHT on API 34+; older devices fall back to gestures.
+            val targetAction = when {
+                direction == "down" -> AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+                direction == "up" -> AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&
                     direction == "left" ->
-                AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT.id
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&
+                    AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT.id
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&
                     direction == "right" ->
-                AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT.id
-            direction == "left" -> AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
-            else -> AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+                    AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT.id
+                direction == "left" -> AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+                else -> AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+            }
+            val oppositeAction = oppositeScrollAction(targetAction)
+            // Near-label targeting: the needle must appear somewhere inside the
+            // scrollable's subtree (e.g. "52" for the minutes wheel, "Ring once"
+            // for the alarms list). Case-insensitive.
+            val scrollable = nearLabel?.trim()?.takeIf { it.isNotEmpty() }?.let { needle ->
+                findScrollableContaining(root, targetAction, needle.lowercase())
+                    ?: return mapOf(
+                        "ok" to false,
+                        "error" to "NO_TARGET_SCROLLABLE",
+                        "message" to "No scrollable area containing \"$nearLabel\" found. " +
+                            "Re-read the screen; the label must be currently visible.",
+                    )
+            } ?: run {
+                findScrollable(root, targetAction)
+                    ?: oppositeAction?.let { opp ->
+                        findScrollable(root, opp)?.let {
+                            recycleQuietly(it)
+                            return mapOf("ok" to true, "at_end" to true, "method" to "node_action",
+                                "message" to "Already at the END of this direction ($direction) -- nothing further that way.")
+                        }
+                    }
+                    ?: return gestureFallbackScroll(direction)
+            }
+            scrollable.let { s ->
+                try {
+                    var done = 0
+                    repeat(clamped) {
+                        if (s.performAction(targetAction)) done++
+                    }
+                    if (done > 0) {
+                        return mapOf("ok" to true, "method" to "node_action", "scrolled" to done,
+                            "message" to "Scrolled $direction ×$done" +
+                                (if (nearLabel != null) " (targeted by \"$nearLabel\")" else ""))
+                    }
+                } finally {
+                    recycleQuietly(s)
+                }
+            }
+            return gestureFallbackScroll(direction)
+        } finally {
+            recycleQuietly(root)
         }
+    }
 
-        // Near-label targeting: the needle must appear somewhere inside the
-        // scrollable's subtree (e.g. "52" for the minutes wheel, "Ring once"
-        // for the alarms list). Case-insensitive.
-        val scrollable = nearLabel?.trim()?.takeIf { it.isNotEmpty() }?.let { needle ->
-            findScrollableContaining(root, targetAction, needle.lowercase())
-                ?: return mapOf(
-                    "ok" to false,
-                    "error" to "NO_TARGET_SCROLLABLE",
-                    "message" to "No scrollable area containing \"$nearLabel\" found. " +
-                        "Re-read the screen; the label must be currently visible.",
-                )
-        } ?: run {
-            findScrollable(root, targetAction)
-                ?: findScrollable(root, if (down) AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
-                else AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)?.let {
-                    it.recycle()
-                    return mapOf("ok" to true, "at_end" to true, "method" to "node_action",
-                        "message" to "Already at the END of this direction ($direction) -- nothing further that way.")
-                }
-                ?: return gestureFallbackScroll(direction)
-        }
-
-        scrollable.let { s ->
-            try {
-                var done = 0
-                repeat(clamped) {
-                    if (s.performAction(targetAction)) done++
-                }
-                if (done > 0) {
-                    return mapOf("ok" to true, "method" to "node_action", "scrolled" to done,
-                        "message" to "Scrolled $direction ×$done" +
-                            (if (nearLabel != null) " (targeted by \"$nearLabel\")" else ""))
-                }
-            } finally {
-                s.recycle()
+    /** Opposite scroll action, or null when we cannot name one. */
+    private fun oppositeScrollAction(actionId: Int): Int? {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            when (actionId) {
+                AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT.id ->
+                    return AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT.id
+                AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT.id ->
+                    return AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT.id
             }
         }
-        return gestureFallbackScroll(direction)
+        return when (actionId) {
+            AccessibilityNodeInfo.ACTION_SCROLL_FORWARD -> AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+            AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD -> AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+            else -> null
+        }
     }
 
     private fun gestureFallbackScroll(direction: String): Map<String, Any?> =
@@ -767,16 +879,21 @@ class ErrandAccessibilityService : AccessibilityService() {
         node: AccessibilityNodeInfo,
         actionId: Int,
     ): AccessibilityNodeInfo? {
-        if (node.isScrollable && node.isVisibleToUser &&
-            node.actionList.any { it.id == actionId }
-        ) {
-            return AccessibilityNodeInfo.obtain(node)
-        }
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
-            val found = findScrollable(child, actionId)
-            child.recycle()
-            if (found != null) return found
+        try {
+            if (node.isScrollable && node.isVisibleToUser &&
+                node.actionList.any { it.id == actionId }
+            ) {
+                return AccessibilityNodeInfo.obtain(node)
+            }
+            val childCount = node.childCount
+            for (i in 0 until childCount) {
+                val child = node.getChild(i) ?: continue
+                val found = findScrollable(child, actionId)
+                recycleQuietly(child)
+                if (found != null) return found
+            }
+        } catch (_: Exception) {
+            // Stale node — skip this subtree.
         }
         return null
     }
@@ -788,18 +905,23 @@ class ErrandAccessibilityService : AccessibilityService() {
         needle: String,
         depth: Int = 0,
     ): AccessibilityNodeInfo? {
-        if (node.isScrollable && node.isVisibleToUser &&
-            node.actionList.any { it.id == actionId } &&
-            subtreeContainsText(node, needle)
-        ) {
-            return AccessibilityNodeInfo.obtain(node)
-        }
         if (depth >= 12) return null
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
-            val found = findScrollableContaining(child, actionId, needle, depth + 1)
-            child.recycle()
-            if (found != null) return found
+        try {
+            if (node.isScrollable && node.isVisibleToUser &&
+                node.actionList.any { it.id == actionId } &&
+                subtreeContainsText(node, needle)
+            ) {
+                return AccessibilityNodeInfo.obtain(node)
+            }
+            val childCount = node.childCount
+            for (i in 0 until childCount) {
+                val child = node.getChild(i) ?: continue
+                val found = findScrollableContaining(child, actionId, needle, depth + 1)
+                recycleQuietly(child)
+                if (found != null) return found
+            }
+        } catch (_: Exception) {
+            // Stale node — skip this subtree.
         }
         return null
     }
@@ -810,13 +932,18 @@ class ErrandAccessibilityService : AccessibilityService() {
         depth: Int = 0,
     ): Boolean {
         if (depth >= 12) return false
-        node.text?.toString()?.lowercase()?.contains(needle)?.let { if (it) return true }
-        node.contentDescription?.toString()?.lowercase()?.contains(needle)?.let { if (it) return true }
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
-            val found = subtreeContainsText(child, needle, depth + 1)
-            child.recycle()
-            if (found) return true
+        try {
+            node.text?.toString()?.lowercase()?.contains(needle)?.let { if (it) return true }
+            node.contentDescription?.toString()?.lowercase()?.contains(needle)?.let { if (it) return true }
+            val childCount = node.childCount
+            for (i in 0 until childCount) {
+                val child = node.getChild(i) ?: continue
+                val found = subtreeContainsText(child, needle, depth + 1)
+                recycleQuietly(child)
+                if (found) return true
+            }
+        } catch (_: Exception) {
+            return false
         }
         return false
     }
@@ -870,6 +997,23 @@ class ErrandAccessibilityService : AccessibilityService() {
         return im.currentInputConnection
     }
 
+    /** Recycle-safe: true if the focused node is a password field. */
+    private fun focusedIsPassword(): Boolean {
+        val root = rootInActiveWindow ?: return false
+        try {
+            val focus = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return false
+            try {
+                return focus.isPassword
+            } finally {
+                recycleQuietly(focus)
+            }
+        } catch (_: Exception) {
+            return false
+        } finally {
+            recycleQuietly(root)
+        }
+    }
+
     /**
      * Identity + content of the currently focused editable field. This is
      * the verification primitive: it answers "what field is focused and what
@@ -903,6 +1047,7 @@ class ErrandAccessibilityService : AccessibilityService() {
      * inputs where ACTION_SET_TEXT is refused. [replaceAll] selects the
      * existing content first; otherwise text is inserted at the cursor.
      * Returns the post-write field content for verification.
+     * Password fields are refused (same policy as [typeText]).
      */
     fun imeCommit(text: String, replaceAll: Boolean): Map<String, Any?> {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
@@ -912,6 +1057,10 @@ class ErrandAccessibilityService : AccessibilityService() {
         val conn = imeReady()
             ?: return mapOf("ok" to false, "error" to "NO_INPUT_FOCUS",
                 "message" to "No focused editable field. Tap the field first (act tap).")
+        if (focusedIsPassword()) {
+            return mapOf("ok" to false, "error" to "PASSWORD_FIELD",
+                "message" to "Refusing to type into a password field.")
+        }
         if (replaceAll) {
             val st = try {
                 conn.getSurroundingText(4096, 4096, 0)

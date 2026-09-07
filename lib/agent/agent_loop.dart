@@ -134,21 +134,47 @@ class AgentLoop {
       final pendingMediaParts = <Map<String, dynamic>>[];
 
       // Run stateless read/search tools concurrently for performance;
-      // sequence stateful actions (screen navigation, clicks, directory change).
+      // sequence stateful actions (screen navigation, clicks, directory change, app launch).
       final isAnyStateful = message.toolCalls.any((call) {
         if (call.name == 'act') return true;
+        if (call.name == 'intent') return true;
         if (call.name == 'workspace' && call.arguments['action'] == 'cd') return true;
         if (call.name == 'screen' && call.arguments['action'] == 'global') return true;
         return false;
       });
 
-      final results = isAnyStateful
-          ? <ToolCallResult>[
-              for (final call in message.toolCalls) await _registry.execute(call),
-            ]
-          : await Future.wait(
-              message.toolCalls.map((call) => _registry.execute(call)),
+      final results = <ToolCallResult>[];
+      if (isAnyStateful) {
+        var aborted = false;
+        String? abortReason;
+        for (var i = 0; i < message.toolCalls.length; i++) {
+          final call = message.toolCalls[i];
+          if (aborted) {
+            results.add(
+              ToolCallResult.failure(
+                call.id,
+                'Aborted: previous action in batch failed ($abortReason).',
+              ),
             );
+            continue;
+          }
+          if (i > 0) {
+            await Future<void>.delayed(const Duration(milliseconds: 350));
+          }
+          final res = await _registry.execute(call);
+          results.add(res);
+          if (!res.ok) {
+            aborted = true;
+            abortReason = res.errorMessage ?? (res.output.isNotEmpty ? res.output : 'unknown error');
+          }
+        }
+      } else {
+        results.addAll(
+          await Future.wait(
+            message.toolCalls.map((call) => _registry.execute(call)),
+          ),
+        );
+      }
 
       for (var i = 0; i < message.toolCalls.length; i++) {
         final call = message.toolCalls[i];
