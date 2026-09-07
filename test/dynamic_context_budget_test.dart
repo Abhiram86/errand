@@ -34,7 +34,9 @@ class CompactionMockLlmClient extends LlmClient {
     // Detect if this is a compaction request
     final isCompaction = messages.any((m) {
       final content = m['content'];
-      return content is String && content.contains('Summarize the entire conversation history');
+      return content is String &&
+          (content.contains('context compactor') ||
+              content.contains('Summarize the'));
     });
 
     if (isCompaction) {
@@ -505,7 +507,8 @@ class HangingCompactionMockLlmClient extends LlmClient {
     final isCompaction = messages.any((m) {
       final content = m['content'];
       return content is String &&
-          content.contains('Summarize the entire conversation history');
+          (content.contains('context compactor') ||
+              content.contains('Summarize the'));
     });
     if (isCompaction) {
       // Never completes on its own (no timer, so no isolate hold) —
@@ -542,7 +545,8 @@ class ToolYieldingMockLlmClient extends LlmClient {
     final isCompaction = messages.any((m) {
       final content = m['content'];
       return content is String &&
-          content.contains('Summarize the entire conversation history');
+          (content.contains('context compactor') ||
+              content.contains('Summarize the'));
     });
 
     if (isCompaction) {

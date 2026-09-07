@@ -76,15 +76,12 @@ Tool readTool(
       structuredDocuments.clear();
     },
     description:
-        'Reads a chunk of a file inside the granted workspace. Supports text '
-        'files plus PDF, DOCX, XLSX, and PPTX extraction, and media files '
-        '(images: jpg/png/webp/gif; audio: wav/mp3; video: mp4/webm/mov) '
-        'which are delivered to you as visual/audio content when the current '
-        'model supports that modality — read them without offset/length. For '
-        'text files, offset and length are byte-based. For structured files, '
-        'offset is a logical page/slide/section offset and length is a '
-        'character budget; structured pages overlap between reads. Path is '
-        'relative to the workspace or an absolute path inside it.',
+        'Reads the contents of a specific file inside the workspace or an attached file. '
+        'Requires "path". Supports text files, documents (PDF, DOCX, XLSX, PPTX), '
+        'and media (images, audio, video). Do NOT use on directories (use "workspace" '
+        'action:"list" instead). For text files, offset and length are byte-based; '
+        'for structured documents, offset is page/section index. For media files, '
+        'call without offset/length.',
     parameters: {
       'type': 'object',
       'properties': {

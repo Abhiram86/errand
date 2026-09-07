@@ -191,6 +191,13 @@ enum ProviderPresetType {
       case ProviderPresetType.openRouter:
         return const [
           ModelOption(
+            id: 'openrouter/free',
+            name: 'Free Models Router',
+            provider: 'OpenRouter',
+            inputModalities: ['text'],
+            contextLength: 128000,
+          ),
+          ModelOption(
             id: 'anthropic/claude-3.7-sonnet',
             name: 'Claude 3.7 Sonnet',
             provider: 'Anthropic',

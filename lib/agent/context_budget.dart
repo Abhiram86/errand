@@ -205,25 +205,26 @@ List<Map<String, dynamic>> buildCompactionPrompt(
     const {
       'role': 'system',
       'content':
-          'You are an expert context compactor for an autonomous AI assistant.\n'
-          'Your task is to summarize the preceding conversation history, model thinking, and tool execution log '
-          'into a dense, structured, factual briefing for the ongoing agent loop.\n'
-          'DO NOT lose crucial technical details, exact file paths, identifiers, or error messages.',
+          'You are a context compactor for an autonomous AI assistant.\n'
+          'Summarize the preceding conversation and tool execution history into a clear, continuation-ready state briefing.\n\n'
+          'Core Principles:\n'
+          '1. Focus on Core User Concern: Keep the user\'s primary objective, explicit preferences, and constraints front and center.\n'
+          '2. Bias to Recency: Heavily compress older exploratory steps, superseded screens, and trial-and-error into brief 1-line outcomes. Retain higher detail for recent findings, active files, current screen/app state, and latest results.\n'
+          '3. Dense & Factual: Preserve exact file paths, identifiers, URLs, and unfinished tasks. Do not preserve discarded chain-of-thought or raw repetitive tool logs.',
     },
     {
       'role': 'user',
       'content':
-          'Here is the previous conversation history, model thinking, and tool execution log to compact:\n\n'
+          'Compact the following history into a continuation-ready state briefing, prioritizing the user\'s core concern and recent state:\n\n'
           '${formatted.toString()}\n\n'
-          'Summarize the entire conversation history, actions taken, and tool outputs above into a concise, '
-          'structured state briefing with these exact sections:\n'
+          'Use these sections:\n'
           '## 1. Primary User Goal\n'
-          'Brief statement of what the user requested.\n'
-          '## 2. Completed Actions & Findings\n'
-          'Key files read/edited, tools invoked, important observations, command outputs, or error traces.\n'
-          '## 3. Current Progress & Immediate Next Steps\n'
-          'What was accomplished and what the agent should do next.\n\n'
-          'Be concise, dense with facts, and retain exact file paths and technical identifiers.',
+          'What the user wants to accomplish and active constraints.\n\n'
+          '## 2. Recent State & Key Findings\n'
+          'Current state, recent discoveries, active files, and relevant results (summarize older intermediate steps very briefly).\n\n'
+          '## 3. Unresolved Issues & Next Steps\n'
+          'What remains to be done and what the agent should tackle next.\n\n'
+          'Be concise, factual, and dense with actionable information.',
     },
   ];
 }

@@ -33,57 +33,39 @@ import 'widgets/message_bubbles.dart';
 import 'widgets/model_picker.dart';
 import 'widgets/paging.dart';
 import 'widgets/settings_sheet.dart';
-const kSystemPrompt =
-    'You are Errand, a general-purpose agent running on an Android phone. '
-    'You can navigate, inspect, and read files inside the user\'s granted '
-    'workspace. Prefer list before reading whole files. Never guess '
-    'file paths that have not been confirmed to exist. '
-    'Try different methods when appropriate and do not stop after one failure. '
-    'Use cd to change directories, then use relative paths from the new location. '
-    'If a tool call fails, re-derive its arguments from that tool\'s schema and '
-    'fix them — NEVER repeat an identical failing call. Two identical failures '
-    'in a row mean the approach is wrong: change approach or ask the user.';
+const kSystemPrompt = '''
+You are Errand, a friendly, capable, and practical personal AI assistant running on Android.
+You communicate naturally, warmly, and clearly with the user.
+
+Interaction Principles:
+- For greetings ("hi", "hello"), casual conversation, or general knowledge questions, reply warmly and directly — do NOT invoke tools or search for files unless the user asks for action or inspection.
+- Only invoke tools when the user's intent requires device interaction, workspace inspection, or external information.
+- Keep answers concise, clear, and actionable. Avoid robotic phrasing or unprompted system dumps.
+
+Tool Selection Guide:
+- workspace: Browse folder structure (actions: "list", "find", "cd", "pwd"). Use this to locate files, navigate, or check directory contents. NEVER use workspace to read file contents.
+- read: Read contents of a specific file (text, PDF, DOCX, media). Requires "path". NEVER call read on a directory.
+- attached_files: When the user refers to an attached or uploaded file without specifying a path (e.g. "this file", "the document", "summarize this"), call attached_files to discover its URI, then use read. Never guess file paths.
+- If a tool call fails, re-check arguments against the tool schema and adapt. Never repeat an identical failing call. Two identical failures mean the approach is wrong: change approach or ask the user.
+''';
 
 String _systemPromptFor(
   Directory currentDir, {
   bool screenAccess = false,
-  List<String> attachedFileUris = const [],
 }) {
   var prompt = '$kSystemPrompt\nCurrent working directory: ${currentDir.path}';
-  if (attachedFileUris.isNotEmpty) {
-    final names = [
-      for (final uri in attachedFileUris) path.basename(uri),
-    ];
-    prompt +=
-        '\nAttached files (${names.length}):\n'
-        '${[
-          for (var i = 0; i < names.length; i++) '${i + 1}. ${names[i]}',
-        ].join('\n')}\n'
-        'Use attached_files to see full URIs, then read to open any of them.';
-  }
   if (screenAccess) {
-    prompt +=
-        '\nScreen access is ENABLED: you can use the "screen" tool to read '
-        'what is currently on the phone\'s display (action:"read") and perform '
-        'system navigation like back/home/recents (action:"global"). You can also '
-        'use the "act" tool to tap labeled controls, type into focused fields, '
-        'and scroll. DRAFT POLICY: you prepare, the user sends — act refuses '
-        'final-commit taps (Send/Pay/Delete/Confirm); prepare everything up to '
-        'them, then tell the user to do that last step themselves. Use screen '
-        '"read" first to find exact labels, and again after acting to verify. '
-        'Screen/act calls are STATEFUL and SEQUENTIAL: every tap or navigation '
-        'changes what is on screen. Prefer passing then_read:true on act calls '
-        'to automatically receive the updated screen outline in the same tool result '
-        '(saves an entire round-trip turn). After open_app or '
-        'navigation, pass a larger settle_ms (~800-1500) to the read. The '
-        'outline may also contain OFF-SCREEN tab pages of tabbed apps — target '
-        'content under the active tab only. For On/Off switches embedded in '
-        'list rows (alarms, settings), prefer tapping the row\'s title/time '
-        'label (the whole row is clickable) over the switch itself, and use '
-        'occurrence when several rows share labels. For WEB FORMS in browsers, '
-        'use act fill (label + text) — it focuses, verifies the field, types, '
-        'and reports the field\'s actual content back; expect ad iframes to '
-        'shuffle the page between steps on heavy sites.';
+    prompt += '''
+
+Screen & Device Capabilities (ENABLED):
+- screen:
+  * action:"read" to get visible UI elements with interactive [ref] numbers. Use settle_ms (~800–1500) after opening apps or navigation so screens have time to render.
+  * action:"global" for system navigation (name: "back" | "home" | "recents" | "notifications").
+- act: Interact with UI elements seen on screen (action: "tap" | "fill" | "scroll" | "press").
+  * Prefer passing then_read:true on act calls to automatically receive the updated screen outline in the same step.
+  * For form inputs, use action:"fill" (label/ref + text).
+  * Safety (DRAFT POLICY): Prepare everything up to the final commit (type messages, fill forms, navigate), but let the user perform final-commit taps (Send, Pay, Delete, Submit).
+''';
   }
   return prompt;
 }
@@ -227,6 +209,20 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   StreamSubscription<List<Conversation>>? _conversationsSub;
   StreamSubscription<List<Conversation>>? _pinnedConversationsSub;
   Timer? _persistTimer;
+  int _estimatedActiveTokens = 0;
+  List<Conversation> _cachedSortedConversations = [];
+  bool _sortedConversationsDirty = true;
+  final Set<String> _animatedMessageIds = <String>{};
+
+  void _updateEstimatedTokens() {
+    final lastCompactedIdx =
+        _messages.lastIndexWhere((m) => m is CompactedNoticeMessage);
+    final activeMessages = lastCompactedIdx != -1
+        ? _messages.sublist(lastCompactedIdx)
+        : _messages;
+    _estimatedActiveTokens = estimateHistoryTokens(activeMessages);
+  }
+
   final WorkingDirectory _workingDirectory = WorkingDirectory(
     Workspace.instance.root,
   );
@@ -267,9 +263,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     super.initState();
     _activeConversation = _newDraftConversation();
     _llm = _createLlmClient(_selectedModel);
+    _animatedMessageIds.addAll(_messages.map((m) => m.id));
+    _updateEstimatedTokens();
     ModelsDevService.preload();
     unawaited(_loadAppConfig());
-    unawaited(_refreshA11yState());
     // One-time POST_NOTIFICATIONS grant so the foreground work indicator is
     // visible on API 33+ (the service itself runs regardless).
     unawaited(_intentService.requestNotificationPermission());
@@ -280,7 +277,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       limit: _sidebarPageSize,
     ).listen((summaries) {
       if (!mounted) return;
-      setState(() => _conversations = summaries);
+      setState(() {
+        _conversations = summaries;
+        _sortedConversationsDirty = true;
+      });
     });
     _pinnedConversationsSub = database.watchPinnedConversations().listen((
       pinned,
@@ -288,8 +288,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       if (!mounted) return;
       setState(() => _pinnedConversations = pinned);
     });
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _checkStoragePermission(promptIfMissing: true);
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await _checkStoragePermission(promptIfMissing: true);
+      if (mounted) {
+        await _refreshA11yState();
+      }
     });
   }
 
@@ -310,14 +313,73 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     );
   }
 
+  String _pickDefaultModelForProvider(
+    LlmProvider provider,
+    List<ModelOption> availableModels,
+  ) {
+    if (availableModels.isEmpty) {
+      return 'gpt-4o';
+    }
+
+    final isOpenRouter = provider.id == ProviderPresetType.openRouter.id ||
+        provider.baseUrl.contains('openrouter.ai');
+
+    if (isOpenRouter) {
+      final freeRouter = availableModels.cast<ModelOption?>().firstWhere(
+        (m) =>
+            m != null &&
+            (m.id == 'openrouter/free' ||
+                m.id == 'openrouter/auto' ||
+                m.id.toLowerCase().contains('openrouter/free') ||
+                m.name.toLowerCase().contains('free models router')),
+        orElse: () => null,
+      );
+      if (freeRouter != null) return freeRouter.id;
+      return availableModels.first.id;
+    }
+
+    final freeModel = availableModels.cast<ModelOption?>().firstWhere(
+      (m) {
+        if (m == null) return false;
+        final id = m.id.toLowerCase();
+        final name = m.name.toLowerCase();
+        return id.startsWith('free') ||
+            id.endsWith('-free') ||
+            id.endsWith(':free') ||
+            id.contains('free') ||
+            name.contains('free');
+      },
+      orElse: () => null,
+    );
+
+    if (freeModel != null) return freeModel.id;
+    return availableModels.first.id;
+  }
+
   /// Loads runtime configuration (decrypted keys, last-selected model) from
   /// the settings store, then refreshes the model catalog. Replaces the old
   /// compile-time --dart-define env injection.
   Future<void> _loadAppConfig() async {
     await AppSettingsService.instance.ensureLoaded();
     if (!mounted) return;
+    final settings = AppSettingsService.instance;
+    final provider = settings.activeProvider;
+    final cached = ModelCatalogService.getCachedModels(provider.baseUrl);
+    final availableModels = (cached != null && cached.isNotEmpty)
+        ? cached
+        : provider.defaultModels;
+
+    var model = settings.selectedModel;
+    if (!availableModels.any((m) => m.id == model)) {
+      model = _pickDefaultModelForProvider(provider, availableModels);
+      unawaited(settings.setSelectedModel(model));
+    }
+
     setState(() {
-      _selectedModel = AppSettingsService.instance.selectedModel;
+      _selectedModel = model;
+      _activeConversation.model = model;
+      _activeConversation.provider = provider.name;
+      _models = availableModels;
       _llm.close();
       _llm = _createLlmClient(_selectedModel);
     });
@@ -328,6 +390,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   /// Reloads the LLM client + catalog afterwards so new keys take effect
   /// immediately.
   Future<bool> _openSettings() async {
+    if (_busy) return false;
     // Local tab shows both history (conversation inventory) and pending.
     final allAttached = <String>[
       ..._activeConversation.attachedFileUris,
@@ -359,11 +422,28 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       },
     );
     if (changed && mounted) {
+      final activeProvider = AppSettingsService.instance.activeProvider;
+      final cached = ModelCatalogService.getCachedModels(activeProvider.baseUrl);
+      final availableModels = (cached != null && cached.isNotEmpty)
+          ? cached
+          : activeProvider.defaultModels;
+
+      String modelToUse = _selectedModel;
+      if (!availableModels.any((m) => m.id == _selectedModel)) {
+        modelToUse = _pickDefaultModelForProvider(activeProvider, availableModels);
+        unawaited(AppSettingsService.instance.setSelectedModel(modelToUse));
+      }
+
       setState(() {
-        _activeConversation.provider = AppSettingsService.instance.activeProvider.name;
+        _selectedModel = modelToUse;
+        _activeConversation.model = modelToUse;
+        _activeConversation.provider = activeProvider.name;
+        _models = availableModels;
         _llm.close();
-        _llm = _createLlmClient(_selectedModel);
+        _llm = _createLlmClient(modelToUse);
+        _touchConversation();
       });
+      _persistNow();
       unawaited(_loadModelCatalog(forceRefresh: false));
     }
     return changed;
@@ -389,17 +469,15 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     final availableModels = (cached != null && cached.isNotEmpty)
         ? cached
         : provider.defaultModels;
-    final firstModel = availableModels.isNotEmpty
-        ? availableModels.first.id
-        : 'gpt-4o';
+    final modelToUse = _pickDefaultModelForProvider(provider, availableModels);
 
     _llm.close();
-    _llm = _createLlmClient(firstModel);
-    unawaited(AppSettingsService.instance.setSelectedModel(firstModel));
+    _llm = _createLlmClient(modelToUse);
+    unawaited(AppSettingsService.instance.setSelectedModel(modelToUse));
 
     setState(() {
-      _selectedModel = firstModel;
-      _activeConversation.model = firstModel;
+      _selectedModel = modelToUse;
+      _activeConversation.model = modelToUse;
       _activeConversation.provider = provider.name;
       _models = availableModels;
       _touchConversation();
@@ -439,6 +517,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       // Re-check after the user may have toggled the service in Settings
       // while we were backgrounded.
       unawaited(_refreshA11yState());
+    } else if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.hidden) {
+      _persistNow();
     }
   }
 
@@ -854,6 +936,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   /// Watched first page + loaded older pages, deduped by id (the watched
   /// page wins) and re-sorted by recency.
   List<Conversation> get _sortedConversations {
+    if (!_sortedConversationsDirty) {
+      return _cachedSortedConversations;
+    }
     final seen = <String>{};
     final unique = <Conversation>[
       for (final conversation in [..._conversations, ..._olderConversations])
@@ -861,6 +946,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           conversation,
     ];
     unique.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    _cachedSortedConversations = unique;
+    _sortedConversationsDirty = false;
     return unique;
   }
 
@@ -877,6 +964,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       if (!mounted) return;
       setState(() {
         _olderConversations.addAll(fresh);
+        _sortedConversationsDirty = true;
         _loadingMoreConversations = false;
       });
     } catch (_) {
@@ -892,13 +980,17 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _controller.clear();
     _pendingAttachments.clear();
     _workingDirectory.current = _workingDirectory.root;
+    final welcome = _welcomeMessages();
+    _animatedMessageIds.clear();
+    _animatedMessageIds.addAll(welcome.map((m) => m.id));
     setState(() {
-      _messages = _welcomeMessages();
+      _messages = welcome;
       _activeConversation = _newDraftConversation();
       _workingMessageId = null;
       _workingText.clear();
       _editingMessageId = null;
       _hasOlderMessages = false;
+      _updateEstimatedTokens();
     });
     _closeSidebar();
     _scrollToBottom(animated: false, force: true);
@@ -924,19 +1016,23 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       return;
     }
 
+    if (loaded.provider != null) {
+      final match = AppSettingsService.instance.providers.firstWhere(
+        (p) => p.name == loaded.provider || p.id == loaded.provider,
+        orElse: () => AppSettingsService.instance.activeProvider,
+      );
+      await AppSettingsService.instance.setActiveProvider(match.id);
+      if (!mounted) return;
+    }
+
     _pendingAttachments.clear();
     _workingDirectory.current = loaded.currentDir;
+    _animatedMessageIds.clear();
+    _animatedMessageIds.addAll(loaded.messages.map((m) => m.id));
     setState(() {
       _activeConversation = loaded;
       _messages = loaded.messages;
       _selectedModel = loaded.model ?? AppSettingsService.instance.selectedModel;
-      if (loaded.provider != null) {
-        final match = AppSettingsService.instance.providers.firstWhere(
-          (p) => p.name == loaded.provider || p.id == loaded.provider,
-          orElse: () => AppSettingsService.instance.activeProvider,
-        );
-        AppSettingsService.instance.setActiveProvider(match.id);
-      }
       _llm.close();
       _llm = _createLlmClient(_selectedModel);
       _workingMessageId = null;
@@ -945,6 +1041,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       // A short page means the whole history fit in the first window.
       _hasOlderMessages = loaded.messages.length == _messagePageSize;
       _messageFetcher.hasMore = true;
+      _updateEstimatedTokens();
     });
     _closeSidebar();
     // Land on the newest message. The flag also suppresses the leading-edge
@@ -987,7 +1084,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _loadingOlderMessages = false;
       _hasOlderMessages = _messageFetcher.hasMore && older.isNotEmpty;
       if (older.isNotEmpty) {
+        _animatedMessageIds.addAll(older.map((m) => m.id));
         _messages = [...older, ..._messages];
+        _updateEstimatedTokens();
       }
     });
     if (older.isNotEmpty && hadClients) {
@@ -1034,6 +1133,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     // from any already-loaded older pages so it can't linger as a ghost.
     setState(() {
       _olderConversations.removeWhere((c) => c.id == id);
+      _sortedConversationsDirty = true;
     });
     if (_activeConversation.id == id) {
       _startNewChat();
@@ -1083,6 +1183,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       // Older pages hold summary snapshots; refresh the renamed row.
       final index = _olderConversations.indexWhere((c) => c.id == id);
       if (index != -1) _olderConversations[index].title = title;
+      _sortedConversationsDirty = true;
     });
   }
 
@@ -1105,6 +1206,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           _olderConversations[index] = fresh;
         }
       }
+      _sortedConversationsDirty = true;
     });
     if (_activeConversation.id == id) {
       _touchConversation();
@@ -1181,6 +1283,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           attachedUris: attachedSnapshot,
         ),
       );
+      _updateEstimatedTokens();
       if (attachedSnapshot.isNotEmpty) {
         // Keep the conversation's global inventory in sync.
         for (final p in attachedSnapshot) {
@@ -1212,12 +1315,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     await _runAgentTurn();
   }
 
-  /// If [message] is the final assistant bubble of a user-turn response
+  /// If the message at [index] is the final assistant bubble of a user-turn response
   /// (the end-of-response step), returns the owning user message id so a
   /// regenerate can be anchored to that turn; otherwise null.
-  String? _regenerateTargetFor(Message message) {
+  String? _regenerateTargetFor(int index) {
+    if (index < 0 || index >= _messages.length) return null;
+    final message = _messages[index];
     if (message is! AssistantMessage) return null;
-    final index = _messages.indexOf(message);
     // The response's last step: no other assistant bubble follows before
     // the next user message (tool bubbles in between are fine).
     for (var i = index + 1; i < _messages.length; i++) {
@@ -1309,7 +1413,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     if (index == -1) return;
 
     final removed = _messages.sublist(index);
-    setState(() => _messages.removeRange(index, _messages.length));
+    setState(() {
+      _messages.removeRange(index, _messages.length);
+      _updateEstimatedTokens();
+    });
     _touchConversation();
 
     final conversationId = _activeConversation.id;
@@ -1362,7 +1469,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         localSystemPrompt: _systemPromptFor(
           _workingDirectory.current,
           screenAccess: _a11yAvailable,
-          attachedFileUris: _activeConversation.attachedFileUris,
         ),
         messages: _messages
             .where((message) => message.id != _workingMessageId)
@@ -1402,7 +1508,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         systemPromptBuilder: () => _systemPromptFor(
           _workingDirectory.current,
           screenAccess: _a11yAvailable,
-          attachedFileUris: _activeConversation.attachedFileUris,
         ),
         cancelToken: _cancelToken,
         onEvent: _handleEvent,
@@ -1491,6 +1596,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       if (index != -1) _messages.removeAt(index);
       _busy = false;
       _workingMessageId = null;
+      _updateEstimatedTokens();
     });
     // OPT-07: saves merge by message id now, so a working bubble that was
     // already persisted mid-stream must be removed from the DB explicitly.
@@ -1550,9 +1656,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   void _handleCompacted(String summary, {int tailBlockCount = 0}) {
     if (!mounted) return;
-    if (_messages.isNotEmpty && _messages.first.text.contains(summary)) return;
 
     final beforeTokens = estimateHistoryTokens(_messages);
+
+    late int tailTokens;
 
     setState(() {
       final workingId = _workingMessageId;
@@ -1576,7 +1683,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       final compactedBlocks = blocks.sublist(0, blocks.length - keepCount);
       final keptTailBlocks = blocks.sublist(blocks.length - keepCount);
 
-      final tailTokens = estimateHistoryTokens([
+      tailTokens = estimateHistoryTokens([
         for (final block in keptTailBlocks) ...block,
       ]);
 
@@ -1595,6 +1702,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         ?workingMsg,
       ];
 
+      _updateEstimatedTokens();
       _touchConversation();
     });
 
@@ -1602,7 +1710,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
     if (mounted) {
       _showToast(
-        'Context compacted: ${_formatTokens(beforeTokens)} → ${_formatTokens(estimateHistoryTokens(_messages))} tokens',
+        'Context compacted: ${_formatTokens(beforeTokens)} → ${_formatTokens(tailTokens)} tokens',
       );
     }
   }
@@ -1663,7 +1771,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _workingText.write(delta);
     if (_workingFlushTimer?.isActive ?? false) return;
     _workingFlushTimer = Timer(
-      const Duration(milliseconds: 40),
+      const Duration(milliseconds: 65),
       _flushWorkingText,
     );
   }
@@ -1749,6 +1857,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _touchConversation();
       _busy = false;
       _workingMessageId = null;
+      _updateEstimatedTokens();
     });
     // Merge-based saves keep rows not in memory — a dropped bubble that
     // was persisted mid-stream must be removed explicitly.
@@ -1879,9 +1988,16 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: kDarkBg,
-      body: LayoutBuilder(
+    return PopScope(
+      canPop: !_sidebarOpen,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && _sidebarOpen) {
+          _closeSidebar();
+        }
+      },
+      child: Scaffold(
+        backgroundColor: kDarkBg,
+        body: LayoutBuilder(
         builder: (context, constraints) {
           final sidebarWidth = _sidebarWidth(constraints.maxWidth);
 
@@ -1964,8 +2080,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           );
         },
       ),
-    );
-  }
+    ),
+  );
+}
 
   double _sidebarWidth(double screenWidth) {
     if (screenWidth <= 0) return 0;
@@ -2013,7 +2130,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             ),
           ),
           IconButton(
-            onPressed: _openSettings,
+            onPressed: _busy ? null : _openSettings,
             tooltip: 'Settings',
             icon: const Icon(Icons.settings_rounded, size: 20),
             color: kMuted,
@@ -2067,33 +2184,45 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           }
           final index = _loadingOlderMessages ? i - 1 : i;
           final message = _messages[index];
+          final shouldAnimate = !_animatedMessageIds.contains(message.id);
+          if (shouldAnimate) {
+            _animatedMessageIds.add(message.id);
+          }
+
+          final Widget bubbleWidget;
           if (message is CompactedNoticeMessage) {
-            return CompactedDividerBubble(
+            bubbleWidget = CompactedDividerBubble(
               key: ValueKey(message.id),
               message: message,
             );
-          }
-          if (message is ToolMessage) {
-            return ToolMessageBubble(
+          } else if (message is ToolMessage) {
+            bubbleWidget = ToolMessageBubble(
               key: ValueKey(message.id),
               message: message,
             );
+          } else {
+            // Regenerate sits on the LAST assistant bubble of each user-turn
+            // response (the end-of-response step), not just the literal last
+            // message of the conversation. Regenerating an older turn also
+            // drops every later turn — same semantics as edit-resend.
+            final regenerateUserId = !_busy
+                ? _regenerateTargetFor(index)
+                : null;
+            bubbleWidget = MessageBubble(
+              key: ValueKey(message.id),
+              message: message,
+              onEdit:
+                  message is UserMessage ? () => _editUserMessage(message) : null,
+              onRegenerate: regenerateUserId == null
+                  ? null
+                  : () => _regenerate(regenerateUserId),
+            );
           }
-          // Regenerate sits on the LAST assistant bubble of each user-turn
-          // response (the end-of-response step), not just the literal last
-          // message of the conversation. Regenerating an older turn also
-          // drops every later turn — same semantics as edit-resend.
-          final regenerateUserId = !_busy
-              ? _regenerateTargetFor(message)
-              : null;
-          return MessageBubble(
-            key: ValueKey(message.id),
-            message: message,
-            onEdit:
-                message is UserMessage ? () => _editUserMessage(message) : null,
-            onRegenerate: regenerateUserId == null
-                ? null
-                : () => _regenerate(regenerateUserId),
+
+          return SubtleFadeIn(
+            key: ValueKey('fade_${message.id}'),
+            animate: shouldAnimate,
+            child: bubbleWidget,
           );
         },
       ),
@@ -2117,22 +2246,16 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   Widget _buildContextFooter() {
     final budget = _getActiveBudget();
     final threshold = budget.compactionThreshold;
-
-    final lastCompactedIdx =
-        _messages.lastIndexWhere((m) => m is CompactedNoticeMessage);
-    final activeMessages = lastCompactedIdx != -1
-        ? _messages.sublist(lastCompactedIdx)
-        : _messages;
-    final activeTokens = estimateHistoryTokens(activeMessages);
+    final activeTokens = _estimatedActiveTokens;
 
     final isNearOrOver = activeTokens >= threshold;
-    final hasCompacted = lastCompactedIdx != -1 ||
-        _messages.any(
-          (m) =>
-              m is UserMessage &&
+    final hasCompacted = _messages.any(
+      (m) =>
+          m is CompactedNoticeMessage ||
+          (m is UserMessage &&
               (m.text.startsWith(kCompactedContextMarker) ||
-                  m.text.startsWith('[Compacted Conversation History')),
-        );
+                  m.text.startsWith('[Compacted Conversation History'))),
+    );
 
     final statusSuffix = isNearOrOver
         ? ' · compacts next'

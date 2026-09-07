@@ -9,10 +9,11 @@ Tool attachedFilesTool({
   return Tool(
     name: 'attached_files',
     description:
-        'Lists files the user attached via the + button in this conversation. '
-        'Returns count and file names. Use read to open any of them — the '
-        'path is the full URI shown here. Call this when the user refers to '
-        '"the attached file" or you need to know what is available.',
+        'Lists files the user attached or uploaded in this conversation. '
+        'Returns count, file names, and absolute URIs for each file. '
+        'Use read to open any of them. Call this whenever the user refers to '
+        '"this file", "the attached file", "the uploaded document", or asks '
+        'to inspect or summarize something without specifying a path.',
     parameters: {
       'type': 'object',
       'properties': {},

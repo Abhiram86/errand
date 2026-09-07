@@ -111,7 +111,7 @@ ModelCatalog: GET {baseUrl}/models → architecture.input_modalities + context_l
 7  agent/context_budget.dart + agent_loop.dart     ← dynamic budget+compaction [x] dbe2757
 8  services/database.dart (schema v4 + compacted)  ← +replaceAllMessages     [~] partial (compaction half via dbe2757)
 9  a11y_service.dart + ErrandAccessibilityService.kt + screen/act tools      [ ]
-10 main.dart + widgets last                        ← depends on all above    [~] partial (compaction UI via dbe2757)
+10 main.dart + widgets last                        ← depends on all above    [x] walkthrough 2026-09-07 (2209 lines; no rewrite — owns everything, see §3b-11)
 ```
 
 Mark `[x]` when walkthrough+revisit+rewrite+tests pass. One commit per row.

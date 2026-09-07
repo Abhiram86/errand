@@ -313,4 +313,60 @@ void main() {
     // then_read already settled internally — wide moat under the 350ms floor.
     expect(skippedMs, lessThan(300));
   });
+
+  test('UserMessage with attachments serializes clean text without leaking raw file paths', () async {
+    final client = MockLlmClient();
+    final loop = AgentLoop(
+      llm: client,
+      registry: ToolRegistry([]),
+    );
+
+    await loop.run(
+      Conversation(
+        id: 'c-attach',
+        messages: [
+          const UserMessage(
+            id: 'u1',
+            text: 'Analyze this file',
+            attachedUris: ['/storage/emulated/0/Download/invoice.pdf'],
+          ),
+        ],
+        currentDir: Directory('/'),
+      ),
+    );
+
+    expect(client.receivedMessages, isNotEmpty);
+    final capturedMessages = client.receivedMessages.first;
+    final userMsg = capturedMessages.firstWhere((m) => m['role'] == 'user');
+    expect(userMsg['content'], 'Analyze this file');
+    expect(userMsg['content'], isNot(contains('/storage/emulated/0')));
+  });
+
+  test('UserMessage with empty text and attachments provides a clear uploaded placeholder', () async {
+    final client = MockLlmClient();
+    final loop = AgentLoop(
+      llm: client,
+      registry: ToolRegistry([]),
+    );
+
+    await loop.run(
+      Conversation(
+        id: 'c-attach-empty',
+        messages: [
+          const UserMessage(
+            id: 'u1',
+            text: '',
+            attachedUris: ['/storage/emulated/0/Download/photo.jpg'],
+          ),
+        ],
+        currentDir: Directory('/'),
+      ),
+    );
+
+    expect(client.receivedMessages, isNotEmpty);
+    final capturedMessages = client.receivedMessages.first;
+    final userMsg = capturedMessages.firstWhere((m) => m['role'] == 'user');
+    expect(userMsg['content'], '[User uploaded attached file(s)]');
+  });
 }
+

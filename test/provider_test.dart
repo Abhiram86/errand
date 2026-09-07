@@ -149,4 +149,13 @@ void main() {
     expect(zen.defaultModels, isNotEmpty);
     expect(zen.defaultModels.first.id, 'nemotron-3.5-lightning-free');
   });
+
+  test('OpenRouter has openrouter/free router as the first default model', () async {
+    await settings.ensureLoaded();
+
+    final openRouter = settings.providers.firstWhere((p) => p.id == 'openrouter');
+    expect(openRouter.baseUrl, 'https://openrouter.ai/api/v1');
+    expect(openRouter.defaultModels, isNotEmpty);
+    expect(openRouter.defaultModels.first.id, 'openrouter/free');
+  });
 }

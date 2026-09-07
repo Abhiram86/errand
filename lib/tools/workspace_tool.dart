@@ -14,11 +14,10 @@ Tool workspaceTool(WorkingDirectory workspace) {
   return Tool(
     name: 'workspace',
     description:
-        'Inspects and changes the current workspace directory. Use action '
-        '"pwd" to see the current directory, "cd" to change it, "list" to '
-        'list immediate entries, or "find" to recursively search files and '
-        'directories. The current directory is shared by read and workspace '
-        'actions.',
+        'Browse and navigate workspace directories. Actions: "list" (show folder entries), '
+        '"find" (search files/folders by pattern), "cd" (change working directory), '
+        'or "pwd" (get current directory). Do NOT use this tool to read file contents; '
+        'use the "read" tool instead.',
     parameters: {
       'type': 'object',
       'properties': {

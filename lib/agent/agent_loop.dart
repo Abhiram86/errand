@@ -1,7 +1,5 @@
 import 'dart:convert';
 
-import 'package:path/path.dart' as path;
-
 import '../llm/llm_client.dart';
 import '../types/conversation.dart';
 import 'context_budget.dart';
@@ -371,13 +369,15 @@ class AgentLoop {
                 'Continuing with the task.',
           });
         case UserMessage():
-          final content = message.attachedUris.isEmpty
-              ? message.text
-              : '${message.text}\n\n[Attached files:\n${[
-                  for (var i = 0; i < message.attachedUris.length; i++)
-                    '${i + 1}. ${path.basename(message.attachedUris[i])} — ${message.attachedUris[i]}',
-                ].join('\n')}]';
-          messages.add({'role': 'user', 'content': content});
+          final text = message.text.trim();
+          final content = text.isNotEmpty
+              ? text
+              : (message.attachedUris.isNotEmpty
+                  ? '[User uploaded attached file(s)]'
+                  : '');
+          if (content.isNotEmpty) {
+            messages.add({'role': 'user', 'content': content});
+          }
         case AssistantMessage():
           // If immediately followed by ToolMessages, merge this assistant's text
           // into the assistant tool_calls message to prevent consecutive assistant messages.

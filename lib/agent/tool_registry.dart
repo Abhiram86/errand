@@ -40,8 +40,9 @@ class ToolRegistry {
       intentTool(),
       screenTool(),
       actTool(),
-      if (getAttachedFiles != null)
-        attachedFilesTool(getAttachedFiles: getAttachedFiles),
+      attachedFilesTool(
+        getAttachedFiles: getAttachedFiles ?? () => const [],
+      ),
     ]);
   }
 

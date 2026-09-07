@@ -120,6 +120,7 @@ class _ScrollingModelName extends StatefulWidget {
 class _ScrollingModelNameState extends State<_ScrollingModelName>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller;
+  late final CurvedAnimation _curvedAnimation;
   bool _shouldAnimate = false;
 
   @override
@@ -129,10 +130,15 @@ class _ScrollingModelNameState extends State<_ScrollingModelName>
       vsync: this,
       duration: const Duration(seconds: 7),
     );
+    _curvedAnimation = CurvedAnimation(
+      parent: _controller,
+      curve: Curves.easeInOut,
+    );
   }
 
   @override
   void dispose() {
+    _curvedAnimation.dispose();
     _controller.dispose();
     super.dispose();
   }
@@ -194,10 +200,7 @@ class _ScrollingModelNameState extends State<_ScrollingModelName>
 
         return ClipRect(
           child: AnimatedBuilder(
-            animation: CurvedAnimation(
-              parent: _controller,
-              curve: Curves.easeInOut,
-            ),
+            animation: _curvedAnimation,
             builder: (context, child) {
               final offset = overflow * _controller.value;
               return Transform.translate(
@@ -703,9 +706,15 @@ class _ModelPickerDialogState extends State<_ModelPickerDialog> {
                             title: Row(
                               children: [
                                 Expanded(
-                                  child: _ScrollingModelName(
-                                    name: model.name,
-                                    color: kText,
+                                  child: Text(
+                                    model.name,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: kText,
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w600,
+                                    ),
                                   ),
                                 ),
                                 if (hasVision)

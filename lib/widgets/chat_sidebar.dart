@@ -120,7 +120,6 @@ class ChatSidebar extends StatelessWidget {
                 ),
               ),
             ),
-            const _ProfileFooter(),
           ],
         ),
       ),
@@ -282,53 +281,6 @@ class _SidebarRow extends StatelessWidget {
               ),
             ),
           ),
-        ),
-      ),
-    );
-  }
-}
-
-class _ProfileFooter extends StatelessWidget {
-  const _ProfileFooter();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
-      decoration: const BoxDecoration(
-        border: Border(top: BorderSide(color: kBorder, width: 0.6)),
-      ),
-      child: Transform.translate(
-        offset: const Offset(0, 2),
-        child: Row(
-          children: [
-            Container(
-              width: 32,
-              height: 32,
-              decoration: const BoxDecoration(
-                color: kBubbleUser,
-                shape: BoxShape.circle,
-              ),
-              alignment: Alignment.center,
-              child: const Text(
-                'JD',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ),
-            const SizedBox(width: 9),
-            const Text(
-              'John Doe',
-              style: TextStyle(
-                color: kText,
-                fontSize: 14,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ],
         ),
       ),
     );

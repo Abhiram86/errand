@@ -61,6 +61,74 @@ class _CopyButton extends StatelessWidget {
   }
 }
 
+/// Smooth, subtle entry transition for new messages and tool calls.
+/// Glides up by ~4% and fades in over 260ms without causing layout reflow.
+class SubtleFadeIn extends StatefulWidget {
+  final Widget child;
+  final bool animate;
+  final Duration duration;
+
+  const SubtleFadeIn({
+    super.key,
+    required this.child,
+    this.animate = true,
+    this.duration = const Duration(milliseconds: 260),
+  });
+
+  @override
+  State<SubtleFadeIn> createState() => _SubtleFadeInState();
+}
+
+class _SubtleFadeInState extends State<SubtleFadeIn>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  late final Animation<double> _fadeAnimation;
+  late final Animation<Offset> _slideAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: widget.duration,
+    );
+    final curve = CurvedAnimation(
+      parent: _controller,
+      curve: Curves.easeOutCubic,
+    );
+    _fadeAnimation = curve;
+    _slideAnimation = Tween<Offset>(
+      begin: const Offset(0, 0.04),
+      end: Offset.zero,
+    ).animate(curve);
+
+    if (widget.animate) {
+      _controller.forward();
+    } else {
+      _controller.value = 1.0;
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!widget.animate) return widget.child;
+
+    return FadeTransition(
+      opacity: _fadeAnimation,
+      child: SlideTransition(
+        position: _slideAnimation,
+        child: widget.child,
+      ),
+    );
+  }
+}
+
 class ToolMessageBubble extends StatelessWidget {
   final ToolMessage message;
 
@@ -211,6 +279,11 @@ class MessageBubble extends StatelessWidget {
     final text = message.text.trim();
     if (text.isEmpty) return const SizedBox.shrink();
 
+    final isPlaceholder = !isUser &&
+        (text.startsWith('…working') ||
+            text.startsWith('…thinking') ||
+            text.startsWith('…compacting'));
+
     final bubble = Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       constraints: BoxConstraints(
@@ -231,7 +304,7 @@ class MessageBubble extends StatelessWidget {
         alignment: isUser ? Alignment.topRight : Alignment.topLeft,
         clipBehavior: Clip.none,
         child: isUser
-            ? SelectableText(
+            ? Text(
                 text,
                 style: const TextStyle(
                   color: kText,
@@ -242,7 +315,9 @@ class MessageBubble extends StatelessWidget {
             // Assistant turns render as markdown (bold, tables, code,
             // LaTeX). Text selection comes from the SelectionArea that
             // wraps the message list.
-            : _StreamingAssistantText(text: text),
+            : _StreamingAssistantText(
+                text: text,
+              ),
       ),
     );
 
@@ -311,7 +386,7 @@ class MessageBubble extends StatelessWidget {
           ],
         ),
       );
-      final Widget userContent = Padding(
+      return Padding(
         padding: const EdgeInsets.symmetric(vertical: 4),
         child: Align(
           alignment: Alignment.centerRight,
@@ -324,19 +399,9 @@ class MessageBubble extends StatelessWidget {
                 ),
         ),
       );
-      return TweenAnimationBuilder<double>(
-        tween: Tween<double>(begin: 0.0, end: 1.0),
-        duration: const Duration(milliseconds: 180),
-        curve: Curves.easeOut,
-        builder: (context, opacity, child) => Opacity(
-          opacity: opacity,
-          child: child,
-        ),
-        child: userContent,
-      );
     }
 
-    final assistantContent = Padding(
+    return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Align(
         alignment: Alignment.centerLeft,
@@ -345,76 +410,66 @@ class MessageBubble extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             bubble,
-            Padding(
-              padding: const EdgeInsets.only(top: 2, left: 2),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.center,
-                children: [
-                _CopyButton(text: text),
+            if (!isPlaceholder)
+              Padding(
+                padding: const EdgeInsets.only(top: 2, left: 2),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    _CopyButton(text: text),
 
-                if (onRegenerate != null) ...[
-                  const SizedBox(width: 8),
-                  IconButton(
-                    onPressed: onRegenerate,
-                    tooltip: 'Regenerate',
-                    style: IconButton.styleFrom(
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      visualDensity: VisualDensity.compact,
-                    ),
-                    constraints: const BoxConstraints.tightFor(
-                      width: 24,
-                      height: 24,
-                    ),
-                    padding: EdgeInsets.zero,
-                    iconSize: 14,
-                    color: kMuted,
-                    icon: const Icon(Icons.refresh_rounded),
-                  ),
-                ],
-
-                if (message is AssistantMessage &&
-                    (message as AssistantMessage).model != null) ...[
-                  const SizedBox(width: 8),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 7,
-                      vertical: 2.5,
-                    ),
-                    decoration: BoxDecoration(
-                      color: kInputBg,
-                      borderRadius: BorderRadius.circular(6),
-                      border: Border.all(
-                        color: kBorder.withValues(alpha: 0.6),
-                      ),
-                    ),
-                    child: Text(
-                      (message as AssistantMessage).model!,
-                      style: const TextStyle(
+                    if (onRegenerate != null) ...[
+                      const SizedBox(width: 8),
+                      IconButton(
+                        onPressed: onRegenerate,
+                        tooltip: 'Regenerate',
+                        style: IconButton.styleFrom(
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          visualDensity: VisualDensity.compact,
+                        ),
+                        constraints: const BoxConstraints.tightFor(
+                          width: 24,
+                          height: 24,
+                        ),
+                        padding: EdgeInsets.zero,
+                        iconSize: 14,
                         color: kMuted,
-                        fontSize: 10,
-                        fontWeight: FontWeight.w500,
+                        icon: const Icon(Icons.refresh_rounded),
                       ),
-                    ),
-                  ),
-                ],
-              ],
+                    ],
+
+                    if (message is AssistantMessage &&
+                        (message as AssistantMessage).model != null) ...[
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 7,
+                          vertical: 2.5,
+                        ),
+                        decoration: BoxDecoration(
+                          color: kInputBg,
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(
+                            color: kBorder.withValues(alpha: 0.6),
+                          ),
+                        ),
+                        child: Text(
+                          (message as AssistantMessage).model!,
+                          style: const TextStyle(
+                            color: kMuted,
+                            fontSize: 10,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
               ),
-            ),
           ],
         ),
       ),
-    );
-
-    return TweenAnimationBuilder<double>(
-      tween: Tween<double>(begin: 0.0, end: 1.0),
-      duration: const Duration(milliseconds: 180),
-      curve: Curves.easeOut,
-      builder: (context, opacity, child) => Opacity(
-        opacity: opacity,
-        child: child,
-      ),
-      child: assistantContent,
     );
   }
 }
@@ -422,7 +477,9 @@ class MessageBubble extends StatelessWidget {
 class _StreamingAssistantText extends StatelessWidget {
   final String text;
 
-  const _StreamingAssistantText({required this.text});
+  const _StreamingAssistantText({
+    required this.text,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -430,19 +487,21 @@ class _StreamingAssistantText extends StatelessWidget {
         text.startsWith('…thinking') ||
         text.startsWith('…compacting');
 
-    return TweenAnimationBuilder<double>(
-      key: ValueKey(isPlaceholder ? 'placeholder' : 'streamed-text'),
-      tween: Tween<double>(begin: 0.0, end: 1.0),
-      duration: const Duration(milliseconds: 220),
-      curve: Curves.easeOut,
-      builder: (context, opacity, child) => Opacity(
-        opacity: opacity,
-        child: child,
-      ),
-      child: GptMarkdown(
+    if (isPlaceholder) {
+      return Text(
         text,
-        style: const TextStyle(color: kText, fontSize: 15),
-      ),
+        style: TextStyle(
+          color: kMuted.withValues(alpha: 0.85),
+          fontSize: 14,
+          fontStyle: FontStyle.italic,
+          height: 1.3,
+        ),
+      );
+    }
+
+    return GptMarkdown(
+      text,
+      style: const TextStyle(color: kText, fontSize: 15),
     );
   }
 }
