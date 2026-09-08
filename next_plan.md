@@ -1,6 +1,6 @@
 # Next Plan — Status & Roadmap
 
-> **Updated Aug 28 2026.** P0, P1, P1.5, P2 and **P3 (multimodality) are shipped — v0.2.1**. P4 is next: **P4a = guided refactor (v0.3.0) first, then P4b = hardening + memory (v0.3.1)** — swapped from previous order per Aug 28 plan.
+> **Updated Sep 2026.** P0, P1, P1.5, P2, P3 (multimodality), P4a (guided refactor), and P4b (hardening + memory) are all shipped — **v0.5.0**.
 
 ---
 
@@ -365,7 +365,7 @@ OCR (~300KB, no camera perm), BiometricPrompt gating for destructive actions.
 
 ## 🧭 P4 — Guided refactor + hardening release (swapped Aug 28: ex-P4b now first)
 
-### P4a — v0.3.0 (big: guided service-by-service refactor) — NOW FIRST (was P4b)
+### P4a — v0.5.0 (guided service-by-service refactor)
 
 Context: ~99% of the Dart code is AI-written; the goal is to understand
 and own it, then shrink and harden it — NOT a line-by-line rewrite.
@@ -396,7 +396,7 @@ Rules of engagement during P4a:
 - Any bug found during walkthrough gets fixed inline but noted separately.
 - Each service lands as its own commit so regressions are bisectable.
 
-### P4b — v0.3.1 (small release, after refactor) — NOW SECOND (was v0.2.5)
+### P4b — v0.5.0 (hardening + memory)
 
 1. **Play Protect / policy hardening (legal-ish, feature-preserving).**
    Goal: reduce the chance Play Protect flags Errand as a threat without
