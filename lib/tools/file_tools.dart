@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:math';
 
 import '../agent/tool.dart';
+import '../services/tool_output_file_service.dart';
 // import '../services/workspace.dart';
 import '../types/tool.dart';
 import '../internal/document_reading/document_reader.dart';
@@ -203,16 +204,24 @@ Tool readTool(
               header: 'File: ${file.path}',
               withLineNumbers: true,
             );
+            final finalOutput = await ToolOutputFileService.instance.processOutput(
+              callId: call.id,
+              output: filtered,
+            );
             return ToolCallResult(
               id: call.id,
               ok: true,
-              output: filtered,
+              output: finalOutput,
             );
           }
+          final finalOutput = await ToolOutputFileService.instance.processOutput(
+            callId: call.id,
+            output: outputText,
+          );
           return ToolCallResult(
             id: call.id,
             ok: true,
-            output: outputText,
+            output: finalOutput,
           );
         }
 
@@ -244,7 +253,11 @@ Tool readTool(
               header: header,
               withLineNumbers: true,
             );
-            return ToolCallResult(id: call.id, ok: true, output: filtered);
+            final finalOutput = await ToolOutputFileService.instance.processOutput(
+              callId: call.id,
+              output: filtered,
+            );
+            return ToolCallResult(id: call.id, ok: true, output: finalOutput);
           }
 
           final nextOffset = offset + bytes.length;
@@ -260,7 +273,11 @@ Tool readTool(
           $text
         ''';
 
-          return ToolCallResult(id: call.id, ok: true, output: formatted);
+          final finalOutput = await ToolOutputFileService.instance.processOutput(
+            callId: call.id,
+            output: formatted,
+          );
+          return ToolCallResult(id: call.id, ok: true, output: finalOutput);
         } finally {
           await raf.close();
         }
@@ -438,10 +455,15 @@ Tool listTool(WorkingDirectory workspace) => Tool(
         if (end < total) 'use offset=$end for the next page',
       ],
     ];
+    final fullText = countOnly ? header.join('\n') : [...header, ...outputEntries].join('\n');
+    final finalOutput = await ToolOutputFileService.instance.processOutput(
+      callId: call.id,
+      output: fullText,
+    );
     return ToolCallResult(
       id: call.id,
       ok: true,
-      output: countOnly ? header.join('\n') : [...header, ...outputEntries].join('\n'),
+      output: finalOutput,
     );
   },
 );
@@ -551,11 +573,11 @@ Future<File?> _resolveReadableFile(
       }
       return path.normalize(norm) == path.normalize(cleanPath);
     });
-    // Also allow bare /data/... cache paths without needing the callback
-    // (covers legacy attachments before this callback was wired).
-    final isPickerCache =
-        cleanPath.startsWith('/data/') && cleanPath.contains('/cache/');
-    if ((isAttached || isPickerCache) && await File(cleanPath).exists()) {
+    // Also allow cache paths and spilled tool output files without needing the callback.
+    final isCacheFile =
+        (cleanPath.contains('/cache/') || cleanPath.contains('tool_outputs')) &&
+        await File(cleanPath).exists();
+    if ((isAttached || isCacheFile) && await File(cleanPath).exists()) {
       return File(path.normalize(cleanPath));
     }
   }
@@ -816,19 +838,25 @@ Tool findTool(WorkingDirectory workspace) => Tool(
       outputEntries = filteredText.split('\n');
     }
 
+    final fullText = [
+      ...header,
+      if (window.isEmpty && total > 0)
+        'offset $offset is beyond the last match ($total total); use offset < $total'
+      else ...[
+        'showing ${start + 1}–$end of $total',
+        if (end < total) 'use offset=$end for the next page',
+      ],
+      ...outputEntries,
+    ].join('\n');
+    final finalOutput = await ToolOutputFileService.instance.processOutput(
+      callId: call.id,
+      output: fullText,
+    );
+
     return ToolCallResult(
       id: call.id,
       ok: true,
-      output: [
-        ...header,
-        if (window.isEmpty && total > 0)
-          'offset $offset is beyond the last match ($total total); use offset < $total'
-        else ...[
-          'showing ${start + 1}–$end of $total',
-          if (end < total) 'use offset=$end for the next page',
-        ],
-        ...outputEntries,
-      ].join('\n'),
+      output: finalOutput,
     );
   },
 );

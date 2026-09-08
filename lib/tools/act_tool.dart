@@ -1,5 +1,6 @@
 import 'package:errand/agent/tool.dart';
 import 'package:errand/services/a11y_service.dart';
+import 'package:errand/services/tool_output_file_service.dart';
 import 'package:errand/tools/grep_filter.dart';
 import 'package:errand/types/tool.dart';
 
@@ -236,10 +237,15 @@ Future<ToolCallResult> handleActAction(ToolCall call, A11yService svc) async {
           }
           outline = GrepFilter.filter(body, grep, header: header);
         }
+        final combined = '${result.output}\n\n$sectionHeader\n$outline';
+        final finalOutput = await ToolOutputFileService.instance.processOutput(
+          callId: call.id,
+          output: combined,
+        );
         return ToolCallResult(
           id: result.id,
           ok: true,
-          output: '${result.output}\n\n$sectionHeader\n$outline',
+          output: finalOutput,
         );
       }
     }

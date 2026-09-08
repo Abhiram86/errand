@@ -241,13 +241,13 @@ policy limits mapped; scope split into tiers below.**
 > (#11 UI), risk-class metadata (#7), Send-tier opt-in, coordinate fallback
 > (#13).
 >
-> **Deferred idea (ColorOS alarm session, Aug 23 2026):** ViewPager page
-> filtering — tabbed apps keep off-screen pages in the tree, polluting
-> outlines. Skipped because detection is fragile (ViewPager2 IS a
-> RecyclerView; `[selected]` anchors are OEM-specific) and a wrong guess
-> hides the live screen. Mitigated instead via the active-tab header +
-> near_label scroll targeting + prompt guidance. Revisit only if outline
-> noise actually breaks flows.
+> **ViewPager off-screen pollution — SHIPPED Sep 2026 (`cf31018`):** Solved via
+> viewport partitioning! Rather than fragile heuristic page drops, elements are
+> partitioned by viewport bounds. Visible items are emitted first in visual reading
+> order; off-screen nodes (e.g. adjacent ViewPager tabs like WhatsApp Communities)
+> are grouped under a distinct `--- Off-screen ---` section. Combined with upfront
+> full ref mapping, interactive line prioritization, repetitive static list compression,
+> and TalkBack boilerplate stripping.
 
 **Consent model — risk-tiered three-way gate, not binary Approve/Deny.**
 Rule of thumb: *the model may prepare anything, only the user pulls
@@ -428,13 +428,12 @@ Rules of engagement during P4a:
    - System-prompt hook: inject a short "known facts" digest so the agent
      uses memory without explicit recall calls when relevant.
    - Note: was v4 in old plan; now v5 after P3's `attachedUrisJson` consumed v4.
-4. **Large Tool Output File-Caching (replaces 24k char hard clamp).**
-   - Instead of hard-clamping tool outputs to 24k chars (which consumes too much context and still cuts off critical content):
-   - When a tool output exceeds a compact limit (~3–4k chars), spill the full output into a cache file via `path_provider` (`cache/tool_outputs/tool-{id}-output.txt`) with an expiration TTL (ideally ~10 min).
-   - Return only a concise 3–4k char preview along with the created file path:
-     `[Output truncated from N chars. Full output saved to: <filePath>. Use read tool with offset and length to inspect further.]`
-   - If output fits within ~3–4k chars, return it inline directly (no file created).
-   - Wires cleanly with the existing `read` tool's `offset` and `length` pagination without bloating the LLM context window.
+4. **Large Tool Output File-Caching (replaces 24k char hard clamp) — ✅ SHIPPED Sep 2026.**
+   - Created `ToolOutputFileService` (`lib/services/tool_output_file_service.dart`) to spill outputs exceeding 6k characters into a cache file via `path_provider` (`cache/tool_outputs/tool-{id}-output.txt`) with a 10-minute TTL.
+   - Returns a concise preview combining the initial 2k (headers preserved) and final 2k characters along with the created file path:
+     `[... Output truncated: showing first X and last Y of Z characters. Full output saved to: <filePath> (TTL: 10m). Use read tool with path: "<filePath>" (supports grep, offset, length) to inspect further. ...]`
+   - Applied across all text-heavy tools (`screen`, `act then_read`, `read`, `workspace` list/find, `webfetch`, `websearch`) and integrated into `ToolRegistry.execute` as a universal safety net.
+   - Updated `_resolveReadableFile` so the `read` tool can directly open and grep spilled output files.
 5. **`grep` argument for data-heavy tools (`screen_tool`, `read_tool`, `workspace_tool`) — ✅ SHIPPED Sep 2026.**
    - Added optional `grep` argument (case-insensitive substring/regex filter via `GrepFilter`) across `screen` (outline filter, forces full read), `read` (document/text filter with line numbers, expands unpaginated length to 512KB), and `workspace` (`find`/`list` output entries filter).
    - Allows the model to pull only matching lines (e.g. `screen read grep:"Total"` or `read path:"..." grep:"API_KEY"`) instead of loading 2–4k tokens of irrelevant content.

@@ -1,6 +1,7 @@
 import '../agent/tool.dart';
 import '../services/app_settings.dart';
 import '../services/tavily_client.dart';
+import '../services/tool_output_file_service.dart';
 import '../types/tool.dart';
 
 const kMaxWebSearchContentChars = 1200;
@@ -76,7 +77,11 @@ Tool webSearchTavilyTool({TavilyClient? client}) {
             ..writeln(content);
         }
 
-        return ToolCallResult(id: call.id, ok: true, output: output.toString());
+        final finalOutput = await ToolOutputFileService.instance.processOutput(
+          callId: call.id,
+          output: output.toString(),
+        );
+        return ToolCallResult(id: call.id, ok: true, output: finalOutput);
       } catch (error) {
         return ToolCallResult.failure(call.id, 'Web search failed: $error');
       } finally {
@@ -164,11 +169,16 @@ Tool webFetchTool({TavilyClient? client}) {
           );
         }
 
+        final rawText = 'Source: $rawUrl\n\n$content';
+        final finalOutput = await ToolOutputFileService.instance.processOutput(
+          callId: call.id,
+          output: rawText,
+        );
+
         return ToolCallResult(
           id: call.id,
           ok: true,
-          output:
-              'Source: $rawUrl\n\n${_truncate(content, kMaxWebFetchContentChars)}',
+          output: finalOutput,
         );
       } catch (error) {
         return ToolCallResult.failure(call.id, 'Web fetch failed: $error');

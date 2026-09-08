@@ -1,6 +1,7 @@
 import 'package:errand/agent/tool.dart';
 import 'package:errand/services/a11y_service.dart';
 import 'package:errand/services/intent_service.dart';
+import 'package:errand/services/tool_output_file_service.dart';
 import 'package:errand/tools/grep_filter.dart';
 import 'package:errand/types/tool.dart';
 
@@ -196,16 +197,15 @@ Future<ToolCallResult> _read(ToolCall call, A11yService svc) async {
     outline = GrepFilter.filter(body, grep, header: header);
   }
 
-  // Hard char clamp mirrors the per-tool-result budget in context_budget.
-  const maxChars = 24000;
-  if (outline.length > maxChars) {
-    outline = '${outline.substring(0, maxChars)}\n[...truncated]';
-  }
+  final finalOutput = await ToolOutputFileService.instance.processOutput(
+    callId: call.id,
+    output: outline,
+  );
 
   return ToolCallResult(
     id: call.id,
     ok: true,
-    output: outline,
+    output: finalOutput,
   );
 }
 

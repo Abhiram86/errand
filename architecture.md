@@ -241,20 +241,55 @@ the `"a11y"` MethodChannel. Static-instance pattern: a null instance IS the
 detected via AppOps and surfaced as enablement guidance.
 
 - **`screen`** — read-only. Serializes the active window's node tree into a
-  compact outline (`[depth] Class "label" [clickable,…]`) with independent
-  depth/node/char caps; labels trim at word boundaries and empty-segment
-  glue is collapsed. Truncation reports WHICH cap hit (`capHit: chars |
-  nodes`) plus real counts, so the model doesn't retry uselessly.
-  `settle_ms` (default 350) guards against stale reads after navigation.
-  Global actions: back / home / recents / notifications / quick_settings /
-  lock_screen (API 28+).
+  compact outline (`[ref] Class "label" [flags] @bounds`) with viewport
+  partitioning and jitter reduction:
+  - **Visible vs. Off-screen**: Elements are partitioned by the screen viewport.
+    Visible elements are sorted visually (top-to-bottom, left-to-right) and emitted
+    first with priority on the character budget. Off-screen elements (e.g. adjacent
+    `ViewPager` tabs like WhatsApp Communities) are grouped under a distinct
+    `--- Off-screen ---` section, eliminating outline interleaving.
+  - **Upfront ref mapping**: The full `elementRefs` map is constructed across all
+    interactive elements before serialization, so `act tap ref:n` refs remain valid
+    regardless of outline character cuts.
+  - **Interactive prioritization**: Character budget reserves space for visible
+    actionable controls so bottom buttons aren't crowded out by walls of static text.
+  - **Jitter reduction**: Unlabeled non-interactive structural containers (`FrameLayout`,
+    `ViewGroup`, spacer `ImageView`) are omitted; redundant container child labels are
+    deduplicated; consecutive duplicate static lines collapse to `(xN)`; TalkBack
+    boilerplate (`"double tap to activate"`, `"tap to add new status"`) is stripped.
+  - Truncation reports WHICH cap hit (`capHit: chars | nodes`) plus real counts.
+  - `settle_ms` guards against stale reads after navigation.
+  - Global actions: back / home / recents / notifications / quick_settings /
+    lock_screen (API 28+).
 - **`act`** — gated injection, **Draft policy** (*agent prepares, user
   sends*): tap-by-label walks up to the nearest clickable ancestor;
+  tap-by-ref addresses `[ref]` from the last read;
   type uses ACTION_SET_TEXT on the focused field (never submits; password
   fields refused); scroll prefers node actions with a gesture fallback.
   Commit-looking controls (send/pay/delete/confirm…) are refused Dart-side
   by word-boundary matching, reporting the matched pattern. No coordinate
-  taps exist at all.
+  taps exist at all. With `then_read: true`, returns the updated screen
+  outline automatically in the same turn.
+
+## Large tool output file caching — `ToolOutputFileService`
+
+`ToolOutputFileService` (`lib/services/tool_output_file_service.dart`) acts as
+the universal context-protection layer for data-heavy tools:
+
+- **Spill threshold (6,000 chars)**: Outputs $\le$ 6k characters are returned inline
+  directly (no file overhead).
+- **10-minute TTL file caching**: When a tool produces $> 6,000$ characters, the
+  entire unabridged output is saved into `<cacheDir>/tool_outputs/tool-<callId>-output.txt`.
+  Expired files older than 10 minutes are swept automatically.
+- **Head/tail preview with header preservation**: Returns the initial 2,000 chars
+  (preserving all metadata headers like `Screen:`, `File:`, `Directory:`, `URL:`)
+  plus the final 2,000 chars, separated by a standard truncation banner containing the
+  exact file path and instructions to use `read` (with `grep`, `offset`, and `length`)
+  to inspect deeper.
+- **Tool integration**: Integrated across `screen`, `act then_read`, `read`,
+  `workspace` (`list`/`find`), `webfetch`, and `websearch`, with a safety-net wrap
+  in `ToolRegistry.execute`. `_resolveReadableFile` allows `read` to open and grep
+  the spilled output files seamlessly.
 
 ## Multimodality — `read` + `attached_files` (P3)
 
@@ -267,6 +302,8 @@ detected via AppOps and surfaced as enablement guidance.
 - Stream-stall watchdog for `chatStream` (inactivity timeout per SSE event; `_streamTimeout` only covers time-to-headers).
 - ✅ Done Sep 2026: per-model dynamic budget + pre/mid-step auto-compaction (was: entry-only truncation, `maxTurns` 18, full compaction TODO) — see `context_budget.dart: ContextBudget`.
 - ✅ Done Sep 2026: Office/PDF streaming hardening (`_StreamingOpenXmlPackage` guards, lazy `PooledPdfDocument` pages, `structuredDocuments` LRU + stat invalidation).
+- ✅ Done Sep 2026: Large tool output file-caching (`ToolOutputFileService` + 10-min TTL + 2k/2k preview + `read` tool cache resolution).
+- ✅ Done Sep 2026: Accessibility outline viewport partitioning (visible vs off-screen separation, upfront ref mapping, interactive line prioritization, jitter compression).
 - Safe-edit tool (`write`/`edit_file` with diff preview + undo) — needs the write-policy decision originally blocking it.
 - Local retrieval (embeddings/FTS) over recent docs for context budgeting.
 - Evaluate SAF as an alternative to `MANAGE_EXTERNAL_STORAGE` for Play distribution.

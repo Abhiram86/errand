@@ -8,6 +8,7 @@ import '../tools/workspace_tool.dart';
 import '../tools/intent_tool.dart';
 import '../tools/screen_tool.dart';
 import '../tools/web_tools.dart';
+import '../services/tool_output_file_service.dart';
 import '../types/tool.dart';
 
 /// Registry of available tools, keyed by name, plus a safe `execute` that
@@ -61,7 +62,11 @@ class ToolRegistry {
       return ToolCallResult.failure(call.id, 'Unknown tool: ${call.name}');
     }
     try {
-      return await tool.handler(call);
+      final result = await tool.handler(call);
+      return await ToolOutputFileService.instance.maybeSpillResult(
+        result,
+        callId: call.id,
+      );
     } catch (e) {
       return ToolCallResult.failure(call.id, '$e', type: 'handler_error');
     }
