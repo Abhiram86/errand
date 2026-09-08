@@ -1,6 +1,7 @@
 import 'package:errand/agent/tool.dart';
 import 'package:errand/services/a11y_service.dart';
 import 'package:errand/services/intent_service.dart';
+import 'package:errand/tools/grep_filter.dart';
 import 'package:errand/types/tool.dart';
 
 /// P2a screen tool (Tier S): read-only access to the active window's
@@ -71,6 +72,12 @@ Tool screenTool({A11yService? service}) {
               '(e.g. the app misbehaved). By default, unchanged screens return '
               'a one-line summary instead of a full outline — that is desired.',
         },
+        'grep': {
+          'type': 'string',
+          'description':
+              'Optional case-insensitive regular expression or substring filter. '
+              'When provided, returns only matching lines from the screen outline.',
+        },
       },
       'required': ['action'],
     },
@@ -127,7 +134,9 @@ Future<ToolCallResult> _read(ToolCall call, A11yService svc) async {
   final settleMsRaw = call.arguments['settle_ms'];
   final settleMs =
       settleMsRaw is int && settleMsRaw > 0 ? settleMsRaw.clamp(0, 5000) : 350;
-  final full = call.arguments['full'] == true;
+  final grep = (call.arguments['grep'] as String?)?.trim();
+  final hasGrep = grep != null && grep.isNotEmpty;
+  final full = call.arguments['full'] == true || hasGrep;
 
   // Settle time: reading immediately after open_app/navigation returns the
   // previous screen. The default covers most transitions; the model raises
@@ -175,6 +184,18 @@ Future<ToolCallResult> _read(ToolCall call, A11yService svc) async {
           'Re-read with a higher max_nodes for more detail.]';
     }
   }
+
+  if (hasGrep) {
+    final lines = outline.split('\n');
+    String? header;
+    String body = outline;
+    if (lines.isNotEmpty && lines.first.startsWith('Screen:')) {
+      header = lines.first;
+      body = lines.sublist(1).join('\n');
+    }
+    outline = GrepFilter.filter(body, grep, header: header);
+  }
+
   // Hard char clamp mirrors the per-tool-result budget in context_budget.
   const maxChars = 24000;
   if (outline.length > maxChars) {

@@ -56,7 +56,7 @@ class A11yService {
 
   /// Effect check: did the screen change since the last full read?
   /// Returns {ok, changed: bool}. Never dumps content.
-  Future<Map<String, dynamic>> probeChanged({int settleMs = 600}) async {
+  Future<Map<String, dynamic>> probeChanged({int settleMs = 1000}) async {
     if (settleMs > 0) {
       await Future<void>.delayed(Duration(milliseconds: settleMs));
     }

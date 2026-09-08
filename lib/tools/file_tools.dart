@@ -6,6 +6,7 @@ import '../agent/tool.dart';
 // import '../services/workspace.dart';
 import '../types/tool.dart';
 import '../internal/document_reading/document_reader.dart';
+import 'grep_filter.dart';
 
 import 'package:path/path.dart' as path;
 
@@ -103,13 +104,22 @@ Tool readTool(
               'for structured files',
           'default': 512,
         },
+        'grep': {
+          'type': 'string',
+          'description':
+              'Optional case-insensitive regular expression or substring filter. '
+              'When provided, returns only matching lines from the file content.',
+        },
       },
       'required': ['path'],
     },
     handler: (call) async {
       final rawPath = (call.arguments['path'] as String?)?.trim();
       final offset = (call.arguments['offset'] as num?)?.toInt() ?? 0;
-      final length = (call.arguments['length'] as num?)?.toInt() ?? 512;
+      final grep = (call.arguments['grep'] as String?)?.trim();
+      final hasGrep = grep != null && grep.isNotEmpty;
+      final length = (call.arguments['length'] as num?)?.toInt() ??
+          (hasGrep ? kMaxReadBytes : 512);
 
       // Validate arguments.
       if (rawPath == null || rawPath.isEmpty) {
@@ -185,10 +195,24 @@ Tool readTool(
 
         final structured = document?.read(offset: offset, length: length);
         if (structured != null) {
+          final outputText = structured.toToolOutput(file.path);
+          if (hasGrep) {
+            final filtered = GrepFilter.filter(
+              outputText,
+              grep,
+              header: 'File: ${file.path}',
+              withLineNumbers: true,
+            );
+            return ToolCallResult(
+              id: call.id,
+              ok: true,
+              output: filtered,
+            );
+          }
           return ToolCallResult(
             id: call.id,
             ok: true,
-            output: structured.toToolOutput(file.path),
+            output: outputText,
           );
         }
 
@@ -211,6 +235,17 @@ Tool readTool(
           final bytes = await raf.read(end - offset);
 
           final text = utf8.decode(bytes, allowMalformed: true);
+
+          if (hasGrep) {
+            final header = 'File: ${file.path} (read $offset–$end of $totalBytes bytes)';
+            final filtered = GrepFilter.filter(
+              text,
+              grep,
+              header: header,
+              withLineNumbers: true,
+            );
+            return ToolCallResult(id: call.id, ok: true, output: filtered);
+          }
 
           final nextOffset = offset + bytes.length;
           final hasMore = nextOffset < totalBytes;
@@ -286,6 +321,12 @@ Tool listTool(WorkingDirectory workspace) => Tool(
             'page.',
         'default': 0,
         'minimum': 0,
+      },
+      'grep': {
+        'type': 'string',
+        'description':
+            'Optional case-insensitive regular expression or substring filter to '
+            'filter returned directory entries.',
       },
     },
   },
@@ -378,6 +419,13 @@ Tool listTool(WorkingDirectory workspace) => Tool(
     final end = min(start + limit, total);
     final window = results.sublist(start, end);
 
+    var outputEntries = window;
+    final grep = (call.arguments['grep'] as String?)?.trim();
+    if (grep != null && grep.isNotEmpty) {
+      final filteredText = GrepFilter.filter(window.join('\n'), grep);
+      outputEntries = filteredText.split('\n');
+    }
+
     final header = [
       'current directory: ${target.path}',
       'found $total file(s)',
@@ -393,7 +441,7 @@ Tool listTool(WorkingDirectory workspace) => Tool(
     return ToolCallResult(
       id: call.id,
       ok: true,
-      output: countOnly ? header.join('\n') : [...header, ...window].join('\n'),
+      output: countOnly ? header.join('\n') : [...header, ...outputEntries].join('\n'),
     );
   },
 );
@@ -644,6 +692,12 @@ Tool findTool(WorkingDirectory workspace) => Tool(
         'default': 0,
         'minimum': 0,
       },
+      'grep': {
+        'type': 'string',
+        'description':
+            'Optional case-insensitive regular expression or substring filter to '
+            'filter returned file/directory paths.',
+      },
     },
     'required': ['path', 'pattern'],
   },
@@ -755,6 +809,13 @@ Tool findTool(WorkingDirectory workspace) => Tool(
     final end = min(start + limit, total);
     final window = results.sublist(start, end);
 
+    var outputEntries = window;
+    final grep = (call.arguments['grep'] as String?)?.trim();
+    if (grep != null && grep.isNotEmpty) {
+      final filteredText = GrepFilter.filter(window.join('\n'), grep);
+      outputEntries = filteredText.split('\n');
+    }
+
     return ToolCallResult(
       id: call.id,
       ok: true,
@@ -766,7 +827,7 @@ Tool findTool(WorkingDirectory workspace) => Tool(
           'showing ${start + 1}–$end of $total',
           if (end < total) 'use offset=$end for the next page',
         ],
-        ...window,
+        ...outputEntries,
       ].join('\n'),
     );
   },

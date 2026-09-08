@@ -94,6 +94,59 @@ void main() {
       expect(res.output, contains('Tapped [1]'));
       expect(res.output, contains('[Screen after action]: UNCHANGED'));
     });
+
+    test('filters screen outline with grep when then_read is true and shows tap info', () async {
+      final mock = MockA11yService()
+        ..screenOutline =
+            'Screen: package=com.example\n[1] Button "Next"\n[2] Switch "Dark theme"';
+      final tool = actTool(service: mock);
+
+      final res = await tool.handler(
+        const ToolCall(
+          id: 'call_grep',
+          name: 'act',
+          arguments: {
+            'action': 'tap',
+            'ref': 1,
+            'then_read': true,
+            'grep': 'Dark',
+          },
+        ),
+      );
+
+      expect(res.ok, isTrue);
+      // Tap information is always preserved at the top
+      expect(res.output, contains('Tapped [1]'));
+      expect(res.output, contains('[Screen after action (grep: "Dark")]:'));
+      expect(res.output, contains('Screen: package=com.example'));
+      expect(res.output, contains('[2] Switch "Dark theme"'));
+      expect(res.output, isNot(contains('[1] Button "Next"')));
+    });
+
+    test('passing grep automatically reads and returns tap info with matches', () async {
+      final mock = MockA11yService()
+        ..screenOutline =
+            'Screen: package=com.example\n[1] Button "Next"\n[2] Switch "Dark theme"';
+      final tool = actTool(service: mock);
+
+      final res = await tool.handler(
+        const ToolCall(
+          id: 'call_grep_implicit',
+          name: 'act',
+          arguments: {
+            'action': 'tap',
+            'ref': 1,
+            'grep': 'Dark',
+          },
+        ),
+      );
+
+      expect(res.ok, isTrue);
+      expect(res.output, contains('Tapped [1]'));
+      expect(res.output, contains('[Screen after action (grep: "Dark")]:'));
+      expect(res.output, contains('[2] Switch "Dark theme"'));
+      expect(res.output, isNot(contains('[1] Button "Next"')));
+    });
   });
 }
 
@@ -126,7 +179,7 @@ class MockA11yService extends A11yService {
   }
 
   @override
-  Future<Map<String, dynamic>> probeChanged({int settleMs = 600}) async {
+  Future<Map<String, dynamic>> probeChanged({int settleMs = 1000}) async {
     return {'ok': true, 'changed': true};
   }
 

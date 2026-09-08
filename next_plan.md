@@ -435,10 +435,10 @@ Rules of engagement during P4a:
      `[Output truncated from N chars. Full output saved to: <filePath>. Use read tool with offset and length to inspect further.]`
    - If output fits within ~3–4k chars, return it inline directly (no file created).
    - Wires cleanly with the existing `read` tool's `offset` and `length` pagination without bloating the LLM context window.
-5. **`grep` argument for data-heavy tools (`screen_tool`, `read_tool`, `workspace_tool`).**
-   - Add an optional `grep` argument (case-insensitive substring/regex filter) across `screen` (outline filter), `read` (document/text filter), and `workspace` (`find`/`list` output filter).
+5. **`grep` argument for data-heavy tools (`screen_tool`, `read_tool`, `workspace_tool`) — ✅ SHIPPED Sep 2026.**
+   - Added optional `grep` argument (case-insensitive substring/regex filter via `GrepFilter`) across `screen` (outline filter, forces full read), `read` (document/text filter with line numbers, expands unpaginated length to 512KB), and `workspace` (`find`/`list` output entries filter).
    - Allows the model to pull only matching lines (e.g. `screen read grep:"Total"` or `read path:"..." grep:"API_KEY"`) instead of loading 2–4k tokens of irrelevant content.
-   - Evaluated before caching/truncation, allowing single-turn precision retrieval.
+   - Evaluated before caching/truncation, allowing single-turn precision retrieval. Safe fallback to escaped literal match on invalid regex syntax.
 
 **Backlog (deferred from P3):** `write`/`edit_file` with diff preview + undo — needs write-policy decision, queued after P4b.
 

@@ -226,7 +226,7 @@ class AgentLoop {
   }
 
   /// True when the previous batch call already waited for the screen to
-  /// settle: `act` + `then_read:true` sleeps 400ms and re-reads internally
+  /// settle: `act` + `then_read:true` sleeps 1000ms and re-reads internally
   /// on success, so stacking another 350ms inter-call settle just idles.
   static bool _prevAlreadySettled(
     LlmMessage message,

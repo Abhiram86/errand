@@ -49,6 +49,12 @@ Tool workspaceTool(WorkingDirectory workspace) {
           'default': 3,
           'minimum': 0,
         },
+        'grep': {
+          'type': 'string',
+          'description':
+              'Optional case-insensitive regular expression or substring filter '
+              'to filter the list/find output lines.',
+        },
       },
       'required': ['action'],
     },

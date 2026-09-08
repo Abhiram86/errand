@@ -1,5 +1,6 @@
 import 'package:errand/agent/tool.dart';
 import 'package:errand/services/a11y_service.dart';
+import 'package:errand/tools/grep_filter.dart';
 import 'package:errand/types/tool.dart';
 
 /// P2b act tool (Tier A, Draft-mode): semantic injection only — tap by label,
@@ -28,23 +29,26 @@ Tool actTool({A11yService? service}) {
         'outline in the same tool result (saves an entire round-trip turn). DRAFT POLICY: '
         'Errand prepares, the user sends. Taps on final-commit controls '
         '(Send/Post/Pay/Delete/Confirm...) are refused — tell the user to review and '
-        'press those themselves. Typing never submits anything. Requires screen '
-        'access to be enabled (same as the screen tool).',
+        'confirm the action themselves.',
     parameters: {
       'type': 'object',
       'properties': {
         'action': {
           'type': 'string',
-          'enum': ['tap', 'type', 'scroll', 'fill', 'tab', 'long_press', 'esc'],
+          'enum': [
+            'tap',
+            'type',
+            'scroll',
+            'fill',
+            'tab',
+            'long_press',
+            'esc',
+          ],
           'description':
-              'tap = click an element by "ref" number (from the last read) or '
-              'by "label"; type = set focused field content (use "text"); '
-              'scroll = scroll the page (use "direction": up/down/left/right); '
-              'fill = tap a labeled form field AND type into it atomically with '
-              'verification (use "ref" or "label" + "text"; preferred for web '
-              'forms); '
-              'tab = move focus to the next form field; long_press = long-click '
-              'a "ref"/"label" element; esc = send Escape (dismiss popups)',
+              'tap = click an element by ref or label; type = set text in '
+              'focused field; fill = tap an input field then type text into '
+              'it; scroll = swipe/scroll in direction; tab = press Tab; '
+              'long_press = press-and-hold (use "ref"); esc = press Escape',
         },
         'label': {
           'type': 'string',
@@ -115,6 +119,22 @@ Tool actTool({A11yService? service}) {
               'Optional: automatically read and include the updated screen outline '
               'after this action completes. Highly recommended to save a full turn.',
         },
+        'settle_ms': {
+          'type': 'integer',
+          'description':
+              'Milliseconds to wait before reading the screen when then_read:true '
+              '(default 1000ms, clamp 0–5000). Use higher values (~1200–2000) '
+              'after opening apps, page transitions, or system-wide settings '
+              '(e.g. Dark theme).',
+          'minimum': 0,
+          'maximum': 5000,
+        },
+        'grep': {
+          'type': 'string',
+          'description':
+              'Optional case-insensitive regular expression or substring filter. '
+              'When then_read:true, filters the updated screen outline to only matching lines.',
+        },
       },
       'required': ['action'],
     },
@@ -181,11 +201,20 @@ Future<ToolCallResult> handleActAction(ToolCall call, A11yService svc) async {
           '(use "label" + "text"), tab, long_press, esc.');
   }
 
-  if (result.ok && call.arguments['then_read'] == true) {
-    await Future<void>.delayed(const Duration(milliseconds: 400));
-    final readRes = await svc.readScreen(full: false);
+  final grep = (call.arguments['grep'] as String?)?.trim();
+  final hasGrep = grep != null && grep.isNotEmpty;
+  final thenRead = call.arguments['then_read'] == true || hasGrep;
+
+  if (result.ok && thenRead) {
+    final settleMsRaw = call.arguments['settle_ms'];
+    final settleMs =
+        settleMsRaw is int && settleMsRaw >= 0 ? settleMsRaw.clamp(0, 5000) : 1000;
+    if (settleMs > 0) {
+      await Future<void>.delayed(Duration(milliseconds: settleMs));
+    }
+    final readRes = await svc.readScreen(full: hasGrep);
     if (readRes['ok'] == true) {
-      if (readRes['unchanged'] == true) {
+      if (readRes['unchanged'] == true && !hasGrep) {
         return ToolCallResult(
           id: result.id,
           ok: true,
@@ -193,11 +222,24 @@ Future<ToolCallResult> handleActAction(ToolCall call, A11yService svc) async {
               '${result.output}\n\n[Screen after action]: UNCHANGED (screen is identical to previous read)',
         );
       } else {
-        final outline = readRes['outline'] as String? ?? '';
+        var outline = readRes['outline'] as String? ?? '';
+        final sectionHeader = hasGrep
+            ? '[Screen after action (grep: "$grep")]:'
+            : '[Screen after action]:';
+        if (hasGrep) {
+          final lines = outline.split('\n');
+          String? header;
+          String body = outline;
+          if (lines.isNotEmpty && lines.first.startsWith('Screen:')) {
+            header = lines.first;
+            body = lines.sublist(1).join('\n');
+          }
+          outline = GrepFilter.filter(body, grep, header: header);
+        }
         return ToolCallResult(
           id: result.id,
           ok: true,
-          output: '${result.output}\n\n[Screen after action]:\n$outline',
+          output: '${result.output}\n\n$sectionHeader\n$outline',
         );
       }
     }
@@ -251,16 +293,24 @@ Future<ToolCallResult> _tap(ToolCall call, A11yService svc) async {
     // Numeric-ref path: no label matching, no commit-word policy (refs are
     // only issued from reads the model already made deliberately).
     final res = await svc.tapByRef(refRaw);
-    final probe = await svc.probeChanged();
-    final effect = probe['changed'] == true
-        ? '[effect: screen CHANGED — tap landed]'
-        : '[effect: NO observable change — tap was likely swallowed by an overlay or dead element]';
     if (res['ok'] != true) {
       return ToolCallResult.failure(
         call.id,
-        '${res['message'] ?? 'Tap failed.'} $effect',
+        res['message'] ?? 'Tap failed.',
       );
     }
+    final hasGrep = (call.arguments['grep'] as String?)?.trim().isNotEmpty == true;
+    if (call.arguments['then_read'] == true || hasGrep) {
+      return ToolCallResult(
+        id: call.id,
+        ok: true,
+        output: res['message'] ?? '',
+      );
+    }
+    final probe = await svc.probeChanged();
+    final effect = probe['changed'] == true
+        ? '[effect: screen CHANGED — tap landed]'
+        : '[effect: NO observable change — the UI may be animating or took no visible effect]';
     return ToolCallResult(
       id: call.id,
       ok: true,
@@ -298,10 +348,18 @@ Future<ToolCallResult> _tap(ToolCall call, A11yService svc) async {
       (res['message'] as String?) ?? 'Tap failed for "$label".',
     );
   }
+  final hasGrepText = (call.arguments['grep'] as String?)?.trim().isNotEmpty == true;
+  if (call.arguments['then_read'] == true || hasGrepText) {
+    return ToolCallResult(
+      id: call.id,
+      ok: true,
+      output: (res['message'] as String?) ?? '',
+    );
+  }
   final probe = await svc.probeChanged();
   final effect = probe['changed'] == true
       ? '[effect: screen CHANGED]'
-      : '[effect: NO observable change — the tap may have been swallowed]';
+      : '[effect: NO observable change — the UI may be animating or took no visible effect]';
   return ToolCallResult(id: call.id, ok: true,
       output: '${res['message'] as String? ?? ''} $effect');
 }
