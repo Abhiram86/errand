@@ -5,7 +5,10 @@ import '../services/tool_output_file_service.dart';
 import '../types/tool.dart';
 
 const kMaxWebSearchContentChars = 1200;
-const kMaxWebFetchContentChars = 20000;
+
+/// Cap on extracted web content kept for spill (memory/disk guard). The
+/// `Source:` header stays first so previews preserve it.
+const kMaxWebFetchStoredChars = 100 * 1024;
 
 /// Builds a [TavilyClient] from the key stored in app settings.
 ///
@@ -161,12 +164,16 @@ Tool webFetchTool({TavilyClient? client}) {
           );
         }
 
-        final content = _stringValue(firstResult['raw_content'], '').trim();
+        var content = _stringValue(firstResult['raw_content'], '').trim();
         if (content.isEmpty) {
           return ToolCallResult.failure(
             call.id,
             'Tavily returned no readable content for $rawUrl.',
           );
+        }
+        if (content.length > kMaxWebFetchStoredChars) {
+          content =
+              '${content.substring(0, kMaxWebFetchStoredChars)}\n\n[... web content truncated at $kMaxWebFetchStoredChars chars ...]';
         }
 
         final rawText = 'Source: $rawUrl\n\n$content';

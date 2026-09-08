@@ -429,15 +429,24 @@ Rules of engagement during P4a:
      uses memory without explicit recall calls when relevant.
    - Note: was v4 in old plan; now v5 after P3's `attachedUrisJson` consumed v4.
 4. **Large Tool Output File-Caching (replaces 24k char hard clamp) — ✅ SHIPPED Sep 2026.**
-   - Created `ToolOutputFileService` (`lib/services/tool_output_file_service.dart`) to spill outputs exceeding 6k characters into a cache file via `path_provider` (`cache/tool_outputs/tool-{id}-output.txt`) with a 10-minute TTL.
-   - Returns a concise preview combining the initial 2k (headers preserved) and final 2k characters along with the created file path:
+   - Created `ToolOutputFileService` (`lib/services/tool_output_file_service.dart`) to spill outputs exceeding 6k characters into a cache file via `path_provider` (`cache/tool_outputs/tool-{id}_{hash}-output.txt`, atomic tmp+rename write, 512 KB store cap, max 50 files) with a 10-minute default TTL (configurable).
+   - Returns a concise preview reserving the leading metadata header block plus the initial 2k and final 2k characters along with the created file path:
      `[... Output truncated: showing first X and last Y of Z characters. Full output saved to: <filePath> (TTL: 10m). Use read tool with path: "<filePath>" (supports grep, offset, length) to inspect further. ...]`
-   - Applied across all text-heavy tools (`screen`, `act then_read`, `read`, `workspace` list/find, `webfetch`, `websearch`) and integrated into `ToolRegistry.execute` as a universal safety net.
-   - Updated `_resolveReadableFile` so the `read` tool can directly open and grep spilled output files.
+   - Applied across all text-heavy tools (`screen`, `act then_read`, `read`, `workspace` list/find, `webfetch` (extract stored up to 100k chars), `websearch`) and integrated into `ToolRegistry.execute` as a universal safety net (already-spilled previews pass through untouched so the two layers never overwrite each other).
+   - Sweep is opportunistic (expired/over-cap files deleted on the next large spill — no background timer). Updated `_resolveReadableFile` so the `read` tool opens only files inside the spill directory (post-normalize containment check) and reports a regenerate hint for expired spills.
 5. **`grep` argument for data-heavy tools (`screen_tool`, `read_tool`, `workspace_tool`) — ✅ SHIPPED Sep 2026.**
    - Added optional `grep` argument (case-insensitive substring/regex filter via `GrepFilter`) across `screen` (outline filter, forces full read), `read` (document/text filter with line numbers, expands unpaginated length to 512KB), and `workspace` (`find`/`list` output entries filter).
    - Allows the model to pull only matching lines (e.g. `screen read grep:"Total"` or `read path:"..." grep:"API_KEY"`) instead of loading 2–4k tokens of irrelevant content.
    - Evaluated before caching/truncation, allowing single-turn precision retrieval. Safe fallback to escaped literal match on invalid regex syntax.
+   - `GrepFilter` hardening: 200-char pattern cap, nested-quantifier ReDoS guard, 200-match cap with overflow note; structured grep filters body only (header reserved); `list`/`find` grep runs before pagination with honest match counts.
+
+6. **A11y lifecycle & toast UX — ✅ SHIPPED Sep 2026.**
+   - Service auto-disables on task removal (`onTaskRemoved`) and when `MainActivity` finishes (`onDestroy` with `isFinishing`) — keeps other apps secure per the sideload model.
+   - Cold start shows a dismissible toast (8s auto-dismiss) when screen access is off, with **Restricted-setting steps** when `isRestricted()` is true. Dismissal persists via `a11yPromptDismissed`; re-enable clears the flag so future off-cycles re-notify.
+   - Settings sheet (Tools tab) shows Active/Disabled chip with **Enable in Settings** / **Disable now** buttons; resumes refresh the chip via `WidgetsBindingObserver` (no stale state after toggling in system Settings).
+   - `intent` open-style actions (`open_file`/`open_url`/`open_app`/`settings`/`intent`) lazily append a paused-notice **after successful launch** — no wasted channel call on failures, no false positive on channel errors. UI replay (`replayIntentAction`) skips the check entirely.
+
+7. **Composer multi-line** — ✅ SHIPPED Sep 2026. `TextInputAction.newline` (was `send`), Enter inserts a newline up to 4 visible lines; Send button is the only submit path.
 
 **Backlog (deferred from P3):** `write`/`edit_file` with diff preview + undo — needs write-policy decision, queued after P4b.
 

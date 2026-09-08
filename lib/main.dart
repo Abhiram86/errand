@@ -52,6 +52,7 @@ Tool Selection Guide:
 String _systemPromptFor(
   Directory currentDir, {
   bool screenAccess = false,
+  bool screenRestricted = false,
 }) {
   var prompt = '$kSystemPrompt\nCurrent working directory: ${currentDir.path}';
   if (screenAccess) {
@@ -66,6 +67,16 @@ Screen & Device Capabilities (ENABLED):
   * For form inputs, use action:"fill" (label/ref + text).
   * Toggles & system switches: System settings (like Dark theme, Wi-Fi, Bluetooth) animate and take time to settle (~1s). Do NOT immediately re-tap a toggle switch or radio option if it appears unchanged right away; allow it to settle to avoid toggling it back off.
   * Safety (DRAFT POLICY): Prepare everything up to the final commit (type messages, fill forms, navigate), but let the user perform final-commit taps (Send, Pay, Delete, Submit).
+''';
+  } else {
+    prompt += '''
+
+Screen & Device Capabilities (DISABLED):
+- Errand's screen access (Accessibility Service) is currently OFF / PAUSED.
+- Note: Errand pauses screen access when closed to keep other apps secure.
+- You CANNOT inspect or interact with screens (both "screen" and "act" tools will fail while this is off).
+- If the user asks you to interact with an app, inspect their screen, or automate UI tasks, explain that Screen Access is currently off (paused when closed to keep other apps secure), and ask them to enable it in Settings > Accessibility or via Errand Settings > Tools.
+${screenRestricted ? '- IMPORTANT: this device blocks enabling ("Restricted setting" — sideloaded install). The user must FIRST do Settings > Apps > Errand > three-dot menu > Allow restricted settings, THEN enable Errand under Settings > Accessibility. Generic "turn it on" guidance will NOT work.' : ''}
 ''';
   }
   return prompt;
@@ -197,7 +208,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   /// Cached accessibility-service state (refreshed on start/resume) feeding
   /// the conditional screen-access block of the system prompt.
   bool _a11yAvailable = false;
-  bool _a11yDialogOpen = false;
+  bool _a11yRestricted = false;
+  bool _showA11yToast = false;
+  Timer? _a11yToastTimer;
 
   /// True for one frame after opening a conversation, so the leading-edge
   /// pager doesn't cascade-load history while the viewport is still at the top.
@@ -292,7 +305,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       await _checkStoragePermission(promptIfMissing: true);
       if (mounted) {
-        await _refreshA11yState();
+        await _refreshA11yState(triggerToast: true);
       }
     });
   }
@@ -447,6 +460,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _persistNow();
       unawaited(_loadModelCatalog(forceRefresh: false));
     }
+    // The Tools tab can enable/disable screen access without flagging a
+    // settings change — always re-read so the system-prompt cache can't go
+    // stale for the whole session. Silent: the sheet already showed state.
+    if (mounted) {
+      await _refreshA11yState();
+    }
     return changed;
   }
 
@@ -500,6 +519,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     _workingFlushTimer?.cancel();
     _workingElapsedTimer?.cancel();
+    _a11yToastTimer?.cancel();
     unawaited(_intentService.stopWorkIndicator());
     _persistTimer?.cancel();
     _conversationsSub?.cancel();
@@ -516,8 +536,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     if (state == AppLifecycleState.resumed) {
       _checkStoragePermission(promptIfMissing: true);
       // Re-check after the user may have toggled the service in Settings
-      // while we were backgrounded.
-      unawaited(_refreshA11yState());
+      // while we were backgrounded. Toast only on a true→false flip (freshly
+      // disabled) — a steady-off resume stays silent instead of re-nagging.
+      unawaited(_refreshA11yState().then((flippedToOff) {
+        if (flippedToOff) _triggerA11yToast();
+      }));
     } else if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.inactive ||
         state == AppLifecycleState.hidden) {
@@ -526,81 +549,62 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   /// Cached screen-access availability for the system prompt. Refreshed on
-  /// start and every resume — cheap channel call, avoids making
-  /// _systemPromptFor async.
-  Future<void> _refreshA11yState() async {
+  /// start, every resume, and after the Settings sheet — cheap channel calls,
+  /// avoids making _systemPromptFor async. Returns true when the service
+  /// flipped from available to unavailable.
+  Future<bool> _refreshA11yState({bool triggerToast = false}) async {
     try {
       final enabled = await _a11yService.isEnabled();
-      if (!mounted) return;
-      if (enabled != _a11yAvailable) {
-        setState(() => _a11yAvailable = enabled);
+      final restricted = enabled ? false : await _a11yService.isRestricted();
+      if (!mounted) return false;
+      final flippedToOff = _a11yAvailable && !enabled;
+      if (enabled != _a11yAvailable || restricted != _a11yRestricted) {
+        setState(() {
+          _a11yAvailable = enabled;
+          _a11yRestricted = restricted;
+        });
       }
-      // Mirror of the storage-permission popup: one-time offer when screen
-      // access is off. "Don't ask again" persists; resume re-checks state
-      // but never re-nags after a permanent dismissal.
-      if (!enabled) {
-        await _maybeShowA11yDialog();
+      if (enabled) {
+        _dismissA11yToast();
+        // Flow completed — a past dismissal must not mute future off-cycles.
+        unawaited(AppSettingsService.instance.setA11yPromptDismissed(false));
+      } else if (triggerToast) {
+        _triggerA11yToast();
       }
-    } catch (_) {}
+      return flippedToOff;
+    } catch (_) {
+      return false;
+    }
   }
 
-  Future<void> _maybeShowA11yDialog() async {
-    if (_a11yDialogOpen) return;
-    try {
-      if (await AppSettingsService.instance.a11yPromptDismissed()) return;
-    } catch (_) {
-      return; // settings unavailable — don't nag without an escape hatch
-    }
-    if (!mounted) return;
+  void _triggerA11yToast() {
+    if (!mounted || _a11yAvailable || _showA11yToast) return;
+    // Mirror of the old one-time dialog: an explicit dismissal persists, so
+    // cold starts don't nag forever. Fail-open when settings are unavailable.
+    AppSettingsService.instance.a11yPromptDismissed().then((dismissed) {
+      if (dismissed) return;
+      if (!mounted || _a11yAvailable || _showA11yToast) return;
+      setState(() => _showA11yToast = true);
+      _a11yToastTimer?.cancel();
+      _a11yToastTimer = Timer(const Duration(seconds: 8), () {
+        if (mounted && _showA11yToast) {
+          setState(() => _showA11yToast = false);
+        }
+      });
+    }).catchError((_) {
+      if (!mounted || _a11yAvailable || _showA11yToast) return;
+      setState(() => _showA11yToast = true);
+    });
+  }
 
-    final restricted = await _a11yService.isRestricted();
-    if (!mounted || _a11yDialogOpen) return;
-    _a11yDialogOpen = true;
-    try {
-      await showDialog<void>(
-        context: context,
-        builder: (dialogContext) => AlertDialog(
-          title: const Text('Screen access needed'),
-          content: Text(
-            restricted
-                ? 'Android blocks Errand\'s screen-access service because the '
-                    'app was installed outside an app store ("Restricted '
-                    'setting").\n\n1. Open Settings > Apps > Errand\n'
-                    '2. Tap the three-dot menu > Allow restricted settings\n'
-                    '3. Then enable Errand under Settings > Accessibility.'
-                : 'Errand can read the current screen so it can answer questions '
-                    'about what\'s displayed, navigate system UI, and draft '
-                    'messages in other apps. It only reads while acting on your '
-                    'request, and never presses send for you.\n\nAndroid will open '
-                    'Settings > Accessibility where you can turn the service on.',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () async {
-                Navigator.of(dialogContext).pop();
-                await AppSettingsService.instance.setA11yPromptDismissed(true);
-              },
-              child: const Text("Don't ask again"),
-            ),
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const Text('Not now'),
-            ),
-            FilledButton(
-              onPressed: () {
-                Navigator.of(dialogContext).pop();
-                // No public API deep-links straight to our service toggle
-                // (unlike storage's package-URI intent); the Accessibility
-                // list page is as close as stock Android allows.
-                unawaited(_a11yService.openSettings());
-              },
-              child: const Text('Open settings'),
-            ),
-          ],
-        ),
-      );
-    } finally {
-      _a11yDialogOpen = false;
+  void _dismissA11yToast({bool persist = false}) {
+    _a11yToastTimer?.cancel();
+    _a11yToastTimer = null;
+    if (persist) {
+      unawaited(AppSettingsService.instance.setA11yPromptDismissed(true));
+    }
+    if (_showA11yToast && mounted) {
+      setState(() => _showA11yToast = false);
     }
   }
 
@@ -1470,6 +1474,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         localSystemPrompt: _systemPromptFor(
           _workingDirectory.current,
           screenAccess: _a11yAvailable,
+          screenRestricted: _a11yRestricted,
         ),
         messages: _messages
             .where((message) => message.id != _workingMessageId)
@@ -1509,6 +1514,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         systemPromptBuilder: () => _systemPromptFor(
           _workingDirectory.current,
           screenAccess: _a11yAvailable,
+          screenRestricted: _a11yRestricted,
         ),
         cancelToken: _cancelToken,
         onEvent: _handleEvent,
@@ -2017,6 +2023,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                   ],
                 ),
               ),
+              _buildA11yToastOverlay(),
               Positioned.fill(
                 child: IgnorePointer(
                   ignoring: !_sidebarOpen,
@@ -2160,6 +2167,140 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildA11yToastOverlay() {
+    // Hidden state is already zero-size (SizedBox.shrink child) — the
+    // IgnorePointer only guards the fade window. No early return here so
+    // the slide-out exit animation can play on dismiss.
+    return IgnorePointer(
+      ignoring: !_showA11yToast,
+      child: Positioned(
+        top: 0,
+        left: 0,
+        right: 0,
+        child: SafeArea(
+          child: AnimatedSlide(
+            offset: _showA11yToast ? Offset.zero : const Offset(0, -1.2),
+            duration: const Duration(milliseconds: 320),
+            curve: Curves.easeOutCubic,
+            child: AnimatedOpacity(
+              opacity: _showA11yToast ? 1.0 : 0.0,
+              duration: const Duration(milliseconds: 250),
+              child: _showA11yToast
+                  ? Container(
+                      margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+                      padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1E212B),
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(
+                          color: kBorder.withValues(alpha: 0.9),
+                          width: 1,
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.5),
+                            blurRadius: 18,
+                            offset: const Offset(0, 6),
+                          ),
+                        ],
+                      ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(6),
+                              decoration: BoxDecoration(
+                                color: kBubbleAssistant,
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: const Icon(
+                                Icons.settings_accessibility_rounded,
+                                size: 16,
+                                color: kText,
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    _a11yRestricted
+                                        ? 'Screen access is blocked'
+                                        : 'Screen access is paused',
+                                    style: const TextStyle(
+                                      color: kText,
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    _a11yRestricted
+                                        ? 'Android blocks Errand ("Restricted setting"). Fix: Settings > Apps > Errand > ⋮ > Allow restricted settings, then enable in Accessibility.'
+                                        : 'It pauses when Errand closes. Turn it on to let Errand view or control apps.',
+                                    style: const TextStyle(
+                                      color: kMuted,
+                                      fontSize: 12,
+                                      height: 1.3,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            IconButton(
+                              onPressed: () =>
+                                  _dismissA11yToast(persist: true),
+                              icon: const Icon(Icons.close_rounded,
+                                  size: 16, color: kMuted),
+                              tooltip: 'Dismiss',
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(),
+                              visualDensity: VisualDensity.compact,
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: FilledButton(
+                            onPressed: () {
+                              _dismissA11yToast();
+                              unawaited(_a11yService.openSettings());
+                            },
+                            style: FilledButton.styleFrom(
+                              backgroundColor: kBubbleUser,
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 14, vertical: 6),
+                              minimumSize: const Size(0, 30),
+                              tapTargetSize:
+                                  MaterialTapTargetSize.shrinkWrap,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                            ),
+                            child: const Text('Enable',
+                                style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600)),
+                          ),
+                        ),
+                      ],
+                    ),
+                  )
+                : const SizedBox.shrink(),
+          ),
+        ),
+      ),
       ),
     );
   }

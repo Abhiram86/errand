@@ -134,7 +134,7 @@ Tool actTool({A11yService? service}) {
           'type': 'string',
           'description':
               'Optional case-insensitive regular expression or substring filter. '
-              'When then_read:true, filters the updated screen outline to only matching lines.',
+              'Implies then_read:true — filters the updated screen outline to only matching lines.',
         },
       },
       'required': ['action'],
@@ -166,8 +166,8 @@ Future<ToolCallResult> handleActAction(ToolCall call, A11yService svc) async {
               'Errand was installed outside an app store. Fix: Settings > Apps > '
               'Errand > three-dot menu > Allow restricted settings, then enable '
               'Errand in Settings > Accessibility.'
-          : 'Screen access is not enabled. Ask the user to open Settings > '
-              'Accessibility > downloaded apps > Errand and turn the service on.',
+          : 'Screen access is currently off (it pauses when Errand closes to keep other apps secure). '
+              'Ask the user to enable screen access in Settings > Accessibility, or manage it in Errand Settings > Tools.',
     );
   }
 
@@ -215,27 +215,36 @@ Future<ToolCallResult> handleActAction(ToolCall call, A11yService svc) async {
     }
     final readRes = await svc.readScreen(full: hasGrep);
     if (readRes['ok'] == true) {
-      if (readRes['unchanged'] == true && !hasGrep) {
-        return ToolCallResult(
-          id: result.id,
-          ok: true,
-          output:
-              '${result.output}\n\n[Screen after action]: UNCHANGED (screen is identical to previous read)',
-        );
-      } else {
+      if (readRes['unchanged'] == true) {
+        final staleOutline = readRes['outline'] as String?;
+        if (hasGrep && staleOutline != null && staleOutline.isNotEmpty) {
+          final parsed = _splitScreenHeader(staleOutline);
+          final filtered =
+              GrepFilter.filter(parsed.body, grep, header: parsed.header);
+          return ToolCallResult(
+            id: result.id,
+            ok: true,
+            output:
+                '${result.output}\n\n[Screen after action (UNCHANGED — filtered previous snapshot, grep: "$grep")]:\n$filtered',
+          );
+        }
+        if (!hasGrep) {
+          return ToolCallResult(
+            id: result.id,
+            ok: true,
+            output:
+                '${result.output}\n\n[Screen after action]: UNCHANGED (screen is identical to previous read)',
+          );
+        }
+      }
+      {
         var outline = readRes['outline'] as String? ?? '';
         final sectionHeader = hasGrep
             ? '[Screen after action (grep: "$grep")]:'
             : '[Screen after action]:';
         if (hasGrep) {
-          final lines = outline.split('\n');
-          String? header;
-          String body = outline;
-          if (lines.isNotEmpty && lines.first.startsWith('Screen:')) {
-            header = lines.first;
-            body = lines.sublist(1).join('\n');
-          }
-          outline = GrepFilter.filter(body, grep, header: header);
+          final parsed = _splitScreenHeader(outline);
+          outline = GrepFilter.filter(parsed.body, grep, header: parsed.header);
         }
         final combined = '${result.output}\n\n$sectionHeader\n$outline';
         final finalOutput = await ToolOutputFileService.instance.processOutput(
@@ -252,6 +261,14 @@ Future<ToolCallResult> handleActAction(ToolCall call, A11yService svc) async {
   }
 
   return result;
+}
+
+({String? header, String body}) _splitScreenHeader(String outline) {
+  final lines = outline.split('\n');
+  if (lines.isNotEmpty && lines.first.trimLeft().startsWith('Screen:')) {
+    return (header: lines.first, body: lines.sublist(1).join('\n'));
+  }
+  return (header: null, body: outline);
 }
 
 // ---- Draft policy ----------------------------------------------------------
@@ -564,7 +581,11 @@ Future<ToolCallResult> _scroll(ToolCall call, A11yService svc) async {
   final atEnd = res['at_end'] == true;
   var output =
       '${res['message'] ?? ''}${atEnd ? ' — AT_END: no further content in this direction.' : ''}';
-  if (res['method'] == 'gesture') {
+  // When the outer handler will then_read (or grep implies it), the full
+  // re-read below already shows the effect — skip the extra probe settle.
+  final willRead = call.arguments['then_read'] == true ||
+      (call.arguments['grep'] as String?)?.trim().isNotEmpty == true;
+  if (res['method'] == 'gesture' && !willRead) {
     // Gesture scrolls give no node-level feedback — verify with a probe.
     final probe = await svc.probeChanged();
     output += probe['changed'] == true

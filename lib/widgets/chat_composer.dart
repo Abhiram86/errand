@@ -70,10 +70,12 @@ class ChatComposer extends StatelessWidget {
               child: TextField(
                 controller: controller,
                 enabled: !busy,
+                keyboardType: TextInputType.multiline,
                 minLines: 1,
                 maxLines: 4,
-                textInputAction: TextInputAction.send,
-                onSubmitted: (_) => onSend(),
+                // Enter inserts a newline — messages send only via the
+                // send button, never from the keyboard action.
+                textInputAction: TextInputAction.newline,
                 style: const TextStyle(color: kText, fontSize: 15),
                 decoration: const InputDecoration(
                   hintText: 'Message Errand…',

@@ -153,9 +153,13 @@ Tool readTool(
 
       final file = await _resolveReadableFile(workspace, rawPath, getAttachedFiles);
       if (file == null || !await file.exists()) {
+        final looksLikeSpill =
+            rawPath.contains('tool_outputs') || rawPath.contains('tool-');
         return ToolCallResult.failure(
           call.id,
-          'File not found or outside the workspace: $rawPath',
+          looksLikeSpill
+              ? 'Spilled output file not found: $rawPath (it may have expired — TTL is 10m — re-run the tool to regenerate it).'
+              : 'File not found or outside the workspace: $rawPath',
         );
       }
 
@@ -196,13 +200,14 @@ Tool readTool(
 
         final structured = document?.read(offset: offset, length: length);
         if (structured != null) {
-          final outputText = structured.toToolOutput(file.path);
           if (hasGrep) {
+            final header =
+                'File: ${file.path} (units ${structured.start}–${structured.end - 1} of ${structured.total})'
+                '${structured.hasMore ? ' — more units from offset ${structured.nextOffset}' : ''}';
             final filtered = GrepFilter.filter(
-              outputText,
+              structured.output,
               grep,
-              header: 'File: ${file.path}',
-              withLineNumbers: true,
+              header: header,
             );
             final finalOutput = await ToolOutputFileService.instance.processOutput(
               callId: call.id,
@@ -216,7 +221,7 @@ Tool readTool(
           }
           final finalOutput = await ToolOutputFileService.instance.processOutput(
             callId: call.id,
-            output: outputText,
+            output: structured.toToolOutput(file.path),
           );
           return ToolCallResult(
             id: call.id,
@@ -246,12 +251,17 @@ Tool readTool(
           final text = utf8.decode(bytes, allowMalformed: true);
 
           if (hasGrep) {
-            final header = 'File: ${file.path} (read $offset–$end of $totalBytes bytes)';
+            final startLine = await _countLinesBefore(file, offset);
+            var header = 'File: ${file.path} (read $offset–$end of $totalBytes bytes)';
+            if (end < totalBytes) {
+              header += ' — more content may exist beyond byte $end; re-read with offset=$end to continue';
+            }
             final filtered = GrepFilter.filter(
               text,
               grep,
               header: header,
               withLineNumbers: true,
+              startLine: startLine,
             );
             final finalOutput = await ToolOutputFileService.instance.processOutput(
               callId: call.id,
@@ -431,31 +441,48 @@ Tool listTool(WorkingDirectory workspace) => Tool(
     // entries between calls.
     results.sort();
 
-    final total = results.length;
-    final start = min(offset, total);
-    final end = min(start + limit, total);
-    final window = results.sublist(start, end);
-
-    var outputEntries = window;
+    // Grep filters the full result set BEFORE pagination so matches on
+    // other pages are not missed and counts stay honest.
     final grep = (call.arguments['grep'] as String?)?.trim();
-    if (grep != null && grep.isNotEmpty) {
-      final filteredText = GrepFilter.filter(window.join('\n'), grep);
-      outputEntries = filteredText.split('\n');
+    final hasGrep = grep != null && grep.isNotEmpty;
+    List<String> filtered = results;
+    if (hasGrep) {
+      final regex = GrepFilter.compile(grep);
+      filtered = results.where((e) => regex.hasMatch(e)).toList();
     }
+
+    final total = results.length;
+    final matchTotal = filtered.length;
+    if (countOnly) {
+      final header = [
+        'current directory: ${target.path}',
+        'found $total file(s)',
+        if (hasGrep) 'grep "$grep" matched $matchTotal file(s)',
+        'count only; no entries listed',
+      ];
+      return ToolCallResult(
+        id: call.id,
+        ok: true,
+        output: header.join('\n'),
+      );
+    }
+
+    final start = min(offset, matchTotal);
+    final end = min(start + limit, matchTotal);
+    final window = filtered.sublist(start, end);
 
     final header = [
       'current directory: ${target.path}',
       'found $total file(s)',
-      if (countOnly)
-        'count only; no entries listed'
-      else if (window.isEmpty && total > 0)
-        'offset $offset is beyond the last entry ($total total); use offset < $total'
+      if (hasGrep) 'grep "$grep" matched $matchTotal file(s)',
+      if (window.isEmpty && matchTotal > 0)
+        'offset $offset is beyond the last entry ($matchTotal total); use offset < $matchTotal'
       else ...[
-        'showing ${start + 1}–$end of $total',
-        if (end < total) 'use offset=$end for the next page',
+        'showing ${matchTotal == 0 ? 0 : start + 1}–$end of $matchTotal',
+        if (end < matchTotal) 'use offset=$end for the next page',
       ],
     ];
-    final fullText = countOnly ? header.join('\n') : [...header, ...outputEntries].join('\n');
+    final fullText = [...header, ...window].join('\n');
     final finalOutput = await ToolOutputFileService.instance.processOutput(
       callId: call.id,
       output: fullText,
@@ -557,10 +584,10 @@ Future<File?> _resolveReadableFile(
 
   final workspaceFile = _resolveWorkspaceFile(workspace, cleanPath);
   if (workspaceFile != null) return workspaceFile;
-  // Fallback for file_picker cache copies (e.g. /data/user/0/.../cache/file_picker/...)
-  // and any explicitly attached URI — the user picked it, so allow it even
-  // though it lives outside /storage/emulated/0.
+  // Fallback for explicitly attached URIs (the user picked them, so allow
+  // even outside the workspace) and spilled tool-output files.
   if (path.isAbsolute(cleanPath)) {
+    final normalized = path.normalize(cleanPath);
     final attached = getAttachedFiles?.call() ?? const <String>[];
     final isAttached = attached.any((u) {
       var norm = u.trim();
@@ -571,17 +598,56 @@ Future<File?> _resolveReadableFile(
           norm = norm.substring('file://'.length);
         }
       }
-      return path.normalize(norm) == path.normalize(cleanPath);
+      return path.normalize(norm) == normalized;
     });
-    // Also allow cache paths and spilled tool output files without needing the callback.
-    final isCacheFile =
-        (cleanPath.contains('/cache/') || cleanPath.contains('tool_outputs')) &&
-        await File(cleanPath).exists();
-    if ((isAttached || isCacheFile) && await File(cleanPath).exists()) {
-      return File(path.normalize(cleanPath));
+    // Spill files: only inside the service's own output directory (checked
+    // post-normalize so `tool_outputs/../` escapes fail).
+    var isSpill = false;
+    try {
+      final outDir =
+          await ToolOutputFileService.instance.outputDirectory;
+      final outPath = path.normalize(outDir.path);
+      isSpill = normalized == outPath || path.isWithin(outPath, normalized);
+    } catch (_) {}
+    // Narrow picker-cache allowance (file_picker copies only).
+    final isPickerCache = normalized.contains('/cache/file_picker/') &&
+        await File(normalized).exists();
+    if ((isAttached || isSpill || isPickerCache) &&
+        await File(normalized).exists()) {
+      return File(normalized);
     }
   }
   return null;
+}
+
+/// Counts 1-based start line for a byte [offset] by counting '\n' before it.
+/// Chunked to avoid loading large prefixes fully into memory.
+Future<int> _countLinesBefore(File file, int offset) async {
+  if (offset <= 0) return 1;
+  try {
+    final raf = await file.open();
+    try {
+      var remaining = offset;
+      var newlines = 0;
+      const chunk = 64 * 1024;
+      await raf.setPosition(0);
+      while (remaining > 0) {
+        final n = remaining > chunk ? chunk : remaining;
+        final bytes = await raf.read(n);
+        if (bytes.isEmpty) break;
+        for (final b in bytes) {
+          if (b == 10) newlines++;
+        }
+        remaining -= bytes.length;
+        if (bytes.length < n) break;
+      }
+      return newlines + 1;
+    } finally {
+      await raf.close();
+    }
+  } catch (_) {
+    return 1;
+  }
 }
 
 File? _resolveWorkspaceFile(WorkingDirectory workspace, String rawPath) {
@@ -806,6 +872,14 @@ Tool findTool(WorkingDirectory workspace) => Tool(
     // so offset pages are stable between calls.
     results.sort();
 
+    final grep = (call.arguments['grep'] as String?)?.trim();
+    final hasGrep = grep != null && grep.isNotEmpty;
+    List<String> filtered = results;
+    if (hasGrep) {
+      final regex = GrepFilter.compile(grep);
+      filtered = results.where((e) => regex.hasMatch(e)).toList();
+    }
+
     final total = results.length;
     final hitCeiling = total >= kMaxFindResults;
     final header = [
@@ -815,6 +889,7 @@ Tool findTool(WorkingDirectory workspace) => Tool(
       'pattern: $pattern',
       'max depth: $maxDepth',
       'found $total${hitCeiling ? '+' : ''} match(es)',
+      if (hasGrep) 'grep "$grep" matched ${filtered.length} path(s)',
       if (skippedPaths.isNotEmpty)
         'skipped ${skippedPaths.length} inaccessible path(s); results may be partial',
     ];
@@ -827,26 +902,20 @@ Tool findTool(WorkingDirectory workspace) => Tool(
       );
     }
 
-    final start = min(offset, total);
-    final end = min(start + limit, total);
-    final window = results.sublist(start, end);
-
-    var outputEntries = window;
-    final grep = (call.arguments['grep'] as String?)?.trim();
-    if (grep != null && grep.isNotEmpty) {
-      final filteredText = GrepFilter.filter(window.join('\n'), grep);
-      outputEntries = filteredText.split('\n');
-    }
+    final matchTotal = filtered.length;
+    final start = min(offset, matchTotal);
+    final end = min(start + limit, matchTotal);
+    final window = filtered.sublist(start, end);
 
     final fullText = [
       ...header,
-      if (window.isEmpty && total > 0)
-        'offset $offset is beyond the last match ($total total); use offset < $total'
+      if (window.isEmpty && matchTotal > 0)
+        'offset $offset is beyond the last match ($matchTotal total); use offset < $matchTotal'
       else ...[
-        'showing ${start + 1}–$end of $total',
-        if (end < total) 'use offset=$end for the next page',
+        'showing ${matchTotal == 0 ? 0 : start + 1}–$end of $matchTotal',
+        if (end < matchTotal) 'use offset=$end for the next page',
       ],
-      ...outputEntries,
+      ...window,
     ].join('\n');
     final finalOutput = await ToolOutputFileService.instance.processOutput(
       callId: call.id,

@@ -34,6 +34,18 @@ class A11yService {
     await _channel.invokeMethod<void>('openSettings');
   }
 
+  /// Programmatically disables the accessibility service via disableSelf().
+  /// Surfaced in Settings > Tools ("Disable now") so the user can pause
+  /// screen access without leaving the app. Note disableSelf() is async at
+  /// the OS level — callers must not trust an immediate isEnabled() re-read.
+  Future<bool> disableService() async {
+    try {
+      return await _channel.invokeMethod<bool>('disable') ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// Reads the active window as a compact text outline. Identical consecutive
   /// reads return {ok, unchanged: true, message} unless [full] is set.
   /// With [probe], returns ONLY {ok, changed} without updating the stored
@@ -56,7 +68,9 @@ class A11yService {
 
   /// Effect check: did the screen change since the last full read?
   /// Returns {ok, changed: bool}. Never dumps content.
-  Future<Map<String, dynamic>> probeChanged({int settleMs = 1000}) async {
+  /// Default 600ms keeps plain tap/scroll effect checks snappy; the
+  /// then_read path uses its own 1000ms settle for toggles/animations.
+  Future<Map<String, dynamic>> probeChanged({int settleMs = 600}) async {
     if (settleMs > 0) {
       await Future<void>.delayed(Duration(milliseconds: settleMs));
     }

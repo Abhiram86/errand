@@ -109,8 +109,8 @@ Future<ToolCallResult> handleScreenAction(ToolCall call, A11yService svc) async 
               'Errand was installed outside an app store. Fix: Settings > Apps > '
               'Errand > three-dot menu > Allow restricted settings, then enable '
               'Errand in Settings > Accessibility.'
-          : 'Screen access is not enabled. Ask the user to open Settings > '
-              'Accessibility > downloaded apps > Errand and turn the service on.',
+          : 'Screen access is currently off (it pauses when Errand closes to keep other apps secure). '
+              'Ask the user to enable screen access in Settings > Accessibility, or manage it in Errand Settings > Tools.',
     );
   }
 
@@ -156,7 +156,21 @@ Future<ToolCallResult> _read(ToolCall call, A11yService svc) async {
 
   // Verification re-read on an unchanged screen: one line instead of the
   // full outline — this is what keeps long screen flows from burning tokens.
+  // With grep, full:true is forced above so Kotlin returns a fresh outline;
+  // if unchanged still arrives (no outline), be honest about it.
   if (res['unchanged'] == true) {
+    final staleOutline = res['outline'] as String?;
+    if (hasGrep && staleOutline != null && staleOutline.isNotEmpty) {
+      final parsed = _splitHeader(staleOutline);
+      final filtered =
+          GrepFilter.filter(parsed.body, grep, header: parsed.header);
+      return ToolCallResult(
+        id: call.id,
+        ok: true,
+        output:
+            '[Screen (UNCHANGED — filtered previous snapshot, grep: "$grep")]:\n$filtered',
+      );
+    }
     return ToolCallResult(
       id: call.id,
       ok: true,
@@ -168,6 +182,12 @@ Future<ToolCallResult> _read(ToolCall call, A11yService svc) async {
   }
 
   var outline = res['outline'] as String? ?? '';
+  // Filter BEFORE appending the truncation footer so the footer is never
+  // consumed by grep and a no-match filter cannot delete the cap warning.
+  if (hasGrep) {
+    final parsed = _splitHeader(outline);
+    outline = GrepFilter.filter(parsed.body, grep, header: parsed.header);
+  }
   if (res['truncated'] == true) {
     final capHit = res['capHit'] as String?;
     if (capHit == 'chars') {
@@ -186,17 +206,6 @@ Future<ToolCallResult> _read(ToolCall call, A11yService svc) async {
     }
   }
 
-  if (hasGrep) {
-    final lines = outline.split('\n');
-    String? header;
-    String body = outline;
-    if (lines.isNotEmpty && lines.first.startsWith('Screen:')) {
-      header = lines.first;
-      body = lines.sublist(1).join('\n');
-    }
-    outline = GrepFilter.filter(body, grep, header: header);
-  }
-
   final finalOutput = await ToolOutputFileService.instance.processOutput(
     callId: call.id,
     output: outline,
@@ -207,6 +216,15 @@ Future<ToolCallResult> _read(ToolCall call, A11yService svc) async {
     ok: true,
     output: finalOutput,
   );
+}
+
+({String? header, String body}) _splitHeader(String outline) {
+  final lines = outline.split('\n');
+  if (lines.isNotEmpty &&
+      lines.first.trimLeft().startsWith('Screen:')) {
+    return (header: lines.first, body: lines.sublist(1).join('\n'));
+  }
+  return (header: null, body: outline);
 }
 
 Future<ToolCallResult> _global(ToolCall call, A11yService svc) async {

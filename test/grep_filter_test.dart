@@ -29,7 +29,7 @@ EMPTY=
       final res = GrepFilter.filter(sampleText, r'BACKUP_API_KEY=\w+');
       expect(res, contains('BACKUP_API_KEY=backup456'));
       expect(res, isNot(contains('PORT=8080')));
-      expect(res, isNot(contains('API_KEY=secret123\n')));
+      expect(res.split('\n').any((l) => l == 'API_KEY=secret123'), isFalse);
     });
 
     test('falls back gracefully to literal match on invalid regex syntax', () {

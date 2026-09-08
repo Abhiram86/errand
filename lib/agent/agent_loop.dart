@@ -226,8 +226,9 @@ class AgentLoop {
   }
 
   /// True when the previous batch call already waited for the screen to
-  /// settle: `act` + `then_read:true` sleeps 1000ms and re-reads internally
-  /// on success, so stacking another 350ms inter-call settle just idles.
+  /// settle: `act` + `then_read:true` (or `grep`, which implies then_read)
+  /// sleeps 1000ms and re-reads internally on success, so stacking another
+  /// 350ms inter-call settle just idles.
   static bool _prevAlreadySettled(
     LlmMessage message,
     List<ToolCallResult> results,
@@ -235,7 +236,10 @@ class AgentLoop {
   ) {
     if (!results[i - 1].ok) return false;
     final prev = message.toolCalls[i - 1];
-    return prev.name == 'act' && prev.arguments['then_read'] == true;
+    if (prev.name != 'act') return false;
+    if (prev.arguments['then_read'] == true) return true;
+    final grep = (prev.arguments['grep'] as String?)?.trim();
+    return grep != null && grep.isNotEmpty;
   }
 
   Future<void> _compactIfNeeded(List<Map<String, dynamic>> messages) async {

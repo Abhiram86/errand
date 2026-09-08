@@ -118,14 +118,17 @@ Keys are configured in-app (header gear icon → Settings sheet, Global tab) and
   2. **Structured** (`PDF/DOCX/XLSX/PPTX`): delegates to `readStructuredDocument` → `LogicalDocument.read(offset, length)` where `offset` is a logical unit index and `length` is a character budget (clamped to 256 KB). Path traversal is guarded via `path.relative` against `workspace.root`. Structured reads are memoized per-file in a registry-scoped map.
   3. **Text**: byte `offset`/`length` (default 512, max 512 KB) via `RandomAccessFile`.
 
-  Path resolution: `WorkingDirectory { root, current }` is the shared mutable cursor (mutated by `cd`). `_resolveWorkspaceFile` enforces `path.relative` against `workspace.root`; `_resolveReadableFile` allows an explicit escape for **file_picker cache copies** (`/data/.../cache/file_picker/...`) and any URI in `attachedFileUris` (user-picked, so trusted) even though it lives outside `/storage/emulated/0`.
+  Optional `grep` argument (case-insensitive regex/substring): filters text/structured output to matching lines with file-relative 1-based line numbers; unpaginated length expands to 512 KB; structured grep filters body only (header reserved). Path resolution: `WorkingDirectory { root, current }` is the shared mutable cursor (mutated by `cd`). `_resolveWorkspaceFile` enforces `path.relative` against `workspace.root`; `_resolveReadableFile` allows an explicit escape for **file_picker cache copies** (`/data/.../cache/file_picker/...`) and any URI in `attachedFileUris` (user-picked, so trusted) even though it lives outside `/storage/emulated/0`.
 
 - **`workspace` (`workspace_tool.dart`)** — router with `action` enum `pwd|cd|list|find` multiplexing `listTool`/`findTool`/`cdTool` (+ `pwd`). Relative paths resolve from `workspace.current`; absolute paths must stay inside `workspace.root`. `WorkingDirectory { root, current }` is the shared mutable cursor (mutated by `cd`).
   - `list` — non-recursive, optional `pattern` RegExp filter, returns paths relative to `current`.
   - `find` — recursive glob (`*`/`?`, case-insensitive) with `type: file|dir`, `max_depth` (default 3, max 32), cap 500 results, skips inaccessible branches and reports them.
   - `cd` — validates target is a directory, then mutates `workspace.current`.
+  - Optional `grep` on `list`/`find` filters entries **before** pagination (honest `matched N` counts, `count_only` respects it).
 
 - **`attached_files` (`attached_files_tool.dart`)** — zero-param lister: `attached_files` → `No files attached…` or `Attached files: N\n1. basename — uri`. Reads from `getAttachedFiles` (the conversation's global inventory). Lets the model discover non-pending history without guessing.
+
+- **`grep_filter.dart`** — shared utility: `compile()` enforces pattern cap (200 chars) and a nested-quantifier ReDoS guard (falls back to escaped literal); `filter()` supports `header` (preserved), `withLineNumbers`, and `startLine` (for windowed reads); match cap 200 with overflow note.
 
 ## Structured document readers — `lib/internal/document_reading/`
 
@@ -138,7 +141,7 @@ Keys are configured in-app (header gear icon → Settings sheet, Global tab) and
 
 - `TavilyClient { search, extract, _post }` — `POST https://api.tavily.com/{search,extract}`, Bearer token from `AppSettingsService.tavilyKey`, JSON decode with status-range check. The web tools resolve the client **lazily per call** (not at registry construction), so saving a key in Settings takes effect immediately; an unset key is a clean `ToolCallResult.failure` pointing at Settings.
 - `websearch` — `query → search` → titles/URLs/snippets (truncated to 1200 chars each).
-- `webfetch` — `url (+ optional query) → extract` (Markdown, 20k char cap) from a single URL, focused when query is present.
+- `webfetch` — `url (+ optional query) → extract` (Markdown, stored up to 100k chars, then spilled to a cache file with preview) from a single URL, focused when query is present.
 
 ## The intent tool — `lib/tools/intent_tool.dart` + `lib/services/intent_service.dart`
 
@@ -278,18 +281,22 @@ the universal context-protection layer for data-heavy tools:
 
 - **Spill threshold (6,000 chars)**: Outputs $\le$ 6k characters are returned inline
   directly (no file overhead).
-- **10-minute TTL file caching**: When a tool produces $> 6,000$ characters, the
-  entire unabridged output is saved into `<cacheDir>/tool_outputs/tool-<callId>-output.txt`.
-  Expired files older than 10 minutes are swept automatically.
-- **Head/tail preview with header preservation**: Returns the initial 2,000 chars
-  (preserving all metadata headers like `Screen:`, `File:`, `Directory:`, `URL:`)
-  plus the final 2,000 chars, separated by a standard truncation banner containing the
-  exact file path and instructions to use `read` (with `grep`, `offset`, and `length`)
-  to inspect deeper.
+- **10-minute TTL file caching (default, configurable)**: When a tool produces $> 6,000$ characters, the
+  entire unabridged output (up to a 512 KB store cap) is saved into `<cacheDir>/tool_outputs/tool-<callId>_<hash>-output.txt`
+  (atomic tmp+rename write; truncated sanitized id + hash so retries/collisions are safe).
+  Sweep is opportunistic — expired (> TTL) and over-cap (max 50 files) entries are deleted
+  on the next large-output spill; there is no background timer.
+- **Head/tail preview with header reservation**: Returns the leading metadata header block
+  (up to the first blank line — `Screen:`, `File:`, `Source:`, etc., capped at 1.5k chars)
+  plus the initial 2,000 chars and the final 2,000 chars, separated by a standard truncation
+  banner containing the exact file path and instructions to use `read` (with `grep`, `offset`, and `length`)
+  to inspect deeper. Already-spilled previews pass through the registry safety net untouched,
+  so per-tool spills and the net can never overwrite each other.
 - **Tool integration**: Integrated across `screen`, `act then_read`, `read`,
-  `workspace` (`list`/`find`), `webfetch`, and `websearch`, with a safety-net wrap
+  `workspace` (`list`/`find`), `webfetch` (extract stored up to 100k chars), and `websearch`, with a safety-net wrap
   in `ToolRegistry.execute`. `_resolveReadableFile` allows `read` to open and grep
-  the spilled output files seamlessly.
+  only files inside the spill directory (post-normalize containment check — no
+  substring allowlist), plus user-attached URIs and `file_picker` cache copies.
 
 ## Multimodality — `read` + `attached_files` (P3)
 

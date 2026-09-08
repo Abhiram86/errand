@@ -1,11 +1,13 @@
 import 'package:flutter/services.dart';
 import 'package:errand/agent/tool.dart';
+import 'package:errand/services/a11y_service.dart';
 import 'package:errand/services/intent_service.dart';
 import 'package:errand/types/message.dart';
 import 'package:errand/types/tool.dart';
 
-Tool intentTool({IntentService? service}) {
+Tool intentTool({IntentService? service, A11yService? a11yService}) {
   final svc = service ?? IntentService();
+  final a11y = a11yService ?? A11yService();
 
   return Tool(
     name: 'intent',
@@ -76,7 +78,7 @@ Tool intentTool({IntentService? service}) {
     },
     handler: (call) async {
       try {
-        return await handleIntentAction(call, svc);
+        return await handleIntentAction(call, svc, a11y: a11y);
       } catch (e) {
         return ToolCallResult.failure(call.id, 'Intent failed: $e');
       }
@@ -86,19 +88,21 @@ Tool intentTool({IntentService? service}) {
 
 /// Routes an intent [call] through action handlers. Shared by the tool handler
 /// and UI replay ([replayIntentAction]).
+/// [a11y] is nullable: UI replay passes none (no channel call, no notice).
 Future<ToolCallResult> handleIntentAction(
   ToolCall call,
-  IntentService svc,
-) async {
+  IntentService svc, {
+  A11yService? a11y,
+}) async {
   final action = (call.arguments['action'] as String?)?.trim() ?? 'open_url';
 
   switch (action) {
     case 'open_file':
-      return await _openFile(call, svc);
+      return await _openFile(call, svc, a11y);
     case 'open_url':
-      return await _openUrl(call, svc);
+      return await _openUrl(call, svc, a11y);
     case 'open_app':
-      return await _openApp(call, svc);
+      return await _openApp(call, svc, a11y: a11y);
     case 'settings':
       return await _openSettingsPage(
         call,
@@ -106,13 +110,14 @@ Future<ToolCallResult> handleIntentAction(
         (call.arguments['page'] as String?) ??
             (call.arguments['query'] as String?) ??
             'main',
+        a11y,
       );
     case 'intent':
-      return await _genericIntent(call, svc);
+      return await _genericIntent(call, svc, a11y);
 
     // Backward compatibility for persisted chat actions:
     case 'search':
-      return await _openUrl(call, svc);
+      return await _openUrl(call, svc, a11y);
     case 'dial':
       final query = (call.arguments['query'] as String?)?.trim() ?? '';
       return await _openUrl(
@@ -122,6 +127,7 @@ Future<ToolCallResult> handleIntentAction(
           arguments: {...call.arguments, 'url': 'tel:${Uri.encodeComponent(query)}'},
         ),
         svc,
+        a11y,
       );
     case 'open_maps':
       final query = (call.arguments['query'] as String?)?.trim() ?? '';
@@ -132,6 +138,7 @@ Future<ToolCallResult> handleIntentAction(
           arguments: {...call.arguments, 'url': 'geo:0,0?q=${Uri.encodeQueryComponent(query)}'},
         ),
         svc,
+        a11y,
       );
     case 'email':
       final to = (call.arguments['to'] as String?)?.trim() ??
@@ -154,6 +161,7 @@ Future<ToolCallResult> handleIntentAction(
           arguments: {...call.arguments, 'url': mailtoUri.toString()},
         ),
         svc,
+        a11y,
       );
     case 'calendar_event':
     case 'media_play':
@@ -161,7 +169,7 @@ Future<ToolCallResult> handleIntentAction(
     case 'wallpaper':
     case 'uninstall':
     case 'settings_panel':
-      return await _genericIntent(call, svc);
+      return await _genericIntent(call, svc, a11y);
 
     default:
       return ToolCallResult.failure(
@@ -271,10 +279,32 @@ bool _looksLikeWebHost(String raw) {
   return host.contains('.');
 }
 
+/// Appended to successful open-style intents when screen access is off, so
+/// the model knows follow-up screen/act reads will fail. Checked lazily
+/// (after a successful launch) so failed launches pay no channel round-trip.
+String _pausedNotice(String target) =>
+    '\n\n[NOTICE: SCREEN ACCESS PAUSED]\n'
+    'The $target was opened, but Errand\'s Screen Access is currently off (it pauses when Errand closes to keep other apps secure). '
+    'Because of this, you will not be able to read its screen (screen tool) or interact with it (act tool). '
+    'If your task requires reading or controlling $target, inform the user that screen access is off and can be enabled in Settings > Accessibility or via Errand Settings > Tools.';
+
+/// Returns the paused notice when [a11y] is set and the service is off.
+/// Null [a11y] (UI replay) or launch failures skip the check entirely.
+Future<String> _maybePausedNotice(A11yService? a11y, String target) async {
+  if (a11y == null) return '';
+  try {
+    if (await a11y.isEnabled()) return '';
+  } catch (_) {
+    return ''; // channel error: unknown state, don't cry wolf
+  }
+  return _pausedNotice(target);
+}
+
 Future<ToolCallResult> _openSettingsPage(
   ToolCall call,
   IntentService svc,
   String rawPage,
+  A11yService? a11y,
 ) async {
   var key = rawPage.trim().toLowerCase().replaceAll('android.settings.', '');
   if (key.endsWith('_settings')) {
@@ -289,13 +319,14 @@ Future<ToolCallResult> _openSettingsPage(
   }
   try {
     final res = await svc.launchAction('intent', androidAction: androidAction);
-    return ToolCallResult(id: call.id, ok: true, output: 'Opened $key settings ($res)');
+    final notice = await _maybePausedNotice(a11y, '$key settings');
+    return ToolCallResult(id: call.id, ok: true, output: 'Opened $key settings ($res)$notice');
   } on PlatformException catch (e) {
     return ToolCallResult.failure(call.id, 'Failed to open $key settings: ${e.message}');
   }
 }
 
-Future<ToolCallResult> _openFile(ToolCall call, IntentService svc) async {
+Future<ToolCallResult> _openFile(ToolCall call, IntentService svc, A11yService? a11y) async {
   final rawPath = (call.arguments['path'] as String?)?.trim() ??
       (call.arguments['url'] as String?)?.trim() ??
       (call.arguments['query'] as String?)?.trim();
@@ -306,7 +337,7 @@ Future<ToolCallResult> _openFile(ToolCall call, IntentService svc) async {
 
   // Gracefully handle if model passed an HTTP/HTTPS URL to open_file
   if (rawPath.startsWith('http://') || rawPath.startsWith('https://')) {
-    return await _openUrl(call, svc);
+    return await _openUrl(call, svc, a11y);
   }
 
   final pkg = call.arguments['package'] as String?;
@@ -321,10 +352,11 @@ Future<ToolCallResult> _openFile(ToolCall call, IntentService svc) async {
       type: type,
       extras: extras,
     );
+    final notice = await _maybePausedNotice(a11y, 'file $rawPath');
     return ToolCallResult(
       id: call.id,
       ok: true,
-      output: 'Opened file: $rawPath ($res)',
+      output: 'Opened file: $rawPath ($res)$notice',
     );
   } on PlatformException catch (e) {
     return ToolCallResult.failure(
@@ -334,7 +366,7 @@ Future<ToolCallResult> _openFile(ToolCall call, IntentService svc) async {
   }
 }
 
-Future<ToolCallResult> _openUrl(ToolCall call, IntentService svc) async {
+Future<ToolCallResult> _openUrl(ToolCall call, IntentService svc, A11yService? a11y) async {
   final rawUrl = (call.arguments['url'] as String?)?.trim() ??
       (call.arguments['path'] as String?)?.trim();
 
@@ -348,8 +380,9 @@ Future<ToolCallResult> _openUrl(ToolCall call, IntentService svc) async {
       try {
         final res =
             await svc.launchAction('open_url', data: searchUrl, package: pkg);
+        final notice = await _maybePausedNotice(a11y, 'web search for "$query"');
         return ToolCallResult(
-            id: call.id, ok: true, output: 'Searched web for "$query": $res');
+            id: call.id, ok: true, output: 'Searched web for "$query": $res$notice');
       } on PlatformException catch (e) {
         return ToolCallResult.failure(
             call.id, 'Web search failed: ${e.message}');
@@ -360,7 +393,7 @@ Future<ToolCallResult> _openUrl(ToolCall call, IntentService svc) async {
 
   // Auto-route local files to open_file
   if (rawUrl.startsWith('/') || rawUrl.startsWith('file://')) {
-    return await _openFile(call, svc);
+    return await _openFile(call, svc, a11y);
   }
 
   final uri = Uri.tryParse(rawUrl);
@@ -395,21 +428,27 @@ Future<ToolCallResult> _openUrl(ToolCall call, IntentService svc) async {
       package: pkg,
       extras: extras,
     );
+    final notice = await _maybePausedNotice(a11y, 'URL $url');
     return ToolCallResult(
-        id: call.id, ok: true, output: 'Opened URL: $url ($res)');
+        id: call.id, ok: true, output: 'Opened URL: $url ($res)$notice');
   } on PlatformException catch (e) {
     return ToolCallResult.failure(call.id, 'Failed to open URL: ${e.message}');
   }
 }
 
-Future<ToolCallResult> _openApp(ToolCall call, IntentService svc) async {
+Future<ToolCallResult> _openApp(
+  ToolCall call,
+  IntentService svc, {
+  A11yService? a11y,
+}) async {
   final pkg = (call.arguments['package'] as String?)?.trim();
   if (pkg == null || pkg.isEmpty) {
     return ToolCallResult.failure(call.id, 'Missing "package" for open_app');
   }
   try {
     final res = await svc.launchAction('open_app', package: pkg);
-    return ToolCallResult(id: call.id, ok: true, output: 'Launched app: $pkg ($res)');
+    final notice = await _maybePausedNotice(a11y, 'app $pkg');
+    return ToolCallResult(id: call.id, ok: true, output: 'Launched app: $pkg ($res)$notice');
   } on PlatformException catch (e) {
     return ToolCallResult.failure(call.id, 'Failed to launch app "$pkg": ${e.message}');
   }
@@ -431,7 +470,7 @@ const _panelActions = <String, String>{
   'nfc': 'android.settings.panel.action.NFC',
 };
 
-Future<ToolCallResult> _genericIntent(ToolCall call, IntentService svc) async {
+Future<ToolCallResult> _genericIntent(ToolCall call, IntentService svc, A11yService? a11y) async {
   final action = call.arguments['action'] as String;
   final pkg = call.arguments['package'] as String?;
   final extras = _parseStringMap(call.arguments['extras']) ?? {};
@@ -505,8 +544,9 @@ Future<ToolCallResult> _genericIntent(ToolCall call, IntentService svc) async {
       extras: extras.isEmpty ? null : extras,
       type: mimeOverride ?? type,
     );
+    final notice = await _maybePausedNotice(a11y, '$action intent');
     return ToolCallResult(
-        id: call.id, ok: true, output: 'Sent $action intent ($res)');
+        id: call.id, ok: true, output: 'Sent $action intent ($res)$notice');
   } on PlatformException catch (e) {
     return ToolCallResult.failure(call.id, 'Failed $action intent: ${e.message}');
   }

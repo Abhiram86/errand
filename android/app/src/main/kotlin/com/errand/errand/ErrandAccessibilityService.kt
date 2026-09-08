@@ -104,6 +104,13 @@ class ErrandAccessibilityService : AccessibilityService() {
         super.onDestroy()
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        try {
+            disableSelf()
+        } catch (_: Exception) {}
+    }
+
     override fun onInterrupt() {}
 
     // Only listening for window changes right now; no background monitoring.
@@ -143,109 +150,114 @@ class ErrandAccessibilityService : AccessibilityService() {
             val dm = resources.displayMetrics
             val viewportW = dm.widthPixels
             val viewportH = dm.heightPixels
+            // P4: clamp caller budgets server-side regardless of Dart caller.
+            val nodesCap = maxNodes.coerceIn(1, 1000)
+            val depthCap = maxDepth.coerceIn(1, 30)
+            val charsCap = maxChars.coerceIn(1, 32000)
             val entries = mutableListOf<Entry>()
             var visited = 0
             activeTab = null // per-read scratch; see visitNode
             overlayCandidateFound = null
+            // P1: running char counter threaded through the walk.
+            val walkChars = intArrayOf(0)
             var truncated = try {
-                visitNode(root, 0, maxDepth, maxChars, entries) { visited++ < maxNodes }
+                visitNode(root, 0, depthCap, charsCap, viewportW, viewportH, walkChars, entries) { visited++ < nodesCap }
             } catch (_: Exception) {
                 // Stale tree mid-walk: keep whatever we collected.
                 true
             }
 
-            // Separate visible vs off-screen: visible elements have priority
+            // Separate visible vs off-screen: visible elements have priority.
+            // M2: visible = in-viewport AND visibleToUser, so hidden/off-page
+            // nodes with in-viewport bounds stay out of the visible section.
             val visibleEntries = mutableListOf<Entry>()
             val offScreenEntries = mutableListOf<Entry>()
             for (e in entries) {
-                if (offScreenTag(e.bounds, viewportW, viewportH) == null) {
+                if (e.visibleToUser && offScreenTag(e.bounds, viewportW, viewportH) == null) {
                     visibleEntries.add(e)
                 } else {
                     offScreenEntries.add(e)
                 }
             }
 
-            // Visual reading order: top-to-bottom, left-to-right
-            visibleEntries.sortWith(compareBy({ it.bounds.top }, { it.bounds.left }))
-            offScreenEntries.sortWith(compareBy({ it.bounds.top }, { it.bounds.left }))
+            // Visual reading order: top-to-bottom, left-to-right.
+            // m3: tertiary keys (right/bottom, class, label) so identical
+            // positions don't jitter ref numbering between reads.
+            val entryOrder = compareBy<Entry>(
+                { it.bounds.top }, { it.bounds.left },
+                { it.bounds.right }, { it.bounds.bottom },
+                { it.cls }, { it.label ?: "" },
+            )
+            visibleEntries.sortWith(entryOrder)
+            offScreenEntries.sortWith(entryOrder)
 
-            // 1. Build the full ref map FIRST so all interactive elements have stable refs
+            // M1: refs are assigned inline during emission below — never
+            // pre-built. Every ref exposed via elementRefs is guaranteed a
+            // [n] line in the outline (no dangling refs after truncation).
+            // m1: no Entry-keyed map (data-class equality collisions); the
+            // only map is Int -> RefEntry, populated at emit time.
             val refs = mutableMapOf<Int, RefEntry>()
-            val entryRefMap = mutableMapOf<Entry, Int>()
             var refCounter = 0
 
-            for (e in visibleEntries) {
-                if (e.interactive) {
-                    refCounter++
-                    refs[refCounter] = RefEntry(label = e.label, cls = e.cls, rect = e.bounds)
-                    entryRefMap[e] = refCounter
-                }
-            }
-            for (e in offScreenEntries) {
-                if (e.interactive) {
-                    refCounter++
-                    refs[refCounter] = RefEntry(label = e.label, cls = e.cls, rect = e.bounds)
-                    entryRefMap[e] = refCounter
-                }
-            }
-            elementRefs = refs
-
-            fun formatEntryLine(e: Entry): String {
-                return if (e.interactive) {
-                    val ref = entryRefMap[e]
-                    val off = offScreenTag(e.bounds, viewportW, viewportH)
-                    val pos = off ?: "@${e.bounds.left},${e.bounds.top} ${e.bounds.width()}x${e.bounds.height()}"
-                    "[$ref] ${e.cls}" +
-                        (e.vid?.let { " id=$it" } ?: "") +
-                        (e.label?.let { " \"$it\"" } ?: "") +
-                        (if (e.flags.isEmpty()) "" else " [${e.flags.joinToString(",")}]") +
-                        " $pos"
-                } else {
-                    "${e.cls}" +
-                        (e.label?.let { " \"$it\"" } ?: "") +
-                        (if (e.flags.isEmpty()) "" else " [${e.flags.joinToString(",")}]")
-                }
+            // Ref-free body of an interactive line; "[n] " is prepended at
+            // emission once the ref is assigned (m2: ref is never null there).
+            fun interactiveBody(e: Entry): String {
+                val off = offScreenTag(e.bounds, viewportW, viewportH)
+                val pos = off ?: "@${e.bounds.left},${e.bounds.top} ${e.bounds.width()}x${e.bounds.height()}"
+                return "${e.cls}" +
+                    (e.vid?.let { " id=$it" } ?: "") +
+                    (e.label?.let { " \"$it\"" } ?: "") +
+                    (if (e.flags.isEmpty()) "" else " [${e.flags.joinToString(",")}]") +
+                    " $pos"
             }
 
-            // Helper to build compressed lines: drops duplicate child labels and collapses consecutive identical static lines
+            fun staticLine(e: Entry): String {
+                return "${e.cls}" +
+                    (e.label?.let { " \"$it\"" } ?: "") +
+                    (if (e.flags.isEmpty()) "" else " [${e.flags.joinToString(",")}]")
+            }
+
+            // M3: compression collapses only identical CONSECUTIVE static
+            // lines (honest (xN) count). Nothing else is dropped: a static
+            // line that merely equals a preceding interactive label is kept,
+            // and distinct rows are never merged.
             fun processEntries(
                 entryList: List<Entry>,
-            ): List<Pair<String, Boolean>> {
-                val result = mutableListOf<Pair<String, Boolean>>() // Pair(lineText, isInteractive)
-                var lastInteractiveLabel: String? = null
-                var pendingStaticLine: String? = null
-                var pendingStaticCount = 0
+            ): List<OutlineLine> {
+                val result = mutableListOf<OutlineLine>()
+                var pendingEntry: Entry? = null
+                var pendingText: String? = null
+                var pendingCount = 0
 
                 fun flushStatic() {
-                    if (pendingStaticLine != null) {
-                        val text = if (pendingStaticCount > 1) {
-                            "$pendingStaticLine (x$pendingStaticCount)"
+                    val pe = pendingEntry
+                    val pt = pendingText
+                    if (pe != null && pt != null) {
+                        val text = if (pendingCount > 1) {
+                            "$pt (x$pendingCount)"
                         } else {
-                            pendingStaticLine!!
+                            pt
                         }
-                        result.add(Pair(text, false))
-                        pendingStaticLine = null
-                        pendingStaticCount = 0
+                        result.add(OutlineLine(pe, text, false))
+                        pendingEntry = null
+                        pendingText = null
+                        pendingCount = 0
                     }
                 }
 
                 for (e in entryList) {
                     if (e.interactive) {
                         flushStatic()
-                        lastInteractiveLabel = e.label
-                        result.add(Pair(formatEntryLine(e), true))
+                        result.add(OutlineLine(e, interactiveBody(e), true))
                     } else {
-                        // Compress repetitive static lists: drop child text that is identical to parent interactive element's label
-                        if (e.label != null && lastInteractiveLabel != null && e.label == lastInteractiveLabel) {
-                            continue
-                        }
-                        val line = formatEntryLine(e)
-                        if (line == pendingStaticLine) {
-                            pendingStaticCount++
+                        val line = staticLine(e)
+                        if (line == pendingText) {
+                            pendingCount++
                         } else {
                             flushStatic()
-                            pendingStaticLine = line
-                            pendingStaticCount = 1
+                            pendingEntry = e
+                            pendingText = line
+                            pendingCount = 1
                         }
                     }
                 }
@@ -256,61 +268,8 @@ class ErrandAccessibilityService : AccessibilityService() {
             val visibleProcessed = processEntries(visibleEntries)
             val offScreenProcessed = processEntries(offScreenEntries)
 
-            val body = StringBuilder()
-            var charsUsed = 0
-
-            // Prioritise interactive lines within visible entries
-            var remainingInteractiveChars = visibleProcessed
-                .filter { it.second }
-                .sumOf { it.first.length + 1 }
-
-            var staticTruncated = false
-            for ((line, isInteractive) in visibleProcessed) {
-                val lineLen = line.length + 1
-                if (isInteractive) {
-                    remainingInteractiveChars -= lineLen
-                    if (charsUsed + lineLen > maxChars) {
-                        truncated = true
-                        break
-                    }
-                    body.append(line).append('\n')
-                    charsUsed += lineLen
-                } else {
-                    // Reserve room so remaining interactive lines are never crowded out by static text
-                    val remainingBudget = maxChars - charsUsed
-                    if (remainingBudget - lineLen < remainingInteractiveChars) {
-                        staticTruncated = true
-                        continue
-                    }
-                    body.append(line).append('\n')
-                    charsUsed += lineLen
-                }
-            }
-            if (staticTruncated) {
-                val note = "[...static text compressed to prioritize interactive controls]\n"
-                if (charsUsed + note.length <= maxChars) {
-                    body.append(note)
-                    charsUsed += note.length
-                }
-            }
-
-            // Append off-screen elements if budget permits
-            if (offScreenProcessed.isNotEmpty() && charsUsed + 20 < maxChars) {
-                val sep = "--- Off-screen ---\n"
-                body.append(sep)
-                charsUsed += sep.length
-                for ((line, _) in offScreenProcessed) {
-                    val lineLen = line.length + 1
-                    if (charsUsed + lineLen > maxChars) {
-                        body.append("[...remaining off-screen items omitted]\n")
-                        truncated = true
-                        break
-                    }
-                    body.append(line).append('\n')
-                    charsUsed += lineLen
-                }
-            }
-
+            // m4: the header is part of the outline, so it counts toward the
+            // char budget. Built before emission so charsUsed starts honest.
             val pkg = root.packageName?.toString() ?: "unknown"
             val tab = activeTab
             val wins = try { windows } catch (_: Exception) { emptyList() }
@@ -325,6 +284,103 @@ class ErrandAccessibilityService : AccessibilityService() {
                 (overlayCandidateFound?.let {
                     "WARN possible OVERLAY covering screen: $it -- taps may be swallowed; route around or ask the user.\n"
                 } ?: "")
+
+            val body = StringBuilder()
+            var charsUsed = header.length
+
+            // Prioritise interactive lines within visible entries. Estimates
+            // only (ref digits unknown until assignment); exact lengths are
+            // re-checked per line at emission.
+            var remainingInteractiveChars = visibleProcessed
+                .filter { it.interactive }
+                .sumOf { it.text.length + 8 }
+
+            // Emits one interactive line, assigning its ref inline (M1): only
+            // emitted lines ever land in refs, so no dangling ref numbers.
+            // Returns false when the char budget is exhausted.
+            fun emitInteractive(item: OutlineLine): Boolean {
+                val nextRef = refCounter + 1
+                // "[n] " + body + "\n"
+                val lineLen = item.text.length + nextRef.toString().length + 4
+                if (charsUsed + lineLen > charsCap) {
+                    truncated = true
+                    return false
+                }
+                refCounter = nextRef
+                // m6: Rect copied — aliasing e.bounds would let later reads
+                // observe (or mutate) shared mutable state via elementRefs.
+                refs[refCounter] = RefEntry(
+                    label = item.entry.label,
+                    cls = item.entry.cls,
+                    rect = Rect(item.entry.bounds),
+                )
+                val line = "[$refCounter] ${item.text}"
+                body.append(line).append('\n')
+                charsUsed += lineLen
+                return true
+            }
+
+            // m4: the omission note itself is budget-checked.
+            fun emitOmissionNote(): Boolean {
+                val omit = "[...remaining off-screen items omitted]\n"
+                if (charsUsed + omit.length <= charsCap) {
+                    body.append(omit)
+                    charsUsed += omit.length
+                }
+                truncated = true
+                return false
+            }
+
+            var staticTruncated = false
+            for (item in visibleProcessed) {
+                if (item.interactive) {
+                    remainingInteractiveChars -= item.text.length + 8
+                    if (!emitInteractive(item)) break
+                } else {
+                    val lineLen = item.text.length + 1
+                    // Reserve room so remaining interactive lines are never crowded out by static text
+                    val remainingBudget = charsCap - charsUsed
+                    if (remainingBudget - lineLen < remainingInteractiveChars) {
+                        staticTruncated = true
+                        continue
+                    }
+                    body.append(item.text).append('\n')
+                    charsUsed += lineLen
+                }
+            }
+            if (staticTruncated) {
+                val note = "[...static text compressed to prioritize interactive controls]\n"
+                if (charsUsed + note.length <= charsCap) {
+                    body.append(note)
+                    charsUsed += note.length
+                }
+            }
+
+            // Append off-screen elements if budget permits
+            if (offScreenProcessed.isNotEmpty() && charsUsed + 20 < charsCap) {
+                val sep = "--- Off-screen ---\n"
+                body.append(sep)
+                charsUsed += sep.length
+                for (item in offScreenProcessed) {
+                    if (item.interactive) {
+                        if (!emitInteractive(item)) {
+                            emitOmissionNote()
+                            break
+                        }
+                    } else {
+                        val lineLen = item.text.length + 1
+                        if (charsUsed + lineLen > charsCap) {
+                            emitOmissionNote()
+                            break
+                        }
+                        body.append(item.text).append('\n')
+                        charsUsed += lineLen
+                    }
+                }
+            }
+
+            elementRefs = refs
+
             val outlineText = header + body
             // Probe mode: effect check only. Does NOT update the stored snapshot,
             // so a subsequent real read still diffs against the pre-action state.
@@ -345,16 +401,19 @@ class ErrandAccessibilityService : AccessibilityService() {
                         "this snapshot is stale.",
                 )
             }
-            val charCapHit = truncated || charsUsed >= maxChars
-            val nodeCapHit = truncated && !charCapHit && visited >= maxNodes
+            // m6: `truncated` conflates walk-budget cuts (node or char cap hit
+            // mid-traversal) with emission-budget cuts below, so this
+            // attribution is a heuristic: chars first, then nodes.
+            val charCapHit = truncated || charsUsed >= charsCap
+            val nodeCapHit = truncated && !charCapHit && visited >= nodesCap
             return mapOf(
                 "ok" to true,
                 "package" to pkg,
                 "outline" to outlineText,
                 "nodes" to visited,
-                "maxNodes" to maxNodes,
+                "maxNodes" to nodesCap,
                 "charsUsed" to charsUsed,
-                "maxChars" to maxChars,
+                "maxChars" to charsCap,
                 "elements" to refCounter,
                 "capHit" to when {
                     charCapHit -> "chars"
@@ -372,6 +431,17 @@ class ErrandAccessibilityService : AccessibilityService() {
         """(?i)(?:,\s*)?(?:double[- ]tap to (?:activate|toggle|open|switch|view|check)|double[- ]tap and hold to (?:long press|select|open)|tap to (?:activate|toggle|add new status|open))\b.*$"""
     )
 
+    // P2: hoisted — trimLabel runs per node, so these must not recompile per call.
+    private val TRIM_COMMA_GAPS = Regex(",(\\s*,)+")
+    private val TRIM_MULTI_SPACE = Regex("\\s{2,}")
+    private val WORD_SPLIT = Regex("[^a-z-]+")
+
+    // P3: hoisted container-class set (was a fresh setOf(...) per visited node).
+    private val CONTAINER_CLASSES = setOf(
+        "RecyclerView", "ListView", "GridView", "ViewPager",
+        "ScrollView", "NestedScrollView", "ViewPager2",
+    )
+
     /**
      * Word-boundary trim so long labels (mail snippets, list items) don't
      * cut mid-word like "Confirm your ema". Strips TalkBack boilerplate
@@ -381,8 +451,8 @@ class ErrandAccessibilityService : AccessibilityService() {
         // Apps like Gmail glue list fields into one contentDescription with
         // empty segments (", , , Spotify, , subject…") — collapse those gaps.
         var s = raw.replace('\n', ' ')
-            .replace(Regex(",(\\s*,)+"), ",")
-            .replace(Regex("\\s{2,}"), " ")
+            .replace(TRIM_COMMA_GAPS, ",")
+            .replace(TRIM_MULTI_SPACE, " ")
             .trim()
             .trim(',')
             .trim()
@@ -431,6 +501,19 @@ class ErrandAccessibilityService : AccessibilityService() {
         val label: String?,
         val flags: List<String>,
         val interactive: Boolean,
+        // M2: cached at visit time; visible = in-viewport AND visibleToUser.
+        val visibleToUser: Boolean,
+    )
+
+    /**
+     * One outline line after dedup/compression, pre-ref-assignment.
+     * Interactive [text] is the ref-free body; the [n] prefix is added
+     * inline at emission time (M1) so every exposed ref has a [n] line.
+     */
+    private data class OutlineLine(
+        val entry: Entry,
+        val text: String,
+        val interactive: Boolean,
     )
 
     private data class TapCandidate(
@@ -456,6 +539,9 @@ class ErrandAccessibilityService : AccessibilityService() {
         depth: Int,
         maxDepth: Int,
         maxChars: Int,
+        viewportW: Int,
+        viewportH: Int,
+        walkChars: IntArray,
         entries: MutableList<Entry>,
         budget: () -> Boolean,
     ): Boolean {
@@ -465,7 +551,9 @@ class ErrandAccessibilityService : AccessibilityService() {
             return false
         }
         if (depth > maxDepth) return false
-        if (charsCollected(entries) >= maxChars || !budget()) {
+        // P1: running counter — the old charsCollected(entries) re-summed
+        // the whole list per node (O(n²)).
+        if (walkChars[0] >= maxChars || !budget()) {
             return true
         }
         val cls = node.className?.toString()?.substringAfterLast('.') ?: "View"
@@ -473,6 +561,13 @@ class ErrandAccessibilityService : AccessibilityService() {
             ?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
         val clickable = node.isClickable
         val interactive = clickable || node.isEditable || node.isScrollable
+        // M2: captured per node — hidden/off-page/GONE-cached nodes can
+        // still report in-viewport bounds.
+        val visibleToUser = try {
+            node.isVisibleToUser
+        } catch (_: Exception) {
+            false
+        }
         val label = node.text?.toString()?.let { trimLabel(it, interactive) }?.ifBlank { null }
             ?: node.contentDescription?.toString()?.let { trimLabel(it, interactive) }?.ifBlank { null }
             ?: node.hintText?.toString()?.let { trimLabel(it, interactive) }?.ifBlank { null }
@@ -482,13 +577,12 @@ class ErrandAccessibilityService : AccessibilityService() {
         // Fullscreen-ish clickable above content: the consent-wall /
         // modal-backdrop tell. Scroll/list container classes are excluded --
         // a full-screen RecyclerView is a normal feed, not an overlay.
-        val isContainerClass = cls in setOf(
-            "RecyclerView", "ListView", "GridView", "ViewPager",
-            "ScrollView", "NestedScrollView", "ViewPager2",
-        )
+        // P3: container set is hoisted; viewport dims passed in (no
+        // displayMetrics lookup per node).
+        val isContainerClass = cls in CONTAINER_CLASSES
         if (clickable && !isContainerClass &&
-            bounds.width() >= viewportW() * 0.9 &&
-            bounds.height() >= viewportH() * 0.6
+            bounds.width() >= viewportW * 0.9 &&
+            bounds.height() >= viewportH * 0.6
         ) {
             overlayCandidateFound = overlayCandidateFound ?: cls
         }
@@ -519,24 +613,20 @@ class ErrandAccessibilityService : AccessibilityService() {
                     label = label,
                     flags = flags,
                     interactive = interactive,
+                    visibleToUser = visibleToUser,
                 )
             )
+            walkChars[0] += cls.length + (label?.length ?: 0) + 24
         }
         val childCount = try { node.childCount } catch (_: Exception) { return false }
         for (i in 0 until childCount) {
             val child = try { node.getChild(i) } catch (_: Exception) { null } ?: continue
-            val cut = visitNode(child, depth + 1, maxDepth, maxChars, entries, budget)
+            val cut = visitNode(child, depth + 1, maxDepth, maxChars, viewportW, viewportH, walkChars, entries, budget)
             recycleQuietly(child)
             if (cut) return true
         }
         return false
     }
-
-    private fun viewportW(): Int = resources.displayMetrics.widthPixels
-    private fun viewportH(): Int = resources.displayMetrics.heightPixels
-
-    private fun charsCollected(entries: MutableList<Entry>): Int =
-        entries.sumOf { it.cls.length + (it.label?.length ?: 0) + 24 }
 
     private fun offScreenTag(b: Rect, vw: Int, vh: Int): String? = when {
         b.bottom <= 0 -> "[off-screen above]"
@@ -560,7 +650,7 @@ class ErrandAccessibilityService : AccessibilityService() {
      */
     private fun commitMatch(label: String?): String? {
         if (label == null) return null
-        val words = label.lowercase().split(Regex("[^a-z-]+")).filter { it.isNotEmpty() }
+        val words = label.lowercase().split(WORD_SPLIT).filter { it.isNotEmpty() }
         return words.firstOrNull { it in COMMIT_WORDS || it.split("-").any(COMMIT_WORDS::contains) }
     }
 
@@ -757,7 +847,11 @@ class ErrandAccessibilityService : AccessibilityService() {
                         "Re-read the screen and use the exact label.")
             }
             val pool = candidates.filter { it.score == bestScore }
-                .sortedWith(compareBy({ it.bounds.top }, { it.bounds.left }))
+                .sortedWith(compareBy(
+                    { it.bounds.top }, { it.bounds.left },
+                    { it.bounds.right }, { it.bounds.bottom },
+                    { it.text },
+                ))
             if (occurrence !in 1..pool.size) {
                 val msg = "Found ${pool.size} match(es) for \"$label\"; occurrence " +
                     "$occurrence is out of range (1-${pool.size})."
@@ -811,6 +905,13 @@ class ErrandAccessibilityService : AccessibilityService() {
 
     private fun matchScore(candidate: String, needle: String, exact: Boolean): Int? {
         val lower = candidate.lowercase()
+        // M4: the outline trims long labels with a trailing … (100/80-char
+        // word-boundary trim), but tapByText matches raw full labels — a
+        // pasted "Some long subject…" query would otherwise never hit. Strip
+        // trailing ellipsis chars from the query and prefix-match the full
+        // label. Trim limits themselves are unchanged.
+        val stripped = needle.trimEnd('…', '.').trimEnd()
+        if (stripped.isNotEmpty() && stripped != needle && lower.startsWith(stripped)) return 2
         return when {
             lower == needle -> 3
             lower.startsWith(needle) -> 2

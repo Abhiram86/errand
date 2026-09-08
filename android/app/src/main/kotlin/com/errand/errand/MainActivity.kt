@@ -44,6 +44,15 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    override fun onDestroy() {
+        if (isFinishing) {
+            try {
+                ErrandAccessibilityService.instance?.disableSelf()
+            } catch (_: Exception) {}
+        }
+        super.onDestroy()
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
@@ -402,6 +411,19 @@ class MainActivity : FlutterActivity() {
                         result.success(null)
                     } catch (e: Exception) {
                         result.error("SETTINGS_ERR", e.message, null)
+                    }
+                }
+                "disable" -> {
+                    try {
+                        val svc = ErrandAccessibilityService.instance
+                        if (svc != null) {
+                            svc.disableSelf()
+                            result.success(true)
+                        } else {
+                            result.success(false)
+                        }
+                    } catch (e: Exception) {
+                        result.error("DISABLE_ERR", e.message, null)
                     }
                 }
                 "readScreen" -> {

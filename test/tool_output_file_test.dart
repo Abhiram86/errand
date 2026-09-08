@@ -56,7 +56,8 @@ void main() {
       // File was created in tempDir
       final files = tempDir.listSync().whereType<File>().toList();
       expect(files.length, equals(1));
-      expect(files.first.path, contains('tool-call_large_1-output.txt'));
+      expect(files.first.path, contains('tool-call_large_1_'));
+      expect(files.first.path, endsWith('-output.txt'));
 
       // File contains the complete unabridged text
       expect(files.first.readAsStringSync(), equals(largeText));
@@ -99,7 +100,8 @@ void main() {
 
       final files = tempDir.listSync().whereType<File>().toList();
       expect(files.length, equals(1));
-      expect(files.first.path, contains('tool-call_123_456_foo-output.txt'));
+      expect(files.first.path, contains('tool-call_123_456_foo_'));
+      expect(files.first.path, endsWith('-output.txt'));
     });
   });
 
@@ -147,32 +149,33 @@ void main() {
     test('automatically spills large output from any registered tool', () async {
       // Use singleton service with override temp dir for this test
       ToolOutputFileService.instance.overrideDirectory = tempDir;
+      try {
+        final dummyTool = Tool(
+          name: 'huge_dumper',
+          description: 'Dumps a lot of text',
+          parameters: const {'type': 'object', 'properties': {}},
+          handler: (call) async {
+            return ToolCallResult(
+              id: call.id,
+              ok: true,
+              output: 'Header: System Info\n${'Data row\n' * 1200}', // > 8000 chars
+            );
+          },
+        );
 
-      final dummyTool = Tool(
-        name: 'huge_dumper',
-        description: 'Dumps a lot of text',
-        parameters: const {'type': 'object', 'properties': {}},
-        handler: (call) async {
-          return ToolCallResult(
-            id: call.id,
-            ok: true,
-            output: 'Header: System Info\n${'Data row\n' * 1200}', // > 8000 chars
-          );
-        },
-      );
+        final registry = ToolRegistry([dummyTool]);
+        final result = await registry.execute(
+          const ToolCall(id: 'exec_call_99', name: 'huge_dumper', arguments: {}),
+        );
 
-      final registry = ToolRegistry([dummyTool]);
-      final result = await registry.execute(
-        const ToolCall(id: 'exec_call_99', name: 'huge_dumper', arguments: {}),
-      );
-
-      expect(result.ok, isTrue);
-      expect(result.output, contains('Output truncated'));
-      expect(result.output, contains('tool-exec_call_99-output.txt'));
-      expect(result.output, startsWith('Header: System Info'));
-
-      // Restore
-      ToolOutputFileService.instance.overrideDirectory = null;
+        expect(result.ok, isTrue);
+        expect(result.output, contains('Output truncated'));
+        expect(result.output, contains('tool-exec_call_99_'));
+        expect(result.output, startsWith('Header: System Info'));
+      } finally {
+        // Restore
+        ToolOutputFileService.instance.overrideDirectory = null;
+      }
     });
   });
 }

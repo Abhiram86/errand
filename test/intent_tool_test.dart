@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:errand/agent/tool.dart';
+import 'package:errand/services/a11y_service.dart';
 import 'package:errand/services/intent_service.dart';
 import 'package:errand/tools/intent_tool.dart';
 
@@ -31,13 +32,25 @@ class MockIntentService extends IntentService {
   }
 }
 
+class MockA11yService extends A11yService {
+  final bool enabled;
+  MockA11yService({this.enabled = true});
+
+  @override
+  Future<bool> isEnabled() async => enabled;
+
+  @override
+  Future<bool> isRestricted() async => false;
+}
+
 void main() {
   late MockIntentService service;
   late Tool tool;
 
   setUp(() {
     service = MockIntentService();
-    tool = intentTool(service: service);
+    // Hermetic default: never hit the real a11y MethodChannel in tests.
+    tool = intentTool(service: service, a11yService: MockA11yService(enabled: true));
   });
 
   group('intentTool schema', () {
@@ -180,6 +193,40 @@ void main() {
       final result = await tool.handler(call);
       expect(result.ok, isFalse);
       expect(result.errorMessage, contains('Missing "package"'));
+    });
+
+    test('includes disabled notice when a11y is off', () async {
+      final mockA11y = MockA11yService(enabled: false);
+      final customTool = intentTool(service: service, a11yService: mockA11y);
+      final call = ToolCall(
+        id: 'call-a11y-off',
+        name: 'intent',
+        arguments: {
+          'action': 'open_app',
+          'package': 'com.whatsapp',
+        },
+      );
+      final result = await customTool.handler(call);
+      expect(result.ok, isTrue);
+      expect(result.output, contains('[NOTICE: SCREEN ACCESS PAUSED]'));
+      expect(result.output, contains('Launched app: com.whatsapp'));
+    });
+
+    test('omits disabled notice when a11y is on', () async {
+      final mockA11y = MockA11yService(enabled: true);
+      final customTool = intentTool(service: service, a11yService: mockA11y);
+      final call = ToolCall(
+        id: 'call-a11y-on',
+        name: 'intent',
+        arguments: {
+          'action': 'open_app',
+          'package': 'com.whatsapp',
+        },
+      );
+      final result = await customTool.handler(call);
+      expect(result.ok, isTrue);
+      expect(result.output, isNot(contains('[NOTICE: SCREEN ACCESS PAUSED]')));
+      expect(result.output, contains('Launched app: com.whatsapp'));
     });
   });
 

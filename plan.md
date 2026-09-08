@@ -24,16 +24,17 @@ An on-device AI agent for Android: search, read, and navigate any file the user 
 | Concern | Package / mechanism | Notes |
 |---|---|---|
 | File access (current) | Android `MANAGE_EXTERNAL_STORAGE` + `dart:io` | `Workspace` singleton over `storage_access` MethodChannel; root `/storage/emulated/0`, `WorkingDirectory` tracks `current` |
-| File tools | `read`, `workspace` (`pwd`/`cd`/`list`/`find`) in `lib/tools/` | `read` does byte-range for text + logical pagination for PDF/DOCX/XLSX/PPTX; `find` is glob + max_depth; `cd` mutates `WorkingDirectory` |
+| File tools | `read`, `workspace` (`pwd`/`cd`/`list`/`find`) in `lib/tools/` | `read` does byte-range for text + logical pagination for PDF/DOCX/XLSX/PPTX; `find` is glob + max_depth; `cd` mutates `WorkingDirectory`; **grep filter on all** |
 | Document readers | `read_pdf_text` + `archive` + `xml` | `lib/internal/document_reading/` → `LogicalDocument`/`LogicalRead` with character budget (256 KB) and overlap |
 | Web tools | `tavily` via `http` | `TavilyClient` (`/search`, `/extract`), used by `websearch`/`webfetch` tools; Bearer `TAVILY_API_KEY` |
 | LLM client | OpenAI-compatible over `http` | `lib/llm/llm_client.dart` → `POST /chat/completions` + SSE `stream:true`; `baseUrl` → OpenRouter / HF endpoint; custom loop preferred |
-| Agent loop | `lib/agent/` | `Tool` schema + `ToolRegistry` (safe `execute` → `ToolCallResult.failure`) + `AgentLoop.run()` with streaming deltas, reasoning, 12-turn cap |
+| Agent loop | `lib/agent/` | `Tool` schema + `ToolRegistry` (safe `execute` → `ToolCallResult.failure`) + `AgentLoop.run()` with streaming deltas, reasoning, 72-turn cap, token budget, auto-compaction |
 | Local session store | `drift` + `drift_flutter` | `ErrandDatabase` (Conversations, ConversationMessages, ConversationAttachments), `saveConversation` transaction, `watchConversationSummaries`/`watchPinnedConversations` |
 | Model catalog | `http` + `lib/services/model_catalog.dart` | `GET /models?output_modalities=text`, static cache + in-flight dedup, fallback `kFallbackModels` |
-| UI | Flutter Material 3, dark theme | `ChatScreen` (lib/main.dart) + `ChatSidebar`, `ChatComposer`, `MessageBubbles`, `ModelPicker`, `AppColors` |
+| UI | Flutter Material 3, dark theme | `ChatScreen` (lib/main.dart) + `ChatSidebar`, `ChatComposer` (multi-line), `MessageBubbles`, `ModelPicker`, `AppColors` |
 | a11y / notifications (Phase 2) | `flutter_accessibility_service`, `flutter_notification_listener` | click/setText/dispatchGesture/screenshot; read other apps' notifications |
 | Real commands, no root (Phase 3) | bundled static `busybox` + `dart:io Process` | in app-private workspace; no Termux, no allowlists, no Shizuku |
+| Large output spill | `ToolOutputFileService` | `cache/tool_outputs/`, 512 KB cap, max 50 files, 10-min TTL; head/tail preview with header reservation; `read` tool opens spilled files directly |
 
 The current prototype uses Android all-files access so the agent can operate on a shared storage root. SAF remains a possible future replacement if Play distribution or narrower user grants become requirements.
 
@@ -87,8 +88,11 @@ class ToolCallResult { final String id; final bool ok; final String output; fina
 9. ✅ Context budgeting (OPT-07) — history truncation + message windowing + sidebar pagination + merge-based saves (see `next_plan.md` §P1).
 10. ✅ UX batch (P1.5) — stop/copy buttons, rename, edit-message & regenerate (history truncation), voice input (`speech_to_text`), plus abortable cancel + foreground work indicator. See `next_plan.md` §P1.5.
 11. ✅ AccessibilityService (P2, partial) — screen read + global actions + gated Draft-mode injection (`act`: tap/type/scroll with commit refusal). Remaining: plan-preview approval card, risk-class metadata, Send-tier opt-in. See `next_plan.md` §P2.
-12. **P3** — image multimodality (on `attachedFileUris`), safe editing (`edit_file` + diff/undo), local retrieval (embeddings + FTS).
-13. **Phase 3+:** bundled `busybox` shell via `dart:io Process` in app-private workspace.
+12. ✅ **Large tool output file-caching** — `ToolOutputFileService` spill (512 KB, 10-min TTL, max 50 files) + head/tail preview with header reservation + `read` tool cache resolution (see `next_plan.md` §P4b #4).
+13. ✅ **`grep` filter for heavy tools** — `screen`, `read`, `workspace` list/find, `act then_read` (see `next_plan.md` §P4b #5).
+14. ✅ **A11y lifecycle & toast UX** — auto-disable on close, cold-start toast with restricted guidance, Settings chip with Enable/Disable, lazy paused-notice on intent launches, composer multi-line (see `next_plan.md` §P4b #6–7).
+15. **P3** — image multimodality (on `attachedFileUris`), safe editing (`edit_file` + diff/undo), local retrieval (embeddings + FTS).
+16. **Phase 3+:** bundled `busybox` shell via `dart:io Process` in app-private workspace.
 
 ## Cut-lines
 

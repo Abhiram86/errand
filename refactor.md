@@ -104,13 +104,13 @@ ModelCatalog: GET {baseUrl}/models → architecture.input_modalities + context_l
 ```
 1  model_catalog.dart + model_option.dart          ← smallest, isolated      [x] 2026-08-29 (+contextLength 09-07)
 2  tavily_client.dart + web_tools                  ← web layer               [x] 2026-09-01
-3  workspace.dart + file_tools.dart + workspace_tool + attached_files_tool  [~] partial (LRU+dispose via fa6d2ec; resolvers unsplit)
+3  workspace.dart + file_tools.dart + workspace_tool + attached_files_tool  [x] grep filter + spill integration + resolvers hardened
 4  internal/document_reading/ (4 files)            ← structured readers      [x] 83f367b + fa6d2ec
 5  intent_service.dart + intent_tool.dart + MainActivity.kt                  [x] 225b599 (5-action unify)
 6  llm_client.dart (+ CancelToken/retry)           ← resilience core         [x] d75d86d
 7  agent/context_budget.dart + agent_loop.dart     ← dynamic budget+compaction [x] dbe2757
 8  services/database.dart (schema v4 + compacted)  ← +replaceAllMessages     [~] partial (compaction half via dbe2757)
-9  a11y_service.dart + ErrandAccessibilityService.kt + screen/act tools      [ ]
+9  a11y_service.dart + ErrandAccessibilityService.kt + screen/act tools      [x] Sep 2026: lifecycle, toast, grep, ref/visible fixes
 10 main.dart + widgets last                        ← depends on all above    [x] walkthrough 2026-09-07 (2209 lines; no rewrite — owns everything, see §3b-11)
 ```
 
@@ -148,6 +148,9 @@ Mark `[x]` when walkthrough+revisit+rewrite+tests pass. One commit per row.
 | 2026-09-07 | 7 `agent` | Dynamic budget + auto-compaction (`dbe2757`) | `ContextBudget` tokens (reserve `min(16K,25%)`, 128K default, `ModelsDevService` fallback, per-preset `contextLength`), `_compactIfNeeded` pre-turn + post-batch (1–2 tail blocks, LLM summary + deterministic fallback), `CompactedNoticeMessage` + `effectiveHistory` + `applyCompactedHistory`, `AgentCompacting/Compacted` events, `maxTurns 18→72` ctor param, divider merge-save (`replaceAllMessages` kept, uncalled), `CompactedDividerBubble` + footer indicators + draft-guard UI. `dynamic_context_budget/models_dev` suites pass. | `dbe2757` |
 | 2026-09-07 | 7 `agent` fixes | Compaction review fixes (uncommitted review) | `compactionTimeout` 60s cap (ctor param; timeout → fallback, stop still rethrows divider-less), `fitTailToTarget` (oldest-first content trims to 1K floor, newest spared, media/non-tool untouched, input unmutated), `replaceAllMessages` window-safety contract + uncalled note. Stop-during-compaction re-verified already-safe (flag reset in fail/replace paths). 5 new tests. | `ef8a446` |
 | 2026-09-07 | 7+9 batch fixes | Sequential abort + settle review fixes | `_isStatefulCall` extracted; fail-fast skips only stateful followers (`type:'skipped'` marker, first-failure reason wins) — stateless siblings always run; `_prevAlreadySettled` skips the 350ms settle after `act`+`then_read`; Kotlin blank-line + EOF newline. Short-circuit test rewritten (stateful follower) + 2 new tests (sibling-runs, settle-skip timing). | — |
+| 2026-09-08 | 3 `file_tools`/`workspace` | grep filter + spill integration | `GrepFilter` ReDoS guard (200-char, nested-quantifier), `startLine` for windowed reads, structured grep filters body only; `list`/`find` grep before pagination; `ToolOutputFileService` 512 KB store cap, max 50 files, atomic tmp+rename, hashed filenames; `_resolveReadableFile` spill-dir containment only; `webfetch` 100k extract cap. `analyze` clean, 182 tests. | — |
+| 2026-09-08 | 9 `a11y` | Kotlin visible/offscreen + refs + grep | Refs assigned inline at emission (no dangling); `isVisibleToUser` re-added to visible split; dedup collapses only consecutive static lines; `tapByText` tolerates `…` via prefix match; O(n²)→running counter; hoisted regexes/container set; viewport dims params; server clamps (nodes≤1000, chars≤32k); index-keyed refs, no `[null]`; sort tiebreak; header in budget; `Rect` copied. `onTaskRemoved`+`onDestroy(isFinishing)` auto-disableSelf. | — |
+| 2026-09-08 | 10 `main.dart` | Toast + lifecycle + composer | Dismissible a11y toast (8s auto-dismiss, persist on ✕, restricted copy when `isRestricted`); resume refreshes chip via `WidgetsBindingObserver`; `_openSettings` re-reads `_a11yAvailable` (no stale prompt); Settings Tools tab Enable/Disable buttons; `intent` lazy paused-notice after success; composer `TextInputAction.newline` (Enter = newline, Send = submit). | — |
 | | 8 | | | |
 | | 9 | | | |
 | | 10 | | | |

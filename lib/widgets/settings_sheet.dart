@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as path;
 
 import '../models/llm_provider.dart';
+import '../services/a11y_service.dart';
 import '../services/app_settings.dart';
 import '../services/model_catalog.dart';
 import '../theme/app_colors.dart';
@@ -52,13 +55,15 @@ class _SettingsSheet extends StatefulWidget {
   State<_SettingsSheet> createState() => _SettingsSheetState();
 }
 
-class _SettingsSheetState extends State<_SettingsSheet> {
+class _SettingsSheetState extends State<_SettingsSheet>
+    with WidgetsBindingObserver {
   final _tavilyController = TextEditingController();
   bool _hasTavilyKey = false;
   bool _tavilyObscured = true;
 
   bool _loaded = false;
   bool _settingsChanged = false;
+  bool _a11yEnabled = false;
   late List<String> _localAttached;
   bool _picking = false;
 
@@ -66,20 +71,42 @@ class _SettingsSheetState extends State<_SettingsSheet> {
   void initState() {
     super.initState();
     _localAttached = List<String>.from(widget.attachedFiles);
+    WidgetsBinding.instance.addObserver(this);
     _load();
   }
 
+  /// The Enable button fires an intent into system Settings (returns
+  /// immediately — the user enables while we're backgrounded), so refresh
+  /// the chip when we come back instead of going stale until reopen.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_refreshA11y());
+    }
+  }
+
+  Future<void> _refreshA11y() async {
+    final a11y = await A11yService().isEnabled();
+    if (!mounted) return;
+    setState(() => _a11yEnabled = a11y);
+  }
+
   Future<void> _load() async {
-    await AppSettingsService.instance.ensureLoaded();
+    final results = await Future.wait([
+      AppSettingsService.instance.ensureLoaded(),
+      A11yService().isEnabled(),
+    ]);
     if (!mounted) return;
     setState(() {
       _hasTavilyKey = AppSettingsService.instance.hasTavilyKey;
+      _a11yEnabled = results[1] as bool;
       _loaded = true;
     });
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _tavilyController.dispose();
     super.dispose();
   }
@@ -359,6 +386,68 @@ class _SettingsSheetState extends State<_SettingsSheet> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Text('Screen Access (Accessibility)',
+                    style: TextStyle(color: kText, fontSize: 13, fontWeight: FontWeight.w600)),
+                const SizedBox(width: 8),
+                _statusChip(
+                  configured: _a11yEnabled,
+                  label: _a11yEnabled ? 'Active' : 'Disabled',
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            const Text(
+              'Enables screen reading and device automation. Pauses when Errand closes to keep other apps secure.',
+              style: TextStyle(color: kMuted, fontSize: 12),
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                if (_a11yEnabled)
+                  OutlinedButton.icon(
+                    onPressed: () async {
+                      // disableSelf() applies async at OS level — an immediate
+                      // isEnabled() re-read can still return true. Trust a
+                      // successful disable call instead of the racy re-read.
+                      final ok = await A11yService().disableService();
+                      final updated = ok ? false : await A11yService().isEnabled();
+                      if (mounted) {
+                        setState(() {
+                          if (_a11yEnabled != updated) {
+                            _a11yEnabled = updated;
+                            _settingsChanged = true;
+                          }
+                        });
+                      }
+                    },
+                    icon: const Icon(Icons.power_settings_new_rounded, size: 16),
+                    label: const Text('Disable now'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: kDanger,
+                      side: const BorderSide(color: kDanger),
+                    ),
+                  )
+                else
+                  FilledButton.icon(
+                    onPressed: () async {
+                      await A11yService().openSettings();
+                    },
+                    icon: const Icon(Icons.settings_accessibility_rounded, size: 16),
+                    label: const Text('Enable in Settings'),
+                    style: FilledButton.styleFrom(backgroundColor: kBubbleUser),
+                  ),
+              ],
+            ),
+          ],
+        ),
+        const SizedBox(height: 20),
+        const Divider(color: kBorder),
+        const SizedBox(height: 16),
         const Text(
           'API keys for optional agent tools.',
           style: TextStyle(color: kMuted, fontSize: 12),
