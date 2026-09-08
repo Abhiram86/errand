@@ -2175,12 +2175,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     // Hidden state is already zero-size (SizedBox.shrink child) — the
     // IgnorePointer only guards the fade window. No early return here so
     // the slide-out exit animation can play on dismiss.
-    return IgnorePointer(
-      ignoring: !_showA11yToast,
-      child: Positioned(
-        top: 0,
-        left: 0,
-        right: 0,
+    return Positioned(
+      top: 0,
+      left: 0,
+      right: 0,
+      child: IgnorePointer(
+        ignoring: !_showA11yToast,
         child: SafeArea(
           child: AnimatedSlide(
             offset: _showA11yToast ? Offset.zero : const Offset(0, -1.2),
