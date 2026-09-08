@@ -147,40 +147,170 @@ class ErrandAccessibilityService : AccessibilityService() {
             var visited = 0
             activeTab = null // per-read scratch; see visitNode
             overlayCandidateFound = null
-            val truncated = try {
+            var truncated = try {
                 visitNode(root, 0, maxDepth, maxChars, entries) { visited++ < maxNodes }
             } catch (_: Exception) {
                 // Stale tree mid-walk: keep whatever we collected.
                 true
             }
-            // Visual reading order, not tree order.
-            entries.sortWith(compareBy({ it.bounds.top }, { it.bounds.left }))
-            val refs = mutableMapOf<Int, RefEntry>()
-            val body = StringBuilder()
-            var refCounter = 0
-            var charsUsed = 0
+
+            // Separate visible vs off-screen: visible elements have priority
+            val visibleEntries = mutableListOf<Entry>()
+            val offScreenEntries = mutableListOf<Entry>()
             for (e in entries) {
-                val line: String
+                if (offScreenTag(e.bounds, viewportW, viewportH) == null) {
+                    visibleEntries.add(e)
+                } else {
+                    offScreenEntries.add(e)
+                }
+            }
+
+            // Visual reading order: top-to-bottom, left-to-right
+            visibleEntries.sortWith(compareBy({ it.bounds.top }, { it.bounds.left }))
+            offScreenEntries.sortWith(compareBy({ it.bounds.top }, { it.bounds.left }))
+
+            // 1. Build the full ref map FIRST so all interactive elements have stable refs
+            val refs = mutableMapOf<Int, RefEntry>()
+            val entryRefMap = mutableMapOf<Entry, Int>()
+            var refCounter = 0
+
+            for (e in visibleEntries) {
                 if (e.interactive) {
                     refCounter++
                     refs[refCounter] = RefEntry(label = e.label, cls = e.cls, rect = e.bounds)
+                    entryRefMap[e] = refCounter
+                }
+            }
+            for (e in offScreenEntries) {
+                if (e.interactive) {
+                    refCounter++
+                    refs[refCounter] = RefEntry(label = e.label, cls = e.cls, rect = e.bounds)
+                    entryRefMap[e] = refCounter
+                }
+            }
+            elementRefs = refs
+
+            fun formatEntryLine(e: Entry): String {
+                return if (e.interactive) {
+                    val ref = entryRefMap[e]
                     val off = offScreenTag(e.bounds, viewportW, viewportH)
                     val pos = off ?: "@${e.bounds.left},${e.bounds.top} ${e.bounds.width()}x${e.bounds.height()}"
-                    line = "[$refCounter] ${e.cls}" +
+                    "[$ref] ${e.cls}" +
                         (e.vid?.let { " id=$it" } ?: "") +
                         (e.label?.let { " \"$it\"" } ?: "") +
                         (if (e.flags.isEmpty()) "" else " [${e.flags.joinToString(",")}]") +
                         " $pos"
                 } else {
-                    line = "${e.cls}" +
+                    "${e.cls}" +
                         (e.label?.let { " \"$it\"" } ?: "") +
                         (if (e.flags.isEmpty()) "" else " [${e.flags.joinToString(",")}]")
                 }
-                if (charsUsed + line.length > maxChars) break
-                charsUsed += line.length + 1
-                body.append(line).append('\n')
             }
-            elementRefs = refs
+
+            // Helper to build compressed lines: drops duplicate child labels and collapses consecutive identical static lines
+            fun processEntries(
+                entryList: List<Entry>,
+            ): List<Pair<String, Boolean>> {
+                val result = mutableListOf<Pair<String, Boolean>>() // Pair(lineText, isInteractive)
+                var lastInteractiveLabel: String? = null
+                var pendingStaticLine: String? = null
+                var pendingStaticCount = 0
+
+                fun flushStatic() {
+                    if (pendingStaticLine != null) {
+                        val text = if (pendingStaticCount > 1) {
+                            "$pendingStaticLine (x$pendingStaticCount)"
+                        } else {
+                            pendingStaticLine!!
+                        }
+                        result.add(Pair(text, false))
+                        pendingStaticLine = null
+                        pendingStaticCount = 0
+                    }
+                }
+
+                for (e in entryList) {
+                    if (e.interactive) {
+                        flushStatic()
+                        lastInteractiveLabel = e.label
+                        result.add(Pair(formatEntryLine(e), true))
+                    } else {
+                        // Compress repetitive static lists: drop child text that is identical to parent interactive element's label
+                        if (e.label != null && lastInteractiveLabel != null && e.label == lastInteractiveLabel) {
+                            continue
+                        }
+                        val line = formatEntryLine(e)
+                        if (line == pendingStaticLine) {
+                            pendingStaticCount++
+                        } else {
+                            flushStatic()
+                            pendingStaticLine = line
+                            pendingStaticCount = 1
+                        }
+                    }
+                }
+                flushStatic()
+                return result
+            }
+
+            val visibleProcessed = processEntries(visibleEntries)
+            val offScreenProcessed = processEntries(offScreenEntries)
+
+            val body = StringBuilder()
+            var charsUsed = 0
+
+            // Prioritise interactive lines within visible entries
+            var remainingInteractiveChars = visibleProcessed
+                .filter { it.second }
+                .sumOf { it.first.length + 1 }
+
+            var staticTruncated = false
+            for ((line, isInteractive) in visibleProcessed) {
+                val lineLen = line.length + 1
+                if (isInteractive) {
+                    remainingInteractiveChars -= lineLen
+                    if (charsUsed + lineLen > maxChars) {
+                        truncated = true
+                        break
+                    }
+                    body.append(line).append('\n')
+                    charsUsed += lineLen
+                } else {
+                    // Reserve room so remaining interactive lines are never crowded out by static text
+                    val remainingBudget = maxChars - charsUsed
+                    if (remainingBudget - lineLen < remainingInteractiveChars) {
+                        staticTruncated = true
+                        continue
+                    }
+                    body.append(line).append('\n')
+                    charsUsed += lineLen
+                }
+            }
+            if (staticTruncated) {
+                val note = "[...static text compressed to prioritize interactive controls]\n"
+                if (charsUsed + note.length <= maxChars) {
+                    body.append(note)
+                    charsUsed += note.length
+                }
+            }
+
+            // Append off-screen elements if budget permits
+            if (offScreenProcessed.isNotEmpty() && charsUsed + 20 < maxChars) {
+                val sep = "--- Off-screen ---\n"
+                body.append(sep)
+                charsUsed += sep.length
+                for ((line, _) in offScreenProcessed) {
+                    val lineLen = line.length + 1
+                    if (charsUsed + lineLen > maxChars) {
+                        body.append("[...remaining off-screen items omitted]\n")
+                        truncated = true
+                        break
+                    }
+                    body.append(line).append('\n')
+                    charsUsed += lineLen
+                }
+            }
+
             val pkg = root.packageName?.toString() ?: "unknown"
             val tab = activeTab
             val wins = try { windows } catch (_: Exception) { emptyList() }
@@ -238,22 +368,29 @@ class ErrandAccessibilityService : AccessibilityService() {
         }
     }
 
+    private val A11Y_BOILERPLATE = Regex(
+        """(?i)(?:,\s*)?(?:double[- ]tap to (?:activate|toggle|open|switch|view|check)|double[- ]tap and hold to (?:long press|select|open)|tap to (?:activate|toggle|add new status|open))\b.*$"""
+    )
+
     /**
      * Word-boundary trim so long labels (mail snippets, list items) don't
-     * cut mid-word like "Confirm your ema". Marks the cut with an ellipsis.
+     * cut mid-word like "Confirm your ema". Strips TalkBack boilerplate
+     * and trims non-critical labels shorter than interactive ones.
      */
-    private fun trimLabel(raw: String, maxLen: Int = 120): String {
+    private fun trimLabel(raw: String, isInteractive: Boolean = false, maxLen: Int = 100): String {
         // Apps like Gmail glue list fields into one contentDescription with
         // empty segments (", , , Spotify, , subject…") — collapse those gaps.
-        val s = raw.replace('\n', ' ')
+        var s = raw.replace('\n', ' ')
             .replace(Regex(",(\\s*,)+"), ",")
             .replace(Regex("\\s{2,}"), " ")
             .trim()
             .trim(',')
             .trim()
-        if (s.length <= maxLen) return s
-        val cut = s.lastIndexOf(' ', maxLen)
-        return (if (cut > maxLen / 2) s.substring(0, cut) else s.substring(0, maxLen)) + "…"
+        s = s.replace(A11Y_BOILERPLATE, "").trim().trim(',', '.', ';').trim()
+        val limit = if (isInteractive) maxLen else (maxLen * 8 / 10) // 80 chars for non-critical/static
+        if (s.length <= limit) return s
+        val cut = s.lastIndexOf(' ', limit)
+        return (if (cut > limit / 2) s.substring(0, cut) else s.substring(0, limit)) + "…"
     }
 
     /** Per-read scratch: first selected node's label seen during the walk. */
@@ -334,14 +471,14 @@ class ErrandAccessibilityService : AccessibilityService() {
         val cls = node.className?.toString()?.substringAfterLast('.') ?: "View"
         val vid = node.viewIdResourceName
             ?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
-        val label = node.text?.toString()?.let(::trimLabel)?.ifBlank { null }
-            ?: node.contentDescription?.toString()?.let(::trimLabel)?.ifBlank { null }
-            ?: node.hintText?.toString()?.let(::trimLabel)?.ifBlank { null }
+        val clickable = node.isClickable
+        val interactive = clickable || node.isEditable || node.isScrollable
+        val label = node.text?.toString()?.let { trimLabel(it, interactive) }?.ifBlank { null }
+            ?: node.contentDescription?.toString()?.let { trimLabel(it, interactive) }?.ifBlank { null }
+            ?: node.hintText?.toString()?.let { trimLabel(it, interactive) }?.ifBlank { null }
         if (node.isSelected && activeTab == null) {
             activeTab = label ?: cls
         }
-        val clickable = node.isClickable
-        val interactive = clickable || node.isEditable || node.isScrollable
         // Fullscreen-ish clickable above content: the consent-wall /
         // modal-backdrop tell. Scroll/list container classes are excluded --
         // a full-screen RecyclerView is a normal feed, not an overlay.
@@ -371,8 +508,8 @@ class ErrandAccessibilityService : AccessibilityService() {
                 if (ci.rowIndex >= 0) add("row=${ci.rowIndex}")
             }
         }
-        if (!node.isVisibleToUser && label == null && !interactive) {
-            // Skip invisible structural nodes; keep labeled or actionable ones.
+        if (!interactive && label == null) {
+            // Drop unlabelled non-interactive noise (bare FrameLayout, ViewGroup, decorative ImageView, etc.)
         } else {
             entries.add(
                 Entry(
@@ -450,7 +587,7 @@ class ErrandAccessibilityService : AccessibilityService() {
         fun consider(candidate: AccessibilityNodeInfo, b: Rect) {
             val sameCls = candidate.className?.toString()?.substringAfterLast('.') == ref.cls
             if (!sameCls) return
-            val l = nodeLabel(candidate)?.let(::trimLabel)
+            val l = nodeLabel(candidate)?.let { trimLabel(it, isInteractive = true) }
             if (ref.label != null && l != ref.label) return
             if (b == ref.rect) {
                 recycleQuietly(best)
