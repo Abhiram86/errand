@@ -303,16 +303,114 @@ Tool readTool(
 
 const kDefaultListLimit = 25;
 
+const kFileListingColumnHeader = 'T        SIZE          MODIFIED  NAME';
+
+class _FileEntry {
+  final String relativePath;
+  final FileSystemEntityType type;
+  final int size;
+  final DateTime? modified;
+
+  const _FileEntry({
+    required this.relativePath,
+    required this.type,
+    required this.size,
+    this.modified,
+  });
+
+  String format({bool metadata = true}) {
+    if (!metadata) return relativePath;
+    final typeChar = _formatType(type);
+    final sizeStr = _formatSize(size, type);
+    final dateStr = _formatDate(modified);
+    return '$typeChar  $sizeStr  $dateStr  $relativePath';
+  }
+}
+
+String _formatType(FileSystemEntityType type) {
+  switch (type) {
+    case FileSystemEntityType.directory:
+      return 'd';
+    case FileSystemEntityType.link:
+      return 'l';
+    case FileSystemEntityType.file:
+    default:
+      return 'f';
+  }
+}
+
+String _formatSize(int bytes, FileSystemEntityType type) {
+  if (type == FileSystemEntityType.directory) {
+    return '         -';
+  }
+  if (bytes < 1024) {
+    return '${bytes.toString().padLeft(6)}   B';
+  }
+  final kb = bytes / 1024.0;
+  if (kb < 1024) {
+    return '${kb.toStringAsFixed(1).padLeft(6)}  KB';
+  }
+  final mb = kb / 1024.0;
+  if (mb < 1024) {
+    return '${mb.toStringAsFixed(1).padLeft(6)}  MB';
+  }
+  final gb = mb / 1024.0;
+  return '${gb.toStringAsFixed(1).padLeft(6)}  GB';
+}
+
+String _formatDate(DateTime? dt) {
+  if (dt == null) return '----------------';
+  final local = dt.toLocal();
+  final y = local.year.toString().padLeft(4, '0');
+  final m = local.month.toString().padLeft(2, '0');
+  final d = local.day.toString().padLeft(2, '0');
+  final hh = local.hour.toString().padLeft(2, '0');
+  final mm = local.minute.toString().padLeft(2, '0');
+  return '$y-$m-$d $hh:$mm';
+}
+
+int _compareFileEntries(_FileEntry a, _FileEntry b, String sortBy, String sortOrder) {
+  int result;
+  switch (sortBy) {
+    case 'modified':
+      final aDate = a.modified;
+      final bDate = b.modified;
+      if (aDate == null && bDate == null) {
+        result = 0;
+      } else if (aDate == null) {
+        result = -1;
+      } else if (bDate == null) {
+        result = 1;
+      } else {
+        result = aDate.compareTo(bDate);
+      }
+      break;
+    case 'size':
+      result = a.size.compareTo(b.size);
+      break;
+    case 'name':
+    default:
+      result = a.relativePath.compareTo(b.relativePath);
+      break;
+  }
+  if (result == 0) {
+    result = a.relativePath.compareTo(b.relativePath);
+  }
+  return sortOrder == 'desc' ? -result : result;
+}
+
 Tool listTool(WorkingDirectory workspace) => Tool(
   name: 'list',
   description:
-      'Lists files and directories. Without path, lists the current directory. '
+      'Lists files and directories with metadata (type, size, modified date). '
+      'Without path, lists the current directory. '
       'A relative path is resolved from the current directory; an absolute '
       'path may be used for another location inside the workspace. If a '
       'pattern is provided, only matching paths are returned. Returns up to '
       'limit entries starting at offset, plus the total count in the header; '
       'use count_only=true to get just the number. Only raise limit when the '
-      'task requires exhaustive enumeration.',
+      'task requires exhaustive enumeration. Use grep to filter or group '
+      'by date, size, type, or name. Use sort_by="modified" to find recent files.',
   parameters: {
     'type': 'object',
     'properties': {
@@ -353,7 +451,27 @@ Tool listTool(WorkingDirectory workspace) => Tool(
         'type': 'string',
         'description':
             'Optional case-insensitive regular expression or substring filter to '
-            'filter returned directory entries.',
+            'filter returned entries. Matches against the formatted line (including '
+            'type, size, date, and path) when metadata is enabled.',
+      },
+      'sort_by': {
+        'type': 'string',
+        'enum': ['name', 'modified', 'size'],
+        'description':
+            'Field to sort entries by before pagination: "name" (default), "modified", or "size".',
+        'default': 'name',
+      },
+      'sort_order': {
+        'type': 'string',
+        'enum': ['asc', 'desc'],
+        'description':
+            'Sort order: "asc" or "desc". Defaults to "desc" when sort_by is "modified", and "asc" otherwise.',
+      },
+      'metadata': {
+        'type': 'boolean',
+        'description':
+            'Whether to include metadata columns (type, size, modified date). Defaults to true.',
+        'default': true,
       },
     },
   },
@@ -363,6 +481,9 @@ Tool listTool(WorkingDirectory workspace) => Tool(
     final countOnly = (call.arguments['count_only'] as bool?) ?? false;
     final limit = min((call.arguments['limit'] as num?)?.toInt() ?? kDefaultListLimit, kMaxFindResults);
     final offset = (call.arguments['offset'] as num?)?.toInt() ?? 0;
+    final sortBy = (call.arguments['sort_by'] as String?)?.trim().toLowerCase() ?? 'name';
+    final rawSortOrder = (call.arguments['sort_order'] as String?)?.trim().toLowerCase();
+    final metadata = (call.arguments['metadata'] as bool?) ?? true;
 
     if (offset < 0) {
       return ToolCallResult.failure(
@@ -376,6 +497,19 @@ Tool listTool(WorkingDirectory workspace) => Tool(
         'Invalid limit: limit must be > 0.',
       );
     }
+    if (sortBy != 'name' && sortBy != 'modified' && sortBy != 'size') {
+      return ToolCallResult.failure(
+        call.id,
+        'Invalid sort_by "$sortBy": expected "name", "modified", or "size".',
+      );
+    }
+    if (rawSortOrder != null && rawSortOrder.isNotEmpty && rawSortOrder != 'asc' && rawSortOrder != 'desc') {
+      return ToolCallResult.failure(
+        call.id,
+        'Invalid sort_order "$rawSortOrder": expected "asc" or "desc".',
+      );
+    }
+    final sortOrder = rawSortOrder ?? (sortBy == 'modified' ? 'desc' : 'asc');
 
     final target = _resolveListDirectory(workspace, rawPath);
     if (target == null) {
@@ -398,7 +532,7 @@ Tool listTool(WorkingDirectory workspace) => Tool(
       }
     }
 
-    final results = <String>[];
+    final results = <_FileEntry>[];
 
     try {
       if (!await target.exists()) {
@@ -417,17 +551,39 @@ Tool listTool(WorkingDirectory workspace) => Tool(
         );
       }
 
-      await for (final entity in target.list()) {
+      final entities = await target.list(followLinks: false).toList();
+      final entries = await Future.wait(entities.map((entity) async {
         final relativePath = path.relative(
           entity.path,
           from: workspace.current.path,
         );
 
         if (re != null && !re.hasMatch(relativePath)) {
-          continue;
+          return null;
         }
 
-        results.add(relativePath);
+        try {
+          final stat = await entity.stat();
+          return _FileEntry(
+            relativePath: relativePath,
+            type: stat.type,
+            size: stat.size,
+            modified: stat.modified,
+          );
+        } catch (_) {
+          return _FileEntry(
+            relativePath: relativePath,
+            type: entity is Directory
+                ? FileSystemEntityType.directory
+                : FileSystemEntityType.file,
+            size: 0,
+            modified: null,
+          );
+        }
+      }));
+
+      for (final e in entries) {
+        if (e != null) results.add(e);
       }
     } catch (e) {
       return ToolCallResult.failure(
@@ -436,19 +592,17 @@ Tool listTool(WorkingDirectory workspace) => Tool(
       );
     }
 
-    // Deterministic order before windowing: Directory.list() order is
-    // filesystem-dependent, and offset paging over it can overlap or skip
-    // entries between calls.
-    results.sort();
+    results.sort((a, b) => _compareFileEntries(a, b, sortBy, sortOrder));
 
-    // Grep filters the full result set BEFORE pagination so matches on
-    // other pages are not missed and counts stay honest.
     final grep = (call.arguments['grep'] as String?)?.trim();
     final hasGrep = grep != null && grep.isNotEmpty;
-    List<String> filtered = results;
+    List<_FileEntry> filtered = results;
     if (hasGrep) {
       final regex = GrepFilter.compile(grep);
-      filtered = results.where((e) => regex.hasMatch(e)).toList();
+      filtered = results.where((e) {
+        final line = e.format(metadata: metadata);
+        return regex.hasMatch(line);
+      }).toList();
     }
 
     final total = results.length;
@@ -470,6 +624,7 @@ Tool listTool(WorkingDirectory workspace) => Tool(
     final start = min(offset, matchTotal);
     final end = min(start + limit, matchTotal);
     final window = filtered.sublist(start, end);
+    final formattedWindow = window.map((e) => e.format(metadata: metadata)).toList();
 
     final header = [
       'current directory: ${target.path}',
@@ -481,8 +636,9 @@ Tool listTool(WorkingDirectory workspace) => Tool(
         'showing ${matchTotal == 0 ? 0 : start + 1}–$end of $matchTotal',
         if (end < matchTotal) 'use offset=$end for the next page',
       ],
+      if (metadata && window.isNotEmpty) kFileListingColumnHeader,
     ];
-    final fullText = [...header, ...window].join('\n');
+    final fullText = [...header, ...formattedWindow].join('\n');
     final finalOutput = await ToolOutputFileService.instance.processOutput(
       callId: call.id,
       output: fullText,
@@ -719,14 +875,15 @@ const kDefaultFindLimit = 25;
 Tool findTool(WorkingDirectory workspace) => Tool(
   name: 'find',
   description:
-      'Recursively finds files or directories below a path. Use path like '
-      '"." and a shell-style glob pattern like "*.pdf". The type flag is '
+      'Recursively finds files or directories below a path with metadata. '
+      'Use path like "." and a shell-style glob pattern like "*.pdf". The type flag is '
       '"file" by default or "dir" for directories. Relative paths start at '
       'the current working directory; absolute paths must stay inside the '
       'granted workspace root. Returns up to limit matches starting at '
       'offset, plus the total count in the header; use count_only=true to '
       'get just the number. Only raise limit when the task requires '
-      'exhaustive enumeration.',
+      'exhaustive enumeration. Use grep to filter by date, size, or pattern. '
+      'Use sort_by="modified" with sort_order="desc" to locate newest matches.',
   parameters: {
     'type': 'object',
     'properties': {
@@ -734,8 +891,7 @@ Tool findTool(WorkingDirectory workspace) => Tool(
         'type': 'string',
         'description':
             'Optional directory or file to search below; use "." for the current '
-            'working directory.'
-            'default: "."',
+            'working directory. default: "."',
         'default': '.',
       },
       'pattern': {
@@ -783,8 +939,27 @@ Tool findTool(WorkingDirectory workspace) => Tool(
       'grep': {
         'type': 'string',
         'description':
-            'Optional case-insensitive regular expression or substring filter to '
-            'filter returned file/directory paths.',
+            'Optional case-insensitive regular expression or substring filter '
+            'matched against the full result line (type, size, date, and path).',
+      },
+      'sort_by': {
+        'type': 'string',
+        'enum': ['name', 'modified', 'size'],
+        'description':
+            'Field to sort matches by before pagination: "name" (default), "modified", or "size".',
+        'default': 'name',
+      },
+      'sort_order': {
+        'type': 'string',
+        'enum': ['asc', 'desc'],
+        'description':
+            'Sort order: "asc" or "desc". Defaults to "desc" when sort_by is "modified", and "asc" otherwise.',
+      },
+      'metadata': {
+        'type': 'boolean',
+        'description':
+            'Whether to include metadata columns (type, size, modified date). Defaults to true.',
+        'default': true,
       },
     },
     'required': ['path', 'pattern'],
@@ -797,6 +972,9 @@ Tool findTool(WorkingDirectory workspace) => Tool(
     final countOnly = (call.arguments['count_only'] as bool?) ?? false;
     final limit = min((call.arguments['limit'] as num?)?.toInt() ?? kDefaultFindLimit, kMaxFindResults);
     final offset = (call.arguments['offset'] as num?)?.toInt() ?? 0;
+    final sortBy = (call.arguments['sort_by'] as String?)?.trim().toLowerCase() ?? 'name';
+    final rawSortOrder = (call.arguments['sort_order'] as String?)?.trim().toLowerCase();
+    final metadata = (call.arguments['metadata'] as bool?) ?? true;
 
     if (offset < 0) {
       return ToolCallResult.failure(
@@ -829,6 +1007,19 @@ Tool findTool(WorkingDirectory workspace) => Tool(
         'Invalid max_depth "$maxDepth": expected a value from 0 to 32.',
       );
     }
+    if (sortBy != 'name' && sortBy != 'modified' && sortBy != 'size') {
+      return ToolCallResult.failure(
+        call.id,
+        'Invalid sort_by "$sortBy": expected "name", "modified", or "size".',
+      );
+    }
+    if (rawSortOrder != null && rawSortOrder.isNotEmpty && rawSortOrder != 'asc' && rawSortOrder != 'desc') {
+      return ToolCallResult.failure(
+        call.id,
+        'Invalid sort_order "$rawSortOrder": expected "asc" or "desc".',
+      );
+    }
+    final sortOrder = rawSortOrder ?? (sortBy == 'modified' ? 'desc' : 'asc');
 
     final target = _resolveListDirectory(workspace, rawPath);
     if (target == null) {
@@ -840,7 +1031,7 @@ Tool findTool(WorkingDirectory workspace) => Tool(
 
     final matcher = _findMatcher(pattern);
     final matchSubpath = pattern.contains('/');
-    final results = <String>[];
+    final results = <_FileEntry>[];
     final skippedPaths = <String>[];
     try {
       final entityType = await FileSystemEntity.type(target.path);
@@ -868,16 +1059,17 @@ Tool findTool(WorkingDirectory workspace) => Tool(
       );
     }
 
-    // Same deterministic-order requirement as list: sort before windowing
-    // so offset pages are stable between calls.
-    results.sort();
+    results.sort((a, b) => _compareFileEntries(a, b, sortBy, sortOrder));
 
     final grep = (call.arguments['grep'] as String?)?.trim();
     final hasGrep = grep != null && grep.isNotEmpty;
-    List<String> filtered = results;
+    List<_FileEntry> filtered = results;
     if (hasGrep) {
       final regex = GrepFilter.compile(grep);
-      filtered = results.where((e) => regex.hasMatch(e)).toList();
+      filtered = results.where((e) {
+        final line = e.format(metadata: metadata);
+        return regex.hasMatch(line);
+      }).toList();
     }
 
     final total = results.length;
@@ -906,6 +1098,7 @@ Tool findTool(WorkingDirectory workspace) => Tool(
     final start = min(offset, matchTotal);
     final end = min(start + limit, matchTotal);
     final window = filtered.sublist(start, end);
+    final formattedWindow = window.map((e) => e.format(metadata: metadata)).toList();
 
     final fullText = [
       ...header,
@@ -915,7 +1108,8 @@ Tool findTool(WorkingDirectory workspace) => Tool(
         'showing ${matchTotal == 0 ? 0 : start + 1}–$end of $matchTotal',
         if (end < matchTotal) 'use offset=$end for the next page',
       ],
-      ...window,
+      if (metadata && window.isNotEmpty) kFileListingColumnHeader,
+      ...formattedWindow,
     ].join('\n');
     final finalOutput = await ToolOutputFileService.instance.processOutput(
       callId: call.id,
@@ -937,7 +1131,7 @@ Future<void> _collectFindMatches({
   required bool matchSubpath,
   required String type,
   required int maxDepth,
-  required List<String> results,
+  required List<_FileEntry> results,
   required List<String> skippedPaths,
 }) async {
   if (results.length >= kMaxFindResults) return;
@@ -958,7 +1152,12 @@ Future<void> _collectFindMatches({
       ? path.relative(target.path, from: target.path)
       : path.basename(target.path);
   if (targetMatches && matcher.hasMatch(targetName)) {
-    results.add(relativePath);
+    results.add(_FileEntry(
+      relativePath: relativePath,
+      type: targetStat.type,
+      size: targetStat.size,
+      modified: targetStat.modified,
+    ));
   }
 
   if (!isDir || maxDepth == 0) {
@@ -988,7 +1187,7 @@ Future<void> _walkFindDirectory({
   required String type,
   required int depth,
   required int maxDepth,
-  required List<String> results,
+  required List<_FileEntry> results,
   required List<String> skippedPaths,
 }) async {
   if (depth >= maxDepth || results.length >= kMaxFindResults) return;
@@ -1003,16 +1202,17 @@ Future<void> _walkFindDirectory({
       final childDepth = depth + 1;
       bool isDir = false;
       bool isFile = false;
-      if (entity is Directory) {
-        isDir = true;
-      } else if (entity is File) {
-        isFile = true;
-      } else {
-        try {
-          final stat = await entity.stat();
-          isDir = stat.type == FileSystemEntityType.directory;
-          isFile = stat.type == FileSystemEntityType.file;
-        } on FileSystemException {
+      FileStat? stat;
+      try {
+        stat = await entity.stat();
+        isDir = stat.type == FileSystemEntityType.directory;
+        isFile = stat.type == FileSystemEntityType.file;
+      } on FileSystemException {
+        if (entity is Directory) {
+          isDir = true;
+        } else if (entity is File) {
+          isFile = true;
+        } else {
           skippedPaths.add(entity.path);
           continue;
         }
@@ -1024,7 +1224,12 @@ Future<void> _walkFindDirectory({
           ? path.relative(entity.path, from: rootTarget.path)
           : path.basename(entity.path);
       if (isMatchType && matcher.hasMatch(testName)) {
-        results.add(relativePath);
+        results.add(_FileEntry(
+          relativePath: relativePath,
+          type: stat?.type ?? (isDir ? FileSystemEntityType.directory : FileSystemEntityType.file),
+          size: stat?.size ?? 0,
+          modified: stat?.modified,
+        ));
       }
 
       if (isDir && childDepth < maxDepth) {

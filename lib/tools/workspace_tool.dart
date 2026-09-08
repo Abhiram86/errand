@@ -55,6 +55,25 @@ Tool workspaceTool(WorkingDirectory workspace) {
               'Optional case-insensitive regular expression or substring filter '
               'to filter the list/find output lines.',
         },
+        'sort_by': {
+          'type': 'string',
+          'enum': ['name', 'modified', 'size'],
+          'description':
+              'Optional field to sort entries by: "name" (default), "modified", or "size".',
+          'default': 'name',
+        },
+        'sort_order': {
+          'type': 'string',
+          'enum': ['asc', 'desc'],
+          'description':
+              'Optional sort direction: "asc" or "desc". Defaults to "desc" for modified, "asc" otherwise.',
+        },
+        'metadata': {
+          'type': 'boolean',
+          'description':
+              'Whether to include file metadata (type, size, modified timestamp). Defaults to true.',
+          'default': true,
+        },
       },
       'required': ['action'],
     },
