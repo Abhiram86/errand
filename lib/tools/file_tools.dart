@@ -765,10 +765,13 @@ Future<File?> _resolveReadableFile(
       final outPath = path.normalize(outDir.path);
       isSpill = normalized == outPath || path.isWithin(outPath, normalized);
     } catch (_) {}
-    // Narrow picker-cache allowance (file_picker copies only).
+    // Narrow allowances: picker-cache and screenshot captures.
     final isPickerCache = normalized.contains('/cache/file_picker/') &&
         await File(normalized).exists();
-    if ((isAttached || isSpill || isPickerCache) &&
+    final isScreenshot = (normalized.contains('/cache/screenshots/') ||
+            normalized.contains('/Pictures/Screenshots/')) &&
+        await File(normalized).exists();
+    if ((isAttached || isSpill || isPickerCache || isScreenshot) &&
         await File(normalized).exists()) {
       return File(normalized);
     }

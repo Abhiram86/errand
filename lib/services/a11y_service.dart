@@ -95,6 +95,37 @@ class A11yService {
     return await _channel.invokeMethod<String>('globalAction', {'name': name});
   }
 
+  /// Captures a screenshot of the active window via AccessibilityService.takeScreenshot.
+  /// Available on Android 11+ (API 30+).
+  ///
+  /// - [quality]: 'sd' (scaled to max 720px width, JPEG q65) or 'hd' (native resolution, JPEG q85).
+  /// - [temp]: if true, saves to app internal cacheDir/screenshots. If false, saves to Pictures/Screenshots.
+  ///
+  /// Returns a map with {ok, path?, width?, height?, size_kb?, quality?, base64?, error?, message?}.
+  Future<Map<String, dynamic>> takeScreenshot({
+    String? quality,
+    bool temp = true,
+  }) async {
+    final effectiveQuality = (quality == 'hd' || quality == 'sd')
+        ? quality!
+        : (temp ? 'sd' : 'hd');
+    try {
+      final res = await _channel.invokeMethod<Map<Object?, Object?>>(
+        'takeScreenshot',
+        {'quality': effectiveQuality, 'temp': temp},
+      );
+      return res?.map((k, v) => MapEntry(k.toString(), v)) ?? {'ok': false};
+    } on PlatformException catch (e) {
+      return {
+        'ok': false,
+        'error': e.code,
+        'message': e.message ?? 'Screenshot failed: ${e.code}',
+      };
+    } catch (e) {
+      return {'ok': false, 'error': 'UNKNOWN', 'message': e.toString()};
+    }
+  }
+
   // -- P2b: gated injection (Draft-mode primitives) --------------------------
 
   /// Taps the clickable element whose label matches [label] (case-insensitive;

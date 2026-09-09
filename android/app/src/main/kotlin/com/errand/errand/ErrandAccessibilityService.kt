@@ -7,13 +7,19 @@ import android.app.AppOpsManager
 import android.content.Context
 import android.content.Intent
 import android.graphics.Path
+import android.graphics.Bitmap
 import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.util.Base64
+import android.view.Display
 import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.inputmethod.EditorInfo
+import java.io.File
+import java.io.FileOutputStream
 import kotlin.math.abs
 
 /**
@@ -1329,5 +1335,141 @@ class ErrandAccessibilityService : AccessibilityService() {
         conn.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_TAB))
         return mapOf("ok" to true,
             "message" to "Sent Tab — focus should move to the next field.")
+    }
+
+    /**
+     * Captures a screenshot via AccessibilityService.takeScreenshot (Android 11+).
+     * Compresses to JPEG in app cache (temp=true) or Pictures/Screenshots (temp=false).
+     * Scales to max 720px width when quality is "sd" to minimize vision token cost.
+     */
+    fun takeScreenshot(
+        quality: String? = null,
+        temp: Boolean = true,
+        callback: (Map<String, Any?>) -> Unit
+    ) {
+        val effectiveQuality = if (quality?.lowercase() == "hd") "hd" else if (quality?.lowercase() == "sd") "sd" else if (temp) "sd" else "hd"
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            callback(mapOf(
+                "ok" to false,
+                "error" to "UNSUPPORTED_VERSION",
+                "message" to "Screenshots require Android 11 (API 30) or higher."
+            ))
+            return
+        }
+
+        try {
+            takeScreenshot(
+                Display.DEFAULT_DISPLAY,
+                applicationContext.mainExecutor,
+                object : TakeScreenshotCallback {
+                    override fun onSuccess(screenshotResult: ScreenshotResult) {
+                        Thread {
+                            try {
+                                val hwBuffer = screenshotResult.hardwareBuffer
+                                val colorSpace = screenshotResult.colorSpace
+                                val hwBitmap = Bitmap.wrapHardwareBuffer(hwBuffer, colorSpace)
+                                if (hwBitmap == null) {
+                                    hwBuffer.close()
+                                    callback(mapOf(
+                                        "ok" to false,
+                                        "error" to "BITMAP_ERROR",
+                                        "message" to "Failed to wrap hardware buffer into bitmap."
+                                    ))
+                                    return@Thread
+                                }
+
+                                val swBitmap = hwBitmap.copy(Bitmap.Config.ARGB_8888, false)
+                                hwBuffer.close()
+                                hwBitmap.recycle()
+
+                                val scale = if (effectiveQuality == "sd") {
+                                    minOf(1.0f, 720f / swBitmap.width)
+                                } else {
+                                    1.0f
+                                }
+                                val targetW = (swBitmap.width * scale).toInt().coerceAtLeast(1)
+                                val targetH = (swBitmap.height * scale).toInt().coerceAtLeast(1)
+
+                                val finalBitmap = if (targetW != swBitmap.width || targetH != swBitmap.height) {
+                                    val scaled = Bitmap.createScaledBitmap(swBitmap, targetW, targetH, true)
+                                    swBitmap.recycle()
+                                    scaled
+                                } else {
+                                    swBitmap
+                                }
+
+                                val screenshotDir = if (temp) {
+                                    File(cacheDir, "screenshots").apply { mkdirs() }
+                                } else {
+                                    File(
+                                        Environment.getExternalStoragePublicDirectory(
+                                            Environment.DIRECTORY_PICTURES
+                                        ),
+                                        "Screenshots"
+                                    ).apply { mkdirs() }
+                                }
+
+                                val timestamp = System.currentTimeMillis()
+                                val outFile = File(screenshotDir, "screenshot_$timestamp.jpg")
+
+                                val jpegQuality = if (effectiveQuality == "sd") 65 else 85
+                                FileOutputStream(outFile).use { fos ->
+                                    finalBitmap.compress(Bitmap.CompressFormat.JPEG, jpegQuality, fos)
+                                }
+
+                                val bytes = outFile.readBytes()
+                                val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+                                val kb = bytes.size / 1024
+
+                                finalBitmap.recycle()
+
+                                callback(mapOf(
+                                    "ok" to true,
+                                    "path" to outFile.absolutePath,
+                                    "width" to targetW,
+                                    "height" to targetH,
+                                    "size_kb" to kb,
+                                    "quality" to effectiveQuality,
+                                    "base64" to base64,
+                                    "message" to "Captured ${effectiveQuality.uppercase()} screenshot (${targetW}x${targetH}, $kb KB)."
+                                ))
+                            } catch (e: Exception) {
+                                callback(mapOf(
+                                    "ok" to false,
+                                    "error" to "PROCESS_ERROR",
+                                    "message" to "Failed to process screenshot: ${e.message}"
+                                ))
+                            }
+                        }.start()
+                    }
+
+                    override fun onFailure(errorCode: Int) {
+                        val reason = when (errorCode) {
+                            ERROR_TAKE_SCREENSHOT_SECURE_WINDOW ->
+                                "SECURE_WINDOW: Screen contains secure or protected content (e.g. banking app, password field, or incognito tab) and cannot be captured."
+                            ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT ->
+                                "RATE_LIMITED: Screenshots called too rapidly; wait before capturing again."
+                            ERROR_TAKE_SCREENSHOT_NO_ACCESSIBILITY_ACCESS ->
+                                "NO_ACCESS: Accessibility service lacks screenshot permission."
+                            ERROR_TAKE_SCREENSHOT_INTERNAL_ERROR ->
+                                "INTERNAL_ERROR: Android system failed to capture screenshot."
+                            else -> "Screenshot failed with error code $errorCode."
+                        }
+                        callback(mapOf(
+                            "ok" to false,
+                            "error" to "CAPTURE_FAILED",
+                            "code" to errorCode,
+                            "message" to reason
+                        ))
+                    }
+                }
+            )
+        } catch (e: Exception) {
+            callback(mapOf(
+                "ok" to false,
+                "error" to "EXECUTION_ERROR",
+                "message" to "Failed to execute screenshot: ${e.message}"
+            ))
+        }
     }
 }

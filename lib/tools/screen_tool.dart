@@ -17,25 +17,25 @@ Tool screenTool({A11yService? service}) {
   return Tool(
     name: 'screen',
     description:
-        'Reads the current phone screen or performs system navigation. '
-        'Use action "read" to get a text outline of what is on screen right now '
+        'Reads the current phone screen, captures visual fallback screenshots, '
+        'or performs system navigation. '
+        'Always prioritize action "read" to get a fast, token-efficient text outline '
         '(interactive elements carry numeric refs [n] — address them via act '
-        'ref:n; refs expire on every read, so re-read after navigation) and use it '
-        'to answer "what\'s on my screen" or to check a result after opening an app. '
-        'Use action "global" for '
-        'system navigation: back, home, recents, notifications shade, quick settings, '
-        'lock_screen. Requires the user to have enabled Errand in '
-        'Accessibility settings; if unavailable, tell the user how to enable it '
-        'instead of retrying.',
+        'ref:n). Only use action "screenshot" as a visual fallback when "read" '
+        'returns empty/unlabeled canvas nodes (e.g. games, webviews, canvas graphics, '
+        'unlabeled icon buttons) or when answering visual appearance questions. '
+        'Use action "global" for system navigation: back, home, recents, '
+        'notifications shade, quick settings, lock_screen. Requires Errand in '
+        'Accessibility settings.',
     parameters: {
       'type': 'object',
       'properties': {
         'action': {
           'type': 'string',
-          'enum': ['read', 'global'],
+          'enum': ['read', 'global', 'screenshot'],
           'description':
               'read = describe current screen contents; global = perform a '
-              'navigation action (use "name")',
+              'navigation action (use "name"); screenshot = capture visual fallback image',
         },
         'name': {
           'type': 'string',
@@ -62,9 +62,9 @@ Tool screenTool({A11yService? service}) {
         'settle_ms': {
           'type': 'integer',
           'description':
-              'Milliseconds to wait before reading (default 350). Raise to '
-              '~800-1500 right after open_app/navigation so the new screen '
-              'has time to render; reading too early returns stale content.',
+              'Milliseconds to wait before reading or capturing (default 350). '
+              'Raise to ~800-1500 right after open_app/navigation so the new screen '
+              'has time to render.',
         },
         'full': {
           'type': 'boolean',
@@ -78,6 +78,23 @@ Tool screenTool({A11yService? service}) {
           'description':
               'Optional case-insensitive regular expression or substring filter. '
               'When provided, returns only matching lines from the screen outline.',
+        },
+        'temp': {
+          'type': 'boolean',
+          'description':
+              'For action:"screenshot": when true (default), stores capture in temporary '
+              'app cache without saving to public gallery (defaults quality to "sd"). '
+              'Set false only if user requested saving a screenshot permanently (defaults quality to "hd").',
+          'default': true,
+        },
+        'quality': {
+          'type': 'string',
+          'enum': ['sd', 'hd'],
+          'description':
+              'For action:"screenshot": image quality ("sd" or "hd"). '
+              'Defaults to "sd" when temp is true, or "hd" when temp is false. '
+              '"sd" scales to max 720px width and compresses to reduce vision token costs; '
+              '"hd" captures native screen resolution.',
         },
       },
       'required': ['action'],
@@ -119,10 +136,12 @@ Future<ToolCallResult> handleScreenAction(ToolCall call, A11yService svc) async 
       return _read(call, svc);
     case 'global':
       return _global(call, svc);
+    case 'screenshot':
+      return _screenshot(call, svc);
     default:
       return ToolCallResult.failure(
         call.id,
-        'Unknown screen action "$action". Valid actions: read, global. '
+        'Unknown screen action "$action". Valid actions: read, global, screenshot. '
         '(Note: "read" here reads THE SCREEN — it belongs to this tool, not the intent tool.)',
       );
   }
@@ -243,4 +262,53 @@ Future<ToolCallResult> _global(ToolCall call, A11yService svc) async {
     return ToolCallResult.failure(call.id, err);
   }
   return ToolCallResult(id: call.id, ok: true, output: '$name done');
+}
+
+Future<ToolCallResult> _screenshot(ToolCall call, A11yService svc) async {
+  final settleMsRaw = call.arguments['settle_ms'];
+  final settleMs =
+      settleMsRaw is int && settleMsRaw > 0 ? settleMsRaw.clamp(0, 5000) : 350;
+  if (settleMs > 0) {
+    await Future<void>.delayed(Duration(milliseconds: settleMs));
+  }
+
+  final temp = (call.arguments['temp'] as bool?) ?? true;
+  final qualityRaw = (call.arguments['quality'] as String?)?.trim().toLowerCase();
+  final quality = (qualityRaw == 'hd' || qualityRaw == 'sd')
+      ? qualityRaw!
+      : (temp ? 'sd' : 'hd');
+
+  final res = await svc.takeScreenshot(temp: temp, quality: quality);
+  if (res['ok'] != true) {
+    final msg = (res['message'] as String?) ?? 'Could not capture screen.';
+    return ToolCallResult.failure(call.id, msg);
+  }
+
+  final pathStr = res['path'] as String? ?? '';
+  final width = res['width'] ?? 0;
+  final height = res['height'] ?? 0;
+  final sizeKb = res['size_kb'] ?? 0;
+  final base64Data = res['base64'] as String?;
+
+  final storageDesc = temp ? 'temporary cache' : 'Pictures/Screenshots';
+  final output = pathStr.isNotEmpty
+      ? 'Captured ${quality.toUpperCase()} screenshot ($pathStr, ${width}x$height, $sizeKb KB, $storageDesc).'
+      : 'Captured ${quality.toUpperCase()} screenshot (${width}x$height, $sizeKb KB, $storageDesc).';
+
+  final contentParts = <Map<String, dynamic>>[];
+  if (base64Data != null && base64Data.isNotEmpty) {
+    contentParts.add({
+      'type': 'image_url',
+      'image_url': {
+        'url': 'data:image/jpeg;base64,$base64Data',
+      },
+    });
+  }
+
+  return ToolCallResult(
+    id: call.id,
+    ok: true,
+    output: output,
+    contentParts: contentParts.isNotEmpty ? contentParts : null,
+  );
 }

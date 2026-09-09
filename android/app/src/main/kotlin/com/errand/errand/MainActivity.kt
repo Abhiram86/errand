@@ -453,6 +453,30 @@ class MainActivity : FlutterActivity() {
                     }
                 }
 
+                "takeScreenshot" -> {
+                    val svc = ErrandAccessibilityService.instance
+                    if (svc == null) {
+                        result.error("NOT_ENABLED", "Accessibility service is not enabled.", null)
+                    } else {
+                        val temp = call.argument<Boolean>("temp") ?: true
+                        val qualityArg = call.argument<String>("quality")?.trim()?.lowercase()
+                        val quality = if (qualityArg == "hd" || qualityArg == "sd") qualityArg else if (temp) "sd" else "hd"
+                        svc.takeScreenshot(quality = quality, temp = temp) { res ->
+                            runOnUiThread {
+                                if (res["ok"] == true) {
+                                    result.success(res)
+                                } else {
+                                    result.error(
+                                        res["error"] as? String ?: "CAPTURE_FAILED",
+                                        res["message"] as? String,
+                                        res
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
                 "imeFieldInfo" -> {
                     val svc = ErrandAccessibilityService.instance
                     if (svc == null) {
