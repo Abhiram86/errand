@@ -27,6 +27,7 @@ class ToolRegistry {
     WorkingDirectory? workingDirectory,
     bool Function(String modality)? supportsInput,
     List<String> Function()? getAttachedFiles,
+    bool hasTavilyKey = false,
   }) {
     final directory = workingDirectory ?? WorkingDirectory(currentDir);
     return ToolRegistry([
@@ -72,3 +73,4 @@ class ToolRegistry {
     }
   }
 }
+

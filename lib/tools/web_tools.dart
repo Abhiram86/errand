@@ -1,8 +1,11 @@
+import 'package:http/http.dart' as http;
+
 import '../agent/tool.dart';
 import '../services/app_settings.dart';
 import '../services/tavily_client.dart';
 import '../services/tool_output_file_service.dart';
 import '../types/tool.dart';
+import 'fallback_web_fetch_tool.dart';
 
 const kMaxWebSearchContentChars = 1200;
 
@@ -16,14 +19,26 @@ const kMaxWebFetchStoredChars = 100 * 1024;
 /// in Settings takes effect immediately without rebuilding the tool set.
 /// Returns null when no key is configured — callers turn that into a clean
 /// tool failure pointing at Settings.
-TavilyClient? _resolveTavilyClient({TavilyClient? client}) {
+TavilyClient? _resolveTavilyClient({
+  TavilyClient? client,
+  String? Function()? keyResolver,
+}) {
   if (client != null) return client;
-  final key = AppSettingsService.instance.tavilyKey?.trim();
-  if (key == null || key.isEmpty) return null;
-  return TavilyClient(apiKey: key);
+  try {
+    final key = keyResolver != null
+        ? keyResolver()
+        : AppSettingsService.instance.tavilyKey?.trim();
+    if (key == null || key.isEmpty) return null;
+    return TavilyClient(apiKey: key);
+  } catch (_) {
+    return null;
+  }
 }
 
-Tool webSearchTavilyTool({TavilyClient? client}) {
+Tool webSearchTavilyTool({
+  TavilyClient? client,
+  String? Function()? keyResolver,
+}) {
   return Tool(
     name: 'websearch',
     description:
@@ -42,12 +57,18 @@ Tool webSearchTavilyTool({TavilyClient? client}) {
       if (query == null || query.isEmpty) {
         return ToolCallResult.failure(call.id, 'Query cannot be empty.');
       }
-      final tavily = _resolveTavilyClient(client: client);
+      final tavily = _resolveTavilyClient(
+        client: client,
+        keyResolver: keyResolver,
+      );
       if (tavily == null) {
+        final encodedQuery = Uri.encodeQueryComponent(query);
         return ToolCallResult.failure(
           call.id,
-          'Tavily API key is not configured. Open Settings (gear icon) and '
-          'add a Tavily key to enable web search.',
+          'Tavily API key is not configured. Web search cannot be executed directly, '
+          'but webfetch still works without an API key because a fallback implementation is active. '
+          'You can use webfetch as web search via sites like '
+          'https://lite.duckduckgo.com/lite/?q=$encodedQuery or other alternatives if rate limited.',
         );
       }
 
@@ -86,6 +107,16 @@ Tool webSearchTavilyTool({TavilyClient? client}) {
         );
         return ToolCallResult(id: call.id, ok: true, output: finalOutput);
       } catch (error) {
+        final message = error.toString();
+        if (message.contains('401') || message.contains('API key')) {
+          final encodedQuery = Uri.encodeQueryComponent(query);
+          return ToolCallResult.failure(
+            call.id,
+            'Web search failed ($message). Note that webfetch still works without an API key '
+            'because a fallback implementation is active. You can use webfetch as web search '
+            'via sites like https://lite.duckduckgo.com/lite/?q=$encodedQuery or other alternatives if rate limited.',
+          );
+        }
         return ToolCallResult.failure(call.id, 'Web search failed: $error');
       } finally {
         // Per-call client: release its socket pool immediately instead of
@@ -96,7 +127,11 @@ Tool webSearchTavilyTool({TavilyClient? client}) {
   );
 }
 
-Tool webFetchTool({TavilyClient? client}) {
+Tool webFetchTool({
+  TavilyClient? client,
+  http.Client? fallbackClient,
+  String? Function()? keyResolver,
+}) {
   return Tool(
     name: 'webfetch',
     description:
@@ -133,64 +168,56 @@ Tool webFetchTool({TavilyClient? client}) {
       }
 
       final query = (call.arguments['query'] as String?)?.trim();
+      final tavily = _resolveTavilyClient(
+        client: client,
+        keyResolver: keyResolver,
+      );
 
-      final tavily = _resolveTavilyClient(client: client);
-      if (tavily == null) {
-        return ToolCallResult.failure(
-          call.id,
-          'Tavily API key is not configured. Open Settings (gear icon) and '
-          'add a Tavily key to enable web fetching.',
-        );
+      // 1. First attempt: use Tavily if configured
+      if (tavily != null) {
+        try {
+          final data = await tavily.extract(
+            url: uri.toString(),
+            query: query == null || query.isEmpty ? null : query,
+          );
+          final rawResults = data['results'];
+          if (rawResults is List && rawResults.isNotEmpty) {
+            final firstResult = rawResults.first;
+            if (firstResult is Map) {
+              var content = _stringValue(firstResult['raw_content'], '').trim();
+              if (content.isNotEmpty) {
+                if (content.length > kMaxWebFetchStoredChars) {
+                  content =
+                      '${content.substring(0, kMaxWebFetchStoredChars)}\n\n[... web content truncated at $kMaxWebFetchStoredChars chars ...]';
+                }
+
+                final rawText = 'Source: $rawUrl\n\n$content';
+                final finalOutput =
+                    await ToolOutputFileService.instance.processOutput(
+                  callId: call.id,
+                  output: rawText,
+                );
+
+                return ToolCallResult(
+                  id: call.id,
+                  ok: true,
+                  output: finalOutput,
+                );
+              }
+            }
+          }
+        } catch (_) {
+          // Tavily failed (quota limit 429, timeout, network error) -> fall through to fallback
+        } finally {
+          tavily.close();
+        }
       }
 
+      // 2. Fallback: on-device readable Markdown extraction
       try {
-        final data = await tavily.extract(
-          url: uri.toString(),
-          query: query == null || query.isEmpty ? null : query,
-        );
-        final rawResults = data['results'];
-        if (rawResults is! List || rawResults.isEmpty) {
-          return ToolCallResult.failure(
-            call.id,
-            'Tavily could not extract content from $rawUrl.',
-          );
-        }
-
-        final firstResult = rawResults.first;
-        if (firstResult is! Map) {
-          return ToolCallResult.failure(
-            call.id,
-            'Tavily returned an invalid extraction result for $rawUrl.',
-          );
-        }
-
-        var content = _stringValue(firstResult['raw_content'], '').trim();
-        if (content.isEmpty) {
-          return ToolCallResult.failure(
-            call.id,
-            'Tavily returned no readable content for $rawUrl.',
-          );
-        }
-        if (content.length > kMaxWebFetchStoredChars) {
-          content =
-              '${content.substring(0, kMaxWebFetchStoredChars)}\n\n[... web content truncated at $kMaxWebFetchStoredChars chars ...]';
-        }
-
-        final rawText = 'Source: $rawUrl\n\n$content';
-        final finalOutput = await ToolOutputFileService.instance.processOutput(
-          callId: call.id,
-          output: rawText,
-        );
-
-        return ToolCallResult(
-          id: call.id,
-          ok: true,
-          output: finalOutput,
-        );
+        return await fallbackWebFetchTool(client: fallbackClient).handler(call);
       } catch (error) {
         return ToolCallResult.failure(call.id, 'Web fetch failed: $error');
-      } finally {
-        tavily.close();
       }
     },
   );

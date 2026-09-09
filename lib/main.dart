@@ -1503,6 +1503,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             ) !=
             false,
         getAttachedFiles: () => _activeConversation.attachedFileUris,
+        hasTavilyKey: AppSettingsService.instance.hasTavilyKey,
       );
 
       final budget = _getActiveBudget();

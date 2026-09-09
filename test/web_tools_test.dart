@@ -8,6 +8,8 @@ import 'package:errand/services/tavily_client.dart';
 import 'package:errand/tools/web_tools.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   test('websearch formats Tavily results for the agent', () async {
     final client = TavilyClient(
       apiKey: 'test-key',
@@ -83,4 +85,103 @@ void main() {
       expect(result.output, contains('Readable Markdown content.'));
     },
   );
+
+  test(
+    'websearch prompts agent to use webfetch fallback when API key is missing',
+    () async {
+      final result = await webSearchTavilyTool(keyResolver: () => null).handler(
+        const ToolCall(
+          id: 'search-no-key',
+          name: 'websearch',
+          arguments: {'query': 'flutter release notes'},
+        ),
+      );
+
+      expect(result.ok, isFalse);
+      expect(result.errorMessage, contains('Tavily API key is not configured'));
+      expect(result.errorMessage, contains('webfetch still works'));
+      expect(result.errorMessage, contains('https://lite.duckduckgo.com/lite/?q=flutter+release+notes'));
+    },
+  );
+
+  test(
+    'webfetch falls back to in-built fetcher when Tavily errors out (e.g. 429 quota)',
+    () async {
+      final tavily = TavilyClient(
+        apiKey: 'test-key',
+        client: MockClient((request) async {
+          return http.Response('Rate limit / Quota exceeded', 429);
+        }),
+      );
+      addTearDown(tavily.close);
+
+      final fallbackHttp = MockClient((request) async {
+        expect(request.url.toString(), 'https://example.com/quota-test');
+        return http.Response(
+          '''
+<!DOCTYPE html>
+<html>
+<head><title>Fallback Article</title></head>
+<body>
+  <article>
+    <h1>Fallback Article</h1>
+    <p>Recovered using in-built fallback fetcher.</p>
+  </article>
+</body>
+</html>
+''',
+          200,
+          headers: {'content-type': 'text/html; charset=utf-8'},
+        );
+      });
+
+      final result = await webFetchTool(
+        client: tavily,
+        fallbackClient: fallbackHttp,
+      ).handler(
+        const ToolCall(
+          id: 'fetch-quota-fallback',
+          name: 'webfetch',
+          arguments: {'url': 'https://example.com/quota-test'},
+        ),
+      );
+
+      expect(result.ok, isTrue);
+      expect(result.output, contains('Fallback Article'));
+      expect(result.output, contains('Recovered using in-built fallback fetcher.'));
+    },
+  );
+
+  test(
+    'webfetch outputs error text when both Tavily and fallback fail',
+    () async {
+      final tavily = TavilyClient(
+        apiKey: 'test-key',
+        client: MockClient((request) async {
+          return http.Response('Quota exceeded', 429);
+        }),
+      );
+      addTearDown(tavily.close);
+
+      final fallbackHttp = MockClient((request) async {
+        return http.Response('Not Found', 404);
+      });
+
+      final result = await webFetchTool(
+        client: tavily,
+        fallbackClient: fallbackHttp,
+      ).handler(
+        const ToolCall(
+          id: 'fetch-both-fail',
+          name: 'webfetch',
+          arguments: {'url': 'https://example.com/missing-page'},
+        ),
+      );
+
+      expect(result.ok, isFalse);
+      expect(result.errorMessage, contains('HTTP 404'));
+    },
+  );
 }
+
+
