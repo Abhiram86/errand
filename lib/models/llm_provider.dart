@@ -189,43 +189,7 @@ enum ProviderPresetType {
           ),
         ];
       case ProviderPresetType.openRouter:
-        return const [
-          ModelOption(
-            id: 'openrouter/free',
-            name: 'Free Models Router',
-            provider: 'OpenRouter',
-            inputModalities: ['text'],
-            contextLength: 128000,
-          ),
-          ModelOption(
-            id: 'anthropic/claude-3.7-sonnet',
-            name: 'Claude 3.7 Sonnet',
-            provider: 'Anthropic',
-            inputModalities: ['text', 'image'],
-            contextLength: 200000,
-          ),
-          ModelOption(
-            id: 'openai/gpt-4o',
-            name: 'GPT-4o',
-            provider: 'OpenAI',
-            inputModalities: ['text', 'image'],
-            contextLength: 128000,
-          ),
-          ModelOption(
-            id: 'google/gemini-2.0-flash-001',
-            name: 'Gemini 2.0 Flash',
-            provider: 'Google',
-            inputModalities: ['text', 'image', 'audio', 'video'],
-            contextLength: 1048576,
-          ),
-          ModelOption(
-            id: 'meta-llama/llama-3.3-70b-instruct',
-            name: 'Llama 3.3 70B Instruct',
-            provider: 'Meta',
-            inputModalities: ['text'],
-            contextLength: 128000,
-          ),
-        ];
+        return kFallbackModels;
       case ProviderPresetType.groq:
         return const [
           ModelOption(

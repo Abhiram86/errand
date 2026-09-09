@@ -54,41 +54,41 @@ class ModelOption {
   );
 }
 
-const kDefaultModelId = 'anthropic/claude-3.7-sonnet';
+const kDefaultModelId = 'openrouter/free';
 
 // Used immediately on launch and whenever the model endpoint is unavailable.
 // The live catalog normally replaces this list after startup.
 const kFallbackModels = <ModelOption>[
   ModelOption(
-    id: 'anthropic/claude-3.7-sonnet',
-    name: 'Claude 3.7 Sonnet',
-    provider: 'Anthropic',
+    id: 'openrouter/free',
+    name: 'Free Models',
+    provider: 'OpenRouter',
     inputModalities: ['text', 'image'],
     hasExplicitModalities: true,
     contextLength: 200000,
   ),
   ModelOption(
-    id: 'openai/gpt-4o',
-    name: 'GPT-4o',
+    id: 'openai/gpt-5.6-luna',
+    name: 'GPT-5.6 Luna',
     provider: 'OpenAI',
     inputModalities: ['text', 'image'],
     hasExplicitModalities: true,
-    contextLength: 128000,
+    contextLength: 1050000,
   ),
   ModelOption(
-    id: 'google/gemini-2.0-flash-001',
-    name: 'Gemini 2.0 Flash',
-    provider: 'Google',
-    inputModalities: ['text', 'image', 'audio', 'video'],
-    hasExplicitModalities: true,
-    contextLength: 1048576,
-  ),
-  ModelOption(
-    id: 'meta-llama/llama-3.3-70b-instruct',
-    name: 'Llama 3.3 70B Instruct',
-    provider: 'Meta',
+    id: 'deepseek/deepseek-v4-flash-0731',
+    name: 'DeepSeek V4 Flash',
+    provider: 'DeepSeek',
     inputModalities: ['text'],
     hasExplicitModalities: true,
-    contextLength: 128000,
+    contextLength: 1310720,
+  ),
+  ModelOption(
+    id: 'z-ai/glm-5.3-flash',
+    name: 'GLM 5.3 Flash',
+    provider: 'Z.ai',
+    inputModalities: ['text', 'image', 'video'],
+    hasExplicitModalities: true,
+    contextLength: 1048576,
   ),
 ];

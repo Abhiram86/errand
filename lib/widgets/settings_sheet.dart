@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:path/path.dart' as path;
 
 import '../models/llm_provider.dart';
+import '../models/model_option.dart';
 import '../services/a11y_service.dart';
 import '../services/app_settings.dart';
 import '../services/model_catalog.dart';
@@ -278,13 +279,29 @@ class _SettingsSheetState extends State<_SettingsSheet>
             itemBuilder: (context, i) {
               final provider = providers[i];
               final isActive = provider.id == activeId;
-              final hasKey = provider.hasKey;
+              final hasKey = provider.hasKey ||
+                  (provider.id == ProviderPresetType.openRouter.id &&
+                      settings.hasOpenRouterKey);
 
               return InkWell(
                 onTap: () async {
                   await settings.setActiveProvider(provider.id);
                   if (!mounted) return;
                   setState(() => _settingsChanged = true);
+                  if (hasKey && !ModelCatalogService.hasCachedModels(provider.baseUrl)) {
+                    final apiKey = provider.id == ProviderPresetType.openRouter.id
+                        ? (provider.apiKey ?? settings.openRouterKey ?? '')
+                        : (provider.apiKey ?? '');
+                    unawaited(
+                      ModelCatalogService().load(
+                        baseUrl: provider.baseUrl.isNotEmpty ? provider.baseUrl : provider.defaultBaseUrl,
+                        apiKey: apiKey,
+                        defaultProvider: provider.name,
+                        isOpenRouter: provider.id == ProviderPresetType.openRouter.id ||
+                            provider.baseUrl.contains('openrouter.ai'),
+                      ).catchError((_) => <ModelOption>[]),
+                    );
+                  }
                 },
                 borderRadius: BorderRadius.circular(12),
                 child: Container(
@@ -613,7 +630,6 @@ class _SettingsSheetState extends State<_SettingsSheet>
       builder: (dialogCtx) => _ProviderFormDialog(provider: provider),
     );
     if (changed == true && mounted) {
-      ModelCatalogService.clearCache(baseUrl: provider.baseUrl);
       setState(() => _settingsChanged = true);
     }
   }
@@ -822,6 +838,28 @@ class _ProviderFormDialogState extends State<_ProviderFormDialog> {
       apiKey: shouldClearKey ? null : apiKey,
       clearKey: shouldClearKey,
     );
+
+    if (existing != null && existing.baseUrl != baseUrl) {
+      ModelCatalogService.clearCache(baseUrl: existing.baseUrl);
+    }
+
+    if (apiKey.isNotEmpty) {
+      ModelCatalogService.clearCache(baseUrl: baseUrl);
+      unawaited(
+        ModelCatalogService().load(
+          baseUrl: baseUrl,
+          apiKey: apiKey,
+          defaultProvider: name,
+          isOpenRouter: _selectedPreset == ProviderPresetType.openRouter ||
+              id == ProviderPresetType.openRouter.id ||
+              baseUrl.contains('openrouter.ai'),
+          forceRefresh: true,
+        ).catchError((_) => <ModelOption>[]),
+      );
+    } else {
+      ModelCatalogService.clearCache(baseUrl: baseUrl);
+    }
+
     if (!mounted) return;
     Navigator.of(context).pop(true);
   }

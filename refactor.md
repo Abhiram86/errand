@@ -1,4 +1,4 @@
-# Refactor Memory — P4a Guided Service-by-Service (v0.5.0)
+# Refactor Memory — P4a Guided Service-by-Service (v0.5.1)
 
 > **Purpose:** Long-context memory for this and future sessions. `next_plan.md` + `architecture.md` + `lib/main.dart` are the big-3; this file is the *compressed* survivor when history truncates. Update it after every service step.
 > **Last updated:** 2026-09-07 | **Status:** P4a #1,2,4–7 done (3 partial, 8–10 open) | **Schema:** Drift v4 + `compacted` rows

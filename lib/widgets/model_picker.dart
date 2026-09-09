@@ -262,12 +262,27 @@ class _ModelPickerDialogState extends State<_ModelPickerDialog> {
   void initState() {
     super.initState();
     _searchController = TextEditingController()..addListener(_onSearchChanged);
-    _currentProvider = widget.activeProvider ??
+    final provider = widget.activeProvider ??
         (widget.providers != null && widget.providers!.isNotEmpty
             ? widget.providers!.first
             : null);
+    _currentProvider = provider;
     _currentSelectedModel = widget.selectedModel;
-    _currentOptions = List.of(widget.options);
+
+    final cached = provider != null
+        ? ModelCatalogService.getCachedModels(provider.baseUrl)
+        : null;
+    if (cached != null && cached.isNotEmpty) {
+      _currentOptions = List.of(cached);
+    } else {
+      _currentOptions = List.of(widget.options);
+    }
+
+    if (cached == null && _currentProviderHasKey) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _handleRefresh();
+      });
+    }
   }
 
   @override
@@ -328,6 +343,29 @@ class _ModelPickerDialogState extends State<_ModelPickerDialog> {
           _refreshing = false;
         });
       }
+    } else if (needsFetch) {
+      final apiKey = provider.id == ProviderPresetType.openRouter.id
+          ? (provider.apiKey ?? AppSettingsService.instance.openRouterKey ?? '')
+          : (provider.apiKey ?? '');
+      try {
+        final models = await ModelCatalogService().load(
+          baseUrl: provider.baseUrl.isNotEmpty ? provider.baseUrl : provider.defaultBaseUrl,
+          apiKey: apiKey,
+          defaultProvider: provider.name,
+          isOpenRouter: provider.id == ProviderPresetType.openRouter.id ||
+              provider.baseUrl.contains('openrouter.ai'),
+        );
+        if (mounted && _currentProvider?.id == provider.id) {
+          setState(() {
+            _currentOptions = models;
+            _refreshing = false;
+          });
+        }
+      } catch (_) {
+        if (mounted && _currentProvider?.id == provider.id) {
+          setState(() => _refreshing = false);
+        }
+      }
     } else {
       if (mounted) {
         setState(() => _refreshing = false);
@@ -358,10 +396,36 @@ class _ModelPickerDialogState extends State<_ModelPickerDialog> {
   }
 
   Future<void> _handleRefresh() async {
-    if (widget.onRefresh == null || _refreshing) return;
+    if (_refreshing) return;
     setState(() => _refreshing = true);
+    final provider = _currentProvider ?? widget.activeProvider;
     try {
-      await widget.onRefresh!();
+      if (widget.onRefresh != null) {
+        await widget.onRefresh!();
+      }
+      if (provider != null) {
+        var cached = ModelCatalogService.getCachedModels(provider.baseUrl);
+        if ((cached == null || cached.isEmpty) && _currentProviderHasKey) {
+          final apiKey = provider.id == ProviderPresetType.openRouter.id
+              ? (provider.apiKey ?? AppSettingsService.instance.openRouterKey ?? '')
+              : (provider.apiKey ?? '');
+          try {
+            cached = await ModelCatalogService().load(
+              baseUrl: provider.baseUrl.isNotEmpty ? provider.baseUrl : provider.defaultBaseUrl,
+              apiKey: apiKey,
+              defaultProvider: provider.name,
+              isOpenRouter: provider.id == ProviderPresetType.openRouter.id ||
+                  provider.baseUrl.contains('openrouter.ai'),
+              forceRefresh: true,
+            );
+          } catch (_) {}
+        }
+        if (mounted && cached != null && cached.isNotEmpty) {
+          setState(() {
+            _currentOptions = cached!;
+          });
+        }
+      }
     } finally {
       if (mounted) setState(() => _refreshing = false);
     }

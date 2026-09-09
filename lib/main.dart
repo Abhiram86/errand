@@ -474,10 +474,15 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _llm.close();
     _llm = _createLlmClient(model);
     unawaited(AppSettingsService.instance.setSelectedModel(model));
+    final activeProvider = AppSettingsService.instance.activeProvider;
+    final cached = ModelCatalogService.getCachedModels(activeProvider.baseUrl);
     setState(() {
+      if (cached != null && cached.isNotEmpty && _models != cached) {
+        _models = cached;
+      }
       _selectedModel = model;
       _activeConversation.model = model;
-      _activeConversation.provider = _providerForModel(model) ?? AppSettingsService.instance.activeProvider.name;
+      _activeConversation.provider = _providerForModel(model) ?? activeProvider.name;
       _touchConversation();
     });
     _persistNow();
@@ -859,6 +864,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   String? _providerForModel(String model) {
     for (final option in _models) {
       if (option.id == model) return option.provider;
+    }
+    final cached = ModelCatalogService.getCachedModels(AppSettingsService.instance.activeProvider.baseUrl);
+    if (cached != null) {
+      for (final option in cached) {
+        if (option.id == model) return option.provider;
+      }
     }
     return AppSettingsService.instance.activeProvider.name;
   }

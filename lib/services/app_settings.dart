@@ -257,8 +257,8 @@ final class AppSettingsService {
 
   List<LlmProvider> _createDefaultPresets() {
     return [
-      ProviderPresetType.openCodeZen.createProvider(),
       ProviderPresetType.openRouter.createProvider(isDefault: true),
+      ProviderPresetType.openCodeZen.createProvider(),
       ProviderPresetType.groq.createProvider(),
       ProviderPresetType.byok.createProvider(),
     ];

@@ -1,6 +1,6 @@
 # Next Plan — Status & Roadmap
 
-> **Updated Sep 2026.** P0, P1, P1.5, P2, P3 (multimodality), P4a (guided refactor), and P4b (hardening + memory) are all shipped — **v0.5.0**.
+> **Updated Sep 2026.** P0, P1, P1.5, P2, P3 (multimodality), P4a (guided refactor), P4b (hardening + memory), and v0.5.1 resilience enhancements are all shipped — **v0.5.1**.
 
 ---
 
@@ -447,6 +447,11 @@ Rules of engagement during P4a:
    - `intent` open-style actions (`open_file`/`open_url`/`open_app`/`settings`/`intent`) lazily append a paused-notice **after successful launch** — no wasted channel call on failures, no false positive on channel errors. UI replay (`replayIntentAction`) skips the check entirely.
 
 7. **Composer multi-line** — ✅ SHIPPED Sep 2026. `TextInputAction.newline` (was `send`), Enter inserts a newline up to 4 visible lines; Send button is the only submit path.
+8. **Web, Visual & Catalog Resilience — ✅ SHIPPED Sep 2026 (v0.5.1).**
+   - **Offline/free web fetch fallback:** Added on-device `webfetch` extraction using `reader_mode` + `html2md` when Tavily API key is absent or when Tavily returns errors. `websearch` guides agent to fallback search engines (e.g. DuckDuckGo Lite via `webfetch`).
+   - **Accessibility visual screenshot fallback:** Added `screenshot` action in `screen` tool via Android accessibility screenshot API (`takeScreenshot`) returning base64 vision parts.
+   - **Background catalog prefetching:** Immediately kicks off background catalog fetch on API key save or provider change; prevents stale cache wipes.
+   - **ModelPicker live refresh:** Dynamically updates dialog options upon refresh completion, auto-fetches for providers with keys, and links OpenRouter default preset models to `kFallbackModels`.
 
 **Backlog (deferred from P3):** `write`/`edit_file` with diff preview + undo — needs write-policy decision, queued after P4b.
 

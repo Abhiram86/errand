@@ -77,6 +77,11 @@ class ModelCatalogService {
     return _cache.containsKey(_normalizeBaseUrl(baseUrl));
   }
 
+  /// Whether a catalog request is currently in flight for the given base URL.
+  static bool isInFlight(String baseUrl) {
+    return _inFlight.containsKey(_normalizeBaseUrl(baseUrl));
+  }
+
   /// Tests connectivity and authentication to an OpenAI-compatible endpoint.
   Future<ConnectionTestResult> testConnection({
     required String baseUrl,
