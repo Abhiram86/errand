@@ -236,6 +236,14 @@ class MainActivity : FlutterActivity() {
                         }
                         val outcome = if (pkg == null && handlers.size > 1) {
                             "launched (choose app if prompted)"
+                        } else if (action == "open_app" && pkg != null) {
+                            val label = try {
+                                val info = packageManager.getApplicationInfo(pkg, 0)
+                                packageManager.getApplicationLabel(info).toString()
+                            } catch (_: Exception) {
+                                null
+                            }
+                            if (!label.isNullOrEmpty()) "launched: $label" else "launched"
                         } else {
                             "launched"
                         }
@@ -330,6 +338,42 @@ class MainActivity : FlutterActivity() {
                         result.success(intent.resolveActivity(packageManager) != null)
                     } catch (e: Exception) {
                         result.success(false)
+                    }
+                }
+
+                "getInstalledApps" -> {
+                    try {
+                        val launcherIntent = Intent(Intent.ACTION_MAIN).apply {
+                            addCategory(Intent.CATEGORY_LAUNCHER)
+                        }
+                        val resolveInfos = packageManager.queryIntentActivities(launcherIntent, 0)
+                        val apps = resolveInfos.mapNotNull { ri ->
+                            val p = ri.activityInfo?.packageName ?: return@mapNotNull null
+                            val l = try {
+                                ri.loadLabel(packageManager)?.toString() ?: p
+                            } catch (_: Exception) {
+                                p
+                            }
+                            mapOf("package" to p, "label" to l)
+                        }.distinctBy { it["package"] }
+                        result.success(apps)
+                    } catch (e: Exception) {
+                        result.error("APPS_ERR", e.message, null)
+                    }
+                }
+
+                "getAppLabel" -> {
+                    val p = call.argument<String>("package")
+                    if (p.isNullOrEmpty()) {
+                        result.success(null)
+                    } else {
+                        try {
+                            val info = packageManager.getApplicationInfo(p, 0)
+                            val label = packageManager.getApplicationLabel(info).toString()
+                            result.success(label)
+                        } catch (_: Exception) {
+                            result.success(null)
+                        }
                     }
                 }
 

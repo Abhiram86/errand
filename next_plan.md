@@ -1,6 +1,6 @@
 # Next Plan — Status & Roadmap
 
-> **Updated Sep 2026.** P0, P1, P1.5, P2, P3 (multimodality), P4a (guided refactor), P4b (hardening + memory), and v0.5.1 resilience enhancements are all shipped — **v0.5.1**.
+> **Updated Sep 2026.** P0, P1, P1.5, P2, P3 (multimodality), P4a (guided refactor), P4b (hardening + memory), v0.5.1 resilience enhancements, and v0.5.2 flavors & intent UX improvements are all shipped — **v0.5.2**.
 
 ---
 
@@ -452,6 +452,11 @@ Rules of engagement during P4a:
    - **Accessibility visual screenshot fallback:** Added `screenshot` action in `screen` tool via Android accessibility screenshot API (`takeScreenshot`) returning base64 vision parts.
    - **Background catalog prefetching:** Immediately kicks off background catalog fetch on API key save or provider change; prevents stale cache wipes.
    - **ModelPicker live refresh:** Dynamically updates dialog options upon refresh completion, auto-fetches for providers with keys, and links OpenRouter default preset models to `kFallbackModels`.
+9. **Flavors & Intent UX Improvements — ✅ SHIPPED Sep 2026 (v0.5.2).**
+   - **Full & Lite Flavors:** Split build flavors. Lite flavor removes the accessibility service completely from the manifest, bypassing accessibility permissions and removing `screen` and `act` tools dynamically while keeping all file, web, and intent tools. Full flavor preserves the accessibility service and tools.
+   - **Installed Apps Discovery & Caching:** Persistent SQLite caching of installed launcher packages on app startup with background refresh. Auto-resolves common app aliases (e.g., YT Music, BookMyShow) and suggests top 10 matching apps on launch failure.
+   - **Friendly App Summaries:** Tool message bubbles show the resolved app name (e.g., "Opened Spotify", "Opened YouTube") instead of generic text.
+   - **Selective Bring-to-Front:** Errand stays in the launched app if the turn finishes silently, but returns to the foreground if the agent has follow-up text or encounters an error.
 
 **Backlog (deferred from P3):** `write`/`edit_file` with diff preview + undo — needs write-policy decision, queued after P4b.
 

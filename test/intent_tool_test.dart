@@ -213,7 +213,7 @@ void main() {
       final result = await customTool.handler(call);
       expect(result.ok, isTrue);
       expect(result.output, contains('[NOTICE: SCREEN ACCESS PAUSED]'));
-      expect(result.output, contains('Launched app: com.whatsapp'));
+      expect(result.output, contains('Launched app: WhatsApp (com.whatsapp'));
     });
 
     test('omits disabled notice when a11y is on', () async {
@@ -230,7 +230,7 @@ void main() {
       final result = await customTool.handler(call);
       expect(result.ok, isTrue);
       expect(result.output, isNot(contains('[NOTICE: SCREEN ACCESS PAUSED]')));
-      expect(result.output, contains('Launched app: com.whatsapp'));
+      expect(result.output, contains('Launched app: WhatsApp (com.whatsapp'));
     });
   });
 

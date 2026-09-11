@@ -57,6 +57,13 @@ conversations are stored locally (Drift/SQLite) with no cloud sync.
   database. No `.env` file is needed. Settings → Tools tab shows screen-access
   state (Active/Disabled), Enable/Disable buttons, and Tavily key.
 
+## Flavors (Full vs. Lite)
+
+Errand is distributed in two build flavors:
+
+- **Full** (`com.errand.errand`, app name `Errand`): Includes the complete feature set. Declares the Android accessibility service in its manifest, enabling the `screen` and `act` tools for reading on-screen content, tapping UI elements, typing, and taking screenshots. Settings includes screen access controls and cold-start guidance for enabling the service.
+- **Lite** (`com.errand.errand.lite`, app name `Errand Lite`): Completely removes the accessibility service declaration from the Android manifest. It runs without asking for or relying on accessibility permissions. The `screen` and `act` tools are excluded from the agent tool registry. It handles file operations, document reading (PDF, DOCX, XLSX, PPTX), web search and extraction, and system intents (`open_app`, `open_file`, `open_url`, `settings`). It also includes on-device installed app caching with alias resolution, fuzzy matching for failed launches, and selective bring-to-front behavior when the agent produces follow-up responses.
+
 ## Configuration
 
 Keys are configured at runtime in the app — tap the gear icon (or

@@ -7,7 +7,6 @@ import 'package:errand/main.dart';
 import 'package:errand/services/a11y_service.dart';
 import 'package:errand/tools/act_tool.dart';
 import 'package:errand/tools/screen_tool.dart';
-import 'package:errand/types/tool.dart';
 
 class UnsupportedA11yService extends A11yService {
   @override

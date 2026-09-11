@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:gpt_markdown/gpt_markdown.dart';
 import 'package:path/path.dart' as path;
 
+import '../services/installed_apps_service.dart';
 import '../theme/app_colors.dart';
 import '../tools/intent_tool.dart';
 import '../types/message.dart';
@@ -213,6 +214,11 @@ class ToolMessageBubble extends StatefulWidget {
         final action = args['action']?.toString();
         switch (action) {
           case 'open_app':
+            final pkg = args['package']?.toString();
+            if (pkg != null && pkg.isNotEmpty) {
+              final label = InstalledAppsService.instance.getLabel(pkg);
+              return 'Opened $label';
+            }
             return 'Opened app';
           case 'open_url':
             return 'Opened web link';

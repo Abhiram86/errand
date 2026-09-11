@@ -153,6 +153,34 @@ void main() {
         'Opened app',
       );
       expect(
+        ToolMessageBubble.friendlyToolSummary('intent', {
+          'action': 'open_app',
+          'package': 'com.spotify.music',
+        }),
+        'Opened Spotify',
+      );
+      expect(
+        ToolMessageBubble.friendlyToolSummary('intent', {
+          'action': 'open_app',
+          'package': 'com.google.android.youtube',
+        }),
+        'Opened YouTube',
+      );
+      expect(
+        ToolMessageBubble.friendlyToolSummary('intent', {
+          'action': 'open_app',
+          'package': 'com.bt.bms',
+        }),
+        'Opened BookMyShow',
+      );
+      expect(
+        ToolMessageBubble.friendlyToolSummary('intent', {
+          'action': 'open_app',
+          'package': 'com.google.android.apps.youtube.music',
+        }),
+        'Opened YT Music',
+      );
+      expect(
         ToolMessageBubble.friendlyToolSummary('intent', {'action': 'open_url'}),
         'Opened web link',
       );

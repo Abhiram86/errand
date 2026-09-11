@@ -10,6 +10,7 @@ import 'package:path/path.dart' as path;
 import 'package:errand/services/database.dart';
 import 'package:errand/services/a11y_service.dart';
 import 'package:errand/services/app_settings.dart';
+import 'package:errand/services/installed_apps_service.dart';
 import 'package:errand/services/intent_service.dart';
 import 'package:uuid/uuid.dart';
 
@@ -239,6 +240,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   bool _permissionDialogOpen = false;
   bool _sidebarOpen = false;
   bool _externalAppWorkDone = false;
+  bool _externalIntentLaunched = false;
   StreamSubscription<List<Conversation>>? _conversationsSub;
   StreamSubscription<List<Conversation>>? _pinnedConversationsSub;
   Timer? _persistTimer;
@@ -326,6 +328,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       if (mounted) {
         await _refreshA11yState(triggerToast: true);
       }
+      unawaited(InstalledAppsService.instance.initAndRefresh());
     });
   }
 
@@ -1496,6 +1499,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _workingText.clear();
     _workingReasoning = false;
     _externalAppWorkDone = false;
+    _externalIntentLaunched = false;
     _cancelToken.reset();
     setState(() {
       _messages.add(AssistantMessage(
@@ -1639,7 +1643,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _workingElapsedTimer?.cancel();
     _workingCompacting = false;
     unawaited(_intentService.stopWorkIndicator());
-    if (_externalAppWorkDone) {
+    if (_externalAppWorkDone || _externalIntentLaunched) {
       unawaited(_intentService.bringToFront());
     }
     final id = _workingMessageId;
@@ -1693,6 +1697,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         _workingCompacting = false;
         if (call.name == 'screen' || call.name == 'act') {
           _externalAppWorkDone = true;
+        } else if (call.name == 'intent') {
+          _externalIntentLaunched = true;
         }
         final text =
             '${call.name} → ${result.ok ? result.output.split('\n').take(3).join('\n') : result.errorMessage}';
@@ -1877,7 +1883,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _workingElapsedTimer?.cancel();
     _workingCompacting = false;
     unawaited(_intentService.stopWorkIndicator());
-    if (_externalAppWorkDone) {
+    final trimmed = text.trim();
+    if (_externalAppWorkDone || (_externalIntentLaunched && trimmed.isNotEmpty)) {
       unawaited(_intentService.bringToFront());
     }
     final id = _workingMessageId;
@@ -1886,7 +1893,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     // Some models return an empty/whitespace final answer (content-only
     // tool turns, stray "\n"). Trim it; if nothing is left, drop the
     // bubble instead of rendering an empty one.
-    final trimmed = text.trim();
     if (trimmed.isEmpty) {
       _showToast('Model produced no response.');
     }

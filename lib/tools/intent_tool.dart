@@ -1,13 +1,19 @@
 import 'package:flutter/services.dart';
 import 'package:errand/agent/tool.dart';
 import 'package:errand/services/a11y_service.dart';
+import 'package:errand/services/installed_apps_service.dart';
 import 'package:errand/services/intent_service.dart';
 import 'package:errand/types/message.dart';
 import 'package:errand/types/tool.dart';
 
-Tool intentTool({IntentService? service, A11yService? a11yService}) {
+Tool intentTool({
+  IntentService? service,
+  A11yService? a11yService,
+  InstalledAppsService? installedAppsService,
+}) {
   final svc = service ?? IntentService();
   final a11y = a11yService ?? A11yService();
+  final appsSvc = installedAppsService ?? InstalledAppsService.instance;
 
   return Tool(
     name: 'intent',
@@ -78,7 +84,12 @@ Tool intentTool({IntentService? service, A11yService? a11yService}) {
     },
     handler: (call) async {
       try {
-        return await handleIntentAction(call, svc, a11y: a11y);
+        return await handleIntentAction(
+          call,
+          svc,
+          a11y: a11y,
+          installedAppsService: appsSvc,
+        );
       } catch (e) {
         return ToolCallResult.failure(call.id, 'Intent failed: $e');
       }
@@ -93,6 +104,7 @@ Future<ToolCallResult> handleIntentAction(
   ToolCall call,
   IntentService svc, {
   A11yService? a11y,
+  InstalledAppsService? installedAppsService,
 }) async {
   final action = (call.arguments['action'] as String?)?.trim() ?? 'open_url';
 
@@ -102,7 +114,12 @@ Future<ToolCallResult> handleIntentAction(
     case 'open_url':
       return await _openUrl(call, svc, a11y);
     case 'open_app':
-      return await _openApp(call, svc, a11y: a11y);
+      return await _openApp(
+        call,
+        svc,
+        a11y: a11y,
+        installedAppsService: installedAppsService,
+      );
     case 'settings':
       return await _openSettingsPage(
         call,
@@ -441,17 +458,44 @@ Future<ToolCallResult> _openApp(
   ToolCall call,
   IntentService svc, {
   A11yService? a11y,
+  InstalledAppsService? installedAppsService,
 }) async {
-  final pkg = (call.arguments['package'] as String?)?.trim();
-  if (pkg == null || pkg.isEmpty) {
+  final rawPkg = (call.arguments['package'] as String?)?.trim();
+  if (rawPkg == null || rawPkg.isEmpty) {
     return ToolCallResult.failure(call.id, 'Missing "package" for open_app');
   }
+
+  final appsSvc = installedAppsService ?? InstalledAppsService.instance;
+  // If the model passed an app label or alias (e.g. 'BookMyShow' or 'yt music'), resolve it.
+  final exact = appsSvc.findExact(rawPkg);
+  final pkgToLaunch = exact?.package ?? rawPkg;
+
   try {
-    final res = await svc.launchAction('open_app', package: pkg);
-    final notice = await _maybePausedNotice(a11y, 'app $pkg');
-    return ToolCallResult(id: call.id, ok: true, output: 'Launched app: $pkg ($res)$notice');
-  } on PlatformException catch (e) {
-    return ToolCallResult.failure(call.id, 'Failed to launch app "$pkg": ${e.message}');
+    final res = await svc.launchAction('open_app', package: pkgToLaunch);
+    final appLabel = appsSvc.getLabel(pkgToLaunch);
+    final notice = await _maybePausedNotice(a11y, 'app $appLabel');
+    return ToolCallResult(
+      id: call.id,
+      ok: true,
+      output: 'Launched app: $appLabel ($pkgToLaunch - $res)$notice',
+    );
+  } catch (e) {
+    final matches = appsSvc.findBestMatches(rawPkg, limit: 10);
+    if (matches.isNotEmpty) {
+      final suggestions =
+          matches.map((a) => '- ${a.label} (${a.package})').join('\n');
+      return ToolCallResult.failure(
+        call.id,
+        'Failed to launch app "$rawPkg": package not found or cannot be launched.\n'
+        'Top matching installed apps on this device:\n$suggestions\n\n'
+        'Please retry open_app using one of the exact package names above.',
+      );
+    }
+    final message = e is PlatformException ? (e.message ?? e.code) : '$e';
+    return ToolCallResult.failure(
+      call.id,
+      'Failed to launch app "$rawPkg": $message',
+    );
   }
 }
 

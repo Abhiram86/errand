@@ -24,7 +24,7 @@ LLM client (lib/llm/llm_client.dart)  ◀── HTTP/SSE ─┤ OpenRouter / HF 
      ▼                                             │
 tool registry (lib/agent/tool_registry.dart)
      │  defaults: read (+media), workspace, websearch, webfetch,
-     │            intent, screen, act, attached_files
+     │            intent, attached_files, plus screen + act (Full flavor only)
      ├──────────┬──────────────┬─────────────┴─────────┐
      ▼          ▼              ▼                       ▼
  file tools   workspace    web tools              intent tool
@@ -83,7 +83,7 @@ ChatScreen keeps `List<String> _pendingAttachments` (`lib/main.dart`) as the **s
 ## The agent — `lib/agent/`
 
 - **`tool.dart`** defines the LLM-facing `Tool` schema (`name`, `description`, `parameters`, `handler`) and parsed `ToolCall` (`id`, `name`, `arguments`). `ToolCall.toJson()` serializes arguments as a JSON string as required by OpenAI-compatible APIs. `requiresValidation` is internal metadata for future mutation tools; `onDispose`/`dispose()` releases tool-held resources (e.g. cached open documents).
-- **`tool_registry.dart`** registers the current tools and safely executes a call, converting handler exceptions into `ToolCallResult.failure`. `ToolRegistry.defaults({currentDir, workingDirectory, supportsInput, getAttachedFiles})` currently contains `read` + `workspace` (`list`/`find`/`cd`/`pwd`) + `websearch` + `webfetch` + `intent` + `screen` + `act` + `attached_files`. `supportsInput` (from `ModelCatalogService.supportsInput`) lets `read` fail honestly when the current model lacks `image`/`audio`/`video` support; `getAttachedFiles` lets `read` resolve file-picker cache paths outside the workspace and lets `attached_files` list the conversation inventory. `dispose()` fans out to every tool.
+- **`tool_registry.dart`** registers the current tools and safely executes a call, converting handler exceptions into `ToolCallResult.failure`. `ToolRegistry.defaults({currentDir, workingDirectory, supportsInput, getAttachedFiles, enableA11yTools = true})` contains `read` + `workspace` (`list`/`find`/`cd`/`pwd`) + `websearch` + `webfetch` + `intent` + `attached_files`, and conditionally includes `screen` + `act` when `enableA11yTools` is true (Full flavor). In the Lite flavor, `enableA11yTools` is false and accessibility tools are omitted. `supportsInput` (from `ModelCatalogService.supportsInput`) lets `read` fail honestly when the current model lacks `image`/`audio`/`video` support; `getAttachedFiles` lets `read` resolve file-picker cache paths outside the workspace and lets `attached_files` list the conversation inventory. `dispose()` fans out to every tool.
 - **`agent_loop.dart`** exposes `run(Conversation)`. It builds the LLM message array (`system` + `_toLlmHistory`), injects the live system prompt each turn, and drives streaming (`chatStream`) or non-streaming (`chat`) via `LlmClient`.
   - `UserMessage.attachedUris` is rendered in `_toLlmHistory` as `text + "\n\n[Attached files:\n1. basename — uri]"` (no extra tool call needed for discovery).
   - An `AssistantMessage` immediately followed by `ToolMessage`s is merged into the synthesized assistant `tool_calls` message (carrying its text + first reasoning block); standalone consecutive `ToolMessage`s are reconstructed the same way. Either shape avoids back-to-back `assistant` roles, which strict providers reject.

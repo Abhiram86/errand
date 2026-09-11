@@ -40,6 +40,36 @@ class IntentService {
         false;
   }
 
+  /// Returns a list of installed launcher applications with their package names and labels.
+  Future<List<Map<String, String>>> getInstalledApps() async {
+    try {
+      final list = await _channel.invokeListMethod<dynamic>('getInstalledApps');
+      if (list == null) return const [];
+      final result = <Map<String, String>>[];
+      for (final item in list) {
+        if (item is Map) {
+          final pkg = item['package']?.toString() ?? '';
+          final lbl = item['label']?.toString() ?? pkg;
+          if (pkg.isNotEmpty) {
+            result.add({'package': pkg, 'label': lbl});
+          }
+        }
+      }
+      return result;
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// Returns the human-readable application label for a given [package] name, or null.
+  Future<String?> getAppLabel(String package) async {
+    try {
+      return await _channel.invokeMethod<String>('getAppLabel', {'package': package});
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Brings Errand to the foreground (reordering task stack without recreating activity).
   /// Used after the agent finishes automated work in another app so the user sees the summary.
   Future<void> bringToFront() async {
