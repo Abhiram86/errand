@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:gpt_markdown/gpt_markdown.dart';
@@ -129,16 +130,195 @@ class _SubtleFadeInState extends State<SubtleFadeIn>
   }
 }
 
-class ToolMessageBubble extends StatelessWidget {
+class ToolMessageBubble extends StatefulWidget {
   final ToolMessage message;
+
+  /// Test-only hook to simulate release or debug mode behavior.
+  /// If null, [kDebugMode] is used.
+  @visibleForTesting
+  static bool? debugShowToolArgsOverride;
 
   const ToolMessageBubble({super.key, required this.message});
 
+  /// Maps tool names and arguments into concise, human-friendly summaries.
+  static String friendlyToolSummary(
+    String toolName,
+    Map<String, dynamic> args,
+  ) {
+    switch (toolName) {
+      case 'websearch':
+        return 'Used web search';
+      case 'webfetch':
+        return 'Fetched web page';
+      case 'read':
+        return 'Read file';
+      case 'workspace':
+        final action = args['action']?.toString();
+        switch (action) {
+          case 'find':
+            return 'Searched files';
+          case 'list':
+            return 'Listed files';
+          case 'cd':
+            return 'Changed folder';
+          case 'pwd':
+            return 'Checked current folder';
+          default:
+            return 'Browsed files';
+        }
+      case 'screen':
+        final action = args['action']?.toString();
+        switch (action) {
+          case 'screenshot':
+            return 'Captured screenshot';
+          case 'global':
+            final name = args['name']?.toString();
+            switch (name) {
+              case 'back':
+                return 'Pressed back';
+              case 'home':
+                return 'Pressed home';
+              case 'recents':
+                return 'Opened recents';
+              case 'notifications':
+                return 'Opened notifications';
+              default:
+                return 'Navigated system';
+            }
+          case 'read':
+          default:
+            return 'Inspected screen';
+        }
+      case 'act':
+        final action = args['action']?.toString();
+        switch (action) {
+          case 'tap':
+            return 'Tapped on screen';
+          case 'type':
+            return 'Typed text';
+          case 'scroll':
+            return 'Scrolled screen';
+          case 'fill':
+            return 'Filled input field';
+          case 'tab':
+            return 'Navigated next field';
+          case 'long_press':
+            return 'Long pressed on screen';
+          case 'esc':
+            return 'Pressed escape';
+          default:
+            return 'Interacted with screen';
+        }
+      case 'intent':
+        final action = args['action']?.toString();
+        switch (action) {
+          case 'open_app':
+            return 'Opened app';
+          case 'open_url':
+            return 'Opened web link';
+          case 'open_file':
+            return 'Opened file';
+          case 'settings':
+          case 'settings_panel':
+            return 'Opened settings';
+          case 'search':
+            return 'Searched web';
+          case 'dial':
+            return 'Opened dialer';
+          case 'open_maps':
+            return 'Opened maps';
+          case 'email':
+            return 'Drafted email';
+          case 'calendar_event':
+            return 'Created calendar event';
+          case 'media_play':
+            return 'Played media';
+          case 'share':
+            return 'Shared content';
+          case 'wallpaper':
+            return 'Set wallpaper';
+          case 'uninstall':
+            return 'Triggered uninstall';
+          case 'intent':
+            return 'Sent intent';
+          default:
+            return 'Launched intent';
+        }
+      case 'attached_files':
+        return 'Read attached files';
+      default:
+        final formattedName = toolName
+            .replaceAll('_', ' ')
+            .replaceAll('-', ' ')
+            .trim();
+        if (formattedName.isEmpty) return 'Used tool';
+        return 'Used $formattedName';
+    }
+  }
+
+  /// Maps tool names and actions to appropriate visual icons.
+  static IconData toolIcon(
+    String toolName,
+    Map<String, dynamic> args,
+  ) {
+    switch (toolName) {
+      case 'websearch':
+        return Icons.search_rounded;
+      case 'webfetch':
+        return Icons.travel_explore_rounded;
+      case 'read':
+        return Icons.description_outlined;
+      case 'workspace':
+        return Icons.folder_open_outlined;
+      case 'screen':
+        final action = args['action']?.toString();
+        if (action == 'screenshot') {
+          return Icons.camera_alt_outlined;
+        }
+        return Icons.screenshot_monitor_rounded;
+      case 'act':
+        final action = args['action']?.toString();
+        if (action == 'type' || action == 'fill') {
+          return Icons.keyboard_outlined;
+        }
+        if (action == 'scroll') {
+          return Icons.swipe_outlined;
+        }
+        return Icons.touch_app_outlined;
+      case 'intent':
+        return Icons.open_in_new_rounded;
+      case 'attached_files':
+        return Icons.attach_file_rounded;
+      default:
+        return Icons.build_outlined;
+    }
+  }
+
+  @override
+  State<ToolMessageBubble> createState() => _ToolMessageBubbleState();
+}
+
+class _ToolMessageBubbleState extends State<ToolMessageBubble> {
+  bool _isExpanded = false;
+
   @override
   Widget build(BuildContext context) {
+    final message = widget.message;
     final args = _formatToolArgs(message.tool.args);
     final outputWasTruncated = message.result.length > kMaxToolOutputChars;
     final output = _truncateForDisplay(message.result, kMaxToolOutputChars);
+
+    final showRawArgs =
+        (ToolMessageBubble.debugShowToolArgsOverride ?? kDebugMode) ||
+            _isExpanded;
+
+    final headerText = showRawArgs
+        ? '${_truncateForDisplay(message.tool.name, 32)} '
+            '${_truncateForDisplay(args, kMaxToolHeaderChars)}'
+        : ToolMessageBubble.friendlyToolSummary(
+            message.tool.name,
+            message.tool.args,
+          );
 
     return Align(
       alignment: Alignment.centerLeft,
@@ -155,6 +335,11 @@ class ToolMessageBubble extends StatelessWidget {
                 .copyWith(color: kMuted.withValues(alpha: 0.45), size: 16),
           ),
           child: ExpansionTile(
+            onExpansionChanged: (expanded) {
+              if (_isExpanded != expanded) {
+                setState(() => _isExpanded = expanded);
+              }
+            },
             tilePadding: EdgeInsets.zero,
             childrenPadding: EdgeInsets.zero,
             collapsedIconColor: kMuted.withValues(alpha: 0.45),
@@ -164,10 +349,18 @@ class ToolMessageBubble extends StatelessWidget {
             minTileHeight: 24,
             title: Row(
               children: [
+                Icon(
+                  ToolMessageBubble.toolIcon(
+                    message.tool.name,
+                    message.tool.args,
+                  ),
+                  size: 14,
+                  color: kMuted.withValues(alpha: 0.7),
+                ),
+                const SizedBox(width: 6),
                 Expanded(
                   child: Text(
-                    '${_truncateForDisplay(message.tool.name, 32)} '
-                    '${_truncateForDisplay(args, kMaxToolHeaderChars)}',
+                    headerText,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(color: kMuted, fontSize: 12),
