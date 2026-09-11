@@ -1,4 +1,5 @@
 import 'package:flutter/services.dart';
+import 'package:meta/meta.dart';
 
 /// Dart-side handle for the P2a accessibility channel ("a11y").
 ///
@@ -7,6 +8,32 @@ import 'package:flutter/services.dart';
 /// screen tool maps into guidance the model can relay to the user.
 class A11yService {
   static const MethodChannel _channel = MethodChannel('a11y');
+
+  static bool? _supportedCache;
+
+  /// True if the accessibility service is declared and supported in this flavor.
+  /// Result is cached after the first query for synchronous lookups.
+  Future<bool> isSupported({bool forceRefresh = false}) async {
+    if (_supportedCache != null && !forceRefresh) {
+      return _supportedCache!;
+    }
+    try {
+      final supported = await _channel.invokeMethod<bool>('isSupported') ?? true;
+      _supportedCache = supported;
+      return supported;
+    } catch (_) {
+      // Default to true in tests or when channel is not implemented.
+      return _supportedCache ?? true;
+    }
+  }
+
+  /// Synchronous access to the cached support state (defaults to true before loaded).
+  static bool get isSupportedSync => _supportedCache ?? true;
+
+  @visibleForTesting
+  static void setSupportedForTesting(bool? value) {
+    _supportedCache = value;
+  }
 
   /// True only while the user has enabled the accessibility service.
   Future<bool> isEnabled() async {

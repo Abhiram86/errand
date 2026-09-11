@@ -36,6 +36,21 @@ android {
         // flag during build.
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        manifestPlaceholders["appName"] = "Errand"
+    }
+
+    flavorDimensions += "feature"
+
+    productFlavors {
+        create("full") {
+            dimension = "feature"
+            manifestPlaceholders["appName"] = "Errand"
+        }
+        create("lite") {
+            dimension = "feature"
+            applicationIdSuffix = ".lite"
+            manifestPlaceholders["appName"] = "Errand Lite"
+        }
     }
 
     signingConfigs {

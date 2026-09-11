@@ -293,6 +293,7 @@ String _pausedNotice(String target) =>
 Future<String> _maybePausedNotice(A11yService? a11y, String target) async {
   if (a11y == null) return '';
   try {
+    if (!await a11y.isSupported()) return '';
     if (await a11y.isEnabled()) return '';
   } catch (_) {
     return ''; // channel error: unknown state, don't cry wolf

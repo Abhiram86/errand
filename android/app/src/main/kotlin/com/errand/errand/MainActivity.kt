@@ -400,6 +400,13 @@ class MainActivity : FlutterActivity() {
         ).setMethodCallHandler { call, result ->
             when (call.method) {
                 "isEnabled" -> result.success(ErrandAccessibilityService.isConnected())
+                "isSupported" -> {
+                    val intent = Intent("android.accessibilityservice.AccessibilityService").apply {
+                        `package` = packageName
+                    }
+                    val services = packageManager.queryIntentServices(intent, 0)
+                    result.success(services.isNotEmpty())
+                }
                 "isRestricted" -> result.success(ErrandAccessibilityService.isRestricted(this))
                 "openSettings" -> {
                     try {

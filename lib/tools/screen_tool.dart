@@ -116,6 +116,14 @@ Future<ToolCallResult> handleScreenAction(ToolCall call, A11yService svc) async 
   }
 
   // Availability gate — honest failure with actionable guidance.
+  final supported = await svc.isSupported();
+  if (!supported) {
+    return ToolCallResult.failure(
+      call.id,
+      'Screen access is not supported in this build of Errand.',
+    );
+  }
+
   final enabled = await svc.isEnabled();
   if (!enabled) {
     final restricted = await svc.isRestricted();

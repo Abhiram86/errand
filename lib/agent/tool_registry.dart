@@ -28,6 +28,7 @@ class ToolRegistry {
     bool Function(String modality)? supportsInput,
     List<String> Function()? getAttachedFiles,
     bool hasTavilyKey = false,
+    bool enableA11yTools = true,
   }) {
     final directory = workingDirectory ?? WorkingDirectory(currentDir);
     return ToolRegistry([
@@ -40,8 +41,10 @@ class ToolRegistry {
       webSearchTavilyTool(),
       webFetchTool(),
       intentTool(),
-      screenTool(),
-      actTool(),
+      if (enableA11yTools) ...[
+        screenTool(),
+        actTool(),
+      ],
       attachedFilesTool(
         getAttachedFiles: getAttachedFiles ?? () => const [],
       ),

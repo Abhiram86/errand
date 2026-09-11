@@ -64,6 +64,7 @@ class _SettingsSheetState extends State<_SettingsSheet>
 
   bool _loaded = false;
   bool _settingsChanged = false;
+  bool _a11ySupported = A11yService.isSupportedSync;
   bool _a11yEnabled = false;
   late List<String> _localAttached;
   bool _picking = false;
@@ -87,20 +88,36 @@ class _SettingsSheetState extends State<_SettingsSheet>
   }
 
   Future<void> _refreshA11y() async {
+    final supported = await A11yService().isSupported();
+    if (!mounted) return;
+    if (!supported) {
+      if (_a11ySupported || _a11yEnabled) {
+        setState(() {
+          _a11ySupported = false;
+          _a11yEnabled = false;
+        });
+      }
+      return;
+    }
     final a11y = await A11yService().isEnabled();
     if (!mounted) return;
-    setState(() => _a11yEnabled = a11y);
+    setState(() {
+      _a11ySupported = true;
+      _a11yEnabled = a11y;
+    });
   }
 
   Future<void> _load() async {
     final results = await Future.wait([
       AppSettingsService.instance.ensureLoaded(),
       A11yService().isEnabled(),
+      A11yService().isSupported(),
     ]);
     if (!mounted) return;
     setState(() {
       _hasTavilyKey = AppSettingsService.instance.hasTavilyKey;
       _a11yEnabled = results[1] as bool;
+      _a11ySupported = results[2] as bool;
       _loaded = true;
     });
   }
@@ -403,68 +420,70 @@ class _SettingsSheetState extends State<_SettingsSheet>
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const Text('Screen Access (Accessibility)',
-                    style: TextStyle(color: kText, fontSize: 13, fontWeight: FontWeight.w600)),
-                const SizedBox(width: 8),
-                _statusChip(
-                  configured: _a11yEnabled,
-                  label: _a11yEnabled ? 'Active' : 'Disabled',
-                ),
-              ],
-            ),
-            const SizedBox(height: 4),
-            const Text(
-              'Enables screen reading and device automation. Pauses when Errand closes to keep other apps secure.',
-              style: TextStyle(color: kMuted, fontSize: 12),
-            ),
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                if (_a11yEnabled)
-                  OutlinedButton.icon(
-                    onPressed: () async {
-                      // disableSelf() applies async at OS level — an immediate
-                      // isEnabled() re-read can still return true. Trust a
-                      // successful disable call instead of the racy re-read.
-                      final ok = await A11yService().disableService();
-                      final updated = ok ? false : await A11yService().isEnabled();
-                      if (mounted) {
-                        setState(() {
-                          if (_a11yEnabled != updated) {
-                            _a11yEnabled = updated;
-                            _settingsChanged = true;
-                          }
-                        });
-                      }
-                    },
-                    icon: const Icon(Icons.power_settings_new_rounded, size: 16),
-                    label: const Text('Disable now'),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: kDanger,
-                      side: const BorderSide(color: kDanger),
-                    ),
-                  )
-                else
-                  FilledButton.icon(
-                    onPressed: () async {
-                      await A11yService().openSettings();
-                    },
-                    icon: const Icon(Icons.settings_accessibility_rounded, size: 16),
-                    label: const Text('Enable in Settings'),
-                    style: FilledButton.styleFrom(backgroundColor: kBubbleUser),
+        if (_a11ySupported) ...[
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Text('Screen Access (Accessibility)',
+                      style: TextStyle(color: kText, fontSize: 13, fontWeight: FontWeight.w600)),
+                  const SizedBox(width: 8),
+                  _statusChip(
+                    configured: _a11yEnabled,
+                    label: _a11yEnabled ? 'Active' : 'Disabled',
                   ),
-              ],
-            ),
-          ],
-        ),
-        const SizedBox(height: 20),
-        const Divider(color: kBorder),
-        const SizedBox(height: 16),
+                ],
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                'Enables screen reading and device automation. Pauses when Errand closes to keep other apps secure.',
+                style: TextStyle(color: kMuted, fontSize: 12),
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  if (_a11yEnabled)
+                    OutlinedButton.icon(
+                      onPressed: () async {
+                        // disableSelf() applies async at OS level — an immediate
+                        // isEnabled() re-read can still return true. Trust a
+                        // successful disable call instead of the racy re-read.
+                        final ok = await A11yService().disableService();
+                        final updated = ok ? false : await A11yService().isEnabled();
+                        if (mounted) {
+                          setState(() {
+                            if (_a11yEnabled != updated) {
+                              _a11yEnabled = updated;
+                              _settingsChanged = true;
+                            }
+                          });
+                        }
+                      },
+                      icon: const Icon(Icons.power_settings_new_rounded, size: 16),
+                      label: const Text('Disable now'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: kDanger,
+                        side: const BorderSide(color: kDanger),
+                      ),
+                    )
+                  else
+                    FilledButton.icon(
+                      onPressed: () async {
+                        await A11yService().openSettings();
+                      },
+                      icon: const Icon(Icons.settings_accessibility_rounded, size: 16),
+                      label: const Text('Enable in Settings'),
+                      style: FilledButton.styleFrom(backgroundColor: kBubbleUser),
+                    ),
+                ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 20),
+          const Divider(color: kBorder),
+          const SizedBox(height: 16),
+        ],
         const Text(
           'API keys for optional agent tools.',
           style: TextStyle(color: kMuted, fontSize: 12),

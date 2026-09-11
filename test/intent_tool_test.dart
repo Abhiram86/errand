@@ -34,7 +34,11 @@ class MockIntentService extends IntentService {
 
 class MockA11yService extends A11yService {
   final bool enabled;
-  MockA11yService({this.enabled = true});
+  final bool supported;
+  MockA11yService({this.enabled = true, this.supported = true});
+
+  @override
+  Future<bool> isSupported({bool forceRefresh = false}) async => supported;
 
   @override
   Future<bool> isEnabled() async => enabled;
@@ -276,6 +280,44 @@ void main() {
       expect(result.ok, isTrue);
       expect(service.lastAction, 'open_url');
       expect(service.lastData, contains('geo:0,0?q=Central+Park'));
+    });
+  });
+
+  group('flavor support and screen access notice', () {
+    test('omits paused notice when a11y is unsupported (lite flavor)', () async {
+      final liteTool = intentTool(
+        service: service,
+        a11yService: MockA11yService(enabled: false, supported: false),
+      );
+      final call = ToolCall(
+        id: 'call-lite',
+        name: 'intent',
+        arguments: {
+          'action': 'open_url',
+          'url': 'https://flutter.dev',
+        },
+      );
+      final result = await liteTool.handler(call);
+      expect(result.ok, isTrue);
+      expect(result.output, isNot(contains('[NOTICE: SCREEN ACCESS PAUSED]')));
+    });
+
+    test('includes paused notice when a11y is supported but disabled (full flavor)', () async {
+      final fullTool = intentTool(
+        service: service,
+        a11yService: MockA11yService(enabled: false, supported: true),
+      );
+      final call = ToolCall(
+        id: 'call-full',
+        name: 'intent',
+        arguments: {
+          'action': 'open_url',
+          'url': 'https://flutter.dev',
+        },
+      );
+      final result = await fullTool.handler(call);
+      expect(result.ok, isTrue);
+      expect(result.output, contains('[NOTICE: SCREEN ACCESS PAUSED]'));
     });
   });
 }

@@ -53,8 +53,12 @@ String _systemPromptFor(
   Directory currentDir, {
   bool screenAccess = false,
   bool screenRestricted = false,
+  bool a11ySupported = true,
 }) {
   var prompt = '$kSystemPrompt\nCurrent working directory: ${currentDir.path}';
+  if (!a11ySupported) {
+    return prompt;
+  }
   if (screenAccess) {
     prompt += '''
 
@@ -81,6 +85,20 @@ ${screenRestricted ? '- IMPORTANT: this device blocks enabling ("Restricted sett
   }
   return prompt;
 }
+
+@visibleForTesting
+String systemPromptFor(
+  Directory currentDir, {
+  bool screenAccess = false,
+  bool screenRestricted = false,
+  bool a11ySupported = true,
+}) =>
+    _systemPromptFor(
+      currentDir,
+      screenAccess: screenAccess,
+      screenRestricted: screenRestricted,
+      a11ySupported: a11ySupported,
+    );
 
 final database = ErrandDatabase.instance;
 // database.loadConversation(id)
@@ -207,6 +225,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   /// Cached accessibility-service state (refreshed on start/resume) feeding
   /// the conditional screen-access block of the system prompt.
+  bool _a11ySupported = A11yService.isSupportedSync;
   bool _a11yAvailable = false;
   bool _a11yRestricted = false;
   bool _showA11yToast = false;
@@ -559,12 +578,27 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   /// flipped from available to unavailable.
   Future<bool> _refreshA11yState({bool triggerToast = false}) async {
     try {
+      final supported = await _a11yService.isSupported();
+      if (!mounted) return false;
+      if (!supported) {
+        if (_a11ySupported || _a11yAvailable || _showA11yToast) {
+          setState(() {
+            _a11ySupported = false;
+            _a11yAvailable = false;
+            _showA11yToast = false;
+          });
+        }
+        return false;
+      }
       final enabled = await _a11yService.isEnabled();
       final restricted = enabled ? false : await _a11yService.isRestricted();
       if (!mounted) return false;
       final flippedToOff = _a11yAvailable && !enabled;
-      if (enabled != _a11yAvailable || restricted != _a11yRestricted) {
+      if (enabled != _a11yAvailable ||
+          restricted != _a11yRestricted ||
+          !_a11ySupported) {
         setState(() {
+          _a11ySupported = true;
           _a11yAvailable = enabled;
           _a11yRestricted = restricted;
         });
@@ -583,12 +617,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   void _triggerA11yToast() {
-    if (!mounted || _a11yAvailable || _showA11yToast) return;
+    if (!mounted || !_a11ySupported || _a11yAvailable || _showA11yToast) return;
     // Mirror of the old one-time dialog: an explicit dismissal persists, so
     // cold starts don't nag forever. Fail-open when settings are unavailable.
     AppSettingsService.instance.a11yPromptDismissed().then((dismissed) {
       if (dismissed) return;
-      if (!mounted || _a11yAvailable || _showA11yToast) return;
+      if (!mounted || !_a11ySupported || _a11yAvailable || _showA11yToast) return;
       setState(() => _showA11yToast = true);
       _a11yToastTimer?.cancel();
       _a11yToastTimer = Timer(const Duration(seconds: 8), () {
@@ -597,7 +631,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         }
       });
     }).catchError((_) {
-      if (!mounted || _a11yAvailable || _showA11yToast) return;
+      if (!mounted || !_a11ySupported || _a11yAvailable || _showA11yToast) return;
       setState(() => _showA11yToast = true);
     });
   }
@@ -1486,6 +1520,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           _workingDirectory.current,
           screenAccess: _a11yAvailable,
           screenRestricted: _a11yRestricted,
+          a11ySupported: _a11ySupported,
         ),
         messages: _messages
             .where((message) => message.id != _workingMessageId)
@@ -1515,6 +1550,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             false,
         getAttachedFiles: () => _activeConversation.attachedFileUris,
         hasTavilyKey: AppSettingsService.instance.hasTavilyKey,
+        enableA11yTools: _a11ySupported,
       );
 
       final budget = _getActiveBudget();
@@ -1527,6 +1563,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           _workingDirectory.current,
           screenAccess: _a11yAvailable,
           screenRestricted: _a11yRestricted,
+          a11ySupported: _a11ySupported,
         ),
         cancelToken: _cancelToken,
         onEvent: _handleEvent,

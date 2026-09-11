@@ -322,4 +322,24 @@ void main() {
     registry.dispose();
     expect(disposed, isTrue);
   });
+
+  test('ToolRegistry.defaults includes screen and act when enableA11yTools is true', () {
+    final registry = ToolRegistry.defaults(
+      currentDir: Directory('/'),
+      enableA11yTools: true,
+    );
+    final names = registry.all.map((t) => t.name).toSet();
+    expect(names.contains('screen'), isTrue);
+    expect(names.contains('act'), isTrue);
+  });
+
+  test('ToolRegistry.defaults excludes screen and act when enableA11yTools is false', () {
+    final registry = ToolRegistry.defaults(
+      currentDir: Directory('/'),
+      enableA11yTools: false,
+    );
+    final names = registry.all.map((t) => t.name).toSet();
+    expect(names.contains('screen'), isFalse);
+    expect(names.contains('act'), isFalse);
+  });
 }
