@@ -11,6 +11,19 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+
+    <!-- Alarms & Timers (Safe normal permission) -->
+    <uses-permission android:name="com.android.alarm.permission.SET_ALARM"/>
+
+    <!-- Connectivity Management (Safe normal permissions) -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
+
+    <!-- Background / Screen State (Safe normal permission) -->
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
+
+    <!-- Device Interaction Feedback (Safe normal permission) -->
+    <uses-permission android:name="android.permission.VIBRATE"/>
     <application
         android:label="${appName}"
         android:name="${applicationName}"
@@ -122,5 +135,25 @@
         <package android:name="com.spotify.music"/>
         <package android:name="com.google.android.apps.maps"/>
         <package android:name="com.android.chrome"/>
+
+        <!-- Alarm, Timers & Stopwatch -->
+        <intent><action android:name="android.intent.action.SET_ALARM" /></intent>
+        <intent><action android:name="android.intent.action.SET_TIMER" /></intent>
+        <intent><action android:name="android.intent.action.SHOW_ALARMS" /></intent>
+        <intent><action android:name="android.intent.action.SHOW_TIMERS" /></intent>
+
+        <!-- Camera / Video Capture -->
+        <intent><action android:name="android.media.action.IMAGE_CAPTURE" /></intent>
+        <intent><action android:name="android.media.action.VIDEO_CAPTURE" /></intent>
+
+        <!-- Settings Shortcuts (Agent directing user to toggle flags) -->
+        <intent><action android:name="android.settings.SETTINGS" /></intent>
+        <intent><action android:name="android.settings.APPLICATION_DETAILS_SETTINGS" /></intent>
+        <intent><action android:name="android.settings.ACCESSIBILITY_SETTINGS" /></intent>
+
+        <!-- SMS / Direct Messaging -->
+        <intent><action android:name="android.intent.action.SENDTO" /><data android:scheme="smsto" /></intent>
+        <intent><action android:name="android.intent.action.SENDTO" /><data android:scheme="sms" /></intent>
+        <intent><action android:name="android.intent.action.SENDTO" /><data android:scheme="mms" /></intent>
     </queries>
 </manifest>
