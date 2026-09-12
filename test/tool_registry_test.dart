@@ -4,13 +4,15 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:errand/agent/tool.dart';
 import 'package:errand/agent/tool_registry.dart';
 import 'package:errand/tools/file_tools.dart';
+import 'package:errand/tools/legacy_workspace_tool.dart';
 import 'package:errand/types/tool.dart';
 
 void main() {
-  test('default registry exposes the core file tools', () {
+  test('default registry exposes the core file tools and retires workspace', () {
     final registry = ToolRegistry.defaults(currentDir: Directory('/'));
     final names = registry.all.map((t) => t.name).toList();
-    expect(names, containsAll(['read', 'workspace', 'websearch', 'webfetch']));
+    expect(names, containsAll(['read', 'bash', 'websearch', 'webfetch']));
+    expect(names, isNot(contains('workspace')));
   });
 
   test('unknown tool returns a failure result', () async {
@@ -88,7 +90,7 @@ void main() {
     await File('${nested.path}/notes.txt').writeAsString('text');
     addTearDown(() => workspace.delete(recursive: true));
 
-    final registry = ToolRegistry.defaults(currentDir: workspace);
+    final registry = ToolRegistry([legacyWorkspaceTool(WorkingDirectory(workspace))]);
     final files = await registry.execute(
       const ToolCall(
         id: 'find-files',
@@ -131,7 +133,7 @@ void main() {
     await File('${workspace.path}/notes.txt').writeAsString('text');
     addTearDown(() => workspace.delete(recursive: true));
 
-    final registry = ToolRegistry.defaults(currentDir: workspace);
+    final registry = ToolRegistry([legacyWorkspaceTool(WorkingDirectory(workspace))]);
     final result = await registry.execute(
       const ToolCall(
         id: 'find-regex',
@@ -159,7 +161,7 @@ void main() {
     await File('${levelThree.path}/deep.pdf').writeAsString('pdf');
     addTearDown(() => workspace.delete(recursive: true));
 
-    final registry = ToolRegistry.defaults(currentDir: workspace);
+    final registry = ToolRegistry([legacyWorkspaceTool(WorkingDirectory(workspace))]);
     final result = await registry.execute(
       const ToolCall(
         id: 'depth',
@@ -185,7 +187,8 @@ void main() {
     await File('${nested.path}/inside.pdf').writeAsString('pdf');
     addTearDown(() => workspace.delete(recursive: true));
 
-    final registry = ToolRegistry.defaults(currentDir: workspace);
+    final dir = WorkingDirectory(workspace);
+    final registry = ToolRegistry([legacyWorkspaceTool(dir)]);
     final changed = await registry.execute(
       const ToolCall(
         id: 'cd',
@@ -239,7 +242,7 @@ void main() {
     await File('${workspace.path}/other.txt').writeAsString('text');
     addTearDown(() => workspace.delete(recursive: true));
 
-    final registry = ToolRegistry.defaults(currentDir: workspace);
+    final registry = ToolRegistry([legacyWorkspaceTool(WorkingDirectory(workspace))]);
     final result = await registry.execute(
       const ToolCall(
         id: 'find-sub',
@@ -266,7 +269,7 @@ void main() {
     await File('${sub.path}/main.dart').writeAsString('main');
     addTearDown(() => workspace.delete(recursive: true));
 
-    final registry = ToolRegistry.defaults(currentDir: workspace);
+    final registry = ToolRegistry([legacyWorkspaceTool(WorkingDirectory(workspace))]);
     final result = await registry.execute(
       const ToolCall(
         id: 'find-sub-relative',
@@ -290,7 +293,7 @@ void main() {
     await file.writeAsString('content');
     addTearDown(() => workspace.delete(recursive: true));
 
-    final registry = ToolRegistry.defaults(currentDir: workspace);
+    final registry = ToolRegistry([legacyWorkspaceTool(WorkingDirectory(workspace))]);
     final result = await registry.execute(
       const ToolCall(
         id: 'find-file',
@@ -341,5 +344,27 @@ void main() {
     final names = registry.all.map((t) => t.name).toSet();
     expect(names.contains('screen'), isFalse);
     expect(names.contains('act'), isFalse);
+  });
+
+  test('ToolRegistry.defaults strictly excludes retired workspace tool', () {
+    final registry = ToolRegistry.defaults(currentDir: Directory('/'));
+    expect(registry.all.any((t) => t.name == 'workspace'), isFalse);
+  });
+
+  test('legacyWorkspaceTool can be executed explicitly via custom registry', () async {
+    final workspace = await Directory.systemTemp.createTemp('errand_legacy_test');
+    addTearDown(() => workspace.delete(recursive: true));
+    final registry = ToolRegistry([
+      legacyWorkspaceTool(WorkingDirectory(workspace)),
+    ]);
+    final result = await registry.execute(
+      const ToolCall(
+        id: 'legacy-pwd',
+        name: 'workspace',
+        arguments: {'action': 'pwd'},
+      ),
+    );
+    expect(result.ok, isTrue);
+    expect(result.output, contains('Current working directory: ${workspace.path}'));
   });
 }

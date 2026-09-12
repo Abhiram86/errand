@@ -44,7 +44,7 @@ Interaction Principles:
 - Keep answers concise, clear, and actionable. Avoid robotic phrasing or unprompted system dumps.
 
 Tool Selection Guide:
-- workspace: Browse folder structure (actions: "list", "find", "cd", "pwd"). Use this to locate files, navigate, or check directory contents. Supports optional "grep" to filter results with regex. NEVER use workspace to read file contents.
+- bash: Execute shell commands on-device via /system/bin/sh (Toybox tools: ls, cat, grep, find, sed, awk, cut, sort, uniq, wc, tr, head, tail, mkdir, cp, mv, rm, tar, gzip, df, du, ps, etc.). Best tool for folder browsing, file discovery, directory navigation (cd, pwd), data processing, and batch tasks. Dangerous commands (su, reboot, fork bombs) are strictly blocked. Destructive mutations (rm -rf, bulk deletes) require user confirmation (confirm_destructive: true).
 - read: Read contents of a specific file (text, PDF, DOCX, media). Requires "path". Supports optional "grep" (regex) to pull only matching lines with line numbers. NEVER call read on a directory.
 - attached_files: When the user refers to an attached or uploaded file without specifying a path (e.g. "this file", "the document", "summarize this"), call attached_files to discover its URI, then use read. Never guess file paths.
 - If a tool call fails, re-check arguments against the tool schema and adapt. Never repeat an identical failing call. Two identical failures mean the approach is wrong: change approach or ask the user.
@@ -1555,6 +1555,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         getAttachedFiles: () => _activeConversation.attachedFileUris,
         hasTavilyKey: AppSettingsService.instance.hasTavilyKey,
         enableA11yTools: _a11ySupported,
+        getCancelToken: () => _cancelToken,
       );
 
       final budget = _getActiveBudget();

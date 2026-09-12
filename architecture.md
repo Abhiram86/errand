@@ -23,7 +23,7 @@ LLM client (lib/llm/llm_client.dart)  ◀── HTTP/SSE ─┤ OpenRouter / HF 
      │  tool schemas / tool_calls / reasoning      │  content: string | [text,image_url,input_audio,video_url]
      ▼                                             │
 tool registry (lib/agent/tool_registry.dart)
-     │  defaults: read (+media), workspace, websearch, webfetch,
+     │  defaults: read (+media), workspace, bash, websearch, webfetch,
      │            intent, attached_files, plus screen + act (Full flavor only)
      ├──────────┬──────────────┬─────────────┴─────────┐
      ▼          ▼              ▼                       ▼
@@ -120,13 +120,15 @@ Keys are configured in-app (header gear icon → Settings sheet, Global tab) and
 
   Optional `grep` argument (case-insensitive regex/substring): filters text/structured output to matching lines with file-relative 1-based line numbers; unpaginated length expands to 512 KB; structured grep filters body only (header reserved). Path resolution: `WorkingDirectory { root, current }` is the shared mutable cursor (mutated by `cd`). `_resolveWorkspaceFile` enforces `path.relative` against `workspace.root`; `_resolveReadableFile` allows an explicit escape for **file_picker cache copies** (`/data/.../cache/file_picker/...`) and any URI in `attachedFileUris` (user-picked, so trusted) even though it lives outside `/storage/emulated/0`.
 
-- **`workspace` (`workspace_tool.dart`)** — router with `action` enum `pwd|cd|list|find` multiplexing `listTool`/`findTool`/`cdTool` (+ `pwd`). Relative paths resolve from `workspace.current`; absolute paths must stay inside `workspace.root`. `WorkingDirectory { root, current }` is the shared mutable cursor (mutated by `cd`).
-  - `list` — non-recursive, optional `pattern` RegExp filter, returns paths relative to `current`.
-  - `find` — recursive glob (`*`/`?`, case-insensitive) with `type: file|dir`, `max_depth` (default 3, max 32), cap 500 results, skips inaccessible branches and reports them.
-  - `cd` — validates target is a directory, then mutates `workspace.current`.
-  - Optional `grep` on `list`/`find` filters entries **before** pagination (honest `matched N` counts, `count_only` respects it).
+- **`workspace` (`legacy_workspace_tool.dart:legacyWorkspaceTool`) [RETIRED / LEGACY]** — former router with `action` enum `pwd|cd|list|find` multiplexing `legacyListTool`/`legacyFindTool`/`legacyCdTool` (+ `pwd`). Retired from default `ToolRegistry.defaults` in favor of `bash`. Kept in the codebase with `legacy_` prefixes for backwards compatibility and test suites.
+  - `list` / `legacyListTool` — non-recursive, optional `pattern` RegExp filter.
+  - `find` / `legacyFindTool` — recursive glob (`*`/`?`, case-insensitive) with `type: file|dir`, `max_depth` (default 3, max 32), cap 500 results.
+  - `cd` / `legacyCdTool` — mutates `workspace.current`.
+  - Active directory navigation and listing are now handled by `bash` (`bashTool`), with `workingDirectory.current` automatically synchronized when `cd` commands or `working_directory` arguments are executed.
 
 - **`attached_files` (`attached_files_tool.dart`)** — zero-param lister: `attached_files` → `No files attached…` or `Attached files: N\n1. basename — uri`. Reads from `getAttachedFiles` (the conversation's global inventory). Lets the model discover non-pending history without guessing.
+
+- **`bash` (`bash_tool.dart` + `services/shell_service.dart`)** — executes on-device shell commands via `/system/bin/sh` using `Process.start` in `dart:io`. Runs within the application UID and respects/updates `workingDirectory.current` across shared storage and sandbox paths. Provides access to Android Toybox/Toolbox utilities (`ls`, `cat`, `grep`, `find`, `sed`, `awk`, `cut`, `sort`, `uniq`, `wc`, `tr`, `head`, `tail`, `mkdir`, `cp`, `mv`, `rm`, `tar`, `gzip`, `df`, `du`, `ps`). Automatically persists directory changes on `cd` commands or `working_directory` arguments. Enforces 30s per-command timeouts, clean cancellation abort via stop button, memory buffer guards (512 KB), and Draft safety policies (strictly blocks fork bombs, su/root, and reboot; requires `confirm_destructive: true` for bulk deletions and `rm -rf`). Large outputs automatically route through `ToolOutputFileService`.
 
 - **`grep_filter.dart`** — shared utility: `compile()` enforces pattern cap (200 chars) and a nested-quantifier ReDoS guard (falls back to escaped literal); `filter()` supports `header` (preserved), `withLineNumbers`, and `startLine` (for windowed reads); match cap 200 with overflow note.
 
@@ -226,7 +228,7 @@ Key ops:
 
 1. `lib/types/message.dart`, `lib/types/conversation.dart`, `lib/types/tool.dart`
 2. `lib/agent/tool.dart` → `tool_registry.dart` → `agent_loop.dart` (+ `context_budget.dart`)
-3. `lib/services/workspace.dart` + `lib/tools/file_tools.dart` (incl. media branch) + `lib/tools/workspace_tool.dart` + `lib/tools/attached_files_tool.dart`
+3. `lib/services/workspace.dart` + `lib/tools/file_tools.dart` (incl. media branch) + `lib/tools/legacy_workspace_tool.dart` + `lib/tools/attached_files_tool.dart` + `lib/tools/bash_tool.dart`
 4. `lib/internal/document_reading/` (models → reader → open_xml/pdf)
 5. `lib/tools/web_tools.dart` + `lib/services/tavily_client.dart`
 6. `lib/tools/intent_tool.dart` + `lib/services/intent_service.dart` + `MainActivity.kt` (intent channel)
@@ -311,6 +313,7 @@ the universal context-protection layer for data-heavy tools:
 - ✅ Done Sep 2026: Office/PDF streaming hardening (`_StreamingOpenXmlPackage` guards, lazy `PooledPdfDocument` pages, `structuredDocuments` LRU + stat invalidation).
 - ✅ Done Sep 2026: Large tool output file-caching (`ToolOutputFileService` + 10-min TTL + 2k/2k preview + `read` tool cache resolution).
 - ✅ Done Sep 2026: Accessibility outline viewport partitioning (visible vs off-screen separation, upfront ref mapping, interactive line prioritization, jitter compression).
+- ✅ Done Sep 2026: P5a on-device shell execution tool (`/system/bin/sh`, Toybox/Toolbox, timeouts, cancellation, Draft confirmation policy for destructive mutations).
 - Safe-edit tool (`write`/`edit_file` with diff preview + undo) — needs the write-policy decision originally blocking it.
 - Local retrieval (embeddings/FTS) over recent docs for context budgeting.
 - Evaluate SAF as an alternative to `MANAGE_EXTERNAL_STORAGE` for Play distribution.

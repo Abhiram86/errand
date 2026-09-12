@@ -220,6 +220,7 @@ class AgentLoop {
   static bool _isStatefulCall(ToolCall call) {
     if (call.name == 'act') return true;
     if (call.name == 'intent') return true;
+    if (call.name == 'bash') return true;
     if (call.name == 'workspace' && call.arguments['action'] == 'cd') return true;
     if (call.name == 'screen' && call.arguments['action'] == 'global') return true;
     return false;

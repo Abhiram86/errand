@@ -20,8 +20,12 @@ conversations are stored locally (Drift/SQLite) with no cloud sync.
     DOCX, XLSX, PPTX (zip-bomb and size guarded). Optional `grep` (regex) to
     pull only matching lines with 1-based line numbers; unpaginated length
     expands to 512 KB.
-  - `workspace` — `pwd` / `cd` / `list` / `find` over `/storage/emulated/0`
-    with path-traversal guards. Optional `grep` filters entries before pagination.
+  - `bash` — on-device shell execution via `/system/bin/sh` with access to
+    Android Toybox/Toolbox utilities (`ls`, `find`, `cat`, `grep`, `sed`, `awk`,
+    `mkdir`, `cp`, `mv`, `rm`, `tar`, `gzip`, `df`, `ps`, etc.). Enforces 30s
+    timeouts, Draft safety policies (blocks fork bombs and su/root; requires
+    confirmation for destructive `rm -rf`), and automatic directory persistence
+    on `cd` or `working_directory`.
   - `websearch` / `webfetch` — Tavily search + Markdown extraction.
   - `intent` — 5 core Android actions (`open_file` via FileProvider,
     `open_url`, `open_app`, `settings`, raw `android_action` hatch) with
@@ -33,7 +37,7 @@ conversations are stored locally (Drift/SQLite) with no cloud sync.
     (Send/Pay/Delete…) are refused — Errand prepares, the user sends.
     Requires enabling Errand in Accessibility settings.
   - `grep` filter — optional case-insensitive regex/substring on `screen` (outline),
-    `read` (file content with line numbers), `workspace` (list/find entries),
+    `read` (file content with line numbers),
     and `act` (then_read). ReDoS-safe: overlong / nested-quantifier patterns
     fall back to literal; match cap 200 with overflow note.
 - **Large output spill** — `ToolOutputFileService` spills outputs > 6k chars to

@@ -18,6 +18,7 @@ import '../agent/tool.dart';
 class CancelToken {
   bool _cancelled = false;
   final Set<http.Client> _clients = {};
+  final Set<void Function()> _listeners = {};
 
   bool get isCancelled => _cancelled;
 
@@ -28,6 +29,18 @@ class CancelToken {
   /// [cancel] cannot close it out from under unrelated work.
   void unregister(http.Client client) => _clients.remove(client);
 
+  /// Adds a cancellation listener callback invoked immediately if [cancel] is called.
+  void addListener(void Function() listener) {
+    if (_cancelled) {
+      listener();
+      return;
+    }
+    _listeners.add(listener);
+  }
+
+  /// Removes a cancellation listener.
+  void removeListener(void Function() listener) => _listeners.remove(listener);
+
   void cancel() {
     if (_cancelled) return;
     _cancelled = true;
@@ -37,9 +50,18 @@ class CancelToken {
       client.close();
     }
     _clients.clear();
+    for (final listener in {..._listeners}) {
+      try {
+        listener();
+      } catch (_) {}
+    }
+    _listeners.clear();
   }
 
-  void reset() => _cancelled = false;
+  void reset() {
+    _cancelled = false;
+    _listeners.clear();
+  }
 }
 
 /// Thrown at the next safe boundary after [CancelToken.cancel]. In-flight

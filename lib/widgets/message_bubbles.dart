@@ -252,6 +252,59 @@ class ToolMessageBubble extends StatefulWidget {
         }
       case 'attached_files':
         return 'Read attached files';
+      case 'bash':
+        final cmd = args['command']?.toString().trim();
+        if (cmd == null || cmd.isEmpty) return 'Ran task';
+        final lower = cmd.toLowerCase();
+        final firstWord = lower.split(RegExp(r'\s+')).first;
+        switch (firstWord) {
+          case 'ls':
+            return 'Listed files';
+          case 'find':
+            return 'Searched files';
+          case 'grep':
+            return 'Searched in files';
+          case 'cat':
+          case 'head':
+          case 'tail':
+          case 'more':
+          case 'less':
+            return 'Inspected file';
+          case 'mkdir':
+            return 'Created folder';
+          case 'cp':
+            return 'Copied files';
+          case 'mv':
+            return 'Moved files';
+          case 'rm':
+          case 'rmdir':
+            return 'Deleted files';
+          case 'df':
+          case 'du':
+            return 'Checked storage';
+          case 'tar':
+          case 'gzip':
+          case 'gunzip':
+          case 'zip':
+          case 'unzip':
+            return 'Processed archive';
+          case 'cd':
+            return 'Changed folder';
+          case 'pwd':
+            return 'Checked current folder';
+          case 'touch':
+            return 'Created file';
+          case 'echo':
+          case 'printf':
+            if (cmd.contains('>') || cmd.contains('>>')) {
+              return 'Wrote to file';
+            }
+            return 'Ran task';
+          case 'ps':
+            return 'Checked processes';
+          default:
+            return 'Ran task';
+        }
       default:
         final formattedName = toolName
             .replaceAll('_', ' ')
@@ -268,6 +321,8 @@ class ToolMessageBubble extends StatefulWidget {
     Map<String, dynamic> args,
   ) {
     switch (toolName) {
+      case 'bash':
+        return Icons.terminal_rounded;
       case 'websearch':
         return Icons.search_rounded;
       case 'webfetch':

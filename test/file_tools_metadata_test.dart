@@ -3,7 +3,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:errand/agent/tool.dart';
 import 'package:errand/tools/file_tools.dart';
-import 'package:errand/tools/workspace_tool.dart';
+import 'package:errand/tools/legacy_workspace_tool.dart';
 
 void main() {
   group('fileTools metadata and sorting', () {
@@ -196,8 +196,8 @@ void main() {
       expect(res.output, contains('big.bin'));
     });
 
-    test('workspace router forwards sort_by and metadata correctly', () async {
-      final router = workspaceTool(workspace);
+    test('legacy workspace router forwards sort_by and metadata correctly', () async {
+      final router = legacyWorkspaceTool(workspace);
       final res = await router.handler(
         const ToolCall(
           id: 'ws_list',

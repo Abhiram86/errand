@@ -1,6 +1,6 @@
 # Next Plan — Status & Roadmap
 
-> **Updated Sep 2026.** P0, P1, P1.5, P2, P3 (multimodality), P4a (guided refactor), P4b (hardening + memory), v0.5.1 resilience enhancements, and v0.5.2 flavors & intent UX improvements are all shipped (v0.5.2). Next planned milestone: P5 (P5a shell tool, P5b embedded browser agent tools).
+> **Updated Sep 2026.** P0, P1, P1.5, P2, P3 (multimodality), P4a (guided refactor), P4b (hardening + memory), v0.5.1 resilience enhancements, v0.5.2 flavors & intent UX improvements, and P5a (on-device shell execution tool & workspace retirement) are all shipped (v0.5.5). Next planned milestone: P5b (embedded browser agent tools).
 
 ---
 
@@ -451,15 +451,17 @@ Rules of engagement during P4a:
 
 Goal: Expand Errand's capabilities across both flavors, bringing Lite closer to Full autonomy without requiring Android Accessibility permissions.
 
-### P5a — On-Device Shell Execution Tool (`/system/bin/sh`)
-- **Direct Shell Invocation:** Expose a `bash` or `sh` tool that runs shell commands on-device via `/system/bin/sh` using `Process.start` in `dart:io`.
+### ✅ P5a — On-Device Shell Execution Tool (`/system/bin/sh`) (SHIPPED)
+- **Direct Shell Invocation:** Built `ShellService` (`lib/services/shell_service.dart`) and `bashTool` (`lib/tools/bash_tool.dart`) running on-device commands via `/system/bin/sh` using `Process.start` in `dart:io` (with host `sh` fallback for development/tests).
 - **Built-in Android Toolset:** Provides immediate access to Android's Toybox and Toolbox CLI utilities (`ls`, `cat`, `grep`, `find`, `sed`, `awk`, `cut`, `sort`, `uniq`, `wc`, `tr`, `head`, `tail`, `mkdir`, `cp`, `mv`, `rm`, `tar`, `gzip`, `df`, `du`, `ps`).
-- **Workspace & Storage Integration:** Executes within the application process UID and respects the active `WorkingDirectory.current` across shared storage (`/storage/emulated/0`) and private sandbox folders.
-- **Output & Context Management:** Captures `stdout`, `stderr`, and exit code. Large outputs automatically route to `ToolOutputFileService` with head and tail previews to protect the token budget.
+- **Workspace & Storage Integration:** Executes within the application process UID and defaults to the active `WorkingDirectory.current` across shared storage (`/storage/emulated/0`) and private sandbox folders, with support for relative and custom `working_directory` arguments.
+- **Output & Context Management:** Captures `stdout`, `stderr`, and exit code. Large outputs automatically route to `ToolOutputFileService` with reserved metadata header block (`Command`, `Working directory`, `Exit code`) and head/tail previews to protect the token budget. In-memory buffer capped at 512 KB to avoid OOM.
 - **Execution Safety & Control:**
-  - Enforces per-command timeouts (e.g., 30 seconds default) and aborts cleanly when the user hits the stop button.
-  - Blocks dangerous operations (fork bombs, attempts to invoke `su` or reboot).
-  - Implements a confirmation policy for destructive mutations (`rm -rf`, bulk deletes) under the Draft model.
+  - Enforces per-command timeouts (30 seconds default, clamp 1–120s) and aborts cleanly when the user hits the stop button via `CancelToken` listener hooks and process tree termination.
+  - Strictly blocks dangerous operations via `ShellSafetyCheck.analyze` (fork bombs, attempts to invoke `su`/`sudo`, reboot/shutdown, `init 0/6`, `sys.powerctl`, direct raw device writes, and root/system directory destruction).
+  - Implements a Draft confirmation policy for destructive mutations (`rm -r`, `rm -rf`, bulk wildcards `rm *`, `find -delete`, `find -exec rm`, `xargs rm`, `shred`, `truncate -s 0`) requiring explicit `confirm_destructive: true` after user confirmation.
+- **Cross-Flavor Availability:** Available in both Full and Lite flavors via `ToolRegistry.defaults`, closing the capability gap without requiring accessibility permissions. Verified with 26 unit and integration tests.
+- **Workspace Tool Retirement:** Retired the standalone `workspace` tool (`workspace_tool.dart` -> `legacy_workspace_tool.dart`, `legacyWorkspaceTool`, `legacyListTool`, `legacyFindTool`, `legacyCdTool`) from `ToolRegistry.defaults`. Full folder discovery, search, and navigation (`cd`, `pwd`, `ls`, `find`) now execute via `bashTool`, which automatically keeps `workingDirectory.current` synchronized across subsequent turns and file reads.
 
 ### P5b — Embedded Browser Agent Tools
 - **Interactive In-App Web View:** Dedicated browser sheet that runs web sessions inside Errand instead of bouncing the user to external browser apps. The user watches the agent navigate, fill forms, and click elements live.

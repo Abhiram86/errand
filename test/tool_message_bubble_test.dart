@@ -47,6 +47,29 @@ void main() {
       );
     });
 
+    test('bash tool returns friendly summary', () {
+      expect(
+        ToolMessageBubble.friendlyToolSummary('bash', {'command': 'ls -la'}),
+        'Listed files',
+      );
+      expect(
+        ToolMessageBubble.friendlyToolSummary('bash', {'command': 'find . -name "*.pdf"'}),
+        'Searched files',
+      );
+      expect(
+        ToolMessageBubble.friendlyToolSummary('bash', {'command': 'mkdir photos'}),
+        'Created folder',
+      );
+      expect(
+        ToolMessageBubble.friendlyToolSummary('bash', {'command': 'unknown_binary'}),
+        'Ran task',
+      );
+      expect(
+        ToolMessageBubble.friendlyToolSummary('bash', {}),
+        'Ran task',
+      );
+    });
+
     test('read tool returns friendly summary', () {
       expect(
         ToolMessageBubble.friendlyToolSummary('read', {'path': '/test.txt'}),
@@ -267,6 +290,10 @@ void main() {
 
   group('ToolMessageBubble.toolIcon', () {
     test('returns appropriate icon for each tool', () {
+      expect(
+        ToolMessageBubble.toolIcon('bash', {}),
+        Icons.terminal_rounded,
+      );
       expect(
         ToolMessageBubble.toolIcon('websearch', {}),
         Icons.search_rounded,

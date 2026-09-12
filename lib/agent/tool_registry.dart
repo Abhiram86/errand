@@ -1,15 +1,17 @@
 import 'dart:io';
 
-import 'tool.dart';
+import '../llm/llm_client.dart';
+import '../services/shell_service.dart';
+import '../services/tool_output_file_service.dart';
 import '../tools/act_tool.dart';
 import '../tools/attached_files_tool.dart';
+import '../tools/bash_tool.dart';
 import '../tools/file_tools.dart';
-import '../tools/workspace_tool.dart';
 import '../tools/intent_tool.dart';
 import '../tools/screen_tool.dart';
 import '../tools/web_tools.dart';
-import '../services/tool_output_file_service.dart';
 import '../types/tool.dart';
+import 'tool.dart';
 
 /// Registry of available tools, keyed by name, plus a safe `execute` that
 /// turns any `ToolCall` into a `ToolCallResult`.
@@ -29,6 +31,8 @@ class ToolRegistry {
     List<String> Function()? getAttachedFiles,
     bool hasTavilyKey = false,
     bool enableA11yTools = true,
+    ShellService? shellService,
+    CancelToken Function()? getCancelToken,
   }) {
     final directory = workingDirectory ?? WorkingDirectory(currentDir);
     return ToolRegistry([
@@ -37,7 +41,11 @@ class ToolRegistry {
         supportsInput: supportsInput,
         getAttachedFiles: getAttachedFiles,
       ),
-      workspaceTool(directory),
+      bashTool(
+        workingDirectory: directory,
+        shellService: shellService,
+        getCancelToken: getCancelToken,
+      ),
       webSearchTavilyTool(),
       webFetchTool(),
       intentTool(),

@@ -399,7 +399,7 @@ int _compareFileEntries(_FileEntry a, _FileEntry b, String sortBy, String sortOr
   return sortOrder == 'desc' ? -result : result;
 }
 
-Tool listTool(WorkingDirectory workspace) => Tool(
+Tool legacyListTool(WorkingDirectory workspace) => Tool(
   name: 'list',
   description:
       'Lists files and directories with metadata (type, size, modified date). '
@@ -651,6 +651,9 @@ Tool listTool(WorkingDirectory workspace) => Tool(
   },
 );
 
+@Deprecated('Use legacyListTool instead')
+Tool listTool(WorkingDirectory workspace) => legacyListTool(workspace);
+
 /// Reads a media file whole and returns it as OpenAI-compatible content
 /// parts. [output] stays a short text summary (the durable record shown in
 /// the UI and persisted); the bytes ride in [ToolCallResult.contentParts] as:
@@ -875,7 +878,7 @@ const kMaxFindResults = 500;
 
 const kDefaultFindLimit = 25;
 
-Tool findTool(WorkingDirectory workspace) => Tool(
+Tool legacyFindTool(WorkingDirectory workspace) => Tool(
   name: 'find',
   description:
       'Recursively finds files or directories below a path with metadata. '
@@ -1127,6 +1130,9 @@ Tool findTool(WorkingDirectory workspace) => Tool(
   },
 );
 
+@Deprecated('Use legacyFindTool instead')
+Tool findTool(WorkingDirectory workspace) => legacyFindTool(workspace);
+
 Future<void> _collectFindMatches({
   required FileSystemEntity target,
   required Directory currentDirectory,
@@ -1257,7 +1263,7 @@ Future<void> _walkFindDirectory({
   }
 }
 
-Tool cdTool(WorkingDirectory workspace) => Tool(
+Tool legacyCdTool(WorkingDirectory workspace) => Tool(
   name: 'cd',
   description:
       'Changes the current working directory inside the granted workspace. '
@@ -1319,6 +1325,9 @@ Tool cdTool(WorkingDirectory workspace) => Tool(
     }
   },
 );
+
+@Deprecated('Use legacyCdTool instead')
+Tool cdTool(WorkingDirectory workspace) => legacyCdTool(workspace);
 
 RegExp _globRegExp(String pattern) {
   final buffer = StringBuffer('^');
