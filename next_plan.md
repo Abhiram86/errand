@@ -1,6 +1,6 @@
 # Next Plan — Status & Roadmap
 
-> **Updated Sep 2026.** P0, P1, P1.5, P2, P3 (multimodality), P4a (guided refactor), P4b (hardening + memory), v0.5.1 resilience enhancements, and v0.5.2 flavors & intent UX improvements are all shipped — **v0.5.2**.
+> **Updated Sep 2026.** P0, P1, P1.5, P2, P3 (multimodality), P4a (guided refactor), P4b (hardening + memory), v0.5.1 resilience enhancements, and v0.5.2 flavors & intent UX improvements are all shipped (v0.5.2). Next planned milestone: P5 (P5a shell tool, P5b embedded browser agent tools).
 
 ---
 
@@ -398,25 +398,10 @@ Rules of engagement during P4a:
 
 ### P4b — v0.5.0 (hardening + memory)
 
-1. **Play Protect / policy hardening (legal-ish, feature-preserving).**
-   Goal: reduce the chance Play Protect flags Errand as a threat without
-   dropping any capability. Sideload-first app, so this is about reputation
-   hygiene, not Play compliance:
-   - Audit every permission against actual usage; remove anything unused.
-   - Document (in-repo) why each sensitive API is used: a11y service
-     (screen read/injection — user-enabled, disclosure string already
-     honest), MANAGE_EXTERNAL_STORAGE, WRITE_SECURE_SETTINGS,
-     RECORD_AUDIO, IME flag. Keep the accessibility `isAccessibilityTool`
-     question answered truthfully (we are NOT an accessibility tool →
-     accept Restricted-settings friction rather than lie).
-   - Avoid patterns Play Protect heuristics dislike: no dynamic code
-     loading, no reflection into private APIs, no silent installs; keep
-     all injection behind the explicit user-enabled service.
-   - Verify the release build is signed consistently and minified with the
-     current proguard rules; re-check that no debug endpoints ship.
-   - If Play Protect still flags: capture the verdict via
-     `ApplicationExitInfo` / Play Console if ever published, and fall back
-     to documenting "add to Play Protect allowlist" in README.
+1. **Play Protect / policy hardening — ✅ SHIPPED Sep 2026 via Flavored Releases.**
+   - Addressed Play Protect and accessibility permission friction by introducing separate Full and Lite build flavors (`v0.5.2`).
+   - The Lite flavor (`com.errand.errand.lite`) strips the accessibility service declaration from the Android manifest, eliminating accessibility permission prompts and sensitive service flags.
+   - The Full flavor (`com.errand.errand`) preserves accessibility service integration for sideloaders who explicitly enable it, with honest descriptions and cold-start guidance.
 2. **Small UX improvements** — ad-hoc list, e.g.: settings sheet polish,
    better error toasts, composer tweaks found during daily use. Scope
    flexes; nothing structural.
@@ -459,6 +444,33 @@ Rules of engagement during P4a:
    - **Selective Bring-to-Front:** Errand stays in the launched app if the turn finishes silently, but returns to the foreground if the agent has follow-up text or encounters an error.
 
 **Backlog (deferred from P3):** `write`/`edit_file` with diff preview + undo — needs write-policy decision, queued after P4b.
+
+---
+
+## 🌐 P5 — Capabilities Beyond Accessibility (Closing the Lite vs. Full Gap)
+
+Goal: Expand Errand's capabilities across both flavors, bringing Lite closer to Full autonomy without requiring Android Accessibility permissions.
+
+### P5a — On-Device Shell Execution Tool (`/system/bin/sh`)
+- **Direct Shell Invocation:** Expose a `bash` or `sh` tool that runs shell commands on-device via `/system/bin/sh` using `Process.start` in `dart:io`.
+- **Built-in Android Toolset:** Provides immediate access to Android's Toybox and Toolbox CLI utilities (`ls`, `cat`, `grep`, `find`, `sed`, `awk`, `cut`, `sort`, `uniq`, `wc`, `tr`, `head`, `tail`, `mkdir`, `cp`, `mv`, `rm`, `tar`, `gzip`, `df`, `du`, `ps`).
+- **Workspace & Storage Integration:** Executes within the application process UID and respects the active `WorkingDirectory.current` across shared storage (`/storage/emulated/0`) and private sandbox folders.
+- **Output & Context Management:** Captures `stdout`, `stderr`, and exit code. Large outputs automatically route to `ToolOutputFileService` with head and tail previews to protect the token budget.
+- **Execution Safety & Control:**
+  - Enforces per-command timeouts (e.g., 30 seconds default) and aborts cleanly when the user hits the stop button.
+  - Blocks dangerous operations (fork bombs, attempts to invoke `su` or reboot).
+  - Implements a confirmation policy for destructive mutations (`rm -rf`, bulk deletes) under the Draft model.
+
+### P5b — Embedded Browser Agent Tools
+- **Interactive In-App Web View:** Dedicated browser sheet that runs web sessions inside Errand instead of bouncing the user to external browser apps. The user watches the agent navigate, fill forms, and click elements live.
+- **Dual-Mode Control (DOM JavaScript + Visual Fallback):**
+  - **Primary (Direct JavaScript Evaluation):** Run JavaScript directly for DOM reads, text extraction, selector-based queries, form input population, and click dispatches. Fast, precise, and token-efficient.
+  - **Secondary (Visual Screenshot Fallback):** Capture rendered page screenshots so a vision-capable model can locate elements when CSS or XPath selectors break, canvases are used, or elements live inside complex shadow DOM trees.
+  - **Execution Policy:** Try JavaScript first. Fall back to vision if selectors return no matches or interactions fail.
+- **Safety, Isolation & Policy:**
+  - **Origin & Message Lockdown:** Whitelist permitted schemes and origins. Disallow arbitrary Android intent schemes from untrusted pages, and isolate JavaScript message ports.
+  - **Draft & Confirmation Policy:** Require explicit user confirmation before committing irreversible or sensitive web actions (form submissions, logins, purchases, or account changes). Errand prepares the action; the user approves.
+  - **Session Sandboxing:** Clean cookie and cache handling with clear session boundaries, allowing users to choose whether to keep or discard session state.
 
 ---
 

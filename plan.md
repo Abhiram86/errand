@@ -91,9 +91,12 @@ class ToolCallResult { final String id; final bool ok; final String output; fina
 12. ✅ **Large tool output file-caching** — `ToolOutputFileService` spill (512 KB, 10-min TTL, max 50 files) + head/tail preview with header reservation + `read` tool cache resolution (see `next_plan.md` §P4b #4).
 13. ✅ **`grep` filter for heavy tools** — `screen`, `read`, `workspace` list/find, `act then_read` (see `next_plan.md` §P4b #5).
 14. ✅ **A11y lifecycle & toast UX** — auto-disable on close, cold-start toast with restricted guidance, Settings chip with Enable/Disable, lazy paused-notice on intent launches, composer multi-line (see `next_plan.md` §P4b #6–7).
-15. **P3** — image multimodality (on `attachedFileUris`), safe editing (`edit_file` + diff/undo), local retrieval (embeddings + FTS).
-16. **Phase 3+:** bundled `busybox` shell via `dart:io Process` in app-private workspace.
+15. ✅ **P3 Image Multimodality** — vision, audio, and video input processing on `attachedFileUris` and media tools.
+16. ✅ **Build Flavors & Intent UX (`v0.5.2`)** — Full and Lite flavor split (Lite completely removes accessibility service from manifest), installed app discovery with background caching and fuzzy suggestions, readable app names in tool bubbles, and selective bring-to-front.
+17. **P5 — Capabilities Beyond Accessibility (Closing the Lite vs. Full Gap)**:
+    - **P5a (On-device shell tool):** Execute commands via `/system/bin/sh` using `Process.start` in `dart:io`. Provides access to Android's Toybox/Toolbox utilities (`grep`, `find`, `sed`, `awk`, `cut`, `sort`, `uniq`, `wc`, `tar`, `gzip`, `df`, `du`, `ps`). Respects `WorkingDirectory.current`, routes large outputs to `ToolOutputFileService`, and enforces timeouts and destructive command confirmations.
+    - **P5b (Embedded browser agent tools):** Interactive in-app web view for agent-driven web navigation. Dual-mode control using direct DOM JavaScript evaluation via JS bridge with visual screenshot fallback for vision models. Includes origin lockdown, session sandboxing, and Draft confirmation policy for sensitive web actions.
 
 ## Cut-lines
 
-Shizuku/root and cross-app notification reading are the most Play-hostile/expensive. Everything through step 7 is already a complete standalone agent; steps 8–11 are additive and keep all data on-device.
+Shizuku/root and cross-app notification reading are the most Play-hostile/expensive. Everything through step 7 is already a complete standalone agent; steps 8–16 are additive and keep all data on-device.
