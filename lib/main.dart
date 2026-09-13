@@ -58,13 +58,13 @@ String _systemPromptFor(
   bool screenAccess = false,
   bool screenRestricted = false,
   bool a11ySupported = true,
+  bool? isDebug,
 }) {
+  final debug = isDebug ?? kDebugMode;
   var prompt = '$kSystemPrompt\nCurrent working directory: ${currentDir.path}';
-  if (!a11ySupported) {
-    return prompt;
-  }
-  if (screenAccess) {
-    prompt += '''
+  if (a11ySupported) {
+    if (screenAccess) {
+      prompt += '''
 
 Screen & Device Capabilities (ENABLED):
 - screen:
@@ -76,8 +76,8 @@ Screen & Device Capabilities (ENABLED):
   * Toggles & system switches: System settings (like Dark theme, Wi-Fi, Bluetooth) animate and take time to settle (~1s). Do NOT immediately re-tap a toggle switch or radio option if it appears unchanged right away; allow it to settle to avoid toggling it back off.
   * Safety (DRAFT POLICY): Prepare everything up to the final commit (type messages, fill forms, navigate), but let the user perform final-commit taps (Send, Pay, Delete, Submit).
 ''';
-  } else {
-    prompt += '''
+    } else {
+      prompt += '''
 
 Screen & Device Capabilities (DISABLED):
 - Errand's screen access (Accessibility Service) is currently OFF / PAUSED.
@@ -85,6 +85,16 @@ Screen & Device Capabilities (DISABLED):
 - You CANNOT inspect or interact with screens (both "screen" and "act" tools will fail while this is off).
 - If the user asks you to interact with an app, inspect their screen, or automate UI tasks, explain that Screen Access is currently off (paused when closed to keep other apps secure), and ask them to enable it in Settings > Accessibility or via Errand Settings > Tools.
 ${screenRestricted ? '- IMPORTANT: this device blocks enabling ("Restricted setting" — sideloaded install). The user must FIRST do Settings > Apps > Errand > three-dot menu > Allow restricted settings, THEN enable Errand under Settings > Accessibility. Generic "turn it on" guidance will NOT work.' : ''}
+''';
+    }
+  }
+  if (debug) {
+    prompt += '''
+
+Development & Diagnostics (DEBUG MODE):
+- You are running in a local development build (debug mode) with the developer/maintainer of Errand.
+- Transparent technical inspection: The developer may ask for raw tool arguments, tool outputs, execution traces, intent extras, exit codes, or internal diagnostics. Answer these directly, factually, and with technical precision — never hide internal tool details, give generic disclaimers, or ask why they need them.
+- Normal proactive execution: Maintain your standard direct, capable persona. Do NOT become hesitant or repeatedly ask permission ("Shall I do this?", "Should I proceed?"). Execute normal tasks and invoke tools proactively; only engage in technical/debug explanations when the developer specifically inquires about debugging, execution traces, or tool details.
 ''';
   }
   return prompt;
@@ -96,12 +106,14 @@ String systemPromptFor(
   bool screenAccess = false,
   bool screenRestricted = false,
   bool a11ySupported = true,
+  bool? isDebug,
 }) =>
     _systemPromptFor(
       currentDir,
       screenAccess: screenAccess,
       screenRestricted: screenRestricted,
       a11ySupported: a11ySupported,
+      isDebug: isDebug,
     );
 
 final database = ErrandDatabase.instance;

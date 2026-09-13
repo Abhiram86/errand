@@ -71,6 +71,27 @@ void main() {
 
       expect(prompt, contains('Screen & Device Capabilities (ENABLED)'));
     });
+
+    test('includes development & diagnostics section when isDebug is true', () {
+      final prompt = systemPromptFor(
+        Directory('/tmp'),
+        isDebug: true,
+      );
+
+      expect(prompt, contains('Development & Diagnostics (DEBUG MODE)'));
+      expect(prompt, contains('Transparent technical inspection'));
+      expect(prompt, contains('Normal proactive execution'));
+    });
+
+    test('omits development & diagnostics section when isDebug is false', () {
+      final prompt = systemPromptFor(
+        Directory('/tmp'),
+        isDebug: false,
+      );
+
+      expect(prompt, isNot(contains('Development & Diagnostics (DEBUG MODE)')));
+      expect(prompt, isNot(contains('Transparent technical inspection')));
+    });
   });
 
   group('ToolRegistry flavor checks', () {
