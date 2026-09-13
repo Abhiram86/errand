@@ -334,8 +334,11 @@ Errand is structured into two Gradle product flavors (`android/app/build.gradle.
 - ✅ Done Sep 2026: Large tool output file-caching (`ToolOutputFileService` + 10-min TTL + 2k/2k preview + `read` tool cache resolution).
 - ✅ Done Sep 2026: Accessibility outline viewport partitioning (visible vs off-screen separation, upfront ref mapping, interactive line prioritization, jitter compression).
 - ✅ Done Sep 2026: On-device shell execution tool (`bashTool` + `ShellService`, `/system/bin/sh`, Toybox/Toolbox, timeouts, live cancellation, Draft confirmation policy for destructive mutations) fully superseding the legacy `workspace` tool.
-- ✅ Done Sep 2026: Android custom intent normalization (5 core actions, typed extra preservation for primitives & string lists, null-skipping, `logIntent` boundary debugging, BAL safety).
-- ✅ Done Sep 2026: Tool UX refinements (`ToolMessageBubble` one-tap collapse via `ExpansibleController`, debug full tool-call copying, friendly action headers).
+- ✅ Done Sep 2026: Android custom intent normalization (core actions, typed extra preservation for primitives, string lists & integer lists, null-skipping, `logIntent` boundary debugging, BAL safety).
+- ✅ Done Sep 2026: Tool UX refinements (`ToolMessageBubble` one-tap collapse via `ExpansibleController`, debug full tool-call copying, friendly action headers, and `ToolGroupBubble` sequential tool call grouping with animated morphing).
+- ✅ Done Sep 2026: Intent on-demand documentation tool (`action: 'docs'`) with verified specifications for `alarm`, `calendar`, `timer`, and `location`/`maps`.
+- ✅ Done Sep 2026: Keyed LLM provider prioritization with stable ordering in model picker.
+- ✅ Done Sep 2026: Architectural modularization decomposing `lib/main.dart` from 2,570 lines to 41 lines.
 - ✅ Done Sep 2026: Full vs. Lite build flavors with dynamic accessibility service stripping and split-per-ABI release packaging.
 - Safe-edit tool (`write`/`edit_file` with diff preview + undo) — needs the write-policy decision originally blocking it.
 - Local retrieval (embeddings/FTS) over recent docs for context budgeting.

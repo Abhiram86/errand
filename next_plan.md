@@ -1,6 +1,6 @@
 # Next Plan — Status & Roadmap
 
-> **Updated Sep 2026.** P0, P1, P1.5, P2, P3 (multimodality), P4a (guided refactor), P4b (hardening + memory), v0.5.1 resilience enhancements, v0.5.2 flavors & intent UX improvements, and P5a (on-device shell execution tool & workspace retirement) are all shipped (v0.5.5). Next planned milestone: P5b (embedded browser agent tools).
+> **Updated Sep 2026.** P0, P1, P1.5, P2, P3 (multimodality), P4a (guided refactor), P4b (hardening + memory), v0.5.1 resilience enhancements, v0.5.2 flavors & intent UX improvements, P5a (on-device shell execution tool & workspace retirement), and v0.5.6 (intent docs action, grouped sequential tool calls UI, keyed provider priority, main.dart modularization) are all shipped (v0.5.6). Next planned milestone: P5b (embedded browser agent tools).
 
 ---
 
@@ -10,11 +10,11 @@ The original design (one `intent` tool, second MethodChannel, zero deps) shipped
 
 ### Tool surface — grew from 6 to 17 curated actions
 
-`open_file`, `open_url`, `open_app`, `settings`, `intent`, with URI-style legacy aliases for older conversations. Custom Android actions such as alarms, timers, calendar insertion, sharing, wallpaper, uninstall, and settings panels use normalized `action:"intent"` requests with exact target-specific fields.
+`open_file`, `open_url`, `open_app`, `settings`, `intent`, `docs`, with URI-style legacy aliases for older conversations. Custom Android actions such as alarms, timers, calendar insertion, sharing, wallpaper, uninstall, and settings panels use normalized `action:"intent"` requests with exact target-specific fields.
 
 Plus a **generic escape hatch**: `action:"intent"` accepts raw `android_action` strings (`android.settings.*`, third-party actions) so new apps need zero code changes. Design principle: *curated actions → generic android_action → honest failure*. No per-app pattern matching.
 
-> **Sep 2026 update (`225b599`):** unified to 5 core actions — `open_file` (new, `FileProvider` + MIME resolution), `open_url`, `open_app`, `settings`, `intent` — with URI-style legacy aliases (`search`/`dial`/`open_maps`/`email` → `open_url`). Custom Android actions now pass through normalized typed fields with no alarm/timer/calendar synthesis. Native `launch` is BAL-safe (`PendingIntent` + a11y-context fallback), reports chooser sheets, and `bringToFront` restores Errand after `screen`/`act` work.
+> **Sep 2026 update (`v0.5.6`):** core actions include `open_file` (`FileProvider` + MIME resolution), `open_url`, `open_app`, `settings`, `intent`, and `docs` (on-demand specifications for alarms, timers, calendar, and location/maps). Custom Android actions pass through normalized typed fields (including integer array lists in `MainActivity.kt`). Native `launch` is BAL-safe (`PendingIntent` + a11y-context fallback), reports chooser sheets, and `bringToFront` restores Errand after `screen`/`act` work.
 
 ### Hardening beyond original plan
 

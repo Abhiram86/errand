@@ -1,14 +1,14 @@
-# Refactor Memory — P4a Guided Service-by-Service (v0.5.5)
+# Refactor Memory — P4a Guided Service-by-Service (v0.5.6)
 
-> **Purpose:** Long-context memory for this and future sessions. `next_plan.md` + `architecture.md` + `lib/main.dart` are the big-3; this file is the *compressed* survivor when history truncates. Update it after every service step.
-> **Last updated:** 2026-09-07 | **Status:** P4a #1,2,4–7 done (3 partial, 8–10 open) | **Schema:** Drift v4 + `compacted` rows
+> **Purpose:** Long-context memory for this and future sessions. `next_plan.md` + `architecture.md` + `lib/screens/chat_screen.dart` are the big-3; this file is the *compressed* survivor when history truncates. Update it after every service step.
+> **Last updated:** 2026-09-14 | **Status:** v0.5.6 shipped (P4a modularization, intent docs, tool grouping, provider priority) | **Schema:** Drift v4 + `compacted` rows
 
 ---
 
 ## 1. Big Picture (10s recall)
 
 ```
-ChatScreen (lib/main.dart)  owns Conversation, _messages, _pendingAttachments,
+ChatScreen (lib/screens/chat_screen.dart)  owns Conversation, _messages, _pendingAttachments,
   + Drift watches + WorkingDirectory + LlmClient + model picker + paging
     │
 AgentLoop (lib/agent/agent_loop.dart:45)  72 turns, ContextBudget tokens,

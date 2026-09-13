@@ -27,10 +27,12 @@ conversations are stored locally (Drift/SQLite) with no cloud sync.
     confirmation for destructive `rm -rf`), and automatic directory persistence
     on `cd` or `working_directory`.
   - `websearch` / `webfetch` — Tavily search + Markdown extraction.
-  - `intent` — 5 core Android actions (`open_file` via FileProvider,
-    `open_url`, `open_app`, `settings`, raw `android_action` hatch) with
-    backward-compatible routing for legacy actions; UI toggles live in
-    `act` now. All open-style actions append a notice when screen access is off.
+  - `intent` — 6 core Android actions (`open_file` via FileProvider,
+    `open_url`, `open_app`, `settings`, raw `android_action` hatch, and `docs`
+    for on-demand schema lookups across alarms, timers, calendar, and location/maps).
+    Supports typed extras (primitives, string lists, and integer lists) and
+    backward-compatible routing for legacy actions. All open-style actions
+    append a notice when screen access is off.
   - `screen` / `act` — optional accessibility-backed screen reading (compact
     outline of the active window) and Draft-mode interaction: tap labeled
     controls, type into focused fields, scroll. Commit-looking actions
@@ -49,17 +51,19 @@ conversations are stored locally (Drift/SQLite) with no cloud sync.
   (deterministic fallback), plus message windowing (newest 50 on open, paged
   scroll-up) and sidebar pagination.
 - **Chat UI** — Material 3 dark theme, markdown rendering for assistant
-  messages (code, tables, LaTeX), text selection, collapsible tool bubbles
-  with re-open buttons for launch-style intents, searchable model picker.
-  Multi-line composer: Enter inserts a newline; Send button fires the message.
-  Dismissible a11y toast appears on cold start when screen access is off,
-  with restricted-setting guidance when needed.
+  messages (code, tables, LaTeX), text selection, searchable model picker.
+  Sequential tool calls automatically group into clean collapsible bubbles
+  with live streaming summaries and animated transitions to `"Ran X steps"`,
+  with nested expandable steps for deep debugging. Multi-line composer:
+  Enter inserts a newline; Send button fires the message. Dismissible a11y
+  toast appears on cold start when screen access is off.
 - **Local persistence** — conversations/messages/attachments in Drift with
   merge-based saves, pinned favourites, recency-ordered sidebar.
 - **In-app configuration** — API keys are entered in Settings (gear icon in
-  the header), encrypted with AES-256-GCM, and stored in the app's SQLite
-  database. No `.env` file is needed. Settings → Tools tab shows screen-access
-  state (Active/Disabled), Enable/Disable buttons, and Tavily key.
+  the header), encrypted with AES-256-GCM, and stored in SQLite. Providers with
+  active keys automatically take priority in the model picker while preserving
+  stable relative order. Settings → Tools tab shows screen-access state,
+  Enable/Disable buttons, and Tavily key.
 
 ## Flavors (Full vs. Lite)
 
