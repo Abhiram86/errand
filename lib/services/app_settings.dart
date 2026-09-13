@@ -64,16 +64,34 @@ final class AppSettingsService {
     _cacheLoaded = true;
   }
 
-  // -- Provider Management ---------------------------------------------------
+  bool _providerHasKey(LlmProvider p) {
+    if (p.hasKey) return true;
+    if (p.id == ProviderPresetType.openRouter.id && hasOpenRouterKey) return true;
+    return false;
+  }
 
-  List<LlmProvider> get providers => List.unmodifiable(_providers);
+  List<LlmProvider> get providers {
+    final withKeys = <LlmProvider>[];
+    final withoutKeys = <LlmProvider>[];
+    for (final p in _providers) {
+      final resolved = (p.id == ProviderPresetType.openRouter.id && !p.hasKey && hasOpenRouterKey)
+          ? p.copyWith(apiKey: openRouterKey)
+          : p;
+      if (_providerHasKey(resolved)) {
+        withKeys.add(resolved);
+      } else {
+        withoutKeys.add(resolved);
+      }
+    }
+    return List.unmodifiable([...withKeys, ...withoutKeys]);
+  }
 
   String get activeProviderId {
     if (_activeProviderId != null &&
         _providers.any((p) => p.id == _activeProviderId)) {
       return _activeProviderId!;
     }
-    return _providers.isNotEmpty ? _providers.first.id : ProviderPresetType.openRouter.id;
+    return providers.isNotEmpty ? providers.first.id : ProviderPresetType.openRouter.id;
   }
 
   LlmProvider get activeProvider {

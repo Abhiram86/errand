@@ -158,4 +158,37 @@ void main() {
     expect(openRouter.defaultModels, isNotEmpty);
     expect(openRouter.defaultModels.first.id, 'openrouter/free');
   });
+
+  test('providers with keys appear first, keyless appear later, preserving relative order', () async {
+    await settings.ensureLoaded();
+    // Initially all 4 presets are keyless
+    expect(settings.providers.every((p) => !p.hasKey), isTrue);
+
+    // Add a 5th provider (BYOK custom) with an API key
+    final now = DateTime.now();
+    final byokCustom = LlmProvider(
+      id: 'byok_custom_5th',
+      name: 'Custom 5th Provider',
+      baseUrl: 'https://api.custom.com/v1',
+      createdAt: now,
+      updatedAt: now,
+    );
+    await settings.saveProvider(byokCustom, apiKey: 'secret-key-123');
+
+    // Also give Groq a key
+    final groq = settings.providers.firstWhere((p) => p.id == 'groq');
+    await settings.saveProvider(groq, apiKey: 'gsk_test');
+
+    final ordered = settings.providers;
+    // Groq was earlier in original list than byokCustom, so between keyed providers:
+    // Groq (index 0), then byokCustom (index 1).
+    // Keyless follow after in original order: OpenRouter, OpenCode Zen, BYOK.
+    expect(ordered[0].id, 'groq');
+    expect(ordered[1].id, 'byok_custom_5th');
+    expect(ordered[0].hasKey, isTrue);
+    expect(ordered[1].hasKey, isTrue);
+    expect(ordered[2].hasKey, isFalse);
+    expect(ordered[3].hasKey, isFalse);
+    expect(ordered[4].hasKey, isFalse);
+  });
 }

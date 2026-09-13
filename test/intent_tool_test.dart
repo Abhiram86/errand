@@ -61,7 +61,7 @@ void main() {
   });
 
   group('intentTool schema', () {
-    test('exposes exactly the 5 unified actions in enum', () {
+    test('exposes the unified actions in enum including docs', () {
       final properties = tool.parameters['properties'] as Map<String, dynamic>;
       final actionProp = properties['action'] as Map<String, dynamic>;
       final actions = List<String>.from(actionProp['enum'] as List);
@@ -71,7 +71,9 @@ void main() {
         'open_app',
         'settings',
         'intent',
+        'docs',
       ]);
+      expect(properties.containsKey('name'), isTrue);
     });
   });
 
@@ -425,6 +427,93 @@ void main() {
       final result = await fullTool.handler(call);
       expect(result.ok, isTrue);
       expect(result.output, contains('[NOTICE: SCREEN ACCESS PAUSED]'));
+    });
+  });
+
+  group('docs action', () {
+    tearDown(() {
+      intentDocs.clear();
+      intentDocs.addAll(kDefaultIntentDocs);
+    });
+
+    test('returns empty message when no name is passed and registry is empty', () async {
+      intentDocs.clear();
+      final call = ToolCall(
+        id: 'call-docs-empty',
+        name: 'intent',
+        arguments: {'action': 'docs'},
+      );
+      final result = await tool.handler(call);
+      expect(result.ok, isTrue);
+      expect(result.output, contains('No intent documentation currently available'));
+    });
+
+    test('returns failure when looking up unindexed topic', () async {
+      final call = ToolCall(
+        id: 'call-docs-missing',
+        name: 'intent',
+        arguments: {'action': 'docs', 'name': 'unknown_intent'},
+      );
+      final result = await tool.handler(call);
+      expect(result.ok, isFalse);
+      expect(result.toText(), contains('No intent documentation found for "unknown_intent"'));
+    });
+
+    test('returns alarm definition with hour, minutes, skip_ui, and days', () async {
+      final call = ToolCall(
+        id: 'call-docs-alarm',
+        name: 'intent',
+        arguments: {'action': 'docs', 'name': 'ALARM'},
+      );
+      final result = await tool.handler(call);
+      expect(result.ok, isTrue);
+      expect(result.output, contains('android.intent.action.SET_ALARM'));
+      expect(result.output, contains('android.intent.extra.alarm.HOUR'));
+      expect(result.output, contains('android.intent.extra.alarm.MINUTES'));
+      expect(result.output, contains('android.intent.extra.alarm.SKIP_UI'));
+      expect(result.output, contains('android.intent.extra.alarm.DAYS'));
+    });
+
+    test('returns calendar definition with insert, beginTime, endTime, and user confirmation note', () async {
+      final call = ToolCall(
+        id: 'call-docs-cal',
+        name: 'intent',
+        arguments: {'action': 'docs', 'name': 'Calendar'},
+      );
+      final result = await tool.handler(call);
+      expect(result.ok, isTrue);
+      expect(result.output, contains('android.intent.action.INSERT'));
+      expect(result.output, contains('vnd.android.cursor.item/event'));
+      expect(result.output, contains('beginTime'));
+      expect(result.output, contains('endTime'));
+      expect(result.output, contains('Save'));
+    });
+
+    test('returns location definition with google.navigation, geo, and streetview', () async {
+      final call = ToolCall(
+        id: 'call-docs-loc',
+        name: 'intent',
+        arguments: {'action': 'docs', 'name': 'location'},
+      );
+      final result = await tool.handler(call);
+      expect(result.ok, isTrue);
+      expect(result.output, contains('google.navigation:'));
+      expect(result.output, contains('geo:0,0?q='));
+      expect(result.output, contains('google.streetview:'));
+    });
+
+    test('lists available topics including alarm, calendar, timer, location when name is omitted', () async {
+      final call = ToolCall(
+        id: 'call-docs-list',
+        name: 'intent',
+        arguments: {'action': 'docs'},
+      );
+      final result = await tool.handler(call);
+      expect(result.ok, isTrue);
+      expect(result.output, contains('alarm'));
+      expect(result.output, contains('calendar'));
+      expect(result.output, contains('timer'));
+      expect(result.output, contains('location'));
     });
   });
 }

@@ -218,6 +218,12 @@ class ToolMessageBubble extends StatefulWidget {
       case 'intent':
         final action = args['action']?.toString();
         switch (action) {
+          case 'docs':
+            final name = args['name']?.toString().trim();
+            if (name != null && name.isNotEmpty) {
+              return 'Checked $name intent docs';
+            }
+            return 'Checked intent docs';
           case 'open_app':
             final pkg = args['package']?.toString();
             if (pkg != null && pkg.isNotEmpty) {
@@ -349,6 +355,10 @@ class ToolMessageBubble extends StatefulWidget {
         }
         return Icons.touch_app_outlined;
       case 'intent':
+        final action = args['action']?.toString();
+        if (action == 'docs') {
+          return Icons.menu_book_outlined;
+        }
         return Icons.open_in_new_rounded;
       case 'attached_files':
         return Icons.attach_file_rounded;

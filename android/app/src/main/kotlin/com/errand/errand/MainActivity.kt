@@ -50,9 +50,14 @@ class MainActivity : FlutterActivity() {
                         key,
                         ArrayList(value.filterIsInstance<String>())
                     )
+                } else if (value.all { it is Number }) {
+                    intent.putIntegerArrayListExtra(
+                        key,
+                        ArrayList(value.filterIsInstance<Number>().map { it.toInt() })
+                    )
                 } else {
                     throw IllegalArgumentException(
-                        "Unsupported list extra '$key': only string arrays are supported"
+                        "Unsupported list extra '$key': only string or integer lists are supported"
                     )
                 }
             }
