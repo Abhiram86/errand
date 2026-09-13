@@ -12,21 +12,14 @@ ToolMessage createToolMessage({
   return ToolMessage(
     id: id,
     text: result,
-    tool: ToolInvocation(
-      name: toolName,
-      args: args,
-    ),
+    tool: ToolInvocation(name: toolName, args: args),
     result: result,
   );
 }
 
 Widget wrapBubble(Widget bubble) {
   return MaterialApp(
-    home: Scaffold(
-      body: SingleChildScrollView(
-        child: bubble,
-      ),
-    ),
+    home: Scaffold(body: SingleChildScrollView(child: bubble)),
   );
 }
 
@@ -38,11 +31,15 @@ void main() {
   group('ToolMessageBubble.friendlyToolSummary', () {
     test('web tools return friendly summaries', () {
       expect(
-        ToolMessageBubble.friendlyToolSummary('websearch', {'query': 'flutter'}),
+        ToolMessageBubble.friendlyToolSummary('websearch', {
+          'query': 'flutter',
+        }),
         'Used web search',
       );
       expect(
-        ToolMessageBubble.friendlyToolSummary('webfetch', {'url': 'https://flutter.dev'}),
+        ToolMessageBubble.friendlyToolSummary('webfetch', {
+          'url': 'https://flutter.dev',
+        }),
         'Fetched web page',
       );
     });
@@ -53,21 +50,24 @@ void main() {
         'Listed files',
       );
       expect(
-        ToolMessageBubble.friendlyToolSummary('bash', {'command': 'find . -name "*.pdf"'}),
+        ToolMessageBubble.friendlyToolSummary('bash', {
+          'command': 'find . -name "*.pdf"',
+        }),
         'Searched files',
       );
       expect(
-        ToolMessageBubble.friendlyToolSummary('bash', {'command': 'mkdir photos'}),
+        ToolMessageBubble.friendlyToolSummary('bash', {
+          'command': 'mkdir photos',
+        }),
         'Created folder',
       );
       expect(
-        ToolMessageBubble.friendlyToolSummary('bash', {'command': 'unknown_binary'}),
+        ToolMessageBubble.friendlyToolSummary('bash', {
+          'command': 'unknown_binary',
+        }),
         'Ran task',
       );
-      expect(
-        ToolMessageBubble.friendlyToolSummary('bash', {}),
-        'Ran task',
-      );
+      expect(ToolMessageBubble.friendlyToolSummary('bash', {}), 'Ran task');
     });
 
     test('read tool returns friendly summary', () {
@@ -106,27 +106,44 @@ void main() {
         'Inspected screen',
       );
       expect(
-        ToolMessageBubble.friendlyToolSummary('screen', {'action': 'screenshot'}),
+        ToolMessageBubble.friendlyToolSummary('screen', {
+          'action': 'screenshot',
+        }),
         'Captured screenshot',
       );
       expect(
-        ToolMessageBubble.friendlyToolSummary('screen', {'action': 'global', 'name': 'back'}),
+        ToolMessageBubble.friendlyToolSummary('screen', {
+          'action': 'global',
+          'name': 'back',
+        }),
         'Pressed back',
       );
       expect(
-        ToolMessageBubble.friendlyToolSummary('screen', {'action': 'global', 'name': 'home'}),
+        ToolMessageBubble.friendlyToolSummary('screen', {
+          'action': 'global',
+          'name': 'home',
+        }),
         'Pressed home',
       );
       expect(
-        ToolMessageBubble.friendlyToolSummary('screen', {'action': 'global', 'name': 'recents'}),
+        ToolMessageBubble.friendlyToolSummary('screen', {
+          'action': 'global',
+          'name': 'recents',
+        }),
         'Opened recents',
       );
       expect(
-        ToolMessageBubble.friendlyToolSummary('screen', {'action': 'global', 'name': 'notifications'}),
+        ToolMessageBubble.friendlyToolSummary('screen', {
+          'action': 'global',
+          'name': 'notifications',
+        }),
         'Opened notifications',
       );
       expect(
-        ToolMessageBubble.friendlyToolSummary('screen', {'action': 'global', 'name': 'unknown'}),
+        ToolMessageBubble.friendlyToolSummary('screen', {
+          'action': 'global',
+          'name': 'unknown',
+        }),
         'Navigated system',
       );
       expect(
@@ -208,7 +225,9 @@ void main() {
         'Opened web link',
       );
       expect(
-        ToolMessageBubble.friendlyToolSummary('intent', {'action': 'open_file'}),
+        ToolMessageBubble.friendlyToolSummary('intent', {
+          'action': 'open_file',
+        }),
         'Opened file',
       );
       expect(
@@ -216,7 +235,9 @@ void main() {
         'Opened settings',
       );
       expect(
-        ToolMessageBubble.friendlyToolSummary('intent', {'action': 'settings_panel'}),
+        ToolMessageBubble.friendlyToolSummary('intent', {
+          'action': 'settings_panel',
+        }),
         'Opened settings',
       );
       expect(
@@ -228,7 +249,9 @@ void main() {
         'Opened dialer',
       );
       expect(
-        ToolMessageBubble.friendlyToolSummary('intent', {'action': 'open_maps'}),
+        ToolMessageBubble.friendlyToolSummary('intent', {
+          'action': 'open_maps',
+        }),
         'Opened maps',
       );
       expect(
@@ -236,11 +259,15 @@ void main() {
         'Drafted email',
       );
       expect(
-        ToolMessageBubble.friendlyToolSummary('intent', {'action': 'calendar_event'}),
+        ToolMessageBubble.friendlyToolSummary('intent', {
+          'action': 'calendar_event',
+        }),
         'Created calendar event',
       );
       expect(
-        ToolMessageBubble.friendlyToolSummary('intent', {'action': 'media_play'}),
+        ToolMessageBubble.friendlyToolSummary('intent', {
+          'action': 'media_play',
+        }),
         'Played media',
       );
       expect(
@@ -248,11 +275,15 @@ void main() {
         'Shared content',
       );
       expect(
-        ToolMessageBubble.friendlyToolSummary('intent', {'action': 'wallpaper'}),
+        ToolMessageBubble.friendlyToolSummary('intent', {
+          'action': 'wallpaper',
+        }),
         'Set wallpaper',
       );
       expect(
-        ToolMessageBubble.friendlyToolSummary('intent', {'action': 'uninstall'}),
+        ToolMessageBubble.friendlyToolSummary('intent', {
+          'action': 'uninstall',
+        }),
         'Triggered uninstall',
       );
       expect(
@@ -281,23 +312,14 @@ void main() {
         ToolMessageBubble.friendlyToolSummary('data-parser', {}),
         'Used data parser',
       );
-      expect(
-        ToolMessageBubble.friendlyToolSummary('', {}),
-        'Used tool',
-      );
+      expect(ToolMessageBubble.friendlyToolSummary('', {}), 'Used tool');
     });
   });
 
   group('ToolMessageBubble.toolIcon', () {
     test('returns appropriate icon for each tool', () {
-      expect(
-        ToolMessageBubble.toolIcon('bash', {}),
-        Icons.terminal_rounded,
-      );
-      expect(
-        ToolMessageBubble.toolIcon('websearch', {}),
-        Icons.search_rounded,
-      );
+      expect(ToolMessageBubble.toolIcon('bash', {}), Icons.terminal_rounded);
+      expect(ToolMessageBubble.toolIcon('websearch', {}), Icons.search_rounded);
       expect(
         ToolMessageBubble.toolIcon('webfetch', {}),
         Icons.travel_explore_rounded,
@@ -338,62 +360,71 @@ void main() {
         ToolMessageBubble.toolIcon('attached_files', {}),
         Icons.attach_file_rounded,
       );
-      expect(
-        ToolMessageBubble.toolIcon('other', {}),
-        Icons.build_outlined,
-      );
+      expect(ToolMessageBubble.toolIcon('other', {}), Icons.build_outlined);
     });
   });
 
   group('ToolMessageBubble widget rendering', () {
-    testWidgets('in non-debug mode, closed bubble shows friendly text instead of args', (tester) async {
-      ToolMessageBubble.debugShowToolArgsOverride = false;
+    testWidgets(
+      'in non-debug mode, closed bubble shows friendly text instead of args',
+      (tester) async {
+        ToolMessageBubble.debugShowToolArgsOverride = false;
 
-      final message = createToolMessage(
-        toolName: 'websearch',
-        args: {'query': 'flutter release notes'},
-        result: 'Found 3 results',
-      );
+        final message = createToolMessage(
+          toolName: 'websearch',
+          args: {'query': 'flutter release notes'},
+          result: 'Found 3 results',
+        );
 
-      await tester.pumpWidget(wrapBubble(ToolMessageBubble(message: message)));
+        await tester.pumpWidget(
+          wrapBubble(ToolMessageBubble(message: message)),
+        );
 
-      // Closed state: should show friendly summary
-      expect(find.text('Used web search'), findsOneWidget);
-      // Closed state: should NOT show raw args
-      expect(find.textContaining('flutter release notes'), findsNothing);
-    });
+        // Closed state: should show friendly summary
+        expect(find.text('Used web search'), findsOneWidget);
+        // Closed state: should NOT show raw args
+        expect(find.textContaining('flutter release notes'), findsNothing);
+      },
+    );
 
-    testWidgets('in non-debug mode, expanding bubble reveals raw args and collapsing restores friendly text', (tester) async {
-      ToolMessageBubble.debugShowToolArgsOverride = false;
+    testWidgets(
+      'in non-debug mode, expanding bubble reveals raw args and collapsing restores friendly text',
+      (tester) async {
+        ToolMessageBubble.debugShowToolArgsOverride = false;
 
-      final message = createToolMessage(
-        toolName: 'websearch',
-        args: {'query': 'flutter release notes'},
-        result: 'Found 3 results',
-      );
+        final message = createToolMessage(
+          toolName: 'websearch',
+          args: {'query': 'flutter release notes'},
+          result: 'Found 3 results',
+        );
 
-      await tester.pumpWidget(wrapBubble(ToolMessageBubble(message: message)));
+        await tester.pumpWidget(
+          wrapBubble(ToolMessageBubble(message: message)),
+        );
 
-      // Tap to expand
-      await tester.tap(find.text('Used web search'));
-      await tester.pumpAndSettle();
+        // Tap to expand
+        await tester.tap(find.text('Used web search'));
+        await tester.pumpAndSettle();
 
-      // Expanded state: raw tool name and args are visible
-      expect(find.textContaining('websearch'), findsOneWidget);
-      expect(find.textContaining('flutter release notes'), findsOneWidget);
-      // Tool output is also visible
-      expect(find.text('Found 3 results'), findsOneWidget);
+        // Expanded state: raw tool name and args are visible
+        expect(find.textContaining('websearch'), findsOneWidget);
+        expect(find.textContaining('flutter release notes'), findsOneWidget);
+        // Tool output is also visible
+        expect(find.text('Found 3 results'), findsOneWidget);
 
-      // Tap to collapse
-      await tester.tap(find.textContaining('websearch'));
-      await tester.pumpAndSettle();
+        // Tap to collapse
+        await tester.tap(find.textContaining('websearch'));
+        await tester.pumpAndSettle();
 
-      // Collapsed state: friendly text restored
-      expect(find.text('Used web search'), findsOneWidget);
-      expect(find.textContaining('flutter release notes'), findsNothing);
-    });
+        // Collapsed state: friendly text restored
+        expect(find.text('Used web search'), findsOneWidget);
+        expect(find.textContaining('flutter release notes'), findsNothing);
+      },
+    );
 
-    testWidgets('in debug mode, closed bubble shows raw args immediately', (tester) async {
+    testWidgets('in debug mode, closed bubble shows raw args immediately', (
+      tester,
+    ) async {
       ToolMessageBubble.debugShowToolArgsOverride = true;
 
       final message = createToolMessage(
@@ -410,7 +441,9 @@ void main() {
       expect(find.text('Used web search'), findsNothing);
     });
 
-    testWidgets('renders reopen button for reopenable intent messages', (tester) async {
+    testWidgets('renders reopen button for reopenable intent messages', (
+      tester,
+    ) async {
       ToolMessageBubble.debugShowToolArgsOverride = false;
 
       final message = createToolMessage(
@@ -425,5 +458,70 @@ void main() {
       // Reopen button text 'Open' should be found
       expect(find.text('Open'), findsOneWidget);
     });
+
+    testWidgets('tapping on expanded tool output collapses the dropdown', (
+      tester,
+    ) async {
+      ToolMessageBubble.debugShowToolArgsOverride = false;
+
+      final message = createToolMessage(
+        toolName: 'bash',
+        args: {'command': 'ls -la'},
+        result: 'total 16\ndrwxr-xr-x 4 user group 4096 file.txt',
+      );
+
+      await tester.pumpWidget(wrapBubble(ToolMessageBubble(message: message)));
+
+      // Initially collapsed
+      expect(find.text('Listed files'), findsOneWidget);
+      expect(find.textContaining('total 16'), findsNothing);
+
+      // Tap title to expand
+      await tester.tap(find.text('Listed files'));
+      await tester.pumpAndSettle();
+
+      // Output is visible
+      expect(find.textContaining('total 16'), findsOneWidget);
+
+      // Tap directly on the tool output
+      await tester.tap(find.textContaining('total 16'));
+      await tester.pumpAndSettle();
+
+      // Dropdown should now be collapsed
+      expect(find.text('Listed files'), findsOneWidget);
+      expect(find.textContaining('total 16'), findsNothing);
+    });
+
+    testWidgets(
+      'copy button copies full tool call in debug mode and output only in normal mode',
+      (tester) async {
+        final message = createToolMessage(
+          toolName: 'bash',
+          args: {'command': 'ls -la'},
+          result: 'file.txt',
+        );
+
+        // 1) Normal mode:
+        ToolMessageBubble.debugShowToolArgsOverride = false;
+        await tester.pumpWidget(
+          wrapBubble(ToolMessageBubble(message: message)),
+        );
+        await tester.tap(find.text('Listed files'));
+        await tester.pumpAndSettle();
+
+        final normalCopyBtn = find.byTooltip('Copy output');
+        expect(normalCopyBtn, findsOneWidget);
+
+        // 2) Debug mode:
+        ToolMessageBubble.debugShowToolArgsOverride = true;
+        await tester.pumpWidget(
+          wrapBubble(ToolMessageBubble(message: message)),
+        );
+        await tester.pumpAndSettle();
+
+        final debugCopyBtn = find.byTooltip('Copy tool call & output');
+        expect(debugCopyBtn, findsOneWidget);
+      },
+    );
   });
 }

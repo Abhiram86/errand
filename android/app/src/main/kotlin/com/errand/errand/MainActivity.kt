@@ -7,11 +7,13 @@ import android.app.PendingIntent
 import android.content.ClipData
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.Settings
+import android.util.Log
 import android.webkit.MimeTypeMap
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -29,6 +31,90 @@ class MainActivity : FlutterActivity() {
 
     private val MIC_PERMISSION_CODE = 9001
     private var micPermissionResult: MethodChannel.Result? = null
+
+    private fun putExtraValue(intent: Intent, key: String, value: Any?) {
+        when (value) {
+            null -> return
+            is Boolean -> intent.putExtra(key, value)
+            is Byte -> intent.putExtra(key, value)
+            is Short -> intent.putExtra(key, value)
+            is Int -> intent.putExtra(key, value)
+            is Long -> intent.putExtra(key, value)
+            is Float -> intent.putExtra(key, value)
+            is Double -> intent.putExtra(key, value)
+            is String -> intent.putExtra(key, value)
+            is CharSequence -> intent.putExtra(key, value)
+            is List<*> -> {
+                if (value.all { it is String }) {
+                    intent.putStringArrayListExtra(
+                        key,
+                        ArrayList(value.filterIsInstance<String>())
+                    )
+                } else {
+                    throw IllegalArgumentException(
+                        "Unsupported list extra '$key': only string arrays are supported"
+                    )
+                }
+            }
+            else -> {
+                throw IllegalArgumentException(
+                    "Unsupported extra '$key' value type: ${value.javaClass.name}"
+                )
+            }
+        }
+    }
+
+    /**
+     * Debug-only snapshot of the fully-built intent immediately before launch.
+     * This is intentionally kept at the native boundary so it shows the actual
+     * action, package/component, flags, and runtime types delivered to Android.
+    */
+    private fun logIntent(
+        label: String,
+        intent: Intent,
+        launchContext: Context? = null,
+        isA11y: Boolean = false,
+        transport: String? = null
+    ) {
+        if ((applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) == 0) return
+
+        Log.d("ErrandIntent", "========== $label ==========")
+        Log.d("ErrandIntent", "action      = ${intent.action}")
+        Log.d("ErrandIntent", "data        = ${intent.data}")
+        Log.d("ErrandIntent", "type        = ${intent.type}")
+        Log.d("ErrandIntent", "package     = ${intent.`package`}")
+        Log.d("ErrandIntent", "component   = ${intent.component}")
+        Log.d("ErrandIntent", "categories  = ${intent.categories}")
+        Log.d("ErrandIntent", "flags       = 0x${intent.flags.toString(16)}")
+
+        val extras = intent.extras
+        if (extras == null) {
+            Log.d("ErrandIntent", "extras      = null")
+        } else {
+            Log.d("ErrandIntent", "extras:")
+            for (key in extras.keySet()) {
+                val value = extras.get(key)
+                Log.d(
+                    "ErrandIntent",
+                    "  $key = $value [${value?.javaClass?.name}]"
+                )
+            }
+        }
+
+        Log.d("ErrandIntent", "resolved    = ${intent.resolveActivity(packageManager)}")
+        if (launchContext != null) {
+            Log.d(
+                "ErrandIntent",
+                "launchContext = ${launchContext.javaClass.name}, " +
+                    "accessibilityContext = $isA11y, " +
+                    "androidVersion = ${Build.VERSION.SDK_INT}"
+            )
+        }
+        if (transport != null) {
+            Log.d("ErrandIntent", "transport   = $transport")
+        }
+        Log.d("ErrandIntent", "================================")
+    }
 
     override fun onRequestPermissionsResult(
         requestCode: Int,
@@ -98,7 +184,7 @@ class MainActivity : FlutterActivity() {
                         val data = call.argument<String>("data")
                         val pkg = call.argument<String>("package")
                         val type = call.argument<String>("type")
-                        val extras = call.argument<Map<String, String>>("extras")
+                        val extras = call.argument<Map<String, Any?>>("extras")
 
                         val intent: Intent? = when {
                             action == "open_app" -> {
@@ -155,15 +241,17 @@ class MainActivity : FlutterActivity() {
                                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                     clipData = ClipData.newRawUri(null, contentUri)
                                     pkg?.let { this.`package` = it }
-                                    extras?.forEach { (k, v) -> putExtra(k, v) }
+                                    extras?.forEach { (k, v) -> putExtraValue(this, k, v) }
                                 }
                             }
 
                             action == "email" -> {
                                 val uri = Uri.parse(data ?: "mailto:")
                                 Intent(Intent.ACTION_SENDTO, uri).apply {
-                                    val subject = extras?.get("subject") ?: uri.getQueryParameter("subject")
-                                    val body = extras?.get("body") ?: uri.getQueryParameter("body")
+                                    val subject = extras?.get("subject")?.toString()
+                                        ?: uri.getQueryParameter("subject")
+                                    val body = extras?.get("body")?.toString()
+                                        ?: uri.getQueryParameter("body")
 
                                     subject?.let { putExtra(Intent.EXTRA_SUBJECT, it) }
                                     body?.let { putExtra(Intent.EXTRA_TEXT, it) }
@@ -193,7 +281,7 @@ class MainActivity : FlutterActivity() {
                                     }
                                     pkg?.let { this.`package` = it }
                                     extras?.forEach { (k, v) ->
-                                        putExtra(k, v)
+                                        putExtraValue(this, k, v)
                                     }
                                 }
                             }
@@ -250,6 +338,13 @@ class MainActivity : FlutterActivity() {
 
                         val a11y = ErrandAccessibilityService.instance
                         val launchContext: Context = a11y ?: this
+                        val transport = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                            "PendingIntent.getActivity().send()"
+                        } else {
+                            "Context.startActivity()"
+                        }
+
+                        logIntent("before launch", intent, launchContext, a11y != null, transport)
 
                         @Suppress("DEPRECATION")
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -271,7 +366,29 @@ class MainActivity : FlutterActivity() {
                         result.success(outcome)
 
                     } catch (e: android.content.ActivityNotFoundException) {
-                        result.error("NO_HANDLER", e.message, null)
+                        result.error(
+                            "NO_HANDLER",
+                            "No activity can handle this intent: ${e.message}",
+                            null
+                        )
+                    } catch (e: PendingIntent.CanceledException) {
+                        result.error(
+                            "PENDING_INTENT_CANCELED",
+                            "Android canceled this pending intent: ${e.message}",
+                            null
+                        )
+                    } catch (e: SecurityException) {
+                        result.error(
+                            "INTENT_SECURITY",
+                            "Android rejected this intent: ${e.message}",
+                            null
+                        )
+                    } catch (e: IllegalArgumentException) {
+                        result.error(
+                            "INVALID_INTENT",
+                            "Invalid intent: ${e.message}",
+                            null
+                        )
                     } catch (e: Exception) {
                         result.error("INTENT_ERR", e.message, null)
                     }

@@ -9,10 +9,7 @@ ToolMessage intentMessage(
 }) => ToolMessage(
   id: 't1',
   text: 'tool output',
-  tool: ToolInvocation(
-    name: 'intent',
-    args: {'action': action, ...?args},
-  ),
+  tool: ToolInvocation(name: 'intent', args: {'action': action, ...?args}),
   result: result,
 );
 
@@ -26,15 +23,14 @@ void main() {
         'open_maps',
         'search',
         'dial',
-        'media_play',
         'email',
-        'share',
-        'wallpaper',
         'settings',
-        'settings_panel',
       ]) {
-        expect(isReopenable(intentMessage(action)), isTrue,
-            reason: '$action should be reopenable');
+        expect(
+          isReopenable(intentMessage(action)),
+          isTrue,
+          reason: '$action should be reopenable',
+        );
       }
     });
 
@@ -46,8 +42,11 @@ void main() {
         'uninstall',
         'system',
       ]) {
-        expect(isReopenable(intentMessage(action)), isFalse,
-            reason: '$action should NOT be reopenable');
+        expect(
+          isReopenable(intentMessage(action)),
+          isFalse,
+          reason: '$action should NOT be reopenable',
+        );
       }
     });
 
@@ -55,10 +54,12 @@ void main() {
       // The "play a local mp3" case: ACTION_VIEW on a file Uri — the system
       // chooser opens the content, nothing else happens. Re-tapping is safe.
       expect(
-        isReopenable(intentMessage(
-          'intent',
-          args: {'url': '/storage/emulated/0/Download/song.mp3'},
-        )),
+        isReopenable(
+          intentMessage(
+            'intent',
+            args: {'url': '/storage/emulated/0/Download/song.mp3'},
+          ),
+        ),
         isTrue,
       );
     });
@@ -74,10 +75,9 @@ void main() {
         'android.settings.panel.action.WIFI', // settings panels
       ]) {
         expect(
-          isReopenable(intentMessage(
-            'intent',
-            args: {'android_action': androidAction},
-          )),
+          isReopenable(
+            intentMessage('intent', args: {'android_action': androidAction}),
+          ),
           isTrue,
           reason: '$androidAction should be reopenable',
         );
@@ -86,10 +86,12 @@ void main() {
 
     test('raw intent: unknown third-party actions stay button-less', () {
       expect(
-        isReopenable(intentMessage(
-          'intent',
-          args: {'android_action': 'com.someapp.action.SYNC'},
-        )),
+        isReopenable(
+          intentMessage(
+            'intent',
+            args: {'android_action': 'com.someapp.action.SYNC'},
+          ),
+        ),
         isFalse,
       );
     });

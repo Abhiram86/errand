@@ -12,7 +12,7 @@ class IntentService {
     String? androidAction,
     String? data,
     String? package,
-    Map<String, String>? extras,
+    Map<String, dynamic>? extras,
     String? type,
   }) async {
     final result = await _channel.invokeMethod<String>('launch', {
@@ -33,10 +33,10 @@ class IntentService {
     String? package,
   }) async {
     return await _channel.invokeMethod<bool>('canResolve', {
-      'action': action ?? 'android.intent.action.VIEW',
-      'data': data,
-      'package': package,
-    }) ??
+          'action': action ?? 'android.intent.action.VIEW',
+          'data': data,
+          'package': package,
+        }) ??
         false;
   }
 
@@ -64,7 +64,9 @@ class IntentService {
   /// Returns the human-readable application label for a given [package] name, or null.
   Future<String?> getAppLabel(String package) async {
     try {
-      return await _channel.invokeMethod<String>('getAppLabel', {'package': package});
+      return await _channel.invokeMethod<String>('getAppLabel', {
+        'package': package,
+      });
     } catch (_) {
       return null;
     }

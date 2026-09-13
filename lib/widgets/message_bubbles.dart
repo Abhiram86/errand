@@ -27,6 +27,17 @@ String _formatToolArgs(Map<String, dynamic> args) {
   }
 }
 
+String _formatToolCallDebugCopy(ToolMessage message) {
+  String formattedArgs;
+  try {
+    const encoder = JsonEncoder.withIndent('  ');
+    formattedArgs = encoder.convert(message.tool.args);
+  } catch (_) {
+    formattedArgs = message.tool.args.toString();
+  }
+  return 'Tool: ${message.tool.name}\nArguments: $formattedArgs\nOutput:\n${message.result}';
+}
+
 /// One-tap copy for assistant text and tool output. Free-form selection
 /// still comes from the SelectionArea wrapping the message list.
 class _CopyButton extends StatelessWidget {
@@ -90,10 +101,7 @@ class _SubtleFadeInState extends State<SubtleFadeIn>
   @override
   void initState() {
     super.initState();
-    _controller = AnimationController(
-      vsync: this,
-      duration: widget.duration,
-    );
+    _controller = AnimationController(vsync: this, duration: widget.duration);
     final curve = CurvedAnimation(
       parent: _controller,
       curve: Curves.easeOutCubic,
@@ -123,10 +131,7 @@ class _SubtleFadeInState extends State<SubtleFadeIn>
 
     return FadeTransition(
       opacity: _fadeAnimation,
-      child: SlideTransition(
-        position: _slideAnimation,
-        child: widget.child,
-      ),
+      child: SlideTransition(position: _slideAnimation, child: widget.child),
     );
   }
 }
@@ -316,10 +321,7 @@ class ToolMessageBubble extends StatefulWidget {
   }
 
   /// Maps tool names and actions to appropriate visual icons.
-  static IconData toolIcon(
-    String toolName,
-    Map<String, dynamic> args,
-  ) {
+  static IconData toolIcon(String toolName, Map<String, dynamic> args) {
     switch (toolName) {
       case 'bash':
         return Icons.terminal_rounded;
@@ -361,6 +363,13 @@ class ToolMessageBubble extends StatefulWidget {
 
 class _ToolMessageBubbleState extends State<ToolMessageBubble> {
   bool _isExpanded = false;
+  final _controller = ExpansibleController();
+
+  void _collapse() {
+    if (_controller.isExpanded) {
+      _controller.collapse();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -369,17 +378,21 @@ class _ToolMessageBubbleState extends State<ToolMessageBubble> {
     final outputWasTruncated = message.result.length > kMaxToolOutputChars;
     final output = _truncateForDisplay(message.result, kMaxToolOutputChars);
 
-    final showRawArgs =
-        (ToolMessageBubble.debugShowToolArgsOverride ?? kDebugMode) ||
-            _isExpanded;
+    final isDebug = (ToolMessageBubble.debugShowToolArgsOverride ?? kDebugMode);
+    final showRawArgs = isDebug || _isExpanded;
 
     final headerText = showRawArgs
         ? '${_truncateForDisplay(message.tool.name, 32)} '
-            '${_truncateForDisplay(args, kMaxToolHeaderChars)}'
+              '${_truncateForDisplay(args, kMaxToolHeaderChars)}'
         : ToolMessageBubble.friendlyToolSummary(
             message.tool.name,
             message.tool.args,
           );
+
+    final copyText = isDebug
+        ? _formatToolCallDebugCopy(message)
+        : message.result;
+    final copyTooltip = isDebug ? 'Copy tool call & output' : 'Copy output';
 
     return Align(
       alignment: Alignment.centerLeft,
@@ -396,6 +409,7 @@ class _ToolMessageBubbleState extends State<ToolMessageBubble> {
                 .copyWith(color: kMuted.withValues(alpha: 0.45), size: 16),
           ),
           child: ExpansionTile(
+            controller: _controller,
             onExpansionChanged: (expanded) {
               if (_isExpanded != expanded) {
                 setState(() => _isExpanded = expanded);
@@ -429,8 +443,7 @@ class _ToolMessageBubbleState extends State<ToolMessageBubble> {
                 ),
                 // Reopen button for launch-style intent actions (open_url,
                 // open_app, ...): re-fires the same persisted args.
-                if (isReopenable(message))
-                  _ReopenButton(message: message),
+                if (isReopenable(message)) _ReopenButton(message: message),
               ],
             ),
             children: [
@@ -440,19 +453,24 @@ class _ToolMessageBubbleState extends State<ToolMessageBubble> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Expanded(
-                      child: SelectableText(
-                        outputWasTruncated
-                            ? '$output\n\n[output truncated for display]'
-                            : output,
-                        style: const TextStyle(
-                          color: kMuted,
-                          fontSize: 11,
-                          height: 1.3,
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: _collapse,
+                        child: SelectableText(
+                          outputWasTruncated
+                              ? '$output\n\n[output truncated for display]'
+                              : output,
+                          onTap: _collapse,
+                          style: const TextStyle(
+                            color: kMuted,
+                            fontSize: 11,
+                            height: 1.3,
+                          ),
                         ),
                       ),
                     ),
-                    // Copies the full (untruncated) result.
-                    _CopyButton(text: message.result, tooltip: 'Copy output'),
+                    // Copies the full result (or total tool call in debug mode).
+                    _CopyButton(text: copyText, tooltip: copyTooltip),
                   ],
                 ),
               ),
@@ -533,7 +551,8 @@ class MessageBubble extends StatelessWidget {
     final text = message.text.trim();
     if (text.isEmpty) return const SizedBox.shrink();
 
-    final isPlaceholder = !isUser &&
+    final isPlaceholder =
+        !isUser &&
         (text.startsWith('…working') ||
             text.startsWith('…thinking') ||
             text.startsWith('…compacting'));
@@ -576,9 +595,7 @@ class MessageBubble extends StatelessWidget {
                 // Assistant turns render as markdown (bold, tables, code,
                 // LaTeX). Text selection comes from the SelectionArea that
                 // wraps the message list.
-                : _StreamingAssistantText(
-                    text: text,
-                  ),
+                : _StreamingAssistantText(text: text),
           ),
         );
 
@@ -586,7 +603,9 @@ class MessageBubble extends StatelessWidget {
         // discoverable than tap-to-edit and immune to the SelectionArea
         // swallowing taps on desktop/pointer devices.
         if (isUser) {
-          final attached = (message is UserMessage) ? (message as UserMessage).attachedUris : const <String>[];
+          final attached = (message is UserMessage)
+              ? (message as UserMessage).attachedUris
+              : const <String>[];
           final userRow = Row(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.end,
@@ -601,8 +620,10 @@ class MessageBubble extends StatelessWidget {
                       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                       visualDensity: VisualDensity.compact,
                     ),
-                    constraints:
-                        const BoxConstraints.tightFor(width: 24, height: 24),
+                    constraints: const BoxConstraints.tightFor(
+                      width: 24,
+                      height: 24,
+                    ),
                     padding: EdgeInsets.zero,
                     iconSize: 14,
                     color: kMuted.withValues(alpha: 0.8),
@@ -614,9 +635,7 @@ class MessageBubble extends StatelessWidget {
           );
           final card = Container(
             margin: const EdgeInsets.only(top: 6),
-            constraints: BoxConstraints(
-              maxWidth: availableWidth * 0.78,
-            ),
+            constraints: BoxConstraints(maxWidth: availableWidth * 0.78),
             decoration: BoxDecoration(
               color: kInputBg,
               borderRadius: BorderRadius.circular(12),
@@ -628,16 +647,26 @@ class MessageBubble extends StatelessWidget {
               children: [
                 for (var i = 0; i < attached.length; i++)
                   Padding(
-                    padding: EdgeInsets.only(bottom: i == attached.length - 1 ? 0 : 6),
+                    padding: EdgeInsets.only(
+                      bottom: i == attached.length - 1 ? 0 : 6,
+                    ),
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        const Icon(Icons.attach_file_rounded, size: 14, color: kMuted),
+                        const Icon(
+                          Icons.attach_file_rounded,
+                          size: 14,
+                          color: kMuted,
+                        ),
                         const SizedBox(width: 6),
                         Flexible(
                           child: Text(
                             '${i + 1}. ${path.basename(attached[i])}',
-                            style: const TextStyle(color: kText, fontSize: 12, height: 1.2),
+                            style: const TextStyle(
+                              color: kText,
+                              fontSize: 12,
+                              height: 1.2,
+                            ),
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
@@ -740,13 +769,12 @@ class MessageBubble extends StatelessWidget {
 class _StreamingAssistantText extends StatelessWidget {
   final String text;
 
-  const _StreamingAssistantText({
-    required this.text,
-  });
+  const _StreamingAssistantText({required this.text});
 
   @override
   Widget build(BuildContext context) {
-    final isPlaceholder = text.startsWith('…working') ||
+    final isPlaceholder =
+        text.startsWith('…working') ||
         text.startsWith('…thinking') ||
         text.startsWith('…compacting');
 
@@ -803,7 +831,10 @@ class _CompactedDividerBubbleState extends State<CompactedDividerBubble> {
                 splashColor: Colors.transparent,
                 highlightColor: Colors.transparent,
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 4,
+                  ),
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [

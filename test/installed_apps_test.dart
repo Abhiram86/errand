@@ -12,13 +12,17 @@ class MockFailingIntentService extends IntentService {
     String? androidAction,
     String? data,
     String? package,
-    Map<String, String>? extras,
+    Map<String, dynamic>? extras,
     String? type,
   }) async {
-    if (package == 'com.bt.bms' || package == 'com.google.android.apps.youtube.music') {
+    if (package == 'com.bt.bms' ||
+        package == 'com.google.android.apps.youtube.music') {
       return 'launched';
     }
-    throw PlatformException(code: 'NO_HANDLER', message: 'No activity found for pkg=$package');
+    throw PlatformException(
+      code: 'NO_HANDLER',
+      message: 'No activity found for pkg=$package',
+    );
   }
 }
 
@@ -30,14 +34,23 @@ void main() {
       service = InstalledAppsService();
       service.setAppsForTesting([
         const InstalledApp(package: 'com.bt.bms', label: 'BookMyShow'),
-        const InstalledApp(package: 'com.google.android.apps.youtube.music', label: 'YT Music'),
-        const InstalledApp(package: 'com.google.android.youtube', label: 'YouTube'),
+        const InstalledApp(
+          package: 'com.google.android.apps.youtube.music',
+          label: 'YT Music',
+        ),
+        const InstalledApp(
+          package: 'com.google.android.youtube',
+          label: 'YouTube',
+        ),
         const InstalledApp(package: 'com.spotify.music', label: 'Spotify'),
         const InstalledApp(package: 'in.swiggy.android', label: 'Swiggy'),
         const InstalledApp(package: 'com.application.zomato', label: 'Zomato'),
         const InstalledApp(package: 'com.ubercab', label: 'Uber'),
         const InstalledApp(package: 'com.whatsapp', label: 'WhatsApp'),
-        const InstalledApp(package: 'org.telegram.messenger', label: 'Telegram'),
+        const InstalledApp(
+          package: 'org.telegram.messenger',
+          label: 'Telegram',
+        ),
         const InstalledApp(package: 'com.android.chrome', label: 'Chrome'),
         const InstalledApp(package: 'org.mozilla.firefox', label: 'Firefox'),
       ]);
@@ -45,7 +58,10 @@ void main() {
 
     test('getLabel resolves cached label', () {
       expect(service.getLabel('com.bt.bms'), 'BookMyShow');
-      expect(service.getLabel('com.google.android.apps.youtube.music'), 'YT Music');
+      expect(
+        service.getLabel('com.google.android.apps.youtube.music'),
+        'YT Music',
+      );
       expect(service.getLabel('com.spotify.music'), 'Spotify');
     });
 
@@ -58,23 +74,38 @@ void main() {
       expect(service.findExact('com.bt.bms')?.label, 'BookMyShow');
       expect(service.findExact('BookMyShow')?.package, 'com.bt.bms');
       expect(service.findExact('bookmyshow')?.package, 'com.bt.bms');
-      expect(service.findExact('yt music')?.package, 'com.google.android.apps.youtube.music');
-      expect(service.findExact('YTMusic')?.package, 'com.google.android.apps.youtube.music');
+      expect(
+        service.findExact('yt music')?.package,
+        'com.google.android.apps.youtube.music',
+      );
+      expect(
+        service.findExact('YTMusic')?.package,
+        'com.google.android.apps.youtube.music',
+      );
     });
 
-    test('findBestMatches returns top matched apps on misspelled package or query', () {
-      final bmsMatches = service.findBestMatches('com.bookmyshow');
-      expect(bmsMatches.isNotEmpty, isTrue);
-      expect(bmsMatches.first.package, 'com.bt.bms');
-      expect(bmsMatches.first.label, 'BookMyShow');
+    test(
+      'findBestMatches returns top matched apps on misspelled package or query',
+      () {
+        final bmsMatches = service.findBestMatches('com.bookmyshow');
+        expect(bmsMatches.isNotEmpty, isTrue);
+        expect(bmsMatches.first.package, 'com.bt.bms');
+        expect(bmsMatches.first.label, 'BookMyShow');
 
-      final musicMatches = service.findBestMatches('music');
-      expect(musicMatches.map((a) => a.label), containsAll(['YT Music', 'Spotify']));
+        final musicMatches = service.findBestMatches('music');
+        expect(
+          musicMatches.map((a) => a.label),
+          containsAll(['YT Music', 'Spotify']),
+        );
 
-      final ytMatches = service.findBestMatches('youtube music');
-      expect(ytMatches.isNotEmpty, isTrue);
-      expect(ytMatches.first.package, 'com.google.android.apps.youtube.music');
-    });
+        final ytMatches = service.findBestMatches('youtube music');
+        expect(ytMatches.isNotEmpty, isTrue);
+        expect(
+          ytMatches.first.package,
+          'com.google.android.apps.youtube.music',
+        );
+      },
+    );
   });
 
   group('intentTool open_app with InstalledAppsService', () {
@@ -86,12 +117,21 @@ void main() {
       appsService = InstalledAppsService();
       appsService.setAppsForTesting([
         const InstalledApp(package: 'com.bt.bms', label: 'BookMyShow'),
-        const InstalledApp(package: 'com.google.android.apps.youtube.music', label: 'YT Music'),
-        const InstalledApp(package: 'com.google.android.youtube', label: 'YouTube'),
+        const InstalledApp(
+          package: 'com.google.android.apps.youtube.music',
+          label: 'YT Music',
+        ),
+        const InstalledApp(
+          package: 'com.google.android.youtube',
+          label: 'YouTube',
+        ),
         const InstalledApp(package: 'com.spotify.music', label: 'Spotify'),
       ]);
       intentService = MockFailingIntentService();
-      tool = intentTool(service: intentService, installedAppsService: appsService);
+      tool = intentTool(
+        service: intentService,
+        installedAppsService: appsService,
+      );
     });
 
     test('launches app and formats human label in result output', () async {
@@ -116,28 +156,43 @@ void main() {
       expect(result.output, contains('Launched app: BookMyShow (com.bt.bms'));
     });
 
-    test('returns top matching installed apps when target package is not found', () async {
-      const call = ToolCall(
-        id: '3',
-        name: 'intent',
-        arguments: {'action': 'open_app', 'package': 'com.bookmyshow'},
-      );
-      final result = await tool.handler(call);
-      expect(result.ok, isFalse);
-      expect(result.errorMessage, contains('Failed to launch app "com.bookmyshow": package not found'));
-      expect(result.errorMessage, contains('Top matching installed apps on this device:'));
-      expect(result.errorMessage, contains('BookMyShow (com.bt.bms)'));
-    });
+    test(
+      'returns top matching installed apps when target package is not found',
+      () async {
+        const call = ToolCall(
+          id: '3',
+          name: 'intent',
+          arguments: {'action': 'open_app', 'package': 'com.bookmyshow'},
+        );
+        final result = await tool.handler(call);
+        expect(result.ok, isFalse);
+        expect(
+          result.errorMessage,
+          contains('Failed to launch app "com.bookmyshow": package not found'),
+        );
+        expect(
+          result.errorMessage,
+          contains('Top matching installed apps on this device:'),
+        );
+        expect(result.errorMessage, contains('BookMyShow (com.bt.bms)'));
+      },
+    );
 
-    test('returns suggestions when model guesses wrong yt music package', () async {
-      const call = ToolCall(
-        id: '4',
-        name: 'intent',
-        arguments: {'action': 'open_app', 'package': 'com.youtube.music'},
-      );
-      final result = await tool.handler(call);
-      expect(result.ok, isFalse);
-      expect(result.errorMessage, contains('YT Music (com.google.android.apps.youtube.music)'));
-    });
+    test(
+      'returns suggestions when model guesses wrong yt music package',
+      () async {
+        const call = ToolCall(
+          id: '4',
+          name: 'intent',
+          arguments: {'action': 'open_app', 'package': 'com.youtube.music'},
+        );
+        final result = await tool.handler(call);
+        expect(result.ok, isFalse);
+        expect(
+          result.errorMessage,
+          contains('YT Music (com.google.android.apps.youtube.music)'),
+        );
+      },
+    );
   });
 }

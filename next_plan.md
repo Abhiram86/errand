@@ -10,11 +10,11 @@ The original design (one `intent` tool, second MethodChannel, zero deps) shipped
 
 ### Tool surface — grew from 6 to 17 curated actions
 
-`open_url`, `search`, `open_app`, `open_maps`, `dial`, `email`, `alarm`, `timer`, `calendar_event`, `media_play`, `share`, `wallpaper`, `uninstall`, `settings_panel` (+`panel`), `settings` (+`page`), `system` (+`setting`/`value`), `intent`.
+`open_file`, `open_url`, `open_app`, `settings`, `intent`, with URI-style legacy aliases for older conversations. Custom Android actions such as alarms, timers, calendar insertion, sharing, wallpaper, uninstall, and settings panels use normalized `action:"intent"` requests with exact target-specific fields.
 
 Plus a **generic escape hatch**: `action:"intent"` accepts raw `android_action` strings (`android.settings.*`, third-party actions) so new apps need zero code changes. Design principle: *curated actions → generic android_action → honest failure*. No per-app pattern matching.
 
-> **Sep 2026 update (`225b599`):** unified to 5 core actions — `open_file` (new, `FileProvider` + MIME resolution), `open_url`, `open_app`, `settings`, `intent` — with backward-compatible routing for legacy actions (`search`/`dial`/`open_maps`/`email` → `open_url`; `calendar_event`/`media_play`/`share`/`wallpaper`/`uninstall`/`settings_panel` → generic). `alarm`/`timer`/`system` (dark-mode toggle) removed; UI toggles go through `act`. Native `launch` is BAL-safe (`PendingIntent` + a11y-context fallback), reports chooser sheets, and `bringToFront` restores Errand after `screen`/`act` work.
+> **Sep 2026 update (`225b599`):** unified to 5 core actions — `open_file` (new, `FileProvider` + MIME resolution), `open_url`, `open_app`, `settings`, `intent` — with URI-style legacy aliases (`search`/`dial`/`open_maps`/`email` → `open_url`). Custom Android actions now pass through normalized typed fields with no alarm/timer/calendar synthesis. Native `launch` is BAL-safe (`PendingIntent` + a11y-context fallback), reports chooser sheets, and `bringToFront` restores Errand after `screen`/`act` work.
 
 ### Hardening beyond original plan
 

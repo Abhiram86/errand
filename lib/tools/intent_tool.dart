@@ -18,34 +18,29 @@ Tool intentTool({
   return Tool(
     name: 'intent',
     description:
-        'Interacts with external Android apps, files, URLs, and settings. '
+        'Interacts with external Android apps, files, URLs, settings, and Android intents. '
         'Supports opening local files (images, audio, videos, PDFs), opening URLs or URI schemes '
         '(https, tel, mailto, geo), launching apps by package, navigating system settings pages, '
-        'or sending custom intents.',
+        'or sending a custom Android intent. For action:"intent", pass the exact Android '
+        'action constant, data URI, MIME type, package, and typed extras required by the target app. '
+        'Errand does not infer or synthesize app-specific fields.',
     parameters: {
       'type': 'object',
       'properties': {
         'action': {
           'type': 'string',
-          'enum': [
-            'open_file',
-            'open_url',
-            'open_app',
-            'settings',
-            'intent',
-          ],
+          'enum': ['open_file', 'open_url', 'open_app', 'settings', 'intent'],
           'description':
               'Action to perform: '
               'open_file (view local audio/image/video/pdf/file on device), '
               'open_url (open web URL, web search, or tel/mailto/geo scheme), '
               'open_app (launch installed app by package name), '
               'settings (open Android settings page), '
-              'intent (send custom Android intent).',
+              'intent (send a custom Android intent; provide exact target fields).',
         },
         'path': {
           'type': 'string',
-          'description':
-              'Absolute file path on device for "open_file" (e.g. /storage/emulated/0/Download/song.mp3).',
+          'description': 'Absolute file path on device for "open_file" (e.g. /storage/emulated/0/Download/song.mp3).',
         },
         'url': {
           'type': 'string',
@@ -55,8 +50,7 @@ Tool intentTool({
         },
         'package': {
           'type': 'string',
-          'description':
-              'Android package name for "open_app" (e.g. com.spotify.music, com.android.chrome) or pinning intent.',
+          'description': 'Android package name for "open_app" (e.g. com.spotify.music, com.android.chrome) or pinning intent.',
         },
         'page': {
           'type': 'string',
@@ -67,17 +61,25 @@ Tool intentTool({
         'android_action': {
           'type': 'string',
           'description':
-              'Raw Android intent action constant for "intent" (e.g. android.settings.DISPLAY_SETTINGS, '
-              'android.intent.action.SEND).',
+              'Exact Android intent action constant for "intent" (e.g. '
+              'android.settings.DISPLAY_SETTINGS, android.intent.action.SET_ALARM, '
+              'android.intent.action.INSERT). Use the exact target contract; do not shorten '
+              'extra keys. Alarm uses android.intent.extra.alarm.HOUR and '
+              'android.intent.extra.alarm.MINUTES (plural). Calendar insertion uses '
+              'content://com.android.calendar/events.',
         },
         'type': {
           'type': 'string',
-          'description':
-              'Optional MIME type (e.g. audio/mpeg, application/pdf). If omitted for open_file, auto-detected from file extension.',
+          'description': 'Optional MIME type (e.g. audio/mpeg, application/pdf). If omitted for open_file, auto-detected from file extension.',
         },
         'extras': {
           'type': 'object',
-          'description': 'Optional intent extras as string map for "intent".',
+          'description':
+              'Optional typed Android extras for "intent". Keys and value types must match the '
+              'target app contract. Values may be strings, booleans, integers, numbers, or arrays '
+              'of strings. For example, calendar timestamps are milliseconds since epoch and '
+              'allDay is a boolean; alarm keys use the android.intent.extra.alarm.* names. '
+              'No aliases are generated.',
         },
       },
       'required': ['action'],
@@ -132,7 +134,8 @@ Future<ToolCallResult> handleIntentAction(
     case 'intent':
       return await _genericIntent(call, svc, a11y);
 
-    // Backward compatibility for persisted chat actions:
+    // Backward compatibility for URI-style actions that are equivalent to
+    // open_url. Custom Android actions must use action:"intent" explicitly.
     case 'search':
       return await _openUrl(call, svc, a11y);
     case 'dial':
@@ -141,7 +144,10 @@ Future<ToolCallResult> handleIntentAction(
         ToolCall(
           id: call.id,
           name: call.name,
-          arguments: {...call.arguments, 'url': 'tel:${Uri.encodeComponent(query)}'},
+          arguments: {
+            ...call.arguments,
+            'url': 'tel:${Uri.encodeComponent(query)}',
+          },
         ),
         svc,
         a11y,
@@ -152,13 +158,17 @@ Future<ToolCallResult> handleIntentAction(
         ToolCall(
           id: call.id,
           name: call.name,
-          arguments: {...call.arguments, 'url': 'geo:0,0?q=${Uri.encodeQueryComponent(query)}'},
+          arguments: {
+            ...call.arguments,
+            'url': 'geo:0,0?q=${Uri.encodeQueryComponent(query)}',
+          },
         ),
         svc,
         a11y,
       );
     case 'email':
-      final to = (call.arguments['to'] as String?)?.trim() ??
+      final to =
+          (call.arguments['to'] as String?)?.trim() ??
           (call.arguments['query'] as String?)?.trim() ??
           '';
       final subject = (call.arguments['subject'] as String?)?.trim();
@@ -180,14 +190,6 @@ Future<ToolCallResult> handleIntentAction(
         svc,
         a11y,
       );
-    case 'calendar_event':
-    case 'media_play':
-    case 'share':
-    case 'wallpaper':
-    case 'uninstall':
-    case 'settings_panel':
-      return await _genericIntent(call, svc, a11y);
-
     default:
       return ToolCallResult.failure(
         call.id,
@@ -208,11 +210,7 @@ const _reopenableActions = {
   'search',
   'open_maps',
   'dial',
-  'media_play',
   'email',
-  'share',
-  'wallpaper',
-  'settings_panel',
 };
 
 /// Android intent actions that merely view or open a surface.
@@ -233,8 +231,8 @@ bool isReopenable(ToolMessage message) {
   if (_reopenableActions.contains(action)) return true;
 
   if (action == 'intent') {
-    final androidAction =
-        (message.tool.args['android_action'] as String?)?.trim();
+    final androidAction = (message.tool.args['android_action'] as String?)
+        ?.trim();
     if (androidAction == null || androidAction.isEmpty) return true;
     return _viewStyleAndroidActions.contains(androidAction) ||
         androidAction.startsWith('android.settings.');
@@ -257,15 +255,47 @@ Future<String> replayIntentAction(Map<String, dynamic> args) async {
   }
 }
 
-Map<String, String>? _parseStringMap(dynamic raw) {
-  if (raw is! Map) return null;
-  final result = <String, String>{};
+class _ExtrasParseResult {
+  final Map<String, dynamic>? values;
+  final String? error;
+
+  const _ExtrasParseResult({this.values, this.error});
+}
+
+_ExtrasParseResult _parseExtras(dynamic raw) {
+  if (raw == null) return const _ExtrasParseResult();
+  if (raw is! Map) {
+    return const _ExtrasParseResult(
+      error: '"extras" must be an object whose values are typed primitives',
+    );
+  }
+
+  final result = <String, dynamic>{};
+  final invalid = <String>[];
   raw.forEach((key, val) {
-    if (key != null && val != null) {
-      result[key.toString()] = val.toString();
+    if (val == null) return;
+    if (key is String && _isSupportedExtraValue(val)) {
+      result[key.toString()] = val;
+    } else {
+      invalid.add(key?.toString() ?? '<null>');
     }
   });
-  return result.isEmpty ? null : result;
+
+  if (invalid.isNotEmpty) {
+    return _ExtrasParseResult(
+      error:
+          'Unsupported intent extra value for key(s): ${invalid.join(", ")}. '
+          'Use only string, boolean, integer/number, or string-array values.',
+    );
+  }
+  return _ExtrasParseResult(values: result.isEmpty ? null : result);
+}
+
+bool _isSupportedExtraValue(dynamic value) {
+  if (value == null) return false;
+  if (value is String || value is bool || value is num) return true;
+  if (value is List) return value.every((item) => item is String);
+  return false;
 }
 
 /// Common Android settings pages -> intent actions.
@@ -338,14 +368,26 @@ Future<ToolCallResult> _openSettingsPage(
   try {
     final res = await svc.launchAction('intent', androidAction: androidAction);
     final notice = await _maybePausedNotice(a11y, '$key settings');
-    return ToolCallResult(id: call.id, ok: true, output: 'Opened $key settings ($res)$notice');
+    return ToolCallResult(
+      id: call.id,
+      ok: true,
+      output: 'Opened $key settings ($res)$notice',
+    );
   } on PlatformException catch (e) {
-    return ToolCallResult.failure(call.id, 'Failed to open $key settings: ${e.message}');
+    return ToolCallResult.failure(
+      call.id,
+      'Failed to open $key settings: ${e.message}',
+    );
   }
 }
 
-Future<ToolCallResult> _openFile(ToolCall call, IntentService svc, A11yService? a11y) async {
-  final rawPath = (call.arguments['path'] as String?)?.trim() ??
+Future<ToolCallResult> _openFile(
+  ToolCall call,
+  IntentService svc,
+  A11yService? a11y,
+) async {
+  final rawPath =
+      (call.arguments['path'] as String?)?.trim() ??
       (call.arguments['url'] as String?)?.trim() ??
       (call.arguments['query'] as String?)?.trim();
 
@@ -360,7 +402,11 @@ Future<ToolCallResult> _openFile(ToolCall call, IntentService svc, A11yService? 
 
   final pkg = call.arguments['package'] as String?;
   final type = call.arguments['type'] as String?;
-  final extras = _parseStringMap(call.arguments['extras']);
+  final parsedExtras = _parseExtras(call.arguments['extras']);
+  if (parsedExtras.error != null) {
+    return ToolCallResult.failure(call.id, parsedExtras.error!);
+  }
+  final extras = parsedExtras.values;
 
   try {
     final res = await svc.launchAction(
@@ -384,8 +430,13 @@ Future<ToolCallResult> _openFile(ToolCall call, IntentService svc, A11yService? 
   }
 }
 
-Future<ToolCallResult> _openUrl(ToolCall call, IntentService svc, A11yService? a11y) async {
-  final rawUrl = (call.arguments['url'] as String?)?.trim() ??
+Future<ToolCallResult> _openUrl(
+  ToolCall call,
+  IntentService svc,
+  A11yService? a11y,
+) async {
+  final rawUrl =
+      (call.arguments['url'] as String?)?.trim() ??
       (call.arguments['path'] as String?)?.trim();
 
   if (rawUrl == null || rawUrl.isEmpty) {
@@ -396,14 +447,25 @@ Future<ToolCallResult> _openUrl(ToolCall call, IntentService svc, A11yService? a
           'https://www.google.com/search?q=${Uri.encodeQueryComponent(query)}';
       final pkg = call.arguments['package'] as String?;
       try {
-        final res =
-            await svc.launchAction('open_url', data: searchUrl, package: pkg);
-        final notice = await _maybePausedNotice(a11y, 'web search for "$query"');
+        final res = await svc.launchAction(
+          'open_url',
+          data: searchUrl,
+          package: pkg,
+        );
+        final notice = await _maybePausedNotice(
+          a11y,
+          'web search for "$query"',
+        );
         return ToolCallResult(
-            id: call.id, ok: true, output: 'Searched web for "$query": $res$notice');
+          id: call.id,
+          ok: true,
+          output: 'Searched web for "$query": $res$notice',
+        );
       } on PlatformException catch (e) {
         return ToolCallResult.failure(
-            call.id, 'Web search failed: ${e.message}');
+          call.id,
+          'Web search failed: ${e.message}',
+        );
       }
     }
     return ToolCallResult.failure(call.id, 'Missing "url" for open_url');
@@ -432,12 +494,18 @@ Future<ToolCallResult> _openUrl(ToolCall call, IntentService svc, A11yService? a
     final scheme = uri.scheme.toLowerCase();
     if (scheme == 'javascript') {
       return ToolCallResult.failure(
-          call.id, 'Blocked unsafe URL scheme: "$scheme"');
+        call.id,
+        'Blocked unsafe URL scheme: "$scheme"',
+      );
     }
   }
 
   final pkg = call.arguments['package'] as String?;
-  final extras = _parseStringMap(call.arguments['extras']);
+  final parsedExtras = _parseExtras(call.arguments['extras']);
+  if (parsedExtras.error != null) {
+    return ToolCallResult.failure(call.id, parsedExtras.error!);
+  }
+  final extras = parsedExtras.values;
 
   try {
     final res = await svc.launchAction(
@@ -448,7 +516,10 @@ Future<ToolCallResult> _openUrl(ToolCall call, IntentService svc, A11yService? a
     );
     final notice = await _maybePausedNotice(a11y, 'URL $url');
     return ToolCallResult(
-        id: call.id, ok: true, output: 'Opened URL: $url ($res)$notice');
+      id: call.id,
+      ok: true,
+      output: 'Opened URL: $url ($res)$notice',
+    );
   } on PlatformException catch (e) {
     return ToolCallResult.failure(call.id, 'Failed to open URL: ${e.message}');
   }
@@ -482,8 +553,9 @@ Future<ToolCallResult> _openApp(
   } catch (e) {
     final matches = appsSvc.findBestMatches(rawPkg, limit: 10);
     if (matches.isNotEmpty) {
-      final suggestions =
-          matches.map((a) => '- ${a.label} (${a.package})').join('\n');
+      final suggestions = matches
+          .map((a) => '- ${a.label} (${a.package})')
+          .join('\n');
       return ToolCallResult.failure(
         call.id,
         'Failed to launch app "$rawPkg": package not found or cannot be launched.\n'
@@ -499,85 +571,30 @@ Future<ToolCallResult> _openApp(
   }
 }
 
-const _androidActions = <String, String>{
-  'calendar_event': 'android.intent.action.INSERT',
-  'media_play': 'android.media.action.MEDIA_PLAY_FROM_SEARCH',
-  'share': 'android.intent.action.SEND',
-  'wallpaper': 'android.intent.action.SET_WALLPAPER',
-  'uninstall': 'android.intent.action.DELETE',
-  'settings_panel': 'android.settings.panel.action.INTERNET_CONNECTIVITY',
-};
-
-const _panelActions = <String, String>{
-  'internet': 'android.settings.panel.action.INTERNET_CONNECTIVITY',
-  'wifi': 'android.settings.panel.action.WIFI',
-  'volume': 'android.settings.panel.action.VOLUME',
-  'nfc': 'android.settings.panel.action.NFC',
-};
-
-Future<ToolCallResult> _genericIntent(ToolCall call, IntentService svc, A11yService? a11y) async {
-  final action = call.arguments['action'] as String;
-  final pkg = call.arguments['package'] as String?;
-  final extras = _parseStringMap(call.arguments['extras']) ?? {};
-  final type = call.arguments['type'] as String?;
-  final query = (call.arguments['query'] as String?)?.trim();
-  final url = (call.arguments['url'] as String?)?.trim() ??
+Future<ToolCallResult> _genericIntent(
+  ToolCall call,
+  IntentService svc,
+  A11yService? a11y,
+) async {
+  final androidAction = (call.arguments['android_action'] as String?)?.trim();
+  final data =
+      (call.arguments['url'] as String?)?.trim() ??
       (call.arguments['path'] as String?)?.trim();
-  final rawAction = (call.arguments['android_action'] as String?)?.trim();
+  final pkg = (call.arguments['package'] as String?)?.trim();
+  final type = (call.arguments['type'] as String?)?.trim();
+  final parsedExtras = _parseExtras(call.arguments['extras']);
+  if (parsedExtras.error != null) {
+    return ToolCallResult.failure(call.id, parsedExtras.error!);
+  }
+  final extras = parsedExtras.values;
 
-  String? androidAction = rawAction ?? _androidActions[action];
-  String? mimeOverride;
-  String? targetPackage = pkg;
-  String? data = url;
-
-  if (action == 'settings_panel') {
-    final panel = call.arguments['panel'] as String? ?? 'internet';
-    androidAction = _panelActions[panel];
-    if (androidAction == null) {
-      return ToolCallResult.failure(
-        call.id,
-        'Unknown panel "$panel". Valid panels: ${_panelActions.keys.join(", ")}',
-      );
-    }
-  } else if (action == 'calendar_event') {
-    if (query == null || query.isEmpty) {
-      return ToolCallResult.failure(
-          call.id, 'Provide "query" as event title for calendar_event');
-    }
-    extras['title'] = query;
-    data = 'content://com.android.calendar/events';
-  } else if (action == 'media_play') {
-    if (query == null || query.isEmpty) {
-      return ToolCallResult.failure(
-          call.id, 'Provide "query" e.g. artist/song for media_play');
-    }
-    extras['query'] = query;
-  } else if (action == 'share') {
-    final text = query ??
-        call.arguments['body'] as String? ??
-        call.arguments['url'] as String?;
-    if (text == null || text.isEmpty) {
-      return ToolCallResult.failure(
-          call.id, 'Provide "query" (or body/url) text to share');
-    }
-    extras['android.intent.extra.TEXT'] = text;
-    if (type == null || type.isEmpty) {
-      mimeOverride = 'text/plain';
-    }
-  } else if (action == 'uninstall') {
-    if (pkg == null || pkg.isEmpty) {
-      return ToolCallResult.failure(
-          call.id, 'Provide "package" to uninstall, e.g. com.example.app');
-    }
-    data = 'package:$pkg';
-    targetPackage = null;
-  } else if (action == 'intent') {
-    if ((data == null || data.isEmpty) && (androidAction == null || androidAction.isEmpty)) {
-      return ToolCallResult.failure(
-        call.id,
-        'Provide "url" (data Uri) or "android_action" (raw intent action) for generic intent',
-      );
-    }
+  if ((data == null || data.isEmpty) &&
+      (androidAction == null || androidAction.isEmpty)) {
+    return ToolCallResult.failure(
+      call.id,
+      'Missing intent target. Provide "android_action" and/or "url" (data URI). '
+      'Provide exact target-specific extras in "extras"; Errand does not infer them.',
+    );
   }
 
   try {
@@ -585,14 +602,22 @@ Future<ToolCallResult> _genericIntent(ToolCall call, IntentService svc, A11yServ
       'intent',
       androidAction: androidAction,
       data: data,
-      package: targetPackage,
-      extras: extras.isEmpty ? null : extras,
-      type: mimeOverride ?? type,
+      package: pkg,
+      extras: extras,
+      type: type,
     );
-    final notice = await _maybePausedNotice(a11y, '$action intent');
+    final notice = await _maybePausedNotice(a11y, 'custom intent');
     return ToolCallResult(
-        id: call.id, ok: true, output: 'Sent $action intent ($res)$notice');
+      id: call.id,
+      ok: true,
+      output:
+          'Dispatched custom intent ($res)$notice. Android launch succeeded, but the target app\'s '
+          'operation or saved state is not verified by this tool.',
+    );
   } on PlatformException catch (e) {
-    return ToolCallResult.failure(call.id, 'Failed $action intent: ${e.message}');
+    return ToolCallResult.failure(
+      call.id,
+      'Failed custom intent: ${e.message}',
+    );
   }
 }
