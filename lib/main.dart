@@ -2377,70 +2377,94 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   Widget _buildMessageList() {
-    return SelectionArea(
-      child: NotificationListener<ScrollNotification>(
-      onNotification: (notification) {
-        if (notification.depth == 0 &&
-            !_busy &&
-            shouldLoadMore(notification, PagingEdge.leading)) {
-          _loadOlderMessages();
-        }
-        return false;
-      },
-      child: ListView.builder(
-        controller: _scroll,
-        padding: const EdgeInsets.all(16),
-        itemCount: _messages.length + (_loadingOlderMessages ? 1 : 0),
-        itemBuilder: (context, i) {
-          if (_loadingOlderMessages && i == 0) {
-            return const LoadMoreIndicator(label: 'Loading earlier messages');
+      final displayItems = groupMessagesForDisplay(_messages);
+      return SelectionArea(
+        child: NotificationListener<ScrollNotification>(
+        onNotification: (notification) {
+          if (notification.depth == 0 &&
+              !_busy &&
+              shouldLoadMore(notification, PagingEdge.leading)) {
+            _loadOlderMessages();
           }
-          final index = _loadingOlderMessages ? i - 1 : i;
-          final message = _messages[index];
-          final shouldAnimate = !_animatedMessageIds.contains(message.id);
-          if (shouldAnimate) {
-            _animatedMessageIds.add(message.id);
-          }
-
-          final Widget bubbleWidget;
-          if (message is CompactedNoticeMessage) {
-            bubbleWidget = CompactedDividerBubble(
-              key: ValueKey(message.id),
-              message: message,
-            );
-          } else if (message is ToolMessage) {
-            bubbleWidget = ToolMessageBubble(
-              key: ValueKey(message.id),
-              message: message,
-            );
-          } else {
-            // Regenerate sits on the LAST assistant bubble of each user-turn
-            // response (the end-of-response step), not just the literal last
-            // message of the conversation. Regenerating an older turn also
-            // drops every later turn — same semantics as edit-resend.
-            final regenerateUserId = !_busy
-                ? _regenerateTargetFor(index)
-                : null;
-            bubbleWidget = MessageBubble(
-              key: ValueKey(message.id),
-              message: message,
-              onEdit:
-                  message is UserMessage ? () => _editUserMessage(message) : null,
-              onRegenerate: regenerateUserId == null
-                  ? null
-                  : () => _regenerate(regenerateUserId),
-            );
-          }
-
-          return SubtleFadeIn(
-            key: ValueKey('fade_${message.id}'),
-            animate: shouldAnimate,
-            child: bubbleWidget,
-          );
+          return false;
         },
-      ),
+        child: ListView.builder(
+          controller: _scroll,
+          padding: const EdgeInsets.all(16),
+          itemCount: displayItems.length + (_loadingOlderMessages ? 1 : 0),
+          itemBuilder: (context, i) {
+            if (_loadingOlderMessages && i == 0) {
+              return const LoadMoreIndicator(label: 'Loading earlier messages');
+            }
+            final index = _loadingOlderMessages ? i - 1 : i;
+            final item = displayItems[index];
+            final shouldAnimate = !_animatedMessageIds.contains(item.id);
+            if (shouldAnimate) {
+              _animatedMessageIds.add(item.id);
+            }
+
+            final Widget bubbleWidget;
+            if (item is ToolGroupDisplayItem) {
+              final isLatestActive =
+                  _isLatestActiveToolGroup(displayItems, index);
+              final isRunning =
+                  _busy && isLatestActive && _workingText.isEmpty;
+              bubbleWidget = ToolGroupBubble(
+                key: ValueKey(item.id),
+                tools: item.tools,
+                isFinished: !isRunning,
+              );
+            } else if (item is SingleMessageDisplayItem) {
+              final message = item.message;
+              if (message is CompactedNoticeMessage) {
+                bubbleWidget = CompactedDividerBubble(
+                  key: ValueKey(message.id),
+                  message: message,
+                );
+              } else {
+                // Regenerate sits on the LAST assistant bubble of each user-turn
+                // response (the end-of-response step), not just the literal last
+                // message of the conversation. Regenerating an older turn also
+                // drops every later turn — same semantics as edit-resend.
+                final regenerateUserId = !_busy
+                    ? _regenerateTargetFor(item.originalIndex)
+                    : null;
+                bubbleWidget = MessageBubble(
+                  key: ValueKey(message.id),
+                  message: message,
+                  onEdit:
+                      message is UserMessage ? () => _editUserMessage(message) : null,
+                  onRegenerate: regenerateUserId == null
+                      ? null
+                      : () => _regenerate(regenerateUserId),
+                );
+              }
+            } else {
+              bubbleWidget = const SizedBox.shrink();
+            }
+
+            return SubtleFadeIn(
+              key: ValueKey('fade_${item.id}'),
+              animate: shouldAnimate,
+              child: bubbleWidget,
+            );
+          },
+        ),
       ),
     );
+  }
+
+  bool _isLatestActiveToolGroup(List<ChatDisplayItem> items, int index) {
+    for (var j = index + 1; j < items.length; j++) {
+      final following = items[j];
+      if (following is ToolGroupDisplayItem) return false;
+      if (following is SingleMessageDisplayItem) {
+        if (following.message.id != _workingMessageId) {
+          return false;
+        }
+      }
+    }
+    return true;
   }
 
   String _formatTokens(int tokens) {
