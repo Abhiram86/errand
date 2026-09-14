@@ -8,13 +8,15 @@ import '../models/llm_provider.dart';
 import '../models/model_option.dart';
 import '../services/a11y_service.dart';
 import '../services/app_settings.dart';
+import '../services/memory_service.dart';
 import '../services/model_catalog.dart';
 import '../theme/app_colors.dart';
+import '../types/memory.dart';
 
 /// Modal sheet for runtime configuration:
 /// - Providers: Manage LLM providers (OpenCode Zen, OpenRouter, Groq, BYOK/Custom),
 ///   API tokens, base URLs, active provider selection, and connection testing.
-/// - Tools: Search API keys (Tavily).
+/// - Tools: Search API keys (Tavily) and stored user memories.
 /// - Local: Attached files for the current conversation.
 ///
 /// Pops with `true` when configuration changed so the caller can reload the
@@ -68,6 +70,7 @@ class _SettingsSheetState extends State<_SettingsSheet>
   bool _a11yEnabled = false;
   late List<String> _localAttached;
   bool _picking = false;
+  List<UserMemory> _memories = const [];
 
   @override
   void initState() {
@@ -107,19 +110,41 @@ class _SettingsSheetState extends State<_SettingsSheet>
     });
   }
 
+  Future<List<UserMemory>> _safeLoadMemories() async {
+    try {
+      return await MemoryService.instance.getAll();
+    } catch (_) {
+      return const [];
+    }
+  }
+
   Future<void> _load() async {
     final results = await Future.wait([
       AppSettingsService.instance.ensureLoaded(),
       A11yService().isEnabled(),
       A11yService().isSupported(),
+      _safeLoadMemories(),
     ]);
     if (!mounted) return;
     setState(() {
       _hasTavilyKey = AppSettingsService.instance.hasTavilyKey;
       _a11yEnabled = results[1] as bool;
       _a11ySupported = results[2] as bool;
+      _memories = results[3] as List<UserMemory>;
       _loaded = true;
     });
+  }
+
+  Future<void> _deleteMemory(String id) async {
+    try {
+      await MemoryService.instance.delete(id);
+      final updated = await _safeLoadMemories();
+      if (!mounted) return;
+      setState(() {
+        _memories = updated;
+        _settingsChanged = true;
+      });
+    } catch (_) {}
   }
 
   @override
@@ -540,6 +565,95 @@ class _SettingsSheetState extends State<_SettingsSheet>
           style: FilledButton.styleFrom(backgroundColor: kBubbleUser),
           child: const Text('Save Tool Key'),
         ),
+        const SizedBox(height: 20),
+        const Divider(color: kBorder),
+        const SizedBox(height: 16),
+        Row(
+          children: [
+            const Text(
+              'Memory',
+              style: TextStyle(
+                color: kText,
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(width: 8),
+            _statusChip(
+              configured: _memories.isNotEmpty,
+              label: '${_memories.length}',
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        const Text(
+          'Saved user facts and preferences.',
+          style: TextStyle(color: kMuted, fontSize: 12),
+        ),
+        const SizedBox(height: 12),
+        if (!_loaded)
+          const Center(
+            child: Padding(
+              padding: EdgeInsets.all(12),
+              child: SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ),
+          )
+        else if (_memories.isEmpty)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 8),
+            child: Text(
+              'No saved memories.',
+              style: TextStyle(
+                color: kMuted,
+                fontSize: 12,
+                fontStyle: FontStyle.italic,
+              ),
+            ),
+          )
+        else
+          Column(
+            children: [
+              for (final mem in _memories)
+                Container(
+                  margin: const EdgeInsets.only(bottom: 8),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: kInputBg,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: kBorder),
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          mem.about,
+                          style: const TextStyle(
+                            color: kText,
+                            fontSize: 13,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      IconButton(
+                        onPressed: () => _deleteMemory(mem.id),
+                        icon: const Icon(
+                          Icons.delete_outline_rounded,
+                          size: 18,
+                          color: kDanger,
+                        ),
+                        tooltip: 'Delete memory',
+                        visualDensity: VisualDensity.compact,
+                      ),
+                    ],
+                  ),
+                ),
+            ],
+          ),
       ],
     );
   }
