@@ -29,14 +29,14 @@ class LlmProvider {
     for (final preset in ProviderPresetType.values) {
       if (preset.id == id) return preset.fallbackModels;
     }
-    return ProviderPresetType.byok.fallbackModels;
+    return const [];
   }
 
   String get defaultBaseUrl {
     for (final preset in ProviderPresetType.values) {
       if (preset.id == id) return preset.defaultBaseUrl;
     }
-    return ProviderPresetType.byok.defaultBaseUrl;
+    return '';
   }
 
   LlmProvider copyWith({
@@ -96,100 +96,84 @@ class LlmProvider {
   }
 }
 
-/// The 4 presets requested: OpenCode Zen, OpenRouter, Groq, and BYOK (Custom).
+/// The default presets: OpenRouter, NVIDIA, and Groq.
 enum ProviderPresetType {
-  openCodeZen,
   openRouter,
-  groq,
-  byok;
+  nvidia,
+  groq;
 
   String get id {
     switch (this) {
-      case ProviderPresetType.openCodeZen:
-        return 'opencode_zen';
       case ProviderPresetType.openRouter:
         return 'openrouter';
+      case ProviderPresetType.nvidia:
+        return 'nvidia';
       case ProviderPresetType.groq:
         return 'groq';
-      case ProviderPresetType.byok:
-        return 'byok';
     }
   }
 
   String get displayName {
     switch (this) {
-      case ProviderPresetType.openCodeZen:
-        return 'OpenCode Zen';
       case ProviderPresetType.openRouter:
         return 'OpenRouter';
+      case ProviderPresetType.nvidia:
+        return 'NVIDIA';
       case ProviderPresetType.groq:
         return 'Groq';
-      case ProviderPresetType.byok:
-        return 'BYOK (Custom)';
     }
   }
 
   String get defaultBaseUrl {
     switch (this) {
-      case ProviderPresetType.openCodeZen:
-        return 'https://opencode.ai/zen/v1';
       case ProviderPresetType.openRouter:
         return 'https://openrouter.ai/api/v1';
+      case ProviderPresetType.nvidia:
+        return 'https://integrate.api.nvidia.com/v1';
       case ProviderPresetType.groq:
         return 'https://api.groq.com/openai/v1';
-      case ProviderPresetType.byok:
-        return 'https://api.openai.com/v1';
     }
   }
 
   String get keyHint {
     switch (this) {
-      case ProviderPresetType.openCodeZen:
-        return 'Bearer token';
       case ProviderPresetType.openRouter:
         return 'sk-or-v1-…';
+      case ProviderPresetType.nvidia:
+        return 'nvapi-…';
       case ProviderPresetType.groq:
         return 'gsk_…';
-      case ProviderPresetType.byok:
-        return 'API key or token';
     }
   }
 
   List<ModelOption> get fallbackModels {
     switch (this) {
-      case ProviderPresetType.openCodeZen:
+      case ProviderPresetType.openRouter:
+        return kFallbackModels;
+      case ProviderPresetType.nvidia:
         return const [
           ModelOption(
-            id: 'nemotron-3.5-lightning-free',
-            name: 'Nemotron 3.5 Lightning (Free)',
-            provider: 'OpenCode Zen',
+            id: 'meta/llama-3.3-70b-instruct',
+            name: 'Llama 3.3 70B Instruct',
+            provider: 'NVIDIA',
             inputModalities: ['text'],
             contextLength: 131072,
           ),
           ModelOption(
-            id: 'claude-sonnet-4-6',
-            name: 'Claude Sonnet 4.6',
-            provider: 'OpenCode Zen',
-            inputModalities: ['text', 'image'],
-            contextLength: 1000000,
-          ),
-          ModelOption(
-            id: 'gpt-5.4',
-            name: 'GPT-5.4',
-            provider: 'OpenCode Zen',
-            inputModalities: ['text', 'image'],
-            contextLength: 1000000,
-          ),
-          ModelOption(
-            id: 'ling-3.0-flash-fin-free',
-            name: 'Ling 3.0 Flash (Free)',
-            provider: 'OpenCode Zen',
+            id: 'nvidia/llama-3.1-nemotron-70b-instruct',
+            name: 'Nemotron 70B Instruct',
+            provider: 'NVIDIA',
             inputModalities: ['text'],
-            contextLength: 128000,
+            contextLength: 131072,
+          ),
+          ModelOption(
+            id: 'deepseek-ai/deepseek-r1',
+            name: 'DeepSeek R1',
+            provider: 'NVIDIA',
+            inputModalities: ['text'],
+            contextLength: 131072,
           ),
         ];
-      case ProviderPresetType.openRouter:
-        return kFallbackModels;
       case ProviderPresetType.groq:
         return const [
           ModelOption(
@@ -212,23 +196,6 @@ enum ProviderPresetType {
             provider: 'Groq',
             inputModalities: ['text'],
             contextLength: 32768,
-          ),
-        ];
-      case ProviderPresetType.byok:
-        return const [
-          ModelOption(
-            id: 'gpt-4o',
-            name: 'GPT-4o',
-            provider: 'OpenAI',
-            inputModalities: ['text', 'image'],
-            contextLength: 128000,
-          ),
-          ModelOption(
-            id: 'gpt-4o-mini',
-            name: 'GPT-4o mini',
-            provider: 'OpenAI',
-            inputModalities: ['text', 'image'],
-            contextLength: 128000,
           ),
         ];
     }

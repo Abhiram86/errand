@@ -59,6 +59,7 @@ final class AppSettingsService {
     _openRouterKey = await _readSecret(_kOpenRouterKey);
     _tavilyKey = await _readSecret(_kTavilyKey);
     _baseUrlOverride = await _readSecret(_kBaseUrlOverride);
+    _selectedModel = await _db.getSetting(_kSelectedModel);
 
     await _loadProviders();
     _cacheLoaded = true;
@@ -209,7 +210,7 @@ final class AppSettingsService {
     _activeProviderId = await _db.getSetting(_kActiveProviderId);
 
     if (rawJson == null || rawJson.trim().isEmpty) {
-      // Initialize the 4 default presets: OpenCode Zen, OpenRouter, Groq, BYOK
+      // Initialize the default presets: OpenRouter, NVIDIA, Groq
       _providers = _createDefaultPresets();
 
       // If legacy OpenRouter key or base URL override existed, migrate it
@@ -239,9 +240,15 @@ final class AppSettingsService {
       for (final item in decoded) {
         if (item is! Map<String, dynamic>) continue;
         var p = LlmProvider.fromJson(item);
-        if (p.id == ProviderPresetType.openCodeZen.id &&
-            (p.baseUrl == 'https://api.opencode.com/v1' || p.baseUrl.isEmpty)) {
-          p = p.copyWith(baseUrl: ProviderPresetType.openCodeZen.defaultBaseUrl);
+        // Remove legacy BYOK preset (custom providers are added via Add button)
+        if (p.id == 'byok' && p.isPreset) {
+          continue;
+        }
+        // Migrate legacy OpenCode Zen to NVIDIA preset
+        if (p.id == 'opencode_zen' || p.id == 'opencode') {
+          p = ProviderPresetType.nvidia.createProvider(
+            isDefault: p.isDefault,
+          );
         }
         final secretKey = '$_secretProviderKeyPrefix${p.id}.api_key';
         var key = await _readSecret(secretKey);
@@ -250,6 +257,13 @@ final class AppSettingsService {
           key = _openRouterKey;
         }
         list.add(p.copyWith(apiKey: key));
+      }
+
+      // Ensure standard presets exist
+      for (final preset in ProviderPresetType.values) {
+        if (!list.any((p) => p.id == preset.id)) {
+          list.add(preset.createProvider());
+        }
       }
 
       if (list.isEmpty) {
@@ -276,9 +290,8 @@ final class AppSettingsService {
   List<LlmProvider> _createDefaultPresets() {
     return [
       ProviderPresetType.openRouter.createProvider(isDefault: true),
-      ProviderPresetType.openCodeZen.createProvider(),
+      ProviderPresetType.nvidia.createProvider(),
       ProviderPresetType.groq.createProvider(),
-      ProviderPresetType.byok.createProvider(),
     ];
   }
 

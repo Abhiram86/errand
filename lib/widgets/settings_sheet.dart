@@ -14,7 +14,7 @@ import '../theme/app_colors.dart';
 import '../types/memory.dart';
 
 /// Modal sheet for runtime configuration:
-/// - Providers: Manage LLM providers (OpenCode Zen, OpenRouter, Groq, BYOK/Custom),
+/// - Providers: Manage LLM providers (OpenRouter, NVIDIA, Groq, Custom),
 ///   API tokens, base URLs, active provider selection, and connection testing.
 /// - Tools: Search API keys (Tavily) and stored user memories.
 /// - Local: Attached files for the current conversation.
@@ -747,7 +747,7 @@ class _SettingsSheetState extends State<_SettingsSheet>
   Future<void> _openAddProviderDialog(BuildContext context) async {
     final changed = await showDialog<bool>(
       context: context,
-      builder: (dialogCtx) => const _ProviderFormDialog(),
+      builder: (dialogCtx) => const ProviderFormDialog(),
     );
     if (changed == true && mounted) {
       setState(() => _settingsChanged = true);
@@ -760,7 +760,7 @@ class _SettingsSheetState extends State<_SettingsSheet>
   ) async {
     final changed = await showDialog<bool>(
       context: context,
-      builder: (dialogCtx) => _ProviderFormDialog(provider: provider),
+      builder: (dialogCtx) => ProviderFormDialog(provider: provider),
     );
     if (changed == true && mounted) {
       setState(() => _settingsChanged = true);
@@ -845,24 +845,22 @@ InputDecoration _inputDecoration({required String hint}) {
   );
 }
 
-class _ProviderFormDialog extends StatefulWidget {
+class ProviderFormDialog extends StatefulWidget {
   final LlmProvider? provider;
 
-  const _ProviderFormDialog({this.provider});
+  const ProviderFormDialog({super.key, this.provider});
 
   @override
-  State<_ProviderFormDialog> createState() => _ProviderFormDialogState();
+  State<ProviderFormDialog> createState() => _ProviderFormDialogState();
 }
 
-class _ProviderFormDialogState extends State<_ProviderFormDialog> {
+class _ProviderFormDialogState extends State<ProviderFormDialog> {
   late final TextEditingController _nameController;
   late final TextEditingController _baseUrlController;
   late final TextEditingController _keyController;
   bool _obscureKey = true;
   bool _testing = false;
   ConnectionTestResult? _testResult;
-
-  ProviderPresetType? _selectedPreset;
 
   @override
   void initState() {
@@ -871,28 +869,6 @@ class _ProviderFormDialogState extends State<_ProviderFormDialog> {
     _nameController = TextEditingController(text: p?.name ?? '');
     _baseUrlController = TextEditingController(text: p?.baseUrl ?? '');
     _keyController = TextEditingController(text: p?.apiKey ?? '');
-
-    if (p != null) {
-      for (final preset in ProviderPresetType.values) {
-        if (preset.id == p.id) {
-          _selectedPreset = preset;
-          break;
-        }
-      }
-    } else {
-      // Default to OpenCode Zen preset when creating
-      _selectPreset(ProviderPresetType.openCodeZen);
-    }
-  }
-
-  void _selectPreset(ProviderPresetType preset) {
-    setState(() {
-      _selectedPreset = preset;
-      if (widget.provider == null) {
-        _nameController.text = preset.displayName;
-        _baseUrlController.text = preset.defaultBaseUrl;
-      }
-    });
   }
 
   @override
@@ -914,8 +890,7 @@ class _ProviderFormDialogState extends State<_ProviderFormDialog> {
     });
 
     final service = ModelCatalogService();
-    final isOpenRouter = _selectedPreset == ProviderPresetType.openRouter ||
-        baseUrl.contains('openrouter.ai');
+    final isOpenRouter = baseUrl.contains('openrouter.ai');
 
     final result = await service.testConnection(
       baseUrl: baseUrl,
@@ -940,18 +915,9 @@ class _ProviderFormDialogState extends State<_ProviderFormDialog> {
     if (name.isEmpty || baseUrl.isEmpty) return;
 
     final existing = widget.provider;
-    final String id;
-    if (existing != null) {
-      id = existing.id;
-    } else if (_selectedPreset == ProviderPresetType.byok) {
-      // Multiple BYOK providers get unique IDs
-      id = 'byok_${DateTime.now().millisecondsSinceEpoch}';
-    } else if (_selectedPreset != null) {
-      final exists = AppSettingsService.instance.providers.any((p) => p.id == _selectedPreset!.id);
-      id = exists ? '${_selectedPreset!.id}_${DateTime.now().millisecondsSinceEpoch}' : _selectedPreset!.id;
-    } else {
-      id = 'byok_${DateTime.now().millisecondsSinceEpoch}';
-    }
+    final String id = existing != null
+        ? existing.id
+        : 'custom_${DateTime.now().millisecondsSinceEpoch}';
 
     final bool shouldClearKey = apiKey.isEmpty;
 
@@ -961,7 +927,7 @@ class _ProviderFormDialogState extends State<_ProviderFormDialog> {
       baseUrl: baseUrl,
       apiKey: shouldClearKey ? null : apiKey,
       isDefault: existing?.isDefault ?? false,
-      isPreset: _selectedPreset != null,
+      isPreset: existing?.isPreset ?? false,
       createdAt: existing?.createdAt ?? DateTime.now(),
       updatedAt: DateTime.now(),
     );
@@ -983,8 +949,7 @@ class _ProviderFormDialogState extends State<_ProviderFormDialog> {
           baseUrl: baseUrl,
           apiKey: apiKey,
           defaultProvider: name,
-          isOpenRouter: _selectedPreset == ProviderPresetType.openRouter ||
-              id == ProviderPresetType.openRouter.id ||
+          isOpenRouter: id == ProviderPresetType.openRouter.id ||
               baseUrl.contains('openrouter.ai'),
           forceRefresh: true,
         ).catchError((_) => <ModelOption>[]),
@@ -1028,38 +993,14 @@ class _ProviderFormDialogState extends State<_ProviderFormDialog> {
                 ),
               ],
             ),
-            const SizedBox(height: 12),
-            if (!isEditing) ...[
-              const Text('Select Preset',
-                  style: TextStyle(color: kMuted, fontSize: 12)),
-              const SizedBox(height: 6),
-              Wrap(
-                spacing: 8,
-                children: ProviderPresetType.values.map((preset) {
-                  final isSelected = _selectedPreset == preset;
-                  return ChoiceChip(
-                    label: Text(preset.displayName),
-                    selected: isSelected,
-                    onSelected: (selected) {
-                      if (selected) _selectPreset(preset);
-                    },
-                    selectedColor: kBubbleUser,
-                    labelStyle: TextStyle(
-                      color: isSelected ? Colors.white : kText,
-                      fontSize: 12,
-                    ),
-                  );
-                }).toList(),
-              ),
-              const SizedBox(height: 16),
-            ],
+            const SizedBox(height: 14),
             const Text('Provider Name',
                 style: TextStyle(color: kText, fontSize: 13)),
             const SizedBox(height: 6),
             TextField(
               controller: _nameController,
               style: const TextStyle(color: kText, fontSize: 14),
-              decoration: _inputDecoration(hint: 'OpenCode Zen, etc.'),
+              decoration: _inputDecoration(hint: 'e.g. Ollama, Mistral, Together AI'),
             ),
             const SizedBox(height: 14),
             const Text('Base URL',
@@ -1070,7 +1011,7 @@ class _ProviderFormDialogState extends State<_ProviderFormDialog> {
               keyboardType: TextInputType.url,
               style: const TextStyle(color: kText, fontSize: 14),
               decoration: _inputDecoration(
-                hint: 'https://opencode.ai/zen/v1',
+                hint: 'e.g. http://localhost:11434/v1 or https://api.openai.com/v1',
               ),
             ),
             const SizedBox(height: 14),
@@ -1102,7 +1043,7 @@ class _ProviderFormDialogState extends State<_ProviderFormDialog> {
               obscureText: _obscureKey,
               style: const TextStyle(color: kText, fontSize: 14),
               decoration: _inputDecoration(
-                hint: _selectedPreset?.keyHint ?? 'Enter token or API key',
+                hint: 'Enter token or API key',
               ).copyWith(
                 suffixIcon: IconButton(
                   icon: Icon(

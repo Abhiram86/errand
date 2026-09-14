@@ -157,7 +157,7 @@ class ModelCatalogService {
                     'Authorization': 'Bearer $apiKey',
                   },
                   body: jsonEncode({
-                    'model': firstModelId ?? 'gpt-4o',
+                    'model': firstModelId ?? 'openrouter/free',
                     'messages': [
                       {'role': 'user', 'content': 'ping'}
                     ],

@@ -319,7 +319,9 @@ class _ModelPickerDialogState extends State<_ModelPickerDialog> {
 
     final firstModel = initialModels.isNotEmpty
         ? initialModels.first.id
-        : 'gpt-4o';
+        : (provider.defaultModels.isNotEmpty
+            ? provider.defaultModels.first.id
+            : kDefaultModelId);
 
     final hasKey = provider.hasKey ||
         (provider.id == ProviderPresetType.openRouter.id &&

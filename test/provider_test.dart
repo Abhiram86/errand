@@ -19,28 +19,28 @@ void main() {
 
   tearDown(() => db.close());
 
-  test('initializes with the 4 default presets: OpenCode Zen, OpenRouter, Groq, BYOK', () async {
+  test('initializes with the 3 default presets: OpenRouter, NVIDIA, Groq', () async {
     await settings.ensureLoaded();
 
-    expect(settings.providers.length, 4);
+    expect(settings.providers.length, 3);
     final ids = settings.providers.map((p) => p.id).toList();
-    expect(ids, containsAll(['opencode_zen', 'openrouter', 'groq', 'byok']));
+    expect(ids, containsAll(['openrouter', 'nvidia', 'groq']));
   });
 
   test('saves API key encrypted per provider and marks configured', () async {
     await settings.ensureLoaded();
 
-    final zen = settings.providers.firstWhere((p) => p.id == 'opencode_zen');
-    expect(zen.hasKey, isFalse);
+    final nvidia = settings.providers.firstWhere((p) => p.id == 'nvidia');
+    expect(nvidia.hasKey, isFalse);
 
-    await settings.saveProvider(zen, apiKey: 'zen-secret-token');
+    await settings.saveProvider(nvidia, apiKey: 'nvapi-secret-token');
 
-    expect(settings.providers.firstWhere((p) => p.id == 'opencode_zen').hasKey, isTrue);
+    expect(settings.providers.firstWhere((p) => p.id == 'nvidia').hasKey, isTrue);
 
     // Verify raw database row does not have plaintext
-    final rawRow = await db.getSetting('secret.provider.opencode_zen.api_key');
+    final rawRow = await db.getSetting('secret.provider.nvidia.api_key');
     expect(rawRow, isNotNull);
-    expect(rawRow, isNot(contains('zen-secret-token')));
+    expect(rawRow, isNot(contains('nvapi-secret-token')));
 
     // Verify fresh reload decrypts successfully
     final reloaded = AppSettingsService(
@@ -50,8 +50,8 @@ void main() {
     );
     await reloaded.ensureLoaded();
 
-    final reloadedZen = reloaded.providers.firstWhere((p) => p.id == 'opencode_zen');
-    expect(reloadedZen.apiKey, 'zen-secret-token');
+    final reloadedNvidia = reloaded.providers.firstWhere((p) => p.id == 'nvidia');
+    expect(reloadedNvidia.apiKey, 'nvapi-secret-token');
   });
 
   test('can switch active provider', () async {
@@ -140,14 +140,14 @@ void main() {
     expect(settings.providers.firstWhere((p) => p.id == 'byok_1002').name, 'Custom Endpoint 2');
   });
 
-  test('OpenCode Zen has correct base URL https://opencode.ai/zen/v1 and default models', () async {
+  test('NVIDIA has correct base URL https://integrate.api.nvidia.com/v1 and default models', () async {
     await settings.ensureLoaded();
 
-    final zen = settings.providers.firstWhere((p) => p.id == 'opencode_zen');
-    expect(zen.baseUrl, 'https://opencode.ai/zen/v1');
-    expect(zen.defaultBaseUrl, 'https://opencode.ai/zen/v1');
-    expect(zen.defaultModels, isNotEmpty);
-    expect(zen.defaultModels.first.id, 'nemotron-3.5-lightning-free');
+    final nvidia = settings.providers.firstWhere((p) => p.id == 'nvidia');
+    expect(nvidia.baseUrl, 'https://integrate.api.nvidia.com/v1');
+    expect(nvidia.defaultBaseUrl, 'https://integrate.api.nvidia.com/v1');
+    expect(nvidia.defaultModels, isNotEmpty);
+    expect(nvidia.defaultModels.first.id, 'meta/llama-3.3-70b-instruct');
   });
 
   test('OpenRouter has openrouter/free router as the first default model', () async {
@@ -161,14 +161,14 @@ void main() {
 
   test('providers with keys appear first, keyless appear later, preserving relative order', () async {
     await settings.ensureLoaded();
-    // Initially all 4 presets are keyless
+    // Initially all 3 presets are keyless
     expect(settings.providers.every((p) => !p.hasKey), isTrue);
 
-    // Add a 5th provider (BYOK custom) with an API key
+    // Add a 4th provider (custom) with an API key
     final now = DateTime.now();
     final byokCustom = LlmProvider(
-      id: 'byok_custom_5th',
-      name: 'Custom 5th Provider',
+      id: 'custom_4th',
+      name: 'Custom 4th Provider',
       baseUrl: 'https://api.custom.com/v1',
       createdAt: now,
       updatedAt: now,
@@ -180,15 +180,12 @@ void main() {
     await settings.saveProvider(groq, apiKey: 'gsk_test');
 
     final ordered = settings.providers;
-    // Groq was earlier in original list than byokCustom, so between keyed providers:
-    // Groq (index 0), then byokCustom (index 1).
-    // Keyless follow after in original order: OpenRouter, OpenCode Zen, BYOK.
+    expect(ordered.length, 4);
     expect(ordered[0].id, 'groq');
-    expect(ordered[1].id, 'byok_custom_5th');
+    expect(ordered[1].id, 'custom_4th');
     expect(ordered[0].hasKey, isTrue);
     expect(ordered[1].hasKey, isTrue);
     expect(ordered[2].hasKey, isFalse);
     expect(ordered[3].hasKey, isFalse);
-    expect(ordered[4].hasKey, isFalse);
   });
 }

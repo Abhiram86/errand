@@ -197,6 +197,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    _selectedModel = AppSettingsService.instance.selectedModel;
     _activeConversation = _newDraftConversation();
     _llm = _createLlmClient(_selectedModel);
     _animatedMessageIds.addAll(_messages.map((m) => m.id));
@@ -255,7 +256,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     List<ModelOption> availableModels,
   ) {
     if (availableModels.isEmpty) {
-      return 'gpt-4o';
+      return provider.defaultModels.firstOrNull?.id ?? kDefaultModelId;
     }
 
     final isOpenRouter = provider.id == ProviderPresetType.openRouter.id ||
@@ -306,8 +307,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         ? cached
         : provider.defaultModels;
 
+    // Preserve the user's last selected model. Only pick a default if empty.
     var model = settings.selectedModel;
-    if (!availableModels.any((m) => m.id == model)) {
+    if (model.trim().isEmpty) {
       model = _pickDefaultModelForProvider(provider, availableModels);
       unawaited(settings.setSelectedModel(model));
     }
@@ -315,7 +317,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     setState(() {
       _selectedModel = model;
       _activeConversation.model = model;
-      _activeConversation.provider = provider.name;
+      _activeConversation.provider = _providerForModel(model) ?? provider.name;
       _models = availableModels;
       _llm.close();
       _llm = _createLlmClient(_selectedModel);
@@ -328,6 +330,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   /// immediately.
   Future<bool> _openSettings() async {
     if (_busy) return false;
+    final previousProviderId = AppSettingsService.instance.activeProvider.id;
     // Local tab shows both history (conversation inventory) and pending.
     final allAttached = <String>[
       ..._activeConversation.attachedFileUris,
@@ -360,13 +363,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     );
     if (changed && mounted) {
       final activeProvider = AppSettingsService.instance.activeProvider;
+      final providerChanged = activeProvider.id != previousProviderId;
       final cached = ModelCatalogService.getCachedModels(activeProvider.baseUrl);
       final availableModels = (cached != null && cached.isNotEmpty)
           ? cached
           : activeProvider.defaultModels;
 
       String modelToUse = _selectedModel;
-      if (!availableModels.any((m) => m.id == _selectedModel)) {
+      if (providerChanged) {
         modelToUse = _pickDefaultModelForProvider(activeProvider, availableModels);
         unawaited(AppSettingsService.instance.setSelectedModel(modelToUse));
       }
@@ -888,6 +892,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     final welcome = _welcomeMessages();
     _animatedMessageIds.clear();
     _animatedMessageIds.addAll(welcome.map((m) => m.id));
+
+    final defaultModel = AppSettingsService.instance.selectedModel;
+    _selectedModel = defaultModel;
+    _llm.close();
+    _llm = _createLlmClient(_selectedModel);
+
     setState(() {
       _messages = welcome;
       _activeConversation = _newDraftConversation();
