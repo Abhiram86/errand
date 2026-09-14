@@ -1408,6 +1408,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         hasTavilyKey: AppSettingsService.instance.hasTavilyKey,
         enableA11yTools: _a11ySupported,
         getCancelToken: () => _cancelToken,
+        currentConversationId: _activeConversation.id,
       );
 
       final budget = _getActiveBudget();

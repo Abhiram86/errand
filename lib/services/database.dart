@@ -96,8 +96,42 @@ class AppSettings extends Table {
   Set<Column<Object>> get primaryKey => {key};
 }
 
+/// Structured user memories persisted across conversations (schema v6).
+///
+/// Holds user facts, preferences, and guidelines. About, description, and
+/// keywords are model-facing content.
+@DataClassName('MemoryRow')
+class Memories extends Table {
+  TextColumn get id => text()();
+
+  /// Short semantic identifier (NOT a generic title).
+  TextColumn get about => text()();
+
+  /// Small but information-rich description giving context to understand/steer user intent.
+  TextColumn get description => text()();
+
+  /// JSON array of short generic keywords, max 10.
+  TextColumn get keywords => text()();
+
+  DateTimeColumn get createdAt => dateTime()();
+
+  DateTimeColumn get updatedAt => dateTime()();
+
+  /// Optional internal traceability field.
+  TextColumn get sourceConversationId => text().nullable()();
+
+  @override
+  Set<Column<Object>> get primaryKey => {id};
+}
+
 @DriftDatabase(
-  tables: [Conversations, ConversationMessages, ConversationAttachments, AppSettings],
+  tables: [
+    Conversations,
+    ConversationMessages,
+    ConversationAttachments,
+    AppSettings,
+    Memories,
+  ],
 )
 final class ErrandDatabase extends _$ErrandDatabase {
   ErrandDatabase._([QueryExecutor? executor])
@@ -111,13 +145,14 @@ final class ErrandDatabase extends _$ErrandDatabase {
       ErrandDatabase._(NativeDatabase.memory());
 
   @override
-  int get schemaVersion => 5;
+  int get schemaVersion => 6;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
     onCreate: (m) async {
       await m.createAll();
       await _createMessageIndexes(m);
+      await _createMemoryIndexes(m);
     },
     onUpgrade: (m, from, to) async {
       if (from < 2) {
@@ -144,6 +179,10 @@ final class ErrandDatabase extends _$ErrandDatabase {
         await m.addColumn(conversationMessages, conversationMessages.model);
         await m.addColumn(conversationMessages, conversationMessages.provider);
       }
+      if (from < 6) {
+        await m.createTable(memories);
+        await _createMemoryIndexes(m);
+      }
     },
   );
 
@@ -160,6 +199,15 @@ final class ErrandDatabase extends _$ErrandDatabase {
     await customStatement(
       'CREATE INDEX IF NOT EXISTS idx_conv_msg_sort '
       'ON conversation_messages (conversation_id, sort_order)',
+    );
+  }
+
+  /// Indexes backing memory queries:
+  /// - (updated_at DESC): recency sorting.
+  Future<void> _createMemoryIndexes(Migrator m) async {
+    await customStatement(
+      'CREATE INDEX IF NOT EXISTS idx_memories_updated_at '
+      'ON memories (updated_at DESC)',
     );
   }
 
@@ -321,6 +369,35 @@ final class ErrandDatabase extends _$ErrandDatabase {
   /// Removes a settings key. No-op when absent.
   Future<void> deleteSetting(String key) async {
     await (delete(appSettings)..where((s) => s.key.equals(key))).go();
+  }
+
+  // -- Memory CRUD --------------------------------------------------------
+
+  /// Loads all stored memories, ordered by recency (newest updated first).
+  Future<List<MemoryRow>> loadAllMemories() {
+    return (select(memories)
+          ..orderBy([(m) => OrderingTerm.desc(m.updatedAt)]))
+        .get();
+  }
+
+  /// Finds a single memory by its id.
+  Future<MemoryRow?> getMemoryById(String id) {
+    return (select(memories)..where((m) => m.id.equals(id))).getSingleOrNull();
+  }
+
+  /// Inserts a memory row.
+  Future<void> insertMemoryRow(MemoryRow row) {
+    return into(memories).insert(row);
+  }
+
+  /// Updates an existing memory row.
+  Future<void> updateMemoryRow(MemoryRow row) {
+    return (update(memories)..where((m) => m.id.equals(row.id))).write(row);
+  }
+
+  /// Deletes a memory by its id.
+  Future<int> deleteMemoryRow(String id) {
+    return (delete(memories)..where((m) => m.id.equals(id))).go();
   }
 
 

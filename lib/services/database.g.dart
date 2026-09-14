@@ -1910,6 +1910,494 @@ class AppSettingsCompanion extends UpdateCompanion<AppSettingRow> {
   }
 }
 
+class $MemoriesTable extends Memories
+    with TableInfo<$MemoriesTable, MemoryRow> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $MemoriesTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _idMeta = const VerificationMeta('id');
+  @override
+  late final GeneratedColumn<String> id = GeneratedColumn<String>(
+    'id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _aboutMeta = const VerificationMeta('about');
+  @override
+  late final GeneratedColumn<String> about = GeneratedColumn<String>(
+    'about',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _descriptionMeta = const VerificationMeta(
+    'description',
+  );
+  @override
+  late final GeneratedColumn<String> description = GeneratedColumn<String>(
+    'description',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _keywordsMeta = const VerificationMeta(
+    'keywords',
+  );
+  @override
+  late final GeneratedColumn<String> keywords = GeneratedColumn<String>(
+    'keywords',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _createdAtMeta = const VerificationMeta(
+    'createdAt',
+  );
+  @override
+  late final GeneratedColumn<DateTime> createdAt = GeneratedColumn<DateTime>(
+    'created_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.dateTime,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _updatedAtMeta = const VerificationMeta(
+    'updatedAt',
+  );
+  @override
+  late final GeneratedColumn<DateTime> updatedAt = GeneratedColumn<DateTime>(
+    'updated_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.dateTime,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _sourceConversationIdMeta =
+      const VerificationMeta('sourceConversationId');
+  @override
+  late final GeneratedColumn<String> sourceConversationId =
+      GeneratedColumn<String>(
+        'source_conversation_id',
+        aliasedName,
+        true,
+        type: DriftSqlType.string,
+        requiredDuringInsert: false,
+      );
+  @override
+  List<GeneratedColumn> get $columns => [
+    id,
+    about,
+    description,
+    keywords,
+    createdAt,
+    updatedAt,
+    sourceConversationId,
+  ];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'memories';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<MemoryRow> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('id')) {
+      context.handle(_idMeta, id.isAcceptableOrUnknown(data['id']!, _idMeta));
+    } else if (isInserting) {
+      context.missing(_idMeta);
+    }
+    if (data.containsKey('about')) {
+      context.handle(
+        _aboutMeta,
+        about.isAcceptableOrUnknown(data['about']!, _aboutMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_aboutMeta);
+    }
+    if (data.containsKey('description')) {
+      context.handle(
+        _descriptionMeta,
+        description.isAcceptableOrUnknown(
+          data['description']!,
+          _descriptionMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_descriptionMeta);
+    }
+    if (data.containsKey('keywords')) {
+      context.handle(
+        _keywordsMeta,
+        keywords.isAcceptableOrUnknown(data['keywords']!, _keywordsMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_keywordsMeta);
+    }
+    if (data.containsKey('created_at')) {
+      context.handle(
+        _createdAtMeta,
+        createdAt.isAcceptableOrUnknown(data['created_at']!, _createdAtMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_createdAtMeta);
+    }
+    if (data.containsKey('updated_at')) {
+      context.handle(
+        _updatedAtMeta,
+        updatedAt.isAcceptableOrUnknown(data['updated_at']!, _updatedAtMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_updatedAtMeta);
+    }
+    if (data.containsKey('source_conversation_id')) {
+      context.handle(
+        _sourceConversationIdMeta,
+        sourceConversationId.isAcceptableOrUnknown(
+          data['source_conversation_id']!,
+          _sourceConversationIdMeta,
+        ),
+      );
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {id};
+  @override
+  MemoryRow map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return MemoryRow(
+      id: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}id'],
+      )!,
+      about: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}about'],
+      )!,
+      description: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}description'],
+      )!,
+      keywords: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}keywords'],
+      )!,
+      createdAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}created_at'],
+      )!,
+      updatedAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}updated_at'],
+      )!,
+      sourceConversationId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}source_conversation_id'],
+      ),
+    );
+  }
+
+  @override
+  $MemoriesTable createAlias(String alias) {
+    return $MemoriesTable(attachedDatabase, alias);
+  }
+}
+
+class MemoryRow extends DataClass implements Insertable<MemoryRow> {
+  final String id;
+
+  /// Short semantic identifier (NOT a generic title).
+  final String about;
+
+  /// Small but information-rich description giving context to understand/steer user intent.
+  final String description;
+
+  /// JSON array of short generic keywords, max 10.
+  final String keywords;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+
+  /// Optional internal traceability field.
+  final String? sourceConversationId;
+  const MemoryRow({
+    required this.id,
+    required this.about,
+    required this.description,
+    required this.keywords,
+    required this.createdAt,
+    required this.updatedAt,
+    this.sourceConversationId,
+  });
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['id'] = Variable<String>(id);
+    map['about'] = Variable<String>(about);
+    map['description'] = Variable<String>(description);
+    map['keywords'] = Variable<String>(keywords);
+    map['created_at'] = Variable<DateTime>(createdAt);
+    map['updated_at'] = Variable<DateTime>(updatedAt);
+    if (!nullToAbsent || sourceConversationId != null) {
+      map['source_conversation_id'] = Variable<String>(sourceConversationId);
+    }
+    return map;
+  }
+
+  MemoriesCompanion toCompanion(bool nullToAbsent) {
+    return MemoriesCompanion(
+      id: Value(id),
+      about: Value(about),
+      description: Value(description),
+      keywords: Value(keywords),
+      createdAt: Value(createdAt),
+      updatedAt: Value(updatedAt),
+      sourceConversationId: sourceConversationId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(sourceConversationId),
+    );
+  }
+
+  factory MemoryRow.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return MemoryRow(
+      id: serializer.fromJson<String>(json['id']),
+      about: serializer.fromJson<String>(json['about']),
+      description: serializer.fromJson<String>(json['description']),
+      keywords: serializer.fromJson<String>(json['keywords']),
+      createdAt: serializer.fromJson<DateTime>(json['createdAt']),
+      updatedAt: serializer.fromJson<DateTime>(json['updatedAt']),
+      sourceConversationId: serializer.fromJson<String?>(
+        json['sourceConversationId'],
+      ),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'id': serializer.toJson<String>(id),
+      'about': serializer.toJson<String>(about),
+      'description': serializer.toJson<String>(description),
+      'keywords': serializer.toJson<String>(keywords),
+      'createdAt': serializer.toJson<DateTime>(createdAt),
+      'updatedAt': serializer.toJson<DateTime>(updatedAt),
+      'sourceConversationId': serializer.toJson<String?>(sourceConversationId),
+    };
+  }
+
+  MemoryRow copyWith({
+    String? id,
+    String? about,
+    String? description,
+    String? keywords,
+    DateTime? createdAt,
+    DateTime? updatedAt,
+    Value<String?> sourceConversationId = const Value.absent(),
+  }) => MemoryRow(
+    id: id ?? this.id,
+    about: about ?? this.about,
+    description: description ?? this.description,
+    keywords: keywords ?? this.keywords,
+    createdAt: createdAt ?? this.createdAt,
+    updatedAt: updatedAt ?? this.updatedAt,
+    sourceConversationId: sourceConversationId.present
+        ? sourceConversationId.value
+        : this.sourceConversationId,
+  );
+  MemoryRow copyWithCompanion(MemoriesCompanion data) {
+    return MemoryRow(
+      id: data.id.present ? data.id.value : this.id,
+      about: data.about.present ? data.about.value : this.about,
+      description: data.description.present
+          ? data.description.value
+          : this.description,
+      keywords: data.keywords.present ? data.keywords.value : this.keywords,
+      createdAt: data.createdAt.present ? data.createdAt.value : this.createdAt,
+      updatedAt: data.updatedAt.present ? data.updatedAt.value : this.updatedAt,
+      sourceConversationId: data.sourceConversationId.present
+          ? data.sourceConversationId.value
+          : this.sourceConversationId,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('MemoryRow(')
+          ..write('id: $id, ')
+          ..write('about: $about, ')
+          ..write('description: $description, ')
+          ..write('keywords: $keywords, ')
+          ..write('createdAt: $createdAt, ')
+          ..write('updatedAt: $updatedAt, ')
+          ..write('sourceConversationId: $sourceConversationId')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    id,
+    about,
+    description,
+    keywords,
+    createdAt,
+    updatedAt,
+    sourceConversationId,
+  );
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is MemoryRow &&
+          other.id == this.id &&
+          other.about == this.about &&
+          other.description == this.description &&
+          other.keywords == this.keywords &&
+          other.createdAt == this.createdAt &&
+          other.updatedAt == this.updatedAt &&
+          other.sourceConversationId == this.sourceConversationId);
+}
+
+class MemoriesCompanion extends UpdateCompanion<MemoryRow> {
+  final Value<String> id;
+  final Value<String> about;
+  final Value<String> description;
+  final Value<String> keywords;
+  final Value<DateTime> createdAt;
+  final Value<DateTime> updatedAt;
+  final Value<String?> sourceConversationId;
+  final Value<int> rowid;
+  const MemoriesCompanion({
+    this.id = const Value.absent(),
+    this.about = const Value.absent(),
+    this.description = const Value.absent(),
+    this.keywords = const Value.absent(),
+    this.createdAt = const Value.absent(),
+    this.updatedAt = const Value.absent(),
+    this.sourceConversationId = const Value.absent(),
+    this.rowid = const Value.absent(),
+  });
+  MemoriesCompanion.insert({
+    required String id,
+    required String about,
+    required String description,
+    required String keywords,
+    required DateTime createdAt,
+    required DateTime updatedAt,
+    this.sourceConversationId = const Value.absent(),
+    this.rowid = const Value.absent(),
+  }) : id = Value(id),
+       about = Value(about),
+       description = Value(description),
+       keywords = Value(keywords),
+       createdAt = Value(createdAt),
+       updatedAt = Value(updatedAt);
+  static Insertable<MemoryRow> custom({
+    Expression<String>? id,
+    Expression<String>? about,
+    Expression<String>? description,
+    Expression<String>? keywords,
+    Expression<DateTime>? createdAt,
+    Expression<DateTime>? updatedAt,
+    Expression<String>? sourceConversationId,
+    Expression<int>? rowid,
+  }) {
+    return RawValuesInsertable({
+      if (id != null) 'id': id,
+      if (about != null) 'about': about,
+      if (description != null) 'description': description,
+      if (keywords != null) 'keywords': keywords,
+      if (createdAt != null) 'created_at': createdAt,
+      if (updatedAt != null) 'updated_at': updatedAt,
+      if (sourceConversationId != null)
+        'source_conversation_id': sourceConversationId,
+      if (rowid != null) 'rowid': rowid,
+    });
+  }
+
+  MemoriesCompanion copyWith({
+    Value<String>? id,
+    Value<String>? about,
+    Value<String>? description,
+    Value<String>? keywords,
+    Value<DateTime>? createdAt,
+    Value<DateTime>? updatedAt,
+    Value<String?>? sourceConversationId,
+    Value<int>? rowid,
+  }) {
+    return MemoriesCompanion(
+      id: id ?? this.id,
+      about: about ?? this.about,
+      description: description ?? this.description,
+      keywords: keywords ?? this.keywords,
+      createdAt: createdAt ?? this.createdAt,
+      updatedAt: updatedAt ?? this.updatedAt,
+      sourceConversationId: sourceConversationId ?? this.sourceConversationId,
+      rowid: rowid ?? this.rowid,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (id.present) {
+      map['id'] = Variable<String>(id.value);
+    }
+    if (about.present) {
+      map['about'] = Variable<String>(about.value);
+    }
+    if (description.present) {
+      map['description'] = Variable<String>(description.value);
+    }
+    if (keywords.present) {
+      map['keywords'] = Variable<String>(keywords.value);
+    }
+    if (createdAt.present) {
+      map['created_at'] = Variable<DateTime>(createdAt.value);
+    }
+    if (updatedAt.present) {
+      map['updated_at'] = Variable<DateTime>(updatedAt.value);
+    }
+    if (sourceConversationId.present) {
+      map['source_conversation_id'] = Variable<String>(
+        sourceConversationId.value,
+      );
+    }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('MemoriesCompanion(')
+          ..write('id: $id, ')
+          ..write('about: $about, ')
+          ..write('description: $description, ')
+          ..write('keywords: $keywords, ')
+          ..write('createdAt: $createdAt, ')
+          ..write('updatedAt: $updatedAt, ')
+          ..write('sourceConversationId: $sourceConversationId, ')
+          ..write('rowid: $rowid')
+          ..write(')'))
+        .toString();
+  }
+}
+
 abstract class _$ErrandDatabase extends GeneratedDatabase {
   _$ErrandDatabase(QueryExecutor e) : super(e);
   $ErrandDatabaseManager get managers => $ErrandDatabaseManager(this);
@@ -1919,6 +2407,7 @@ abstract class _$ErrandDatabase extends GeneratedDatabase {
   late final $ConversationAttachmentsTable conversationAttachments =
       $ConversationAttachmentsTable(this);
   late final $AppSettingsTable appSettings = $AppSettingsTable(this);
+  late final $MemoriesTable memories = $MemoriesTable(this);
   @override
   Iterable<TableInfo<Table, Object?>> get allTables =>
       allSchemaEntities.whereType<TableInfo<Table, Object?>>();
@@ -1928,6 +2417,7 @@ abstract class _$ErrandDatabase extends GeneratedDatabase {
     conversationMessages,
     conversationAttachments,
     appSettings,
+    memories,
   ];
 }
 
@@ -3389,6 +3879,243 @@ typedef $$AppSettingsTableProcessedTableManager =
       AppSettingRow,
       PrefetchHooks Function()
     >;
+typedef $$MemoriesTableCreateCompanionBuilder = MemoriesCompanion Function({
+  required String id,
+  required String about,
+  required String description,
+  required String keywords,
+  required DateTime createdAt,
+  required DateTime updatedAt,
+  Value<String?> sourceConversationId,
+  Value<int> rowid,
+});
+typedef $$MemoriesTableUpdateCompanionBuilder = MemoriesCompanion Function({
+  Value<String> id,
+  Value<String> about,
+  Value<String> description,
+  Value<String> keywords,
+  Value<DateTime> createdAt,
+  Value<DateTime> updatedAt,
+  Value<String?> sourceConversationId,
+  Value<int> rowid,
+});
+
+class $$MemoriesTableFilterComposer
+    extends Composer<_$ErrandDatabase, $MemoriesTable> {
+  $$MemoriesTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<String> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get about => $composableBuilder(
+    column: $table.about,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get description => $composableBuilder(
+    column: $table.description,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get keywords => $composableBuilder(
+    column: $table.keywords,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get updatedAt => $composableBuilder(
+    column: $table.updatedAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get sourceConversationId => $composableBuilder(
+    column: $table.sourceConversationId,
+    builder: (column) => ColumnFilters(column),
+  );
+}
+
+class $$MemoriesTableOrderingComposer
+    extends Composer<_$ErrandDatabase, $MemoriesTable> {
+  $$MemoriesTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<String> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get about => $composableBuilder(
+    column: $table.about,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get description => $composableBuilder(
+    column: $table.description,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get keywords => $composableBuilder(
+    column: $table.keywords,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get updatedAt => $composableBuilder(
+    column: $table.updatedAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get sourceConversationId => $composableBuilder(
+    column: $table.sourceConversationId,
+    builder: (column) => ColumnOrderings(column),
+  );
+}
+
+class $$MemoriesTableAnnotationComposer
+    extends Composer<_$ErrandDatabase, $MemoriesTable> {
+  $$MemoriesTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<String> get id =>
+      $composableBuilder(column: $table.id, builder: (column) => column);
+
+  GeneratedColumn<String> get about =>
+      $composableBuilder(column: $table.about, builder: (column) => column);
+
+  GeneratedColumn<String> get description => $composableBuilder(
+    column: $table.description,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get keywords =>
+      $composableBuilder(column: $table.keywords, builder: (column) => column);
+
+  GeneratedColumn<DateTime> get createdAt =>
+      $composableBuilder(column: $table.createdAt, builder: (column) => column);
+
+  GeneratedColumn<DateTime> get updatedAt =>
+      $composableBuilder(column: $table.updatedAt, builder: (column) => column);
+
+  GeneratedColumn<String> get sourceConversationId => $composableBuilder(
+    column: $table.sourceConversationId,
+    builder: (column) => column,
+  );
+}
+
+class $$MemoriesTableTableManager
+    extends
+        RootTableManager<
+          _$ErrandDatabase,
+          $MemoriesTable,
+          MemoryRow,
+          $$MemoriesTableFilterComposer,
+          $$MemoriesTableOrderingComposer,
+          $$MemoriesTableAnnotationComposer,
+          $$MemoriesTableCreateCompanionBuilder,
+          $$MemoriesTableUpdateCompanionBuilder,
+          (
+            MemoryRow,
+            BaseReferences<_$ErrandDatabase, $MemoriesTable, MemoryRow>,
+          ),
+          MemoryRow,
+          PrefetchHooks Function()
+        > {
+  $$MemoriesTableTableManager(_$ErrandDatabase db, $MemoriesTable table)
+    : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$MemoriesTableFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $$MemoriesTableOrderingComposer($db: db, $table: table),
+          createComputedFieldComposer: () =>
+              $$MemoriesTableAnnotationComposer($db: db, $table: table),
+          updateCompanionCallback:
+              ({
+                Value<String> id = const Value.absent(),
+                Value<String> about = const Value.absent(),
+                Value<String> description = const Value.absent(),
+                Value<String> keywords = const Value.absent(),
+                Value<DateTime> createdAt = const Value.absent(),
+                Value<DateTime> updatedAt = const Value.absent(),
+                Value<String?> sourceConversationId = const Value.absent(),
+                Value<int> rowid = const Value.absent(),
+              }) => MemoriesCompanion(
+                id: id,
+                about: about,
+                description: description,
+                keywords: keywords,
+                createdAt: createdAt,
+                updatedAt: updatedAt,
+                sourceConversationId: sourceConversationId,
+                rowid: rowid,
+              ),
+          createCompanionCallback:
+              ({
+                required String id,
+                required String about,
+                required String description,
+                required String keywords,
+                required DateTime createdAt,
+                required DateTime updatedAt,
+                Value<String?> sourceConversationId = const Value.absent(),
+                Value<int> rowid = const Value.absent(),
+              }) => MemoriesCompanion.insert(
+                id: id,
+                about: about,
+                description: description,
+                keywords: keywords,
+                createdAt: createdAt,
+                updatedAt: updatedAt,
+                sourceConversationId: sourceConversationId,
+                rowid: rowid,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .toList(),
+          prefetchHooksCallback: null,
+        ),
+      );
+}
+
+typedef $$MemoriesTableProcessedTableManager =
+    ProcessedTableManager<
+      _$ErrandDatabase,
+      $MemoriesTable,
+      MemoryRow,
+      $$MemoriesTableFilterComposer,
+      $$MemoriesTableOrderingComposer,
+      $$MemoriesTableAnnotationComposer,
+      $$MemoriesTableCreateCompanionBuilder,
+      $$MemoriesTableUpdateCompanionBuilder,
+      (MemoryRow, BaseReferences<_$ErrandDatabase, $MemoriesTable, MemoryRow>),
+      MemoryRow,
+      PrefetchHooks Function()
+    >;
 
 class $ErrandDatabaseManager {
   final _$ErrandDatabase _db;
@@ -3404,4 +4131,6 @@ class $ErrandDatabaseManager {
       );
   $$AppSettingsTableTableManager get appSettings =>
       $$AppSettingsTableTableManager(_db, _db.appSettings);
+  $$MemoriesTableTableManager get memories =>
+      $$MemoriesTableTableManager(_db, _db.memories);
 }

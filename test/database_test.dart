@@ -492,4 +492,44 @@ void main() {
       },
     );
   });
+
+  group('Memories table (schema v6)', () {
+    test('inserts, reads, updates, and deletes MemoryRow', () async {
+      expect(db.schemaVersion, 6);
+
+      final now = DateTime.fromMillisecondsSinceEpoch(
+        (DateTime.now().millisecondsSinceEpoch ~/ 1000) * 1000,
+      );
+      final row = MemoryRow(
+        id: 'mem_1',
+        about: 'preferred_editor',
+        description: 'User uses Neovim.',
+        keywords: '["neovim","editor"]',
+        createdAt: now,
+        updatedAt: now,
+        sourceConversationId: 'c1',
+      );
+
+      await db.insertMemoryRow(row);
+
+      final fetched = await db.getMemoryById('mem_1');
+      expect(fetched, isNotNull);
+      expect(fetched!.about, 'preferred_editor');
+      expect(fetched.description, 'User uses Neovim.');
+      expect(fetched.sourceConversationId, 'c1');
+
+      final all = await db.loadAllMemories();
+      expect(all.length, 1);
+
+      final updatedRow = row.copyWith(description: 'User uses Helix and Neovim.');
+      await db.updateMemoryRow(updatedRow);
+
+      final afterUpdate = await db.getMemoryById('mem_1');
+      expect(afterUpdate!.description, 'User uses Helix and Neovim.');
+
+      await db.deleteMemoryRow('mem_1');
+      final afterDelete = await db.getMemoryById('mem_1');
+      expect(afterDelete, isNull);
+    });
+  });
 }

@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import '../llm/llm_client.dart';
+import '../services/memory_service.dart';
 import '../services/shell_service.dart';
 import '../services/tool_output_file_service.dart';
 import '../tools/act_tool.dart';
@@ -8,6 +9,7 @@ import '../tools/attached_files_tool.dart';
 import '../tools/bash_tool.dart';
 import '../tools/file_tools.dart';
 import '../tools/intent_tool.dart';
+import '../tools/memory_tool.dart';
 import '../tools/screen_tool.dart';
 import '../tools/web_tools.dart';
 import '../types/tool.dart';
@@ -33,6 +35,8 @@ class ToolRegistry {
     bool enableA11yTools = true,
     ShellService? shellService,
     CancelToken Function()? getCancelToken,
+    MemoryService? memoryService,
+    String? currentConversationId,
   }) {
     final directory = workingDirectory ?? WorkingDirectory(currentDir);
     return ToolRegistry([
@@ -49,6 +53,10 @@ class ToolRegistry {
       webSearchTavilyTool(),
       webFetchTool(),
       intentTool(),
+      memoryTool(
+        memoryService: memoryService,
+        currentConversationId: currentConversationId,
+      ),
       if (enableA11yTools) ...[
         screenTool(),
         actTool(),
@@ -69,7 +77,11 @@ class ToolRegistry {
   }
 
   Future<ToolCallResult> execute(ToolCall call) async {
-    final tool = _tools[call.name];
+    var tool = _tools[call.name];
+    if (tool == null &&
+        (call.name.startsWith('memory.') || call.name.startsWith('memory_'))) {
+      tool = _tools['memory'];
+    }
     if (tool == null) {
       return ToolCallResult.failure(call.id, 'Unknown tool: ${call.name}');
     }

@@ -158,6 +158,37 @@ class ToolMessageBubble extends StatefulWidget {
         return 'Fetched web page';
       case 'read':
         return 'Read file';
+      case 'memory':
+      case 'memory.find':
+      case 'memory_find':
+      case 'memory.read':
+      case 'memory_read':
+      case 'memory.create':
+      case 'memory_create':
+      case 'memory.edit':
+      case 'memory_edit':
+        final rawAction = args['action']?.toString();
+        final action = (rawAction != null && rawAction.isNotEmpty)
+            ? rawAction
+            : (toolName.contains('find')
+                ? 'find'
+                : (toolName.contains('read')
+                    ? 'read'
+                    : (toolName.contains('create')
+                        ? 'create'
+                        : (toolName.contains('edit') ? 'edit' : ''))));
+        switch (action) {
+          case 'find':
+            return 'Searched memory';
+          case 'read':
+            return 'Read memory';
+          case 'create':
+            return 'Saved memory';
+          case 'edit':
+            return 'Updated memory';
+          default:
+            return 'Accessed memory';
+        }
       case 'workspace':
         final action = args['action']?.toString();
         switch (action) {

@@ -1,489 +1,131 @@
 # Next Plan — Status & Roadmap
 
-> **Updated Sep 2026.** P0, P1, P1.5, P2, P3 (multimodality), P4a (guided refactor), P4b (hardening + memory), v0.5.1 resilience enhancements, v0.5.2 flavors & intent UX improvements, P5a (on-device shell execution tool & workspace retirement), and v0.5.6 (intent docs action, grouped sequential tool calls UI, keyed provider priority, main.dart modularization) are all shipped (v0.5.6). Next planned milestone: P5b (embedded browser agent tools).
+> **Updated Sep 2026.** P0, P1, P1.5, P2, P3 (multimodality), P4 (refactor & hardening), P5a (on-device shell & workspace retirement), and v0.5.6 (intent docs, tool grouping UI, keyed provider priority, entrypoint modularization) are all **SHIPPED** (v0.5.6).
+> **Active Milestone:** **P5b — Global Memory System & Persistent Knowledge Tool** (schema v5).
+> **Upcoming Milestone:** **P6a — Embedded Browser Agent Tools** (in-app webview, DOM JS bridge + visual fallback).
 
 ---
 
-## ✅ P0 — DIY Intent Tool (SHIPPED)
+## 🧭 Active & Upcoming Roadmap
 
-The original design (one `intent` tool, second MethodChannel, zero deps) shipped with significant hardening beyond it. Current state:
+### 🟡 P5b — Global Memory System & Persistent Knowledge Tool (NEXT — schema v5)
 
-### Tool surface — grew from 6 to 17 curated actions
+Cross-conversation persistent memory giving Errand long-term recall of user preferences, project facts, device context, and learned guidelines.
 
-`open_file`, `open_url`, `open_app`, `settings`, `intent`, `docs`, with URI-style legacy aliases for older conversations. Custom Android actions such as alarms, timers, calendar insertion, sharing, wallpaper, uninstall, and settings panels use normalized `action:"intent"` requests with exact target-specific fields.
+1. **Database Persistence (Schema v5 Migration):**
+   - New `memories` table in `lib/services/database.dart`:
+     - `id` (Text, UUID primary key)
+     - `key` (Text, nullable unique slug for keyed values like `user_name`, `preferred_model`, `work_dir`)
+     - `content` (Text, full memory text or fact description)
+     - `tags` (Text, JSON array or delimited tags for category filtering, e.g. `["preferences", "coding"]`)
+     - `created_at` / `updated_at` (DateTime, sorting and obsolescence tracking)
+   - Clean Drift schema migration from v4 (`attachedUrisJson`) to v5 with full test coverage (`test/database_test.dart`).
 
-Plus a **generic escape hatch**: `action:"intent"` accepts raw `android_action` strings (`android.settings.*`, third-party actions) so new apps need zero code changes. Design principle: *curated actions → generic android_action → honest failure*. No per-app pattern matching.
+2. **Agent Tool (`memory` in `lib/tools/memory_tool.dart`):**
+   - `action: "save"` — Save a new memory or fact with optional key and tags.
+   - `action: "recall"` — Search existing memories using query matching across content, keys, and tags.
+   - `action: "update"` — Update content or tags of an existing memory by ID or key.
+   - `action: "delete"` — Remove a specific memory or purge by tag/key.
+   - `action: "list"` — Browse recent memories with limit and tag filters.
 
-> **Sep 2026 update (`v0.5.6`):** core actions include `open_file` (`FileProvider` + MIME resolution), `open_url`, `open_app`, `settings`, `intent`, and `docs` (on-demand specifications for alarms, timers, calendar, and location/maps). Custom Android actions pass through normalized typed fields (including integer array lists in `MainActivity.kt`). Native `launch` is BAL-safe (`PendingIntent` + a11y-context fallback), reports chooser sheets, and `bringToFront` restores Errand after `screen`/`act` work.
+3. **System Prompt Knowledge Digest (Passive Awareness):**
+   - Inject a compact, token-budgeted "Known Facts" block into `_systemPromptFor` / `SystemPromptService`.
+   - Core preferences and recent memories are passively visible to the agent on every turn without requiring explicit `memory recall` round-trips.
 
-### Hardening beyond original plan
-
-- All handlers `async`/`await` — native errors (`NO_HANDLER`, `NO_PKG`) become real failures instead of fire-and-forget fake success.
-- Safe extras parsing (`Map<dynamic,dynamic>` → `Map<String,String>`; no CastErrors from LLM JSON).
-- URL safety: https auto-prefix only for domain-like hosts; `javascript:`/`file:` blocked; settings names never become web URLs.
-- `resolveActivity` pre-check only when package pinned (API 30+ `<queries>` visibility false-negatives); implicit intents rely on `ActivityNotFoundException`.
-- Email via `ACTION_SENDTO mailto:` + RFC-6068 query params + `EXTRA_SUBJECT/TEXT`; share defaults MIME `text/plain`; uninstall strips package constraint (uninstaller lives in `com.android.packageinstaller`).
-- Alarm `"HH:mm"` parsing with range validation; Kotlin int-coercion limited to HOUR/MINUTES/LENGTH extras.
-- Dark mode: `UiModeManager.setNightMode()` **with read-back verification** → permission-gated `Settings.Secure/Global.putInt("ui_night_mode")` → honest fallback opening `DARK_THEME_SETTINGS`. (An earlier AppCompatDelegate reflection step was removed: it only changed the app's own theme, not the system's, and ran unverified.) Research finding: system-wide night mode is gated behind privileged `MODIFY_DAY_NIGHT_MODE`; reliable sideload path is one-time `adb shell pm grant com.errand.errand android.permission.WRITE_SECURE_SETTINGS`.
-- Idempotent permission flow (`hasWriteSettings` / `requestWriteSettings` returns granted-state; no re-opening Settings when already ON).
-- **Sep 2026 update (`225b599`):** the whole dark-mode ladder + `WRITE_SETTINGS` flow + `nextAlarm` ground-truth were removed from the intent channel; UI toggles are `act`-driven now.
-- Manifest `<queries>`: http(s)/geo/tel/mailto/spotify/whatsapp/tg schemes, SET_ALARM/SET_TIMER/SHOW_ALARMS/calendar INSERT/SEND/package DELETE/MEDIA_PLAY_FROM_SEARCH, all four Settings Panels, pinned packages.
-
-### Known limits (researched, accepted)
-
-- Bluetooth/Wi-Fi/airplane/mobile-data toggles are impossible for 3P apps (API 29/33 restrictions). Sanctioned UX = Settings Panels (`settings_panel` action) and settings pages (`settings` action).
-- Reading/cleaning mail requires Gmail API OAuth (cloud) — rejected per user; Tier-0 intents only.
-- System-wide dark mode needs adb-granted `WRITE_SECURE_SETTINGS` on most builds (see above).
-
----
-
-## ✅ P1 — OPT-07 Context & History Truncation (SHIPPED)
-
-> Landed Aug 21 2026. Deviations from the frozen design: **no
-> `currentContextSize`/`messageOffset` columns** — truncation is recomputed
-> per turn from in-memory history and window state is derived from row counts
-> at query time. A **schema v2 migration was still added** (review follow-up):
-> UNIQUE index on `(conversation_id, message_id)` + `(conversation_id,
-> sort_order)` lookup index, with a dedupe pass for pre-v2 rows.
-
-1. **Truncation** (`lib/agent/context_budget.dart`, pure + unit-tested):
-   assumed 256K char window; truncation triggers above 200K soft limit and
-   keeps a ≤110K suffix (100–125K target band). Consecutive tool messages are
-   one atomic unit (never split a batch); everything from the last
-   `UserMessage` on is mandatory even over target. Any single tool result is
-   head-clamped to 32K regardless (`[...truncated N chars]`). Applied at one
-   place: `AgentLoop.run` boundary — non-destructive, full history stays for
-   persistence/UI.
-   > **Sep 2026 update (`dbe2757` + fixes):** superseded by token-based `ContextBudget` (per-model `contextSize`, reserve `min(16K, 25%)`, `~3.8 chars/token`, `models.dev` fallback) with pre-turn + mid-step LLM compaction (deterministic fallback under a 60s `compactionTimeout`; oversized tails shrink via `fitTailToTarget`, never block drops). `CompactedNoticeMessage` divider merge-saved via `compacted` rows (pre-divider rows retained, never re-sent). Char-based `truncateHistory`/`trimLlmMessages` kept as compat/tested layer. Loop cap `18 → 72` (ctor-overridable).
-2. **Message windowing**: opening a conversation loads the newest 50 messages
-   (`loadConversation(id, messageLimit:)`); scrolling near the top loads the
-   previous page (`loadOlderMessages(beforeMessageId:)`) with a spinner and
-   viewport-anchored prepend (no jump).
-3. **Sidebar pagination**: live watch limited to first 20 recents;
-   `loadOlderConversations(beforeUpdatedAt, beforeId)` cursor-pages append on scroll-to-bottom
-   with a spinner, deduped by id against the watched page.
-4. **Shared paging engine** (`lib/widgets/paging.dart`): `PagedFetcher<T>`
-   (loading guard, has-more, key-dedupe), `shouldLoadMore` edge detector,
-   `LoadMoreIndicator` spinner — reused by both scroll surfaces.
-5. **Persistence made merge-safe**: `saveConversation` upserts messages by
-   messageId instead of delete-all+reinsert, so rows outside the loaded
-   window survive saves. `_failWorking` now explicitly deletes a persisted
-   working bubble. Attachments still rewrite (small, composer-derived).
-6. **Debug footer** (kDebugMode only): `ctx ~NK / 200K · N msgs loaded`.
+4. **User Privacy & Control:**
+   - Dedicated Memory Management screen or Settings sheet tab allowing users to inspect, edit, manually add, or purge memories.
+   - Transparent logging: whenever the agent writes or updates a memory, it is clearly reported in the tool call output.
 
 ---
 
-## ✅ UI polish (markdown, intent reopen, empty-bubble handling)
+### 🌐 P6 — Embedded Web Agent Tools (Closing the Lite vs. Full Gap)
 
-- **Markdown rendering**: assistant turns render via `gpt_markdown` (bold,
-  tables, code, LaTeX); user turns stay plain `SelectableText`. The message
-  list is wrapped in a `SelectionArea` for copy-anywhere selection.
-- **Intent reopen buttons**: successful open-style intent tool bubbles
-  (`open_url`, `open_app`, `open_maps`, `search`, `dial`, `media_play`,
-  `email`, `share`, `wallpaper`, `settings`, `settings_panel`) show an Open
-  button that re-fires the persisted args through the same
-  `handleIntentAction` path as the agent — identical URL safety and error
-  mapping. Side-effect actions (alarm/timer/calendar, system toggle,
-  uninstall, raw `intent`) stay button-less. Derived entirely from persisted
-  data; works for conversations stored before the feature existed.
-- **Empty-bubble suppression**: whitespace-only streaming deltas no longer
-  blank the …working placeholder; empty final answers drop the bubble (and
-  delete its persisted row) instead of rendering an empty turn.
+Goal: Enable autonomous, safe web navigation and interaction directly within Errand, eliminating the need to bounce the user to external browsers while remaining fully functional on both Full and Lite flavors (zero accessibility permissions required).
 
----
+#### 🔵 P6a — Embedded Browser Agent Tools
+1. **Interactive In-App Web View:**
+   - Dedicated in-app browser sheet/view via `webview_flutter` or native platform view.
+   - Allows live observation: the user can watch the agent navigate, fill inputs, and click elements directly inside the Errand UI.
 
-## ✅ P1.5 — UX Batch (SHIPPED Aug 21–22 2026, except item 6 → deferred to P3)
+2. **Dual-Mode Control (DOM JavaScript + Visual Fallback):**
+   - **Primary (Direct JavaScript Bridge):** High-speed, deterministic DOM interaction via JavaScript evaluation:
+     - Read visible page text, headings, links, and structured DOM outlines.
+     - Query and validate CSS / XPath selectors.
+     - Populate form fields, select options, and dispatch click/submit events.
+     - Fast, token-efficient, and independent of device display scaling.
+   - **Secondary (Visual Screenshot Fallback):**
+     - Capture rendered page screenshots from the WebViewController for multimodal models.
+     - Activates when selectors fail, target elements reside within complex shadow DOMs, or interactions involve HTML5 Canvas components.
+   - **Execution Discipline:** JavaScript evaluation is attempted first; vision fallback triggers only when DOM queries fail or yield ambiguous matches.
 
-> All items are UI/history-manipulation work on top of the existing
-> merge-save + windowing machinery. Also landed with this batch: abortable
-> LLM cancellation (stop works during slow time-to-first-token via socket
-> close, elapsed-seconds on the working bubble) and a foreground work
-> indicator (dataSync FGS held while a turn runs — fixes SSE streams dying
-> when an intent tool sends Errand to the background and Android's
-> cached-apps freezer kills its sockets ~10s later).
-
-### 1. Stop button + copy buttons (SHIPPED Aug 21 2026)
-- While `_busy`, the rounded send button becomes a **square stop** button.
-  Cancellation = a cancel flag threaded into `LlmClient.chatStream`/`chat`,
-  checked between SSE events and at agent-loop turn boundaries. Partial text
-  is kept as the final answer (marked "(stopped)"). In-flight native tool
-  calls can't be interrupted — cancel takes effect at the next boundary.
-  Pairs with the stream-stall watchdog (open items below).
-- **Copy buttons**: one-tap copy icon on assistant bubbles and tool output
-  (SelectionArea stays for free-form selection).
-
-### 2. Finish Rename (SHIPPED Aug 21 2026)
-- Dialog → `renameConversation(id, title)` in DB; sidebar updates via the
-  existing watch stream; older loaded pages refreshed in place.
-
-### 3. Edit user message (SHIPPED Aug 21 2026)
-- Tap own bubble → loads text into composer (banner + cancel above the
-  composer). On resend, history is truncated from that message onward
-  (later messages AND their tool runs), then the loop runs fresh.
-- Merge-based saves keep rows outside the loaded window — truncation
-  explicitly `deleteMessage`s every removed row (`_truncateFrom`).
-
-### 4. Regenerate answer (SHIPPED Aug 21 2026)
-- Refresh icon on the last assistant bubble of a completed turn. Same
-  `_truncateFrom` machinery applied from just after the last user message,
-  then re-run via the shared `_runAgentTurn` (extracted from `_send`).
-
-### 5. Voice input (`speech_to_text`) (SHIPPED Aug 21 2026)
-- Mic icon (accent blue) on the send button when the composer is empty;
-  turns red while listening (tap again to stop); switches to the send arrow
-  when there is text. Live partial results replace the composer text.
-- First-use language picker over `speech.locales()`, choice persisted via
-  **shared_preferences** (one string key — schema v3 not needed for this).
-- Plugin wraps Android's built-in SpeechRecognizer: zero shipped model
-  weight, quality/network behavior follows the device's voice typing.
-- Mic permission via the existing "intent" MethodChannel
-  (`hasMicPermission`/`requestMicPermission`, awaitable through
-  `onRequestPermissionsResult`) — no `permission_handler` dependency.
-- Emulator note: enable the Google app + grant it mic access, and install an
-  offline language under Settings → Voice → Offline recognition, or
-  `listen` fails with `error_audio_error`.
-
-### 6. Multimodality — images only (DEFERRED → P3)
-- **Attach path**: composer image picker → OpenAI-compatible `image_url`
-  content parts (base64 data URLs) on user messages.
-- **Agent path**: new `image` tool — model locates an image via
-  `workspace.find`, then reads it; the tool result carries the image as a
-  content part for the next turn. This is the path the old
-  `document_reader` `UnsupportedError("future vision path")` reserved.
-- Loop changes: `_toLlmHistory` must emit multimodal content arrays;
-  persistence needs attachment↔message linkage beyond the current
-  conversation-level table (schema v3).
-- Error policy: non-vision model selected → honest failure telling the user
-  to switch models (reuse the transport-vs-agent error split).
-- **Existing hook**: `Conversation.attachedFileUris` + the
-  `conversation_attachments` table already persist per-conversation file
-  URIs (unused so far) — image attach should build on that instead of
-  inventing new storage.
+3. **Security, Sandboxing & Safety Policy:**
+   - **Origin & Scheme Lockdown:** Strictly whitelist `http` and `https` protocols; block arbitrary `intent://`, `file://`, and `javascript:` scheme navigations from untrusted pages.
+   - **Draft & Confirmation Policy:** Sensitive or irreversible actions (form submissions, logins, purchases, data updates) require user confirmation under the Draft model: the agent pre-fills the form and requests the user to approve or submit.
+   - **Session Isolation:** Configurable ephemeral (incognito) vs. persistent session storage with one-tap cookie and cache clearing.
 
 ---
 
-## 🧭 P2 — AccessibilityService (NEXT)
+### 📦 Backlog & Future Items
 
-Screen-tree reading (`AccessibilityNodeInfo`) + gesture injection
-(`dispatchGesture`) → on-device automation (Tasker-class), including UI-only
-toggles like dark mode by actually tapping Settings. Requires manual user
-enable in accessibility settings. **Researched Aug 22 2026 — capability and
-policy limits mapped; scope split into tiers below.**
-
-### Research findings (Aug 2026)
-
-**Policy — Play distribution of gestures is dead, sideload is fine:**
-- **Play policy updated Oct 30 2025**: the Accessibility API now explicitly
-  *cannot* be used by "an app that autonomously initiates, plans, and executes
-  actions or decisions" — written specifically against AI agents. Errand's
-  agent loop is exactly that. Non-autonomous uses still require a Play Console
-  declaration + demo video + prominent in-app disclosure.
-- **Conclusion**: P2 is **sideload/F-Droid only**, consistent with our existing
-  model (MANAGE_EXTERNAL_STORAGE, adb-granted WRITE_SECURE_SETTINGS).
-  Document as such; never ship Tier A to Play.
-- **Android 13+ "Restricted setting"**: sideloaded APKs get the service
-  grayed out ("For your security…"). Unlocks: App Info → ⋮ → **Allow
-  restricted settings** (+ biometric confirm), session-based installers
-  (F-Droid/Zapstore unaffected), or one-time
-  `adb shell appops set com.errand.errand ACCESS_RESTRICTED_SETTINGS allow`
-  (same spirit as the existing WRITE_SECURE_SETTINGS grant). The app should
-  detect this state (`AppOpsManager.checkOpNoThrow("android:access_restricted_settings", …)`)
-  and show honest instructions instead of a dead toggle.
-- **Android 17 / Advanced Protection Mode**: blocks non-`isAccessibilityTool`
-  apps from the API entirely. We can't honestly declare `isAccessibilityTool`
-  → AAPM users are locked out regardless. Accepted limit.
-
-**Platform walls (accepted):**
-- `FLAG_SECURE` blocks `takeScreenshot()` but not node reading.
-- `isAccessibilityDataSensitive` (Android 14) hides views from non-declared
-  tools; adoption growing (OTP fields, password managers) — some targets will
-  go invisible over time.
-- Banking/finance apps run anti-a11y SDKs (ThreatMark etc.) that detect and
-  block us. Don't fight it.
-- Compose/Flutter/Canvas-heavy apps may expose empty trees without semantics;
-  coordinate-tap fallback covers this blind.
-- No programmatic enable, ever — manual user enablement in Settings is by
-  design.
-
-### Capability tier list
-
-#### 🟢 Tier S — P2a: read + safe globals (SHIPPED Aug 22 2026)
-1. **`ErrandAccessibilityService`** — Kotlin service + XML config
-   (`canRetrieveWindowContent`, `canPerformGestures`, `canTakeScreenshot`,
-   `flagReportViewIds`, `feedbackGeneric`). Static-instance + MethodChannel
-   `"a11y"` mirroring `"intent"` (service lives independent of the Flutter
-   engine). Methods: `isEnabled`, `isRestricted` (appops check),
-   `openSettings`, `readScreen`, `globalAction`, later `gesture`.
-2. **`screen` tool** — serialize active-window tree into a compact outline
-   (`[i] Button "Allow" bounds=[…] clickable`), char-budgeted like
-   `LogicalDocument`, reusing the existing 32K per-result clamp; depth/result
-   caps from day one.
-3. **Global actions**: back, home, recents, notification shade, lock screen
-   (API 28+), screenshot (API 30+, fails cleanly on FLAG_SECURE windows).
-4. **Dark mode payoff** — open Display settings via the existing intent tool,
-   find the "Dark theme" toggle node, tap it. Retires the fragile
-   UiModeManager → putInt → DARK_THEME_SETTINGS ladder on every OEM, no
-   WRITE_SECURE_SETTINGS needed.
-5. **State awareness** — `isEnabled`/restricted-state surfaced through
-   `_systemPromptFor` ("screen control available / not enabled — tell user
-   how") + persistent "Errand can see your screen" indicator (reuse FGS
-   notification pattern from AgentForegroundService).
-6. **Read-back verification** — listen for `TYPE_WINDOW_STATE_CHANGED` after
-   actions to confirm a tap landed (same discipline as the dark-mode ladder).
-
-#### 🟡 Tier A — P2b: gated gesture injection (Deny / Draft / Send model)
-
-> **Draft-mode subset SHIPPED Aug 22 2026**: tap-by-label (commit-word
-> refusal, matched-pattern reporting), SET_TEXT typing (password-refused,
-> never submits), direction-aware scroll with deterministic `at_end`, plus
-> Gmail-session hardening (cap-reason reporting, word-boundary labels,
-> settle_ms, sequential-call prompt guidance). Remaining: plan-preview card
-> (#11 UI), risk-class metadata (#7), Send-tier opt-in, coordinate fallback
-> (#13).
->
-> **ViewPager off-screen pollution — SHIPPED Sep 2026 (`cf31018`):** Solved via
-> viewport partitioning! Rather than fragile heuristic page drops, elements are
-> partitioned by viewport bounds. Visible items are emitted first in visual reading
-> order; off-screen nodes (e.g. adjacent ViewPager tabs like WhatsApp Communities)
-> are grouped under a distinct `--- Off-screen ---` section. Combined with upfront
-> full ref mapping, interactive line prioritization, repetitive static list compression,
-> and TalkBack boilerplate stripping.
-
-**Consent model — risk-tiered three-way gate, not binary Approve/Deny.**
-Rule of thumb: *the model may prepare anything, only the user pulls
-triggers.* Draft-as-default also keeps committing flows outside Play's
-"autonomously executes" clause even in principle — the user performs the
-final act.
-
-| Option | Behavior | Default for |
-|---|---|---|
-| **Deny** | Step dropped; agent told "user declined", continues or aborts | — |
-| **Draft** ⭐ | Agent does everything except the commit: opens chat, types into the field, fills forms — **leaves Send untapped**, then tells the user "review & send" | Anything irreversible: messages, emails, posts, payments, deletes |
-| **Send** | Full auto-completion | Reversible actions only: navigation taps, scrolls, opening apps, toggles |
-
-7. **Risk classes** — `Tool.requiresValidation` graduates into an
-   `actionRisk` metadata: `readonly` (no gate) / `reversible`
-   (batch-approve OK) / `committing` (**draft-only unless user upgrades**) /
-   `dangerous` (per-step approval always). Applied per intent-action too:
-   `dial` ≈ committing, `alarm` reversible, `uninstall` dangerous. Same
-   open-style vs side-effect split the reopen-button logic already uses.
-   Enforcement hook point: `ToolRegistry.execute` honoring the flag
-   (`CancelToken` proves mid-loop external control already works).
-8. **Tap by text/label** — `findAccessibilityNodeInfosByText` →
-   `ACTION_CLICK`, classified by risk class above.
-9. **Type into focused field** — `ACTION_SET_TEXT` on editable nodes. Note:
-   SET_TEXT never fires keyboard enter-to-send, which is why Draft mode is
-   reliable — typed text just sits in the field. Fallback for apps without
-   SET_TEXT support: clipboard-paste gesture. Hard gate: never auto-type
-   into password/OTP-ish fields (`isPassword` + heuristics).
-10. **Swipe/scroll** — `dispatchGesture` + continued strokes;
-    navigation-grade, reversible class.
-11. **Plan preview + draft verification** (the preview story):
-    - **Upfront plan card** rendered in chat while Errand is still
-      foreground: numbered steps with risk badges, commit steps marked
-      `SKIPPED — you send`; user picks Approve · Edit · Deny once for the
-      whole batch. This also sidesteps the "chat UI is behind the target
-      app after launch" problem — no overlay bubble or notification-action
-      approval needed in v1.
-    - **Post-draft verification**: one extra `readScreen` after typing →
-      tool result shows the field content (`typed: "…" ✓`) so chat history
-      doubles as the receipt (ToolMessages already give us this).
-    - Commit-control detection via label/class heuristics (text ∈ {send,
-      post, publish, pay…}); if no confident match → silently stays in
-      Draft mode (safe-by-default).
-12. **Longer loops — DONE Sep 2026 (`dbe2757`)**. Cap went
-    12 → 18 → 72 (`defaultMaxTurns`, ctor-overridable `maxTurnCount`), with
-    mandatory mid-run compaction (pre-turn + post-batch `_compactIfNeeded`,
-    newest 1–2 tail blocks kept, rest LLM-summarized with deterministic
-    fallback; persistence/UI history untouched except the persisted
-    `CompactedNoticeMessage` divider). Original plan below, kept for record:
-    - Raise `maxTurns` to ~40 (make it an `AgentLoop` constructor param).
-    - **Mid-run compaction is mandatory with that** — entry truncation only
-      sees persisted history; screen outlines are up to ~24K chars per read,
-      so a long run can exceed the window mid-flight even though each turn
-      fit. After each completed turn, if the running payload exceeds
-      `kContextSoftLimit`, drop the oldest complete *turn units* (one
-      assistant message + its tool results — same atomic shape
-      `_toLlmHistory` synthesizes, so removal never orphans a tool call),
-      always keeping the newest ~6 turns and the system prompt. Local-only:
-      persistence/UI history untouched. If the model needs dropped context,
-      it re-runs `screen read` — same recovery a human would do.
-    - Each step already = one ToolMessage = free audit log, so compacted
-      turns stay reviewable in chat even after leaving the LLM payload.
-13. *(deferred)* Coordinate fallback tap for empty-semantics apps; require
-    screenshot preview before approving (blind taps are the riskiest form).
-    Known Draft-mode gap: apps that don't expose input fields via semantics
-    degrade to "agent can't help here" — correct failure.
-
-#### 🟠 Tier B — adjacent wins (opportunistic, cheaper APIs)
-14. Notification reader/dismissal — `NotificationListenerService`, lighter
-    permission, no gesture hell.
-15. "What's on my screen" queries — Tier-S reading + existing websearch.
-16. Focus/app-blocker mode — foreground-app detection + self-return-home;
-    policy-gray on Play, fine sideloaded.
-
-#### 🔴 Tier C — never build
-- Reading OTP/2FA codes or automating banking/payment flows (anti-abuse SDKs
-  fight this; malware-shaped).
-- Background always-on event monitoring / keylogging patterns — only listen
-  during an active agent turn.
-- Programmatic enablement / bypassing Restricted Settings.
-- Any Play distribution of Tier A (Oct 2025 policy prohibits autonomous
-  execution outright).
-
-### Cut line
-**P2a = all of Tier S. P2b = items 8–10 under the Deny/Draft/Send gate +
-item 11 previews. Items 12–13 deferred. Tier B opportunistic. Tier C never.**
-
-Design notes carried over from P1.5 planning:
-- Foreground-service plumbing from P1.5 (start/stop with a work lifecycle +
-  typed service declaration) is directly reusable for the accessibility
-  service's "Errand is automating" indicator and the batch-approval flow.
-
-Related future candidates (on-device, non-cloud): ML Kit document scanner +
-OCR (~300KB, no camera perm), BiometricPrompt gating for destructive actions.
+- **Safe File Editing Tool (`write` / `edit_file`):** In-place file modification with structured diff preview, user approval gating, and atomic backup/undo mechanisms.
+- **Local Semantic Retrieval:** On-device embeddings / SQLite FTS5 for local documents and memory recall.
+- **Stream-Stall Watchdog:** SSE inactivity transformer for `chatStream` to cleanly recover from frozen network sockets.
 
 ---
 
-## ✅ P3 — Multimodality (SHIPPED Aug 28 2026)
+## ✅ Shipped Milestones
 
-**Image/audio/video multimodality built *inside* `read` (`lib/tools/file_tools.dart`) — no separate service — as requested Aug 26–28.**
+### ✅ P0 — Android Intent Tool & Native System Surface
+- **Curated Intent Actions:** Comprehensive intent surface (`open_file`, `open_url`, `open_app`, `settings`, `intent`, `docs`) covering alarms, timers, calendar entries, sharing, maps, email, media playback, uninstall, and settings panels.
+- **Generic Escape Hatch:** Normalized `action: "intent"` accepts arbitrary `android_action` strings with typed extras mapping (`int`, `double`, `bool`, `String`) for third-party apps without code changes.
+- **On-Demand Intent Documentation (`docs`):** Agent inspects exact Android actions, URIs, and extra schemas for `alarm`, `timer`, `location`, `calendar`, `web_search`, `email`, and `media_capture` before dispatching.
+- **System Hardening:** Async native error handling (`NO_HANDLER`, `NO_PKG`), strict URL auto-prefix validation, RFC-6068 email queries, `FileProvider` URI resolution, BAL-safe launch (`PendingIntent` + a11y context fallback), and selective `bringToFront`.
+- **App Discovery & Alias Matching:** SQLite-cached launcher package inventory with fuzzy alias resolution (e.g. YouTube Music, BookMyShow) and top-10 suggestions on launch failures.
 
-- **Media read inside `read`** — `kMediaFormats` (jpg/jpeg/png/webp/gif · wav/mp3 · mp4/webm/mov, 20 MiB cap) → `ToolCallResult.contentParts` as OpenAI-compatible `image_url` / `input_audio` / `video_url` data URLs. Whole-file, base64, `file_picker` cache-aware (`_resolveReadableFile` allows `/data/.../cache/file_picker` + any `attachedFileUris`). Capability-gated via `ModelCatalogService.supportsInput` (`architecture.input_modalities` → `ModelOption.inputModalities`); unknown endpoints (`null`) allow the attempt, known-unsupported → `unsupported_modality` honest failure. Delivered as synthetic `user` message after tool batch (`lib/agent/agent_loop.dart: pendingMediaParts`) — tool-role media isn't portable. Counted in `context_budget` `List`-content path.
-- **Attach UX** — `+` → `file_picker` (`allowMultiple: true`) → `ChatScreen._pendingAttachments` staging (pre-send card above composer) → on Send snapshotted into `UserMessage.attachedUris` (ordered, `ConversationMessages.attachedUrisJson` col, schema v4) + appended to global `ConversationAttachments` inventory. Card persists under the user bubble (in order), also visible in Settings → `Local` tab (history+pending). Legacy `[Attached files:]` suffix handled for old messages via `_stripAttachedBlock`/`_extractAttachedUris`.
-- **Discovery** — `attached_files` tool (`lib/tools/attached_files_tool.dart`, zero params) lists the global inventory; system prompt also injects `Attached files (n):` when non-empty. `ToolRegistry.defaults(supportsInput, getAttachedFiles)` wires both.
-- **Verified**: `file_picker: ^10.1.2`, `flutter analyze` clean, 81 tests (new `file_tools_media_test.dart` + `model_catalog` modality tests).
+### ✅ P1 — Context Budgeting, History Compaction & Pagination
+- **Token-Based Context Budgeting:** Dynamic `ContextBudget` calibrated per model (~3.8 chars/token, model `contextSize`, reserving `min(16K, 25%)` output tokens with `models.dev` fallback).
+- **Auto-Compaction & Truncation:** Pre-turn and mid-run LLM history compaction with deterministic fallbacks under a 60-second timeout; persisted `CompactedNoticeMessage` dividers preserve pre-compaction turns without re-sending them.
+- **Windowed Message & Sidebar Loading:** Initial 50-message conversation window with prepending viewport-anchored scroll pagination (`loadOlderMessages`); sidebar cursor-based pagination for recents (`PagedFetcher<T>`).
+- **Merge-Safe Database Upserts:** Message-level upserting in `saveConversation` ensuring out-of-window messages remain intact.
 
-*Deferred from original P3 scope:*
-- Safe editing tool (`write`/`edit_file` with diff preview + undo) → **moved to Backlog** (needs write-policy decision, not P3).
-- Local retrieval (embeddings/FTS) → **deferred** (stays backlog, not P3).
+### ✅ P1.5 — Conversational UX, Control & Resiliency
+- **Abortable Cancellation (Stop Button):** Dynamic send/stop button toggling with cancel flags threaded into SSE streaming and turn boundaries; preserves partial output.
+- **Message Editing & Branching:** Edit user message with cascade deletion of subsequent turns (`_truncateFrom`); regenerate response from last user turn.
+- **Voice Input:** Integrated `speech_to_text` wrapping Android's built-in `SpeechRecognizer` with first-use language selection and persistent preference storage.
+- **Foreground Execution Guard:** Active `dataSync` Foreground Service keeps SSE streams alive when intent launches push Errand to the background.
+- **Network Resilience & Error Policy:** 3-attempt exponential backoff with `Retry-After` honoring for API calls; clear separation between transport errors (transient SnackBars) and tool errors (inline context).
 
-**Backlog (from P3):**
-- `write`/`edit_file` + local retrieval — queued after P4; not in P3 ship.
+### ✅ P2 — Accessibility Service & Screen Automation (Tier S & Draft Tier A)
+- **Kotlin Accessibility Service:** `ErrandAccessibilityService` with `canRetrieveWindowContent`, `canPerformGestures`, and `canTakeScreenshot` capabilities; method channel `"a11y"` mirroring `"intent"`.
+- **Screen Outline Tool (`screen`):** Compact outline serialization with viewport partitioning (visible items emitted first in visual reading order; off-screen nodes grouped under `--- Off-screen ---`); TalkBack boilerplate stripping and list compression.
+- **Global Actions:** Back, home, recents, notification shade, lock screen, and screenshot capture.
+- **Gated Draft-Mode Gestures (`act`):** Tap by label with commit refusal, `ACTION_SET_TEXT` typing with password/OTP field refusal, and directional scrolling with deterministic `at_end` detection.
+- **Extended Turn Cap:** Agent loop cap extended to 72 turns with mid-run compaction.
+- **Lifecycle & Privacy:** Auto-disables on app removal and finish; cold-start restricted settings guidance; Settings sheet Enable/Disable toggle.
 
----
+### ✅ P3 — Media Multimodality & Attachment Pipeline
+- **Integrated Media Reading:** `read` tool directly processes media (`kMediaFormats`: jpg, png, webp, gif, wav, mp3, mp4, webm, mov up to 20 MiB) into OpenAI-compatible data URLs.
+- **Capability Gating:** `ModelCatalogService.supportsInput` checks model capability before dispatching multimodal payloads.
+- **Composer Attachment Workflow:** Multi-file picker (`+`), staging card preview, and schema v4 ordered tracking (`ConversationMessages.attachedUrisJson`).
+- **Discovery Tool:** `attached_files` tool provides instant inventory of conversation attachments. Verified with 81 unit/integration tests.
 
-## 🧭 P4 — Guided refactor + hardening release (swapped Aug 28: ex-P4b now first)
+### ✅ P4 — Architecture Refactor & Operational Hardening (v0.5.0 – v0.5.2)
+- **P4a Service Refactor (v0.5.0):** Systematic refactoring across all core modules (`model_catalog`, `tavily_client`, `workspace`, document readers, `intent_service`, `llm_client`, `agent_loop`, `database`, `a11y_service`, and UI) maintaining strict backward compatibility.
+- **Dual Build Flavors (v0.5.2):** Full flavor retains accessibility automation for sideloaders; Lite flavor strips the accessibility service entirely from the manifest for zero-friction distribution.
+- **Large Output Spill Caching:** `ToolOutputFileService` spills command/tool outputs exceeding 6k characters into temporary cache files (512 KB cap, 10-minute TTL, max 50 files) with head/tail previews and direct `read` cache resolution.
+- **Heavy Tool `grep` Filtering:** Optional `grep` parameter for `screen`, `read`, and `workspace` tools with ReDoS protection and match limits.
+- **Resilient Web & Visual Fallbacks (v0.5.1):** Offline `webfetch` via `reader_mode` + `html2md` fallback; accessibility screenshot capture; background model catalog prefetching and live `ModelPicker` updates.
 
-### P4a — v0.5.0 (guided service-by-service refactor)
+### ✅ P5a — On-Device Shell Execution Tool (`/system/bin/sh`) (v0.5.5)
+- **Direct Shell Invocation:** `ShellService` and `bashTool` execute on-device commands via `/system/bin/sh` using `Process.start` in `dart:io`.
+- **Toybox / Toolbox Utility Suite:** Instant access to CLI utilities (`ls`, `cat`, `grep`, `find`, `sed`, `awk`, `cut`, `sort`, `uniq`, `wc`, `tr`, `head`, `tail`, `mkdir`, `cp`, `mv`, `rm`, `tar`, `gzip`, `df`, `du`, `ps`).
+- **Directory Persistence:** Automatically tracks and mutates `WorkingDirectory.current` across turns and file tools.
+- **Safety Policy:** Strictly blocks privilege escalation (`su`/`sudo`), reboot/shutdown, and fork bombs. Destructive mutations (`rm -rf`, wildcards) enforce Draft confirmation (`confirm_destructive: true`).
+- **Workspace Tool Retirement:** Standalone `workspace` router retired from defaults; folder exploration unified under `bashTool`.
 
-Context: ~99% of the Dart code is AI-written; the goal is to understand
-and own it, then shrink and harden it — NOT a line-by-line rewrite.
-
-Process (per service):
-1. **Walkthrough** — I explain the service line by line (what each piece
-   does and why it exists).
-2. **Core-algorithm revisit** — together we decide what to cut, merge, or
-   simplify; optimize for reliability and faster response.
-3. **Rewrite service-scoped** — small, contained diffs; tests updated per
-   service before moving on.
-
-Service order (dependency-driven, leaf services first):
-1. `model_catalog.dart` + `models/model_option.dart` (smallest, isolated)
-2. `tavily_client.dart` + web tools
-3. `workspace.dart` + `file_tools.dart` + `workspace_tool.dart`
-4. `internal/document_reading/` (readers)
-5. `intent_service.dart` + `intent_tool.dart`
-6. `llm_client.dart` (+ CancelToken/retry)
-7. `agent/context_budget.dart` + `agent_loop.dart`
-8. `services/database.dart` (schema v4 — now includes P3's `attachedUrisJson`)
-9. `a11y_service.dart` + `ErrandAccessibilityService.kt` + screen/act tools
-10. `main.dart` + widgets last (UI depends on everything above)
-
-Rules of engagement during P4a:
-- No feature changes inside refactor steps — behavior parity verified by
-  the existing test suite (plus new tests where coverage is thin).
-- Any bug found during walkthrough gets fixed inline but noted separately.
-- Each service lands as its own commit so regressions are bisectable.
-
-### P4b — v0.5.0 (hardening + memory)
-
-1. **Play Protect / policy hardening — ✅ SHIPPED Sep 2026 via Flavored Releases.**
-   - Addressed Play Protect and accessibility permission friction by introducing separate Full and Lite build flavors (`v0.5.2`).
-   - The Lite flavor (`com.errand.errand.lite`) strips the accessibility service declaration from the Android manifest, eliminating accessibility permission prompts and sensitive service flags.
-   - The Full flavor (`com.errand.errand`) preserves accessibility service integration for sideloaders who explicitly enable it, with honest descriptions and cold-start guidance.
-2. **Small UX improvements** — ad-hoc list, e.g.: settings sheet polish,
-   better error toasts, composer tweaks found during daily use. Scope
-   flexes; nothing structural.
-3. **Global memory tool + table (schema v5).**
-   - New `memories` table: key/value or freeform rows (id, content, tags?,
-     createdAt/updatedAt) — persistent across conversations.
-   - New `memory` tool for the agent: search/recall, save, update, delete;
-     editable by the user too (simple UI later or via chat command).
-   - System-prompt hook: inject a short "known facts" digest so the agent
-     uses memory without explicit recall calls when relevant.
-   - Note: was v4 in old plan; now v5 after P3's `attachedUrisJson` consumed v4.
-4. **Large Tool Output File-Caching (replaces 24k char hard clamp) — ✅ SHIPPED Sep 2026.**
-   - Created `ToolOutputFileService` (`lib/services/tool_output_file_service.dart`) to spill outputs exceeding 6k characters into a cache file via `path_provider` (`cache/tool_outputs/tool-{id}_{hash}-output.txt`, atomic tmp+rename write, 512 KB store cap, max 50 files) with a 10-minute default TTL (configurable).
-   - Returns a concise preview reserving the leading metadata header block plus the initial 2k and final 2k characters along with the created file path:
-     `[... Output truncated: showing first X and last Y of Z characters. Full output saved to: <filePath> (TTL: 10m). Use read tool with path: "<filePath>" (supports grep, offset, length) to inspect further. ...]`
-   - Applied across all text-heavy tools (`screen`, `act then_read`, `read`, `workspace` list/find, `webfetch` (extract stored up to 100k chars), `websearch`) and integrated into `ToolRegistry.execute` as a universal safety net (already-spilled previews pass through untouched so the two layers never overwrite each other).
-   - Sweep is opportunistic (expired/over-cap files deleted on the next large spill — no background timer). Updated `_resolveReadableFile` so the `read` tool opens only files inside the spill directory (post-normalize containment check) and reports a regenerate hint for expired spills.
-5. **`grep` argument for data-heavy tools (`screen_tool`, `read_tool`, `workspace_tool`) — ✅ SHIPPED Sep 2026.**
-   - Added optional `grep` argument (case-insensitive substring/regex filter via `GrepFilter`) across `screen` (outline filter, forces full read), `read` (document/text filter with line numbers, expands unpaginated length to 512KB), and `workspace` (`find`/`list` output entries filter).
-   - Allows the model to pull only matching lines (e.g. `screen read grep:"Total"` or `read path:"..." grep:"API_KEY"`) instead of loading 2–4k tokens of irrelevant content.
-   - Evaluated before caching/truncation, allowing single-turn precision retrieval. Safe fallback to escaped literal match on invalid regex syntax.
-   - `GrepFilter` hardening: 200-char pattern cap, nested-quantifier ReDoS guard, 200-match cap with overflow note; structured grep filters body only (header reserved); `list`/`find` grep runs before pagination with honest match counts.
-
-6. **A11y lifecycle & toast UX — ✅ SHIPPED Sep 2026.**
-   - Service auto-disables on task removal (`onTaskRemoved`) and when `MainActivity` finishes (`onDestroy` with `isFinishing`) — keeps other apps secure per the sideload model.
-   - Cold start shows a dismissible toast (8s auto-dismiss) when screen access is off, with **Restricted-setting steps** when `isRestricted()` is true. Dismissal persists via `a11yPromptDismissed`; re-enable clears the flag so future off-cycles re-notify.
-   - Settings sheet (Tools tab) shows Active/Disabled chip with **Enable in Settings** / **Disable now** buttons; resumes refresh the chip via `WidgetsBindingObserver` (no stale state after toggling in system Settings).
-   - `intent` open-style actions (`open_file`/`open_url`/`open_app`/`settings`/`intent`) lazily append a paused-notice **after successful launch** — no wasted channel call on failures, no false positive on channel errors. UI replay (`replayIntentAction`) skips the check entirely.
-
-7. **Composer multi-line** — ✅ SHIPPED Sep 2026. `TextInputAction.newline` (was `send`), Enter inserts a newline up to 4 visible lines; Send button is the only submit path.
-8. **Web, Visual & Catalog Resilience — ✅ SHIPPED Sep 2026 (v0.5.1).**
-   - **Offline/free web fetch fallback:** Added on-device `webfetch` extraction using `reader_mode` + `html2md` when Tavily API key is absent or when Tavily returns errors. `websearch` guides agent to fallback search engines (e.g. DuckDuckGo Lite via `webfetch`).
-   - **Accessibility visual screenshot fallback:** Added `screenshot` action in `screen` tool via Android accessibility screenshot API (`takeScreenshot`) returning base64 vision parts.
-   - **Background catalog prefetching:** Immediately kicks off background catalog fetch on API key save or provider change; prevents stale cache wipes.
-   - **ModelPicker live refresh:** Dynamically updates dialog options upon refresh completion, auto-fetches for providers with keys, and links OpenRouter default preset models to `kFallbackModels`.
-9. **Flavors & Intent UX Improvements — ✅ SHIPPED Sep 2026 (v0.5.2).**
-   - **Full & Lite Flavors:** Split build flavors. Lite flavor removes the accessibility service completely from the manifest, bypassing accessibility permissions and removing `screen` and `act` tools dynamically while keeping all file, web, and intent tools. Full flavor preserves the accessibility service and tools.
-   - **Installed Apps Discovery & Caching:** Persistent SQLite caching of installed launcher packages on app startup with background refresh. Auto-resolves common app aliases (e.g., YT Music, BookMyShow) and suggests top 10 matching apps on launch failure.
-   - **Friendly App Summaries:** Tool message bubbles show the resolved app name (e.g., "Opened Spotify", "Opened YouTube") instead of generic text.
-   - **Selective Bring-to-Front:** Errand stays in the launched app if the turn finishes silently, but returns to the foreground if the agent has follow-up text or encounters an error.
-
-**Backlog (deferred from P3):** `write`/`edit_file` with diff preview + undo — needs write-policy decision, queued after P4b.
-
----
-
-## 🌐 P5 — Capabilities Beyond Accessibility (Closing the Lite vs. Full Gap)
-
-Goal: Expand Errand's capabilities across both flavors, bringing Lite closer to Full autonomy without requiring Android Accessibility permissions.
-
-### ✅ P5a — On-Device Shell Execution Tool (`/system/bin/sh`) (SHIPPED)
-- **Direct Shell Invocation:** Built `ShellService` (`lib/services/shell_service.dart`) and `bashTool` (`lib/tools/bash_tool.dart`) running on-device commands via `/system/bin/sh` using `Process.start` in `dart:io` (with host `sh` fallback for development/tests).
-- **Built-in Android Toolset:** Provides immediate access to Android's Toybox and Toolbox CLI utilities (`ls`, `cat`, `grep`, `find`, `sed`, `awk`, `cut`, `sort`, `uniq`, `wc`, `tr`, `head`, `tail`, `mkdir`, `cp`, `mv`, `rm`, `tar`, `gzip`, `df`, `du`, `ps`).
-- **Workspace & Storage Integration:** Executes within the application process UID and defaults to the active `WorkingDirectory.current` across shared storage (`/storage/emulated/0`) and private sandbox folders, with support for relative and custom `working_directory` arguments.
-- **Output & Context Management:** Captures `stdout`, `stderr`, and exit code. Large outputs automatically route to `ToolOutputFileService` with reserved metadata header block (`Command`, `Working directory`, `Exit code`) and head/tail previews to protect the token budget. In-memory buffer capped at 512 KB to avoid OOM.
-- **Execution Safety & Control:**
-  - Enforces per-command timeouts (30 seconds default, clamp 1–120s) and aborts cleanly when the user hits the stop button via `CancelToken` listener hooks and process tree termination.
-  - Strictly blocks dangerous operations via `ShellSafetyCheck.analyze` (fork bombs, attempts to invoke `su`/`sudo`, reboot/shutdown, `init 0/6`, `sys.powerctl`, direct raw device writes, and root/system directory destruction).
-  - Implements a Draft confirmation policy for destructive mutations (`rm -r`, `rm -rf`, bulk wildcards `rm *`, `find -delete`, `find -exec rm`, `xargs rm`, `shred`, `truncate -s 0`) requiring explicit `confirm_destructive: true` after user confirmation.
-- **Cross-Flavor Availability:** Available in both Full and Lite flavors via `ToolRegistry.defaults`, closing the capability gap without requiring accessibility permissions. Verified with 26 unit and integration tests.
-- **Workspace Tool Retirement:** Retired the standalone `workspace` tool (`workspace_tool.dart` -> `legacy_workspace_tool.dart`, `legacyWorkspaceTool`, `legacyListTool`, `legacyFindTool`, `legacyCdTool`) from `ToolRegistry.defaults`. Full folder discovery, search, and navigation (`cd`, `pwd`, `ls`, `find`) now execute via `bashTool`, which automatically keeps `workingDirectory.current` synchronized across subsequent turns and file reads.
-
-### P5b — Embedded Browser Agent Tools
-- **Interactive In-App Web View:** Dedicated browser sheet that runs web sessions inside Errand instead of bouncing the user to external browser apps. The user watches the agent navigate, fill forms, and click elements live.
-- **Dual-Mode Control (DOM JavaScript + Visual Fallback):**
-  - **Primary (Direct JavaScript Evaluation):** Run JavaScript directly for DOM reads, text extraction, selector-based queries, form input population, and click dispatches. Fast, precise, and token-efficient.
-  - **Secondary (Visual Screenshot Fallback):** Capture rendered page screenshots so a vision-capable model can locate elements when CSS or XPath selectors break, canvases are used, or elements live inside complex shadow DOM trees.
-  - **Execution Policy:** Try JavaScript first. Fall back to vision if selectors return no matches or interactions fail.
-- **Safety, Isolation & Policy:**
-  - **Origin & Message Lockdown:** Whitelist permitted schemes and origins. Disallow arbitrary Android intent schemes from untrusted pages, and isolate JavaScript message ports.
-  - **Draft & Confirmation Policy:** Require explicit user confirmation before committing irreversible or sensitive web actions (form submissions, logins, purchases, or account changes). Errand prepares the action; the user approves.
-  - **Session Sandboxing:** Clean cookie and cache handling with clear session boundaries, allowing users to choose whether to keep or discard session state.
-
----
-
-## ✅ Also shipped alongside P0 (LLM client resilience + error policy)
-
-- `_postWithRetry` / `_sendStreamWithRetry`: 3 attempts, exponential backoff, `Retry-After` honored. Fixes free-model flakiness ("Software caused connection abort") including stale keep-alive sockets.
-- Streaming requests built per attempt via builder closure (fixes "Bad state: Can't finalize a finalized Request" when app backgrounds during intent launches).
-- `LlmException.transport` flag distinguishes infra failures from agent mistakes.
-- Error policy: transport/API errors → SnackBar via `_failWorking` (working bubble removed, nothing persisted/context); tool-call errors → shown inline AND added to context (agent's business).
-
-## Known open items
-
-- Stream-stall watchdog for `chatStream` (headers timeout only; a stalled mid-stream hangs `_busy`). ~20 LOC inactivity transformer.
-- Malformed SSE JSON surfaces as generic "Unexpected error" toast (harmless, cosmetic).
+### ✅ v0.5.6 — Intent Documentation, Tool Call Grouping UI & Modularity
+- **Intent Documentation Action:** Added `intent(action: "docs", name: "...")` for schema inspection across core Android actions.
+- **Typed Extras Support:** Normalized integer lists and primitive types in platform channels (`MainActivity.kt`).
+- **Grouped Tool Call UI (`ToolGroupBubble`):** Consecutive tool executions grouped into a unified timeline card with animated status transitions (`running`, `completed`, `failed`), step counter badges, and nested collapsible accordions.
+- **Keyed Provider Prioritization:** Providers with configured API keys appear first in the LLM selection UI.
+- **Entrypoint Modularization:** Decomposed `lib/main.dart` into `lib/bootstrap.dart`, `lib/app.dart`, and `lib/screens/chat_screen.dart`.
