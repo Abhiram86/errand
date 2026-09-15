@@ -50,11 +50,16 @@ class AgentLoop {
   /// the fallback summary via the generic catch below (never a throw).
   static const Duration defaultCompactionTimeout = Duration(seconds: 60);
 
+  /// Maximum number of consecutive identical failing tool calls before
+  /// the loop aborts and triggers cancelToken.
+  static const int defaultMaxConsecutiveSameToolErrors = 3;
+
   final LlmClient _llm;
   final ToolRegistry _registry;
   final ContextBudget budget;
   final int maxTurnCount;
   final Duration compactionTimeout;
+  final int maxConsecutiveSameToolErrors;
   final String Function()? systemPromptBuilder;
 
   /// Set by the UI stop button; checked at every turn boundary and between
@@ -72,6 +77,7 @@ class AgentLoop {
     int? modelContextSize,
     int? maxTurns,
     Duration? compactionTimeout,
+    int? maxConsecutiveSameToolErrors,
     this.systemPromptBuilder,
     this.cancelToken,
     this._onEvent,
@@ -83,7 +89,9 @@ class AgentLoop {
                 ? ContextBudget(contextSize: modelContextSize)
                 : ContextBudget.defaultBudget),
         maxTurnCount = maxTurns ?? defaultMaxTurns,
-        compactionTimeout = compactionTimeout ?? defaultCompactionTimeout;
+        compactionTimeout = compactionTimeout ?? defaultCompactionTimeout,
+        maxConsecutiveSameToolErrors =
+            maxConsecutiveSameToolErrors ?? defaultMaxConsecutiveSameToolErrors;
 
   Future<String> run(Conversation conversation) async {
     // OPT-07: individual tool results are head-clamped at the boundary.
@@ -98,6 +106,9 @@ class AgentLoop {
 
     // Check context budget immediately if incoming history exceeds threshold
     await _compactIfNeeded(messages);
+
+    ToolCall? lastFailedCall;
+    var consecutiveSameErrorCount = 0;
 
     for (var turn = 0; turn < maxTurnCount; turn++) {
       if (cancelToken?.isCancelled ?? false) throw const LlmStoppedException();
@@ -187,6 +198,23 @@ class AgentLoop {
           'tool_call_id': call.id,
           'content': clampResultText(result.toText()),
         });
+
+        if (!result.ok) {
+          if (lastFailedCall != null && _isSameToolCall(call, lastFailedCall)) {
+            consecutiveSameErrorCount++;
+          } else {
+            lastFailedCall = call;
+            consecutiveSameErrorCount = 1;
+          }
+          if (consecutiveSameErrorCount >= maxConsecutiveSameToolErrors) {
+            cancelToken?.cancel();
+            throw const LlmStoppedException();
+          }
+        } else {
+          lastFailedCall = null;
+          consecutiveSameErrorCount = 0;
+        }
+
         // Media content parts can't ride the tool role portably across
         // providers — deliver them as a user message after this batch.
         pendingMediaParts.addAll(result.contentParts ?? const []);
@@ -241,6 +269,39 @@ class AgentLoop {
     if (prev.arguments['then_read'] == true) return true;
     final grep = (prev.arguments['grep'] as String?)?.trim();
     return grep != null && grep.isNotEmpty;
+  }
+
+  /// Compares whether two [ToolCall]s represent the same tool invocation.
+  static bool _isSameToolCall(ToolCall a, ToolCall b) {
+    if (a.name != b.name) return false;
+    return _areArgumentsEqual(a.arguments, b.arguments);
+  }
+
+  /// Deep structural equality for tool arguments (maps, lists, strings, numbers, booleans).
+  static bool _areArgumentsEqual(dynamic a, dynamic b) {
+    if (identical(a, b)) return true;
+    if (a is Map && b is Map) {
+      if (a.length != b.length) return false;
+      for (final key in a.keys) {
+        if (!b.containsKey(key)) return false;
+        if (!_areArgumentsEqual(a[key], b[key])) return false;
+      }
+      return true;
+    }
+    if (a is List && b is List) {
+      if (a.length != b.length) return false;
+      for (var i = 0; i < a.length; i++) {
+        if (!_areArgumentsEqual(a[i], b[i])) return false;
+      }
+      return true;
+    }
+    if (a is String && b is String) {
+      return a.trim() == b.trim();
+    }
+    if (a is num && b is num) {
+      return a == b;
+    }
+    return a == b;
   }
 
   Future<void> _compactIfNeeded(List<Map<String, dynamic>> messages) async {

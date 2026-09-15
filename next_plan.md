@@ -43,25 +43,41 @@ Cross-conversation persistent memory giving Errand long-term recall of user pref
 Goal: Enable autonomous, safe web navigation and interaction directly within Errand, eliminating the need to bounce the user to external browsers while remaining fully functional on both Full and Lite flavors (zero accessibility permissions required).
 
 #### 🔵 P6a — Embedded Browser Agent Tools
-1. **Interactive In-App Web View:**
-   - Dedicated in-app browser sheet/view via `webview_flutter` or native platform view.
-   - Allows live observation: the user can watch the agent navigate, fill inputs, and click elements directly inside the Errand UI.
 
-2. **Dual-Mode Control (DOM JavaScript + Visual Fallback):**
-   - **Primary (Direct JavaScript Bridge):** High-speed, deterministic DOM interaction via JavaScript evaluation:
-     - Read visible page text, headings, links, and structured DOM outlines.
-     - Query and validate CSS / XPath selectors.
-     - Populate form fields, select options, and dispatch click/submit events.
-     - Fast, token-efficient, and independent of device display scaling.
-   - **Secondary (Visual Screenshot Fallback):**
-     - Capture rendered page screenshots from the WebViewController for multimodal models.
-     - Activates when selectors fail, target elements reside within complex shadow DOMs, or interactions involve HTML5 Canvas components.
-   - **Execution Discipline:** JavaScript evaluation is attempted first; vision fallback triggers only when DOM queries fail or yield ambiguous matches.
+Goal: give Lite the automation Full gets from a11y, for any task that can be done in a browser (form fill, scheduling, lookup, checkout drafts). Single controllable WebView, visible to the user as the agent works, with pause-and-delegate for logins.
 
-3. **Security, Sandboxing & Safety Policy:**
-   - **Origin & Scheme Lockdown:** Strictly whitelist `http` and `https` protocols; block arbitrary `intent://`, `file://`, and `javascript:` scheme navigations from untrusted pages.
-   - **Draft & Confirmation Policy:** Sensitive or irreversible actions (form submissions, logins, purchases, data updates) require user confirmation under the Draft model: the agent pre-fills the form and requests the user to approve or submit.
-   - **Session Isolation:** Configurable ephemeral (incognito) vs. persistent session storage with one-tap cookie and cache clearing.
+1. **Package choice: `flutter_inappwebview`.**
+   - `evaluateJavascript` + `addJavaScriptHandler` (typed JSON) for DOM bridge, `takeScreenshot` (visible viewport PNG) for visual fallback, `incognito` flag, `ContentBlocker`, `shouldOverrideUrlLoading`.
+   - `webview_flutter` rejected as primary: no screenshot API; framework `RepaintBoundary` capture returns blank on `PlatformView`.
+
+2. **Single WebView + `Offstage` visibility (no headless <-> in-app toggle).**
+   - One `InAppWebViewController` owned by a `BrowserService` singleton (mirrors `A11yService` pattern). Keep it alive across turns/sheet expands.
+   - Headless promotion (`HeadlessInAppWebView` -> visible) is crash-prone on config/size change; avoid it for the main view. Optional headless only for background prefetch, never as the toggle path.
+   - Render: `DraggableScrollableSheet (0.25 collapsed squircle -> 1.0 full)` + `ClipRRect`/`ContinuousRectangleBorder`, same sheet style as Settings sheet. Collapsed = `Offstage` live view or screenshot thumbnail; expanded = live interactive view. `Offstage` skips compositing/GPU but keeps session + controller (does not fully free RAM — call `pauseTimers` when hidden, `resume` on show). Drag handle lives outside WebView gesture area to avoid scroll-vs-drag fights.
+
+3. **Dual-mode control (JS first, vision fallback).**
+   - Snapshot JS: `querySelectorAll('a,button,input,select,textarea,[role],[onclick],form')` capped at 100-150 nodes -> `{id,role,name,tag,href,type,value,disabled,rect}` via `getBoundingClientRect`, tag `data-agent-id`. Return JSON string, `jsonDecode` in Dart. Reuse 6k spill + `grep` conventions from `screen`/`read`.
+   - Act JS: `querySelector('[data-agent-id="N"]').click()` / `MouseEvent` dispatch for SPAs; `focus + execCommand('insertText') + input/change` events for React inputs; `scrollIntoView({block:center})` before act.
+   - `takeScreenshot` only on ambiguity / shadowDOM / canvas. Prefix all page output with `UNTRUSTED_PAGE_DATA:`.
+
+4. **Agent tools (registered unconditionally in `ToolRegistry.defaults`, Lite-safe — no a11y permission):**
+   - `browser_open{url}` — `http/https` only, per-task `allowedDomains` check, `onLoadStop + ~800ms` settle.
+   - `browser_snapshot{}` — DOM outline + `url/title/scroll`.
+   - `browser_act{ref, action: click|type|select|scroll, text?, confirm?}` — resolves `data-agent-id`; refuses password/OTP autofill and `pay/submit/delete` without `confirm:true`.
+   - `browser_shot{}` — viewport PNG into `contentParts image_url` for multimodal models.
+   - `browser_close{clear?}` — ends task; clears per ephemeral setting below.
+
+5. **Sessions: ephemeral default, persistent opt-in.**
+   - Chromium `CookieManager` persists by default across restarts. Default = ephemeral (`incognito:true`, `thirdPartyCookiesEnabled:false`, clear cookies/cache/storage on close). Opt-in "Remember login" = persistent store + domain/expiry row + one-tap Clear. Store is process-global (controllers share it); no per-tab isolation without manual clear.
+   - Chrome/Custom Tab logins cannot be imported (separate jars). User logs in once inside agent WebView, then it sticks.
+
+6. **Auth wall reality + handoff.**
+   - Google OAuth (`accounts.google.com`) returns `403 disallowed_useragent` in any embedded WebView per Secure Browsers policy (Sep 2021); Play Console flags `Usage of WebViews for Authentication`. Same class of breakage for Microsoft Conditional Access/passkeys, Apple. Plain forms + most non-Google OAuth work fine. No UA spoofing.
+   - On `input[type=password] | captcha | checkout/pay | cross-origin/auth URL`: tool returns `{needs_user:true}`, loop pauses, sheet offers `[Take Over] [Open in Chrome] [Cancel]`. Custom Tab / system browser handles Google/SSO (URL bar visible), result returns via redirect token — not cookie copy. Agent re-snapshots on Continue. Passwords use placeholder injection (`x_pass` in history, host injects value, `use_vision:false` on auth pages).
+
+7. **Safety (extends Draft policy from `act`):**
+   - `shouldOverrideUrlLoading` gate + block `intent://, file://, data:, javascript:` from pages; cross-origin nav auto-pauses.
+   - Classify `read(auto) / draft(auto-fill, needs approval) / commit(submit, login, pay, send, delete, upload, permission — always Confirm/Edit/Discard card with origin + masked values)`. Typing into untrusted origins counts as commit. Single human-timeout -> abort + clear draft. Audit-log all calls.
 
 ---
 

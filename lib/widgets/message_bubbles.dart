@@ -189,6 +189,83 @@ class ToolMessageBubble extends StatefulWidget {
           default:
             return 'Accessed memory';
         }
+      case 'browser':
+      case 'browser.open':
+      case 'browser_open':
+      case 'browser.close':
+      case 'browser_close':
+      case 'browser.reload':
+      case 'browser_reload':
+      case 'browser.snapshot':
+      case 'browser_snapshot':
+      case 'browser.extract_text':
+      case 'browser_extract_text':
+      case 'browser.execute_dom_js':
+      case 'browser_execute_dom_js':
+      case 'browser.act':
+      case 'browser_act':
+      case 'browser.screenshot':
+      case 'browser_screenshot':
+      case 'extract_text':
+        final rawAction = args['action']?.toString();
+        final action = (rawAction != null && rawAction.isNotEmpty)
+            ? rawAction
+            : (toolName.contains('open')
+                ? 'open'
+                : (toolName.contains('close')
+                    ? 'close'
+                    : (toolName.contains('reload')
+                        ? 'reload'
+                        : (toolName.contains('snapshot')
+                            ? 'snapshot'
+                            : (toolName.contains('extract') || toolName.contains('text')
+                                ? 'extract_text'
+                                : (toolName.contains('execute') || toolName.contains('js')
+                                    ? 'execute_dom_js'
+                                    : (toolName.contains('act') ||
+                                            toolName.contains('click') ||
+                                            toolName.contains('type') ||
+                                            toolName.contains('scroll')
+                                        ? 'act'
+                                        : (toolName.contains('screenshot')
+                                            ? 'screenshot'
+                                            : ''))))))));
+        switch (action) {
+          case 'open':
+            final url = args['url']?.toString();
+            return url != null && url.isNotEmpty
+                ? 'Opened $url'
+                : 'Opened browser';
+          case 'close':
+            return 'Closed browser';
+          case 'reload':
+            return 'Reloaded page';
+          case 'snapshot':
+            final fullDump =
+                args['full_dump'] == true || args['fullDump'] == true;
+            return fullDump ? 'Dumped page DOM' : 'Inspected web page';
+          case 'extract_text':
+            return 'Extracted page text';
+          case 'execute_dom_js':
+            return 'Executed web script';
+          case 'act':
+            final actAction =
+                (args['act_action'] ?? args['interaction'])?.toString();
+            if (actAction == 'click' || args['click'] != null) {
+              return 'Clicked page element';
+            }
+            if (actAction == 'type' || args['type'] != null) {
+              return 'Typed into page';
+            }
+            if (actAction == 'scroll' || args['scroll'] != null) {
+              return 'Scrolled page';
+            }
+            return 'Interacted with page';
+          case 'screenshot':
+            return 'Captured browser viewport';
+          default:
+            return 'Used browser';
+        }
       case 'workspace':
         final action = args['action']?.toString();
         switch (action) {
@@ -553,6 +630,10 @@ List<ChatDisplayItem> groupMessagesForDisplay(List<Message> messages) {
     if (message is ToolMessage) {
       currentTools ??= [];
       currentTools.add(message);
+    } else if (message is AssistantMessage && message.text.trim().isEmpty) {
+      // Stray whitespace/empty assistant messages (e.g. from model newline deltas
+      // preceding a tool call) must never break consecutive tool grouping.
+      continue;
     } else {
       if (currentTools != null) {
         items.add(ToolGroupDisplayItem(currentTools));

@@ -8,12 +8,14 @@ ToolMessage createToolMessage({
   Map<String, dynamic> args = const {},
   String result = 'Done',
   String id = 'tool_msg_1',
+  String? reasoning,
 }) {
   return ToolMessage(
     id: id,
     text: result,
     tool: ToolInvocation(name: toolName, args: args),
     result: result,
+    reasoning: reasoning,
   );
 }
 
@@ -96,6 +98,31 @@ void main() {
       final single2 = items[3] as SingleMessageDisplayItem;
       expect(single2.message, m2);
       expect(single2.originalIndex, 6);
+    });
+
+    test('ignores whitespace-only assistant messages and preserves sequential tool group', () {
+      final t1 = createToolMessage(toolName: 'websearch', id: 't1');
+      final w1 = AssistantMessage(id: 'w1', text: '\n\n');
+      final t2 = createToolMessage(toolName: 'read', id: 't2');
+      final w2 = AssistantMessage(id: 'w2', text: '   \n   ');
+      final t3 = createToolMessage(toolName: 'bash', id: 't3');
+      final mFinal = AssistantMessage(id: 'mf', text: 'Final answer');
+
+      final items = groupMessagesForDisplay([t1, w1, t2, w2, t3, mFinal]);
+
+      expect(items.length, 2);
+
+      // All 3 tools coalesced into a single group despite intervening whitespace
+      expect(items[0], isA<ToolGroupDisplayItem>());
+      final group = items[0] as ToolGroupDisplayItem;
+      expect(group.tools, [t1, t2, t3]);
+      expect(group.id, 'group_t1');
+
+      // Final assistant response
+      expect(items[1], isA<SingleMessageDisplayItem>());
+      final single = items[1] as SingleMessageDisplayItem;
+      expect(single.message, mFinal);
+      expect(single.originalIndex, 5);
     });
   });
 
@@ -277,6 +304,55 @@ void main() {
       expect(find.textContaining('bash'), findsOneWidget);
       expect(find.textContaining('uname -a'), findsOneWidget);
       expect(find.text('Linux test 6.0'), findsOneWidget);
+    });
+
+    testWidgets('renders clean tool output without reasoning pollution when expanded', (tester) async {
+      ToolMessageBubble.debugShowToolArgsOverride = false;
+
+      final t1 = createToolMessage(
+        toolName: 'read',
+        args: {'path': '/path/to/code.dart'},
+        result: 'class Foo {}',
+        reasoning: 'Checking definition of Foo in code.dart',
+        id: 't1',
+      );
+
+      await tester.pumpWidget(wrapBubble(ToolGroupBubble(tools: [t1])));
+
+      expect(find.text('Ran 1 step'), findsOneWidget);
+      expect(find.text('class Foo {}'), findsNothing);
+
+      // Expand group
+      await tester.tap(find.text('Ran 1 step'));
+      await tester.pumpAndSettle();
+
+      // Tool output is displayed cleanly; reasoning trace is not injected into tool output
+      expect(find.text('class Foo {}'), findsOneWidget);
+      expect(find.text('Checking definition of Foo in code.dart'), findsNothing);
+    });
+
+    testWidgets('standalone ToolMessageBubble renders clean tool output when expanded', (tester) async {
+      ToolMessageBubble.debugShowToolArgsOverride = false;
+
+      final t1 = createToolMessage(
+        toolName: 'websearch',
+        args: {'query': 'dart news'},
+        result: 'Found Dart 3.7 announcement',
+        reasoning: 'Searching for latest Dart releases',
+        id: 't1',
+      );
+
+      await tester.pumpWidget(wrapBubble(ToolMessageBubble(message: t1)));
+
+      expect(find.text('Used web search'), findsOneWidget);
+      expect(find.text('Found Dart 3.7 announcement'), findsNothing);
+
+      // Tap to expand
+      await tester.tap(find.text('Used web search'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Found Dart 3.7 announcement'), findsOneWidget);
+      expect(find.text('Searching for latest Dart releases'), findsNothing);
     });
   });
 }

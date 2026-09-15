@@ -368,5 +368,171 @@ void main() {
     final userMsg = capturedMessages.firstWhere((m) => m['role'] == 'user');
     expect(userMsg['content'], '[User uploaded attached file(s)]');
   });
+
+  group('Repeated tool error loop guard', () {
+    test('aborts with LlmStoppedException and cancels cancelToken on 3 consecutive same tool errors', () async {
+      final client = MockLlmClient();
+      final cancelToken = CancelToken();
+
+      final failingTool = Tool(
+        name: 'failing_tool',
+        description: 'Always fails',
+        parameters: const {
+          'type': 'object',
+          'properties': {
+            'action': {'type': 'string'},
+          },
+        },
+        handler: (call) async => ToolCallResult.failure(call.id, 'Tool failed'),
+      );
+
+      final registry = ToolRegistry([failingTool]);
+      final loop = AgentLoop(
+        llm: client,
+        registry: registry,
+        cancelToken: cancelToken,
+      );
+
+      var turnCount = 0;
+      client.onChat = (_) {
+        turnCount++;
+        return LlmMessage(
+          content: 'Calling tool attempt $turnCount',
+          toolCalls: [
+            ToolCall(
+              id: 'call_$turnCount',
+              name: 'failing_tool',
+              arguments: const {'action': 'do_something'},
+            ),
+          ],
+        );
+      };
+
+      await expectLater(
+        loop.run(
+          Conversation(
+            id: 'c-loop',
+            messages: [const UserMessage(id: 'u1', text: 'Run loop')],
+            currentDir: Directory('/'),
+          ),
+        ),
+        throwsA(isA<LlmStoppedException>()),
+      );
+
+      expect(turnCount, equals(3));
+      expect(cancelToken.isCancelled, isTrue);
+    });
+
+    test('breaks consecutive failure streak if a successful tool call occurs', () async {
+      final client = MockLlmClient();
+      final cancelToken = CancelToken();
+
+      var toolCallCount = 0;
+      final dynamicTool = Tool(
+        name: 'dynamic_tool',
+        description: 'Fails 2 times, succeeds once, then returns final',
+        parameters: const {'type': 'object'},
+        handler: (call) async {
+          toolCallCount++;
+          if (toolCallCount == 3) {
+            return ToolCallResult(id: call.id, ok: true, output: 'Success on 3rd attempt');
+          }
+          return ToolCallResult.failure(call.id, 'Failure #$toolCallCount');
+        },
+      );
+
+      final registry = ToolRegistry([dynamicTool]);
+      final loop = AgentLoop(
+        llm: client,
+        registry: registry,
+        cancelToken: cancelToken,
+      );
+
+      var turnCount = 0;
+      client.onChat = (_) {
+        turnCount++;
+        if (turnCount > 3) {
+          return const LlmMessage(content: 'All done successfully');
+        }
+        return LlmMessage(
+          content: 'Attempt $turnCount',
+          toolCalls: [
+            ToolCall(
+              id: 'call_$turnCount',
+              name: 'dynamic_tool',
+              arguments: const {'key': 'val'},
+            ),
+          ],
+        );
+      };
+
+      final result = await loop.run(
+        Conversation(
+          id: 'c-break',
+          messages: [const UserMessage(id: 'u1', text: 'Try dynamic')],
+          currentDir: Directory('/'),
+        ),
+      );
+
+      expect(result, equals('All done successfully'));
+      expect(cancelToken.isCancelled, isFalse);
+    });
+
+    test('resets streak if subsequent failing tool call has different name or arguments', () async {
+      final client = MockLlmClient();
+      final cancelToken = CancelToken();
+
+      final toolA = Tool(
+        name: 'tool_a',
+        description: 'Tool A',
+        parameters: const {'type': 'object'},
+        handler: (call) async => ToolCallResult.failure(call.id, 'Error A'),
+      );
+      final toolB = Tool(
+        name: 'tool_b',
+        description: 'Tool B',
+        parameters: const {'type': 'object'},
+        handler: (call) async => ToolCallResult.failure(call.id, 'Error B'),
+      );
+
+      final registry = ToolRegistry([toolA, toolB]);
+      final loop = AgentLoop(
+        llm: client,
+        registry: registry,
+        cancelToken: cancelToken,
+      );
+
+      var turnCount = 0;
+      client.onChat = (_) {
+        turnCount++;
+        if (turnCount > 8) {
+          return const LlmMessage(content: 'Finished after alternating failures');
+        }
+        final toolName = turnCount % 2 == 1 ? 'tool_a' : 'tool_b';
+        return LlmMessage(
+          content: 'Attempt $turnCount',
+          toolCalls: [
+            ToolCall(
+              id: 'call_$turnCount',
+              name: toolName,
+              arguments: const {},
+            ),
+          ],
+        );
+      };
+
+      final result = await loop.run(
+        Conversation(
+          id: 'c-alt',
+          messages: [const UserMessage(id: 'u1', text: 'Alternate tools')],
+          currentDir: Directory('/'),
+        ),
+      );
+
+      expect(result, equals('Finished after alternating failures'));
+      expect(cancelToken.isCancelled, isFalse);
+    });
+  });
 }
+
 

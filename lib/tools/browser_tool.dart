@@ -1,0 +1,341 @@
+import '../agent/tool.dart';
+import '../services/browser_service.dart';
+import '../types/tool.dart';
+
+/// Creates the `browser` tool group, exposing embedded web automation functions:
+/// - `open` (`browser.open`): navigate to a URL and display the browser
+/// - `close` (`browser.close`): dismiss the browser
+/// - `reload` (`browser.reload`): reload the current page
+/// - `snapshot` (`browser.snapshot`): extract a token-efficient DOM outline with interactive refs
+/// - `execute_dom_js` (`browser.execute_dom_js`): evaluate arbitrary JS in the DOM
+/// - `act` (`browser.act`): perform clicks, typing, or scrolling
+/// - `screenshot` (`browser.screenshot`): capture the visible viewport
+Tool browserTool({BrowserService? browserService}) {
+  final service = browserService ?? BrowserService.instance;
+
+  return Tool(
+    name: 'browser',
+    description:
+        'Embedded web browser tool group to inspect and interact with websites. '
+        'Functions: '
+        'open (load a URL and show the browser), '
+        'close (hide the browser view), '
+        'reload (refresh the current page), '
+        'snapshot (extract a structured DOM outline with interactive element refs [e1], [e2] and text preview), '
+        'extract_text (extract clean Markdown text of the page via html2md), '
+        'execute_dom_js (evaluate custom JavaScript in the page DOM), '
+        'act (click, type, or scroll using element refs or selectors), '
+        'screenshot (capture the visible viewport).',
+    parameters: {
+      'type': 'object',
+      'properties': {
+        'action': {
+          'type': 'string',
+          'enum': [
+            'open',
+            'close',
+            'reload',
+            'snapshot',
+            'extract_text',
+            'execute_dom_js',
+            'act',
+            'screenshot',
+          ],
+          'description':
+              'The browser action to execute: '
+              'open, close, reload, snapshot, extract_text, execute_dom_js, act, or screenshot.',
+        },
+        'url': {
+          'type': 'string',
+          'description': 'Target URL for action:"open".',
+        },
+        'full_dump': {
+          'type': 'boolean',
+          'description':
+              'When true for action:"snapshot", returns the raw HTML DOM of the page instead of the structured element outline.',
+        },
+        'script': {
+          'type': 'string',
+          'description':
+              'JavaScript expression to evaluate for action:"execute_dom_js".',
+        },
+        'act_action': {
+          'type': 'string',
+          'enum': ['click', 'type', 'scroll'],
+          'description':
+              'Interaction type for action:"act": click, type, or scroll.',
+        },
+        'ref': {
+          'type': 'string',
+          'description':
+              'Element agent ID (from snapshot, e.g. "e1", "e2") or element id attribute for action:"act".',
+        },
+        'selector': {
+          'type': 'string',
+          'description': 'CSS selector for action:"act" or action:"extract_text".',
+        },
+        'text': {
+          'type': 'string',
+          'description':
+              'Text to input into the element for action:"act" with act_action:"type".',
+        },
+        'direction': {
+          'type': 'string',
+          'enum': ['up', 'down', 'top', 'bottom'],
+          'description':
+              'Scroll direction for action:"act" with act_action:"scroll" (default "down").',
+        },
+        'expand': {
+          'type': 'boolean',
+          'description':
+              'Whether to expand the browser sheet in the UI (default true).',
+        },
+        'clear': {
+          'type': 'boolean',
+          'description':
+              'Whether to reset the browser to about:blank on action:"close" (default false).',
+        },
+      },
+    },
+    handler: (call) async {
+      final args = call.arguments;
+
+      // Extract action from args or from prefix calls like browser.open / browser_open
+      var action = args['action']?.toString().trim().toLowerCase();
+      var actAction = (args['act_action'] ??
+              args['interaction'] ??
+              args['sub_action'] ??
+              args['act'])
+          ?.toString()
+          .trim()
+          .toLowerCase();
+
+      if (action == null || action.isEmpty) {
+        final callName = call.name.toLowerCase();
+        if (callName.contains('open')) {
+          action = 'open';
+        } else if (callName.contains('close')) {
+          action = 'close';
+        } else if (callName.contains('reload') || callName.contains('refresh')) {
+          action = 'reload';
+        } else if (callName.contains('snapshot') || callName.contains('inspect')) {
+          action = 'snapshot';
+        } else if (callName.contains('extract') ||
+            callName.contains('text') ||
+            callName.contains('markdown')) {
+          action = 'extract_text';
+        } else if (callName.contains('execute') ||
+            callName.contains('eval') ||
+            callName.contains('js')) {
+          action = 'execute_dom_js';
+        } else if (callName.contains('click')) {
+          action = 'act';
+          actAction = 'click';
+        } else if (callName.contains('type') || callName.contains('input')) {
+          action = 'act';
+          actAction = 'type';
+        } else if (callName.contains('scroll')) {
+          action = 'act';
+          actAction = 'scroll';
+        } else if (callName.contains('act')) {
+          action = 'act';
+        } else if (callName.contains('screenshot') || callName.contains('shot')) {
+          action = 'screenshot';
+        }
+      }
+
+      if (action == null || action.isEmpty) {
+        return ToolCallResult.failure(
+          call.id,
+          'Missing "action" parameter. Specify one of: open, close, reload, snapshot, execute_dom_js, act, screenshot.',
+        );
+      }
+
+      try {
+        switch (action) {
+          case 'open':
+            final rawUrl = (args['url'] ?? args['uri'] ?? args['target'])?.toString().trim();
+            if (rawUrl == null || rawUrl.isEmpty) {
+              return ToolCallResult.failure(
+                call.id,
+                'URL parameter is required for browser open.',
+              );
+            }
+            final expand = args['expand'] != false;
+            final pageInfo = await service.open(rawUrl, expand: expand);
+            final buffer = StringBuffer();
+            buffer.writeln('Opened browser at ${pageInfo.url}');
+            if (pageInfo.title.isNotEmpty) {
+              buffer.writeln('Page Title: ${pageInfo.title}');
+            }
+            buffer.writeln('Status: ${pageInfo.status}');
+            if (pageInfo.status.startsWith('error:')) {
+              return ToolCallResult.failure(
+                call.id,
+                'Failed to load page: ${pageInfo.status}',
+              );
+            }
+            return ToolCallResult(
+              id: call.id,
+              ok: true,
+              output: buffer.toString().trim(),
+            );
+
+          case 'close':
+            final clear = args['clear'] == true;
+            await service.close(clear: clear);
+            return ToolCallResult(
+              id: call.id,
+              ok: true,
+              output: 'Browser closed.',
+            );
+
+          case 'reload':
+            await service.reload();
+            final buffer = StringBuffer();
+            buffer.writeln('Page reloaded.');
+            if (service.currentUrl != null) {
+              buffer.writeln('Current URL: ${service.currentUrl}');
+            }
+            if (service.currentTitle != null) {
+              buffer.writeln('Title: ${service.currentTitle}');
+            }
+            return ToolCallResult(
+              id: call.id,
+              ok: true,
+              output: buffer.toString().trim(),
+            );
+
+          case 'snapshot':
+            final fullDump = args['full_dump'] == true || args['fullDump'] == true;
+            final snapshotOutput = await service.snapshot(fullDump: fullDump);
+            return ToolCallResult(
+              id: call.id,
+              ok: true,
+              output: snapshotOutput,
+            );
+
+          case 'extract_text':
+            final selector = (args['selector'] ?? args['target'])?.toString();
+            final text = await service.extractText(selector: selector);
+            return ToolCallResult(
+              id: call.id,
+              ok: true,
+              output: text,
+            );
+
+          case 'execute_dom_js':
+            final script =
+                (args['script'] ?? args['js'] ?? args['code'])?.toString();
+            if (script == null || script.trim().isEmpty) {
+              return ToolCallResult.failure(
+                call.id,
+                'Missing "script" parameter for execute_dom_js.',
+              );
+            }
+            final result = await service.executeDomJs(script);
+            return ToolCallResult(
+              id: call.id,
+              ok: true,
+              output: result,
+            );
+
+          case 'act':
+            if (actAction == null || actAction.isEmpty) {
+              if (args['click'] != null) {
+                actAction = 'click';
+              } else if (args['type'] != null) {
+                actAction = 'type';
+              } else if (args['scroll'] != null) {
+                actAction = 'scroll';
+              }
+            }
+
+            if (actAction == null || actAction.isEmpty) {
+              return ToolCallResult.failure(
+                call.id,
+                'Missing interaction type for browser act. Specify act_action: "click", "type", or "scroll".',
+              );
+            }
+
+            final ref = args['ref']?.toString();
+            final selector = args['selector']?.toString();
+            final text = (args['text'] ?? args['value'])?.toString();
+            final direction = args['direction']?.toString();
+
+            final actResult = await service.act(
+              action: actAction,
+              ref: ref,
+              selector: selector,
+              text: text,
+              direction: direction,
+            );
+            return ToolCallResult(
+              id: call.id,
+              ok: true,
+              output: actResult,
+            );
+
+          case 'screenshot':
+            final bytes = await service.takeScreenshot();
+            if (bytes == null || bytes.isEmpty) {
+              return ToolCallResult.failure(
+                call.id,
+                'Failed to capture viewport screenshot.',
+              );
+            }
+            return ToolCallResult(
+              id: call.id,
+              ok: true,
+              output:
+                  'Captured browser viewport screenshot (${bytes.lengthInBytes} bytes).',
+            );
+
+          default:
+            return ToolCallResult.failure(
+              call.id,
+              'Unknown browser action: "$action". Supported actions are: open, close, reload, snapshot, extract_text, execute_dom_js, act, screenshot.',
+            );
+        }
+      } catch (e) {
+        return ToolCallResult.failure(call.id, 'Browser error ($action): $e');
+      }
+    },
+  );
+}
+
+/// Tool allowing direct extraction of clean Markdown text from the current browser page.
+Tool extractTextTool({BrowserService? browserService}) {
+  final service = browserService ?? BrowserService.instance;
+
+  return Tool(
+    name: 'extract_text',
+    description:
+        'Extracts clean Markdown text from the currently open browser web page using html2md. '
+        'Ideal for reading articles, documentation, or search results without token or DOM outline bloat.',
+    parameters: {
+      'type': 'object',
+      'properties': {
+        'selector': {
+          'type': 'string',
+          'description':
+              'Optional CSS selector to extract text from a specific element (e.g. "article", "main", "#content"). Defaults to entire page.',
+        },
+      },
+    },
+    handler: (call) async {
+      try {
+        final selector =
+            (call.arguments['selector'] ?? call.arguments['target'])?.toString();
+        final text = await service.extractText(selector: selector);
+        return ToolCallResult(
+          id: call.id,
+          ok: true,
+          output: text,
+        );
+      } catch (e) {
+        return ToolCallResult.failure(call.id, 'Extract text error: $e');
+      }
+    },
+  );
+}

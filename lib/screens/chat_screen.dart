@@ -27,6 +27,7 @@ import '../tools/file_tools.dart';
 import '../types/conversation.dart';
 import '../types/message.dart';
 import '../widgets/a11y_toast_overlay.dart';
+import '../widgets/browser_widget.dart';
 import '../widgets/chat_composer.dart';
 import '../widgets/chat_sidebar.dart';
 import '../widgets/context_footer.dart';
@@ -1652,35 +1653,31 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           ? -1
           : _messages.indexWhere((current) => current.id == workingId);
 
+      final currentText = _workingText.toString();
+      _workingText.clear();
+
       if (workingIndex == -1) {
         _messages.add(message);
         _touchConversation();
         return;
       }
 
-      final currentText = _workingText.toString();
-      _workingText.clear();
-
-      // Finalize any streamed assistant text before inserting the tool that
-      // followed it. Then create a fresh working bubble for the next agent
-      // turn, preserving sequences such as tool1 → msg1 → tool2 → msg2.
       _messages.removeAt(workingIndex);
       var nextWorkingIndex = workingIndex;
-      if (currentText.isNotEmpty) {
+      if (currentText.trim().isNotEmpty) {
         _messages.insert(
           nextWorkingIndex,
-          AssistantMessage(id: workingId!, text: currentText),
+          AssistantMessage(id: workingId!, text: currentText.trim()),
         );
         nextWorkingIndex++;
       }
       _messages.insert(nextWorkingIndex, message);
-      nextWorkingIndex++;
 
       final nextWorkingId = 'working-${DateTime.now().microsecondsSinceEpoch}';
       _workingMessageId = nextWorkingId;
       _workingReasoning = false; // next step starts as …working again
       _messages.insert(
-        nextWorkingIndex,
+        nextWorkingIndex + 1,
         AssistantMessage(id: nextWorkingId, text: '…working'),
       );
       _touchConversation();
@@ -1943,6 +1940,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                 ),
               ),
               _buildA11yToastOverlay(),
+              const BrowserWidget(),
               Positioned.fill(
                 child: IgnorePointer(
                   ignoring: !_sidebarOpen,

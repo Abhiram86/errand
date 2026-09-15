@@ -24,3 +24,25 @@ plugins {
 }
 
 include(":app")
+
+// Automatically patch third-party plugins with AGP 9.0+ deprecations (e.g. proguard-android.txt)
+val pluginsDependenciesFile = file("../.flutter-plugins-dependencies")
+if (pluginsDependenciesFile.exists()) {
+    try {
+        val content = pluginsDependenciesFile.readText()
+        val regex = Regex(""""path":\s*"([^"]+)"""")
+        regex.findAll(content).forEach { match ->
+            val pluginPath = match.groupValues[1]
+            val buildGradle = File(pluginPath, "android/build.gradle")
+            if (buildGradle.exists()) {
+                val script = buildGradle.readText()
+                if (script.contains("proguard-android.txt")) {
+                    buildGradle.writeText(
+                        script.replace("proguard-android.txt", "proguard-android-optimize.txt")
+                    )
+                }
+            }
+        }
+    } catch (_: Exception) {}
+}
+
