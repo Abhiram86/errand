@@ -33,8 +33,8 @@ Tool intentTool({
           'description':
               'Action to perform: '
               'open_file (view local audio/image/video/pdf/file on device), '
-              'open_url (open web URL, web search, or tel/mailto/geo scheme), '
-              'open_app (launch installed app by package name), '
+              'open_url (open web URL, web search, or tel/mailto/geo scheme in external handler; for websites you need to read or interact with use "browser"), '
+              'open_app (launch installed app by package name; for web services with browser access use "browser"), '
               'settings (open Android settings page), '
               'intent (send a custom Android intent; provide exact target fields), '
               'docs (look up expected Android intent action, extras, types, and schema by intent name).',

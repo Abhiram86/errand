@@ -333,6 +333,54 @@ void main() {
       expect(result.ok, isTrue);
       expect(result.output, contains('Scrolled down'));
     });
+
+    test('performs select action on dropdown', () async {
+      fakeController.jsResult = jsonEncode({
+        'ok': true,
+        'tag': 'select',
+        'text': 'Option A',
+        'value': 'opt_a',
+      });
+
+      final call = ToolCall(
+        id: 'c10a',
+        name: 'browser',
+        arguments: {
+          'action': 'act',
+          'act_action': 'select',
+          'ref': '4',
+          'text': 'Option A',
+        },
+      );
+
+      final result = await tool.handler(call);
+      expect(result.ok, isTrue);
+      expect(result.output, contains('Selected "Option A" (value: "opt_a") in [4] <select>.'));
+    });
+
+    test('performs get action to inspect element state', () async {
+      fakeController.jsResult = jsonEncode({
+        'ok': true,
+        'tag': 'input',
+        'id': 'chk',
+        'value': 'yes',
+        'checked': true,
+      });
+
+      final call = ToolCall(
+        id: 'c10b',
+        name: 'browser',
+        arguments: {
+          'action': 'act',
+          'act_action': 'get',
+          'ref': '7',
+        },
+      );
+
+      final result = await tool.handler(call);
+      expect(result.ok, isTrue);
+      expect(result.output, contains('Element [7] <input id="chk">: value: "yes", checked: true.'));
+    });
   });
 
   group('browserTool - screenshot and prefix calls', () {

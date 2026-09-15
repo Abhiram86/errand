@@ -5,6 +5,7 @@ import '../theme/app_colors.dart';
 
 class ChatComposer extends StatelessWidget {
   final TextEditingController controller;
+  final FocusNode? focusNode;
   final bool busy;
   final VoidCallback onMoreActions;
   final VoidCallback onSend;
@@ -22,6 +23,7 @@ class ChatComposer extends StatelessWidget {
   const ChatComposer({
     super.key,
     required this.controller,
+    this.focusNode,
     required this.busy,
     required this.onMoreActions,
     required this.onSend,
@@ -69,6 +71,7 @@ class ChatComposer extends StatelessWidget {
             Expanded(
               child: TextField(
                 controller: controller,
+                focusNode: focusNode,
                 enabled: !busy,
                 keyboardType: TextInputType.multiline,
                 minLines: 1,

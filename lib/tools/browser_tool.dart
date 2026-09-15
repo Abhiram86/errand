@@ -79,23 +79,23 @@ Tool browserTool({BrowserService? browserService}) {
         },
         'act_action': {
           'type': 'string',
-          'enum': ['click', 'type', 'scroll'],
+          'enum': ['click', 'type', 'select', 'get', 'scroll'],
           'description':
-              'Interaction type for action:"act": click, type, or scroll.',
+              'Interaction type for action:"act": click, type, select (dropdowns), get (read state), or scroll.',
         },
         'ref': {
           'type': 'string',
           'description':
-              'Element agent ID (from snapshot, e.g. "e1", "e2") or element id attribute for action:"act".',
+              'Element agent ID (from snapshot, e.g. "e1", "e2") or element id attribute for action:"act" or action:"snapshot".',
         },
         'selector': {
           'type': 'string',
-          'description': 'CSS selector for action:"act" or action:"extract_text".',
+          'description': 'CSS selector for action:"act", action:"snapshot", or action:"extract_text".',
         },
         'text': {
           'type': 'string',
           'description':
-              'Text to input into the element for action:"act" with act_action:"type".',
+              'Text to input for act_action:"type" or option value/label to select for act_action:"select".',
         },
         'direction': {
           'type': 'string',
@@ -147,6 +147,12 @@ Tool browserTool({BrowserService? browserService}) {
         } else if (callName.contains('type') || callName.contains('input')) {
           action = 'act';
           actAction = 'type';
+        } else if (callName.contains('select') || callName.contains('choose')) {
+          action = 'act';
+          actAction = 'select';
+        } else if (callName.contains('get') || callName.contains('read_element')) {
+          action = 'act';
+          actAction = 'get';
         } else if (callName.contains('scroll')) {
           action = 'act';
           actAction = 'scroll';
@@ -223,11 +229,15 @@ Tool browserTool({BrowserService? browserService}) {
             final dumpOffset = (args['dump_offset'] ?? args['offset']) as int? ?? 0;
             final dumpLimit = (args['dump_limit'] ?? args['limit']) as int? ?? 100000;
             final maxNodes = (args['max_nodes'] ?? args['maxNodes']) as int? ?? 200;
+            final ref = args['ref']?.toString();
+            final selector = (args['selector'] ?? args['target'])?.toString();
             final snapshotOutput = await service.snapshot(
               maxNodes: maxNodes,
               fullDump: fullDump,
               dumpOffset: dumpOffset,
               dumpLimit: dumpLimit,
+              ref: ref,
+              selector: selector,
             );
             return ToolCallResult(
               id: call.id,
@@ -268,6 +278,10 @@ Tool browserTool({BrowserService? browserService}) {
                 actAction = 'click';
               } else if (args['type'] != null) {
                 actAction = 'type';
+              } else if (args['select'] != null) {
+                actAction = 'select';
+              } else if (args['get'] != null || args['read'] != null) {
+                actAction = 'get';
               } else if (args['scroll'] != null) {
                 actAction = 'scroll';
               }
@@ -276,7 +290,7 @@ Tool browserTool({BrowserService? browserService}) {
             if (actAction == null || actAction.isEmpty) {
               return ToolCallResult.failure(
                 call.id,
-                'Missing interaction type for browser act. Specify act_action: "click", "type", or "scroll".',
+                'Missing interaction type for browser act. Specify act_action: "click", "type", "select", "get", or "scroll".',
               );
             }
 

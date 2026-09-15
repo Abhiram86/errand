@@ -63,9 +63,6 @@ class ToolRegistry {
       browserTool(
         browserService: browserService,
       ),
-      extractTextTool(
-        browserService: browserService,
-      ),
       if (enableA11yTools) ...[
         screenTool(),
         actTool(),
@@ -100,6 +97,15 @@ class ToolRegistry {
             call.name.startsWith('extract_text_') ||
             call.name == 'extract_text')) {
       tool = _tools['extract_text'] ?? _tools['browser'];
+    }
+    if (tool == null &&
+        (call.name.startsWith('screen_act.') ||
+            call.name.startsWith('screen_act_') ||
+            call.name.startsWith('act.') ||
+            call.name.startsWith('act_') ||
+            call.name == 'act' ||
+            call.name == 'screen_act')) {
+      tool = _tools['screen_act'] ?? _tools['act'];
     }
     if (tool == null) {
       return ToolCallResult.failure(call.id, 'Unknown tool: ${call.name}');

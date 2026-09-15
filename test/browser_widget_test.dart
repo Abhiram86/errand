@@ -243,4 +243,56 @@ void main() {
     await tester.pumpAndSettle();
     expect(tester.getSize(find.byType(BrowserDockSpacer)).height, equals(0));
   });
+
+  testWidgets('BrowserDockSpacer and BrowserWidget compact to closed dock bar only when composer is focused', (tester) async {
+    final composerKey = GlobalKey();
+    final focusNotifier = ValueNotifier<bool>(false);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ValueListenableBuilder<bool>(
+          valueListenable: focusNotifier,
+          builder: (context, isFocused, _) {
+            return Scaffold(
+              body: Stack(
+                children: [
+                  Column(
+                    children: [
+                      BrowserDockSpacer(
+                        service: service,
+                        isComposerFocused: isFocused,
+                      ),
+                      SizedBox(key: composerKey, height: 68),
+                    ],
+                  ),
+                  BrowserWidget(
+                    service: service,
+                    composerKey: composerKey,
+                    isComposerFocused: isFocused,
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+      ),
+    );
+
+    await service.open('https://flutter.dev');
+    service.setPreview();
+    await tester.pumpAndSettle();
+
+    // Normal preview height when composer is not focused
+    expect(tester.getSize(find.byType(BrowserDockSpacer)).height, greaterThan(200));
+
+    // When composer gets focused, browser compacts to closed dock bar
+    focusNotifier.value = true;
+    await tester.pumpAndSettle();
+    expect(tester.getSize(find.byType(BrowserDockSpacer)).height, equals(54));
+
+    // When composer loses focus (or typing in webview input), restores preview
+    focusNotifier.value = false;
+    await tester.pumpAndSettle();
+    expect(tester.getSize(find.byType(BrowserDockSpacer)).height, greaterThan(200));
+  });
 }

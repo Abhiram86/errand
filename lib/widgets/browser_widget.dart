@@ -10,8 +10,9 @@ import '../theme/app_colors.dart';
 /// or [BrowserDisplayMode.preview] mode.
 class BrowserDockSpacer extends StatelessWidget {
   final BrowserService? service;
+  final bool? isComposerFocused;
 
-  const BrowserDockSpacer({super.key, this.service});
+  const BrowserDockSpacer({super.key, this.service, this.isComposerFocused});
 
   @override
   Widget build(BuildContext context) {
@@ -20,8 +21,12 @@ class BrowserDockSpacer extends StatelessWidget {
       listenable: browser,
       builder: (context, _) {
         double targetHeight = 0.0;
+        final composerFocused = isComposerFocused ?? false;
+
         if (browser.isOpen) {
-          if (browser.displayMode == BrowserDisplayMode.closed) {
+          final isCompact = browser.displayMode == BrowserDisplayMode.closed ||
+              (browser.displayMode == BrowserDisplayMode.preview && composerFocused);
+          if (isCompact) {
             targetHeight = 54.0;
           } else if (browser.displayMode == BrowserDisplayMode.preview) {
             final screenHeight = MediaQuery.sizeOf(context).height;
@@ -48,8 +53,14 @@ class BrowserDockSpacer extends StatelessWidget {
 class BrowserWidget extends StatefulWidget {
   final BrowserService? service;
   final GlobalKey? composerKey;
+  final bool? isComposerFocused;
 
-  const BrowserWidget({super.key, this.service, this.composerKey});
+  const BrowserWidget({
+    super.key,
+    this.service,
+    this.composerKey,
+    this.isComposerFocused,
+  });
 
   @override
   State<BrowserWidget> createState() => _BrowserWidgetState();
@@ -87,6 +98,9 @@ class _BrowserWidgetState extends State<BrowserWidget> {
         final isFullScreen = mode == BrowserDisplayMode.fullScreen;
         final isClosed = mode == BrowserDisplayMode.closed;
 
+        final isComposerFocused = widget.isComposerFocused ?? false;
+        final isCompact = isClosed || (mode == BrowserDisplayMode.preview && isComposerFocused);
+
         final size = MediaQuery.sizeOf(context);
         final previewHeight = (size.height * 0.42).clamp(280.0, 420.0);
 
@@ -97,18 +111,17 @@ class _BrowserWidgetState extends State<BrowserWidget> {
             composerH = box.size.height;
           }
         }
-        final bottomOffset = MediaQuery.viewInsetsOf(context).bottom +
-            MediaQuery.paddingOf(context).bottom +
+        final bottomOffset = MediaQuery.paddingOf(context).bottom +
             composerH +
             4.0;
 
         final double targetHeight = isFullScreen
             ? size.height
-            : (isClosed ? 50.0 : previewHeight);
+            : (isCompact ? 50.0 : previewHeight);
         final double targetLeft = isFullScreen ? 0.0 : 10.0;
         final double targetRight = isFullScreen ? 0.0 : 10.0;
         final double targetBottom = isFullScreen ? 0.0 : bottomOffset;
-        final double targetRadius = isFullScreen ? 0.0 : (isClosed ? 12.0 : 14.0);
+        final double targetRadius = isFullScreen ? 0.0 : (isCompact ? 12.0 : 14.0);
 
         return Stack(
           fit: StackFit.expand,
@@ -141,7 +154,7 @@ class _BrowserWidgetState extends State<BrowserWidget> {
                           ],
                   ),
                   clipBehavior: isFullScreen ? Clip.none : Clip.antiAlias,
-                  child: isClosed
+                  child: isCompact
                       ? _buildClosedDockBar(context)
                       : _buildActiveBrowser(
                           context,
@@ -151,8 +164,8 @@ class _BrowserWidgetState extends State<BrowserWidget> {
                 ),
               ),
 
-            // When closed or hidden, keep the WebView alive offstage so DOM & agent actions work
-            if (!isOpen || isClosed)
+            // When closed or compact, keep the WebView alive offstage so DOM & agent actions work
+            if (!isOpen || isCompact)
               Positioned(
                 width: 1,
                 height: 1,

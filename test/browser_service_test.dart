@@ -466,6 +466,90 @@ void main() {
       expect(res, contains('[Result capped at 50000 characters]'));
     });
 
+    test('act click on checkbox returns checked status confirmation', () async {
+      await service.open('https://example.com');
+      fakeController.jsResult = jsonEncode({
+        'ok': true,
+        'tag': 'input',
+        'checked': true,
+      });
+
+      final res = await service.act(action: 'click', ref: 'e4');
+      expect(res, equals('Clicked [e4] <input>. (checked: true)'));
+    });
+
+    test('act type returns confirmed current value', () async {
+      await service.open('https://example.com');
+      fakeController.jsResult = jsonEncode({
+        'ok': true,
+        'tag': 'input',
+        'value': 'john@example.com',
+      });
+
+      final res = await service.act(action: 'type', ref: 'e2', text: 'john@example.com');
+      expect(res, equals('Typed "john@example.com" into [e2] <input>. (current value: "john@example.com")'));
+    });
+
+    test('act select chooses option in select dropdown', () async {
+      await service.open('https://example.com');
+      fakeController.jsResult = jsonEncode({
+        'ok': true,
+        'tag': 'select',
+        'text': 'California',
+        'value': 'CA',
+      });
+
+      final res = await service.act(action: 'select', ref: 'e5', text: 'California');
+      expect(res, equals('Selected "California" (value: "CA") in [e5] <select>.'));
+    });
+
+    test('act get returns targeted element properties', () async {
+      await service.open('https://example.com');
+      fakeController.jsResult = jsonEncode({
+        'ok': true,
+        'tag': 'input',
+        'id': 'username',
+        'value': 'admin',
+        'checked': null,
+        'disabled': false,
+        'text': 'Username Input',
+      });
+
+      final res = await service.act(action: 'get', ref: 'e1');
+      expect(res, contains('Element [e1] <input id="username">: value: "admin", text: "Username Input".'));
+    });
+
+    test('snapshot with ref or selector includes scope in output', () async {
+      await service.open('https://example.com');
+      fakeController.jsResult = jsonEncode({
+        'meta': {
+          'url': 'https://example.com',
+          'title': 'Form Page',
+          'scoped': '[ref=e3]',
+          'scroll': {'x': 0, 'y': 0, 'totalHeight': 800},
+        },
+        'tree': '- form [ref=e3]:\n  - textbox "Name" [ref=e4]',
+        'stats': {'nodeCount': 2, 'visitedCount': 10, 'truncated': false},
+      });
+
+      final res = await service.snapshot(ref: 'e3');
+      expect(res, contains('Scope: [ref=e3]'));
+      expect(res, contains('- form [ref=e3]:'));
+    });
+
+    test('syncs zoom on preview and fullScreen display modes', () async {
+      await service.open('https://example.com');
+      expect(fakeController.executedScripts.any((s) => s.contains("style.zoom = '0.80'")), isTrue);
+
+      service.setFullScreen();
+      await Future.delayed(Duration.zero);
+      expect(fakeController.executedScripts.any((s) => s.contains("style.zoom = '1.0'")), isTrue);
+
+      service.setPreview();
+      await Future.delayed(Duration.zero);
+      expect(fakeController.executedScripts.last, contains("style.zoom = '0.80'"));
+    });
+
     test('throws StateError when operating on closed browser', () async {
       expect(() => service.snapshot(), throwsStateError);
       expect(() => service.executeDomJs('1+1'), throwsStateError);

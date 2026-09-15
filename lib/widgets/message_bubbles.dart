@@ -257,6 +257,12 @@ class ToolMessageBubble extends StatefulWidget {
             if (actAction == 'type' || args['type'] != null) {
               return 'Typed into page';
             }
+            if (actAction == 'select' || args['select'] != null) {
+              return 'Selected page option';
+            }
+            if (actAction == 'get' || args['get'] != null) {
+              return 'Inspected element';
+            }
             if (actAction == 'scroll' || args['scroll'] != null) {
               return 'Scrolled page';
             }
@@ -303,6 +309,7 @@ class ToolMessageBubble extends StatefulWidget {
           default:
             return 'Inspected screen';
         }
+      case 'screen_act':
       case 'act':
         final action = args['action']?.toString();
         switch (action) {
@@ -453,6 +460,7 @@ class ToolMessageBubble extends StatefulWidget {
           return Icons.camera_alt_outlined;
         }
         return Icons.screenshot_monitor_rounded;
+      case 'screen_act':
       case 'act':
         final action = args['action']?.toString();
         if (action == 'type' || action == 'fill') {

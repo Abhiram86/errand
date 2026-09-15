@@ -56,6 +56,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   static const _messagePageSize = 50;
 
   final _controller = TextEditingController();
+  final _composerFocusNode = FocusNode();
   final _scroll = ScrollController();
   final _modelCatalog = ModelCatalogService();
   final _uuid = const Uuid();
@@ -199,6 +200,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    _composerFocusNode.addListener(_onComposerFocusChange);
     _selectedModel = AppSettingsService.instance.selectedModel;
     _activeConversation = _newDraftConversation();
     _llm = _createLlmClient(_selectedModel);
@@ -448,9 +450,16 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     return _models;
   }
 
+  void _onComposerFocusChange() {
+    if (!mounted) return;
+    setState(() {});
+  }
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _composerFocusNode.removeListener(_onComposerFocusChange);
+    _composerFocusNode.dispose();
     _workingFlushTimer?.cancel();
     _workingElapsedTimer?.cancel();
     _a11yToastTimer?.cancel();
@@ -1563,7 +1572,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         reasoningDetails: final reasoningDetails,
       ):
         _workingCompacting = false;
-        if (call.name == 'screen' || call.name == 'act') {
+        if (call.name == 'screen' ||
+            call.name == 'act' ||
+            call.name == 'screen_act') {
           _externalAppWorkDone = true;
         } else if (call.name == 'intent') {
           _externalIntentLaunched = true;
@@ -1914,6 +1925,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
+    final isComposerFocused = _composerFocusNode.hasFocus;
+
     return PopScope(
       canPop: !_sidebarOpen,
       onPopInvokedWithResult: (didPop, _) {
@@ -1938,7 +1951,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                     if (kDebugMode) _buildContextFooter(),
                     if (_pendingAttachments.isNotEmpty) _buildPendingAttachments(),
                     if (_editingMessageId != null) _buildEditingBanner(),
-                    const BrowserDockSpacer(),
+                    BrowserDockSpacer(isComposerFocused: isComposerFocused),
                     KeyedSubtree(
                       key: _composerKey,
                       child: _buildComposer(),
@@ -1947,7 +1960,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                 ),
               ),
               _buildA11yToastOverlay(),
-              BrowserWidget(composerKey: _composerKey),
+              BrowserWidget(
+                composerKey: _composerKey,
+                isComposerFocused: isComposerFocused,
+              ),
               Positioned.fill(
                 child: IgnorePointer(
                   ignoring: !_sidebarOpen,
@@ -2222,6 +2238,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   Widget _buildComposer() {
     return ChatComposer(
       controller: _controller,
+      focusNode: _composerFocusNode,
       busy: _busy,
       onMoreActions: _showMoreActions,
       onSend: _send,

@@ -95,23 +95,23 @@ void main() {
   });
 
   group('ToolRegistry flavor checks', () {
-    test('ToolRegistry includes screen and act when enableA11yTools is true (full)', () {
+    test('ToolRegistry includes screen and screen_act when enableA11yTools is true (full)', () {
       final registry = ToolRegistry.defaults(
         currentDir: Directory('/tmp'),
         enableA11yTools: true,
       );
       final names = registry.all.map((t) => t.name).toList();
-      expect(names, containsAll(['screen', 'act']));
+      expect(names, containsAll(['screen', 'screen_act']));
     });
 
-    test('ToolRegistry excludes screen and act when enableA11yTools is false (lite)', () {
+    test('ToolRegistry excludes screen and screen_act when enableA11yTools is false (lite)', () {
       final registry = ToolRegistry.defaults(
         currentDir: Directory('/tmp'),
         enableA11yTools: false,
       );
       final names = registry.all.map((t) => t.name).toList();
       expect(names.contains('screen'), isFalse);
-      expect(names.contains('act'), isFalse);
+      expect(names.contains('screen_act'), isFalse);
     });
   });
 
@@ -124,9 +124,10 @@ void main() {
       expect(result.errorMessage, contains('Screen access is not supported in this build of Errand'));
     });
 
-    test('act tool fails cleanly when a11y is unsupported', () async {
+    test('act tool (screen_act) fails cleanly when a11y is unsupported', () async {
       final tool = actTool(service: UnsupportedA11yService());
-      const call = ToolCall(id: '2', name: 'act', arguments: {'action': 'tap', 'ref': 1});
+      expect(tool.name, equals('screen_act'));
+      const call = ToolCall(id: '2', name: 'screen_act', arguments: {'action': 'tap', 'ref': 1});
       final result = await tool.handler(call);
       expect(result.ok, isFalse);
       expect(result.errorMessage, contains('Screen actions are not supported in this build of Errand'));

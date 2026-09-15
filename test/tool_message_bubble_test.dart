@@ -185,6 +185,37 @@ void main() {
         ToolMessageBubble.friendlyToolSummary('act', {}),
         'Interacted with screen',
       );
+      expect(
+        ToolMessageBubble.friendlyToolSummary('screen_act', {'action': 'tap'}),
+        'Tapped on screen',
+      );
+      expect(
+        ToolMessageBubble.friendlyToolSummary('screen_act', {'action': 'fill'}),
+        'Filled input field',
+      );
+    });
+
+    test('browser tool returns specific summary based on action', () {
+      expect(
+        ToolMessageBubble.friendlyToolSummary('browser', {'action': 'open', 'url': 'https://flutter.dev'}),
+        'Opened https://flutter.dev',
+      );
+      expect(
+        ToolMessageBubble.friendlyToolSummary('browser', {'action': 'extract_text'}),
+        'Extracted page text',
+      );
+      expect(
+        ToolMessageBubble.friendlyToolSummary('browser', {'action': 'act', 'act_action': 'select'}),
+        'Selected page option',
+      );
+      expect(
+        ToolMessageBubble.friendlyToolSummary('browser', {'action': 'act', 'act_action': 'get'}),
+        'Inspected element',
+      );
+      expect(
+        ToolMessageBubble.friendlyToolSummary('browser', {'action': 'act', 'act_action': 'click'}),
+        'Clicked page element',
+      );
     });
 
     test('intent tool returns specific summary based on action', () {

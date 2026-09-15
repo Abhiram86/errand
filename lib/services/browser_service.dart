@@ -231,6 +231,7 @@ class BrowserService extends ChangeNotifier {
     }
     _targetLoadingUrl = null;
     unawaited(_updateNavState());
+    unawaited(_syncZoom());
     notifyListeners();
   }
 
@@ -276,8 +277,22 @@ class BrowserService extends ChangeNotifier {
       } else if (_isOpen) {
         _controller?.resumeTimers().catchError((_) {});
       }
+      unawaited(_syncZoom());
       notifyListeners();
     }
+  }
+
+  /// Adjusts page zoom based on display mode.
+  /// Preview mode uses a moderate zoom-out (0.80) to maximize visible context
+  /// while keeping subheadings legible. Fullscreen mode restores normal zoom (1.0).
+  Future<void> _syncZoom() async {
+    if (_controller == null || !_isOpen) return;
+    try {
+      final zoom = _displayMode == BrowserDisplayMode.preview ? '0.80' : '1.0';
+      await _controller!.evaluateJavascript(
+        "try { document.documentElement.style.zoom = '$zoom'; } catch (_) {}",
+      );
+    } catch (_) {}
   }
 
   /// Switches to slim dock bar right above composer ("Browser full closed").
@@ -442,6 +457,7 @@ class BrowserService extends ChangeNotifier {
       _currentTitle = null;
     }
     await _updateNavState();
+    await _syncZoom();
     notifyListeners();
 
     final hasLoadedPage = !isError &&
@@ -534,6 +550,7 @@ class BrowserService extends ChangeNotifier {
       _currentTitle = null;
     }
     await _updateNavState();
+    await _syncZoom();
     notifyListeners();
 
     return BrowserPageInfo(
@@ -572,12 +589,15 @@ class BrowserService extends ChangeNotifier {
 
   /// Extracts a structured DOM outline containing interactive elements,
   /// assigned `data-agent-id` references, scroll position, and text preview.
+  /// When [ref] or [selector] is provided, scopes the snapshot to that specific container element.
   /// When [fullDump] is true, returns the pure DOM HTML dump paginated with [dumpOffset] and [dumpLimit].
   Future<String> snapshot({
     int maxNodes = 200,
     bool fullDump = false,
     int dumpOffset = 0,
     int dumpLimit = 100000,
+    String? ref,
+    String? selector,
   }) async {
     _ensureOpenAndReady();
 
@@ -633,7 +653,12 @@ class BrowserService extends ChangeNotifier {
       }
     }
 
-    final script = _kPlaywrightSnapshotScript.replaceFirst('__MAX_NODES__', '$maxNodes');
+    final targetRef = ref?.trim();
+    final targetSel = selector?.trim();
+    final script = _kPlaywrightSnapshotScript
+        .replaceFirst('__MAX_NODES__', '$maxNodes')
+        .replaceFirst('__TARGET_REF__', targetRef != null && targetRef.isNotEmpty ? jsonEncode(targetRef) : 'null')
+        .replaceFirst('__TARGET_SEL__', targetSel != null && targetSel.isNotEmpty ? jsonEncode(targetSel) : 'null');
     final raw = await _controller!.evaluateJavascript(script);
 
     if (raw == null) {
@@ -643,6 +668,10 @@ class BrowserService extends ChangeNotifier {
     try {
       final decoded = jsonDecode(raw.toString()) as Map<String, dynamic>;
 
+      if (decoded.containsKey('error')) {
+        return 'Snapshot error: ${decoded['error']}';
+      }
+
       final meta = decoded['meta'] as Map<String, dynamic>? ?? {};
       final stats = decoded['stats'] as Map<String, dynamic>? ?? {};
 
@@ -650,6 +679,9 @@ class BrowserService extends ChangeNotifier {
 
       buffer.writeln('Page Title: ${meta['title'] ?? ''}');
       buffer.writeln('URL: ${meta['url'] ?? ''}');
+      if (meta['scoped'] != null && meta['scoped'].toString().isNotEmpty) {
+        buffer.writeln('Scope: ${meta['scoped']}');
+      }
 
       final scroll = meta['scroll'] as Map<String, dynamic>? ?? {};
       buffer.writeln(
@@ -843,7 +875,7 @@ class BrowserService extends ChangeNotifier {
     }
   }
 
-  /// Performs a high-level action (click, type, or scroll) on the page.
+  /// Performs a high-level action (click, type, select, get, or scroll) on the page.
   Future<String> act({
     required String action,
     String? ref,
@@ -859,6 +891,12 @@ class BrowserService extends ChangeNotifier {
         return await _actClick(ref: ref, selector: selector);
       case 'type':
         return await _actType(ref: ref, selector: selector, text: text ?? '');
+      case 'select':
+      case 'choose':
+        return await _actSelect(ref: ref, selector: selector, text: text ?? '');
+      case 'get':
+      case 'read':
+        return await _actGet(ref: ref, selector: selector);
       case 'scroll':
         return await _actScroll(direction: direction ?? 'down');
       case 'back':
@@ -868,7 +906,7 @@ class BrowserService extends ChangeNotifier {
         await goForward();
         return 'Navigated forward.';
       default:
-        throw ArgumentError('Unknown act action "$action". Supported: click, type, scroll, back, forward.');
+        throw ArgumentError('Unknown act action "$action". Supported: click, type, select, get, scroll, back, forward.');
     }
   }
 
@@ -903,6 +941,9 @@ class BrowserService extends ChangeNotifier {
     el.scrollIntoView({ behavior: 'instant', block: 'center' });
     if (typeof el.focus === 'function') el.focus();
 
+    const tag = el.tagName.toLowerCase();
+    const isCheckable = el instanceof HTMLInputElement && (el.type === 'checkbox' || el.type === 'radio');
+
     const mouseEvents = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
     for (const evtName of mouseEvents) {
       try {
@@ -918,10 +959,18 @@ class BrowserService extends ChangeNotifier {
     if (typeof el.click === 'function') {
       el.click();
     }
+
+    let checked = undefined;
+    if (isCheckable) {
+      checked = el.checked;
+    }
+
     return JSON.stringify({
       ok: true,
-      tag: el.tagName.toLowerCase(),
-      text: (el.innerText || el.textContent || '').trim().slice(0, 50)
+      tag: tag,
+      text: (el.innerText || el.textContent || '').trim().slice(0, 50),
+      checked: checked,
+      value: el.value ? el.value.slice(0, 50) : undefined
     });
   } catch (err) {
     return JSON.stringify({ ok: false, error: err.toString() });
@@ -936,7 +985,12 @@ class BrowserService extends ChangeNotifier {
         final tag = decoded['tag'] ?? 'element';
         final text = decoded['text'] ?? '';
         final targetStr = targetRef != null ? '[$targetRef]' : (targetSel ?? '');
-        return 'Clicked $targetStr <$tag>${text.isNotEmpty ? ' "$text"' : ''}.';
+        final checked = decoded['checked'];
+        final buffer = StringBuffer('Clicked $targetStr <$tag>${text.isNotEmpty ? ' "$text"' : ''}.');
+        if (checked != null) {
+          buffer.write(' (checked: $checked)');
+        }
+        return buffer.toString().trim();
       } else {
         return 'Click failed: ${decoded['error']}.';
       }
@@ -961,6 +1015,50 @@ class BrowserService extends ChangeNotifier {
     if (typeof el.focus === 'function') el.focus();
 
     const val = ${jsonEncode(text)};
+    const tag = el.tagName.toLowerCase();
+
+    // Auto-delegate to select logic if type is called on a <select>
+    if (el instanceof HTMLSelectElement || tag === 'select') {
+      const targetValLower = (val || '').toLowerCase().trim();
+      let matchedIndex = -1;
+      for (let i = 0; i < el.options.length; i++) {
+        if (el.options[i].value === val || el.options[i].value.toLowerCase() === targetValLower) {
+          matchedIndex = i; break;
+        }
+      }
+      if (matchedIndex === -1) {
+        for (let i = 0; i < el.options.length; i++) {
+          if (el.options[i].text.trim().toLowerCase() === targetValLower) {
+            matchedIndex = i; break;
+          }
+        }
+      }
+      if (matchedIndex === -1) {
+        for (let i = 0; i < el.options.length; i++) {
+          if (el.options[i].text.trim().toLowerCase().includes(targetValLower)) {
+            matchedIndex = i; break;
+          }
+        }
+      }
+      if (matchedIndex !== -1) {
+        el.selectedIndex = matchedIndex;
+        const selectedValue = el.options[matchedIndex].value;
+        const proto = window.HTMLSelectElement.prototype;
+        const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+        if (desc && desc.set) { desc.set.call(el, selectedValue); } else { el.value = selectedValue; }
+        if (el._valueTracker) { el._valueTracker.setValue(''); }
+        el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+        return JSON.stringify({
+          ok: true,
+          tag: 'select',
+          selected: true,
+          text: el.options[matchedIndex].text.trim(),
+          value: selectedValue
+        });
+      }
+      return JSON.stringify({ ok: false, error: 'Option "' + val + '" not found in <select>' });
+    }
 
     if (el.isContentEditable) {
       try {
@@ -1003,7 +1101,8 @@ class BrowserService extends ChangeNotifier {
     }
     el.dispatchEvent(new Event('change', { bubbles: true }));
 
-    return JSON.stringify({ ok: true, tag: el.tagName.toLowerCase() });
+    const currentVal = el.value != null ? String(el.value).slice(0, 100) : (el.innerText || '').trim().slice(0, 100);
+    return JSON.stringify({ ok: true, tag: tag, value: currentVal });
   } catch (err) {
     return JSON.stringify({ ok: false, error: err.toString() });
   }
@@ -1016,12 +1115,168 @@ class BrowserService extends ChangeNotifier {
       if (decoded['ok'] == true) {
         final tag = decoded['tag'] ?? 'element';
         final targetStr = targetRef != null ? '[$targetRef]' : (targetSel ?? '');
-        return 'Typed "$text" into $targetStr <$tag>.';
+        if (decoded['selected'] == true) {
+          final optText = decoded['text'] ?? '';
+          final optVal = decoded['value'] ?? '';
+          return 'Selected "$optText" (value: "$optVal") in $targetStr <select>.';
+        }
+        final currentVal = decoded['value'];
+        final buffer = StringBuffer('Typed "$text" into $targetStr <$tag>.');
+        if (currentVal != null) {
+          buffer.write(' (current value: "$currentVal")');
+        }
+        return buffer.toString().trim();
       } else {
         return 'Type failed: ${decoded['error']}.';
       }
     } catch (_) {
       return 'Typed text.';
+    }
+  }
+
+  Future<String> _actSelect({String? ref, String? selector, required String text}) async {
+    final targetRef = ref?.trim();
+    final targetSel = selector?.trim();
+    if ((targetRef == null || targetRef.isEmpty) && (targetSel == null || targetSel.isEmpty)) {
+      throw ArgumentError('Either ref or selector is required to select an option.');
+    }
+
+    final script = '''
+(() => {
+  ${_resolveElementJs(targetRef, targetSel)}
+  if (!el) return JSON.stringify({ ok: false, error: 'Element not found' });
+  try {
+    el.scrollIntoView({ behavior: 'instant', block: 'center' });
+    if (typeof el.focus === 'function') el.focus();
+
+    const targetVal = ${jsonEncode(text)};
+    const targetValLower = (targetVal || '').toLowerCase().trim();
+
+    if (!(el instanceof HTMLSelectElement) && el.tagName.toLowerCase() !== 'select') {
+      return JSON.stringify({ ok: false, error: 'Element is <' + el.tagName.toLowerCase() + '>, not a <select> element' });
+    }
+
+    let matchedIndex = -1;
+    for (let i = 0; i < el.options.length; i++) {
+      if (el.options[i].value === targetVal || el.options[i].value.toLowerCase() === targetValLower) {
+        matchedIndex = i; break;
+      }
+    }
+    if (matchedIndex === -1) {
+      for (let i = 0; i < el.options.length; i++) {
+        if (el.options[i].text.trim().toLowerCase() === targetValLower) {
+          matchedIndex = i; break;
+        }
+      }
+    }
+    if (matchedIndex === -1) {
+      for (let i = 0; i < el.options.length; i++) {
+        if (el.options[i].text.trim().toLowerCase().includes(targetValLower)) {
+          matchedIndex = i; break;
+        }
+      }
+    }
+
+    if (matchedIndex !== -1) {
+      el.selectedIndex = matchedIndex;
+      const selectedValue = el.options[matchedIndex].value;
+      const proto = window.HTMLSelectElement.prototype;
+      const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+      if (desc && desc.set) { desc.set.call(el, selectedValue); } else { el.value = selectedValue; }
+      if (el._valueTracker) { el._valueTracker.setValue(''); }
+      el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+      return JSON.stringify({
+        ok: true,
+        tag: 'select',
+        text: el.options[matchedIndex].text.trim(),
+        value: selectedValue
+      });
+    }
+
+    const available = Array.from(el.options).slice(0, 10).map(o => o.text.trim() || o.value).join(', ');
+    return JSON.stringify({
+      ok: false,
+      error: 'Option "' + targetVal + '" not found in <select> (available: ' + available + ')'
+    });
+  } catch (err) {
+    return JSON.stringify({ ok: false, error: err.toString() });
+  }
+})()
+''';
+
+    final raw = await _controller!.evaluateJavascript(script);
+    try {
+      final decoded = jsonDecode(raw.toString()) as Map<String, dynamic>;
+      if (decoded['ok'] == true) {
+        final optText = decoded['text'] ?? '';
+        final optVal = decoded['value'] ?? '';
+        final targetStr = targetRef != null ? '[$targetRef]' : (targetSel ?? '');
+        return 'Selected "$optText" (value: "$optVal") in $targetStr <select>.';
+      } else {
+        return 'Select failed: ${decoded['error']}.';
+      }
+    } catch (_) {
+      return 'Option selected.';
+    }
+  }
+
+  Future<String> _actGet({String? ref, String? selector}) async {
+    final targetRef = ref?.trim();
+    final targetSel = selector?.trim();
+    if ((targetRef == null || targetRef.isEmpty) && (targetSel == null || targetSel.isEmpty)) {
+      throw ArgumentError('Either ref or selector is required to inspect an element.');
+    }
+
+    final script = '''
+(() => {
+  ${_resolveElementJs(targetRef, targetSel)}
+  if (!el) return JSON.stringify({ ok: false, error: 'Element not found' });
+  try {
+    const tag = el.tagName.toLowerCase();
+    let val = undefined;
+    if (el instanceof HTMLSelectElement) {
+      val = Array.from(el.selectedOptions).map(o => o.text.trim()).join(', ') || el.value;
+    } else if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || 'value' in el) {
+      val = el.value;
+    }
+    const text = (el.innerText || el.textContent || '').trim().slice(0, 80);
+    const checked = (el.type === 'checkbox' || el.type === 'radio') ? el.checked : undefined;
+    const disabled = el.disabled || el.getAttribute('aria-disabled') === 'true';
+
+    return JSON.stringify({
+      ok: true,
+      tag: tag,
+      id: el.id || undefined,
+      value: val,
+      text: text || undefined,
+      checked: checked,
+      disabled: disabled
+    });
+  } catch (err) {
+    return JSON.stringify({ ok: false, error: err.toString() });
+  }
+})()
+''';
+
+    final raw = await _controller!.evaluateJavascript(script);
+    try {
+      final decoded = jsonDecode(raw.toString()) as Map<String, dynamic>;
+      if (decoded['ok'] == true) {
+        final tag = decoded['tag'] ?? 'element';
+        final domId = decoded['id'];
+        final targetStr = targetRef != null ? '[$targetRef]' : (targetSel ?? '');
+        final parts = <String>[];
+        if (decoded['value'] != null) parts.add('value: "${decoded['value']}"');
+        if (decoded['checked'] != null) parts.add('checked: ${decoded['checked']}');
+        if (decoded['disabled'] == true) parts.add('disabled: true');
+        if (decoded['text'] != null && decoded['text'].toString().isNotEmpty) parts.add('text: "${decoded['text']}"');
+        return 'Element $targetStr <$tag${domId != null ? ' id="$domId"' : ''}>${parts.isNotEmpty ? ': ${parts.join(', ')}' : ''}.';
+      } else {
+        return 'Get element failed: ${decoded['error']}.';
+      }
+    } catch (_) {
+      return 'Element inspected.';
     }
   }
 
@@ -1078,6 +1333,8 @@ class BrowserService extends ChangeNotifier {
 const String _kPlaywrightSnapshotScript = r'''
 (() => {
   const MAX_NODES = __MAX_NODES__;
+  const TARGET_REF = __TARGET_REF__;
+  const TARGET_SEL = __TARGET_SEL__;
   const MAX_TRAVERSAL = Math.max(MAX_NODES * 10, 1500);
   const TIME_BUDGET_MS = 1000;
   const startTime = Date.now();
@@ -1477,7 +1734,22 @@ const String _kPlaywrightSnapshotScript = r'''
     return lines;
   }
 
-  const root = document.body || document.documentElement;
+  let root = null;
+  if (TARGET_REF) {
+    root = document.querySelector('[data-agent-id="' + TARGET_REF + '"]');
+    if (!root) root = document.getElementById(TARGET_REF);
+    if (!root) {
+      try { root = document.querySelector(TARGET_REF); } catch (_) {}
+    }
+  }
+  if (!root && TARGET_SEL) {
+    try { root = document.querySelector(TARGET_SEL); } catch (_) {}
+  }
+  const isScoped = !!root;
+  if (!root && (TARGET_REF || TARGET_SEL)) {
+    return JSON.stringify({ error: 'Target element for scoped snapshot not found (ref: ' + (TARGET_REF || '') + ', selector: ' + (TARGET_SEL || '') + ').' });
+  }
+  if (!root) root = document.body || document.documentElement;
   const treeRoot = root ? walk(root) : null;
   const lines = treeRoot ? serializeToLines(treeRoot) : [];
 
@@ -1485,6 +1757,7 @@ const String _kPlaywrightSnapshotScript = r'''
     meta: {
       url: window.location.href,
       title: document.title,
+      scoped: isScoped ? (TARGET_REF ? '[ref=' + TARGET_REF + ']' : TARGET_SEL) : null,
       scroll: {
         x: Math.round(window.scrollX),
         y: Math.round(window.scrollY),

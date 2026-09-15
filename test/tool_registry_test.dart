@@ -326,24 +326,47 @@ void main() {
     expect(disposed, isTrue);
   });
 
-  test('ToolRegistry.defaults includes screen and act when enableA11yTools is true', () {
+  test('ToolRegistry.defaults includes screen and screen_act when enableA11yTools is true', () {
     final registry = ToolRegistry.defaults(
       currentDir: Directory('/'),
       enableA11yTools: true,
     );
     final names = registry.all.map((t) => t.name).toSet();
     expect(names.contains('screen'), isTrue);
-    expect(names.contains('act'), isTrue);
+    expect(names.contains('screen_act'), isTrue);
+    expect(names.contains('extract_text'), isFalse); // merged into browser
   });
 
-  test('ToolRegistry.defaults excludes screen and act when enableA11yTools is false', () {
+  test('ToolRegistry.defaults excludes screen and screen_act when enableA11yTools is false', () {
     final registry = ToolRegistry.defaults(
       currentDir: Directory('/'),
       enableA11yTools: false,
     );
     final names = registry.all.map((t) => t.name).toSet();
     expect(names.contains('screen'), isFalse);
-    expect(names.contains('act'), isFalse);
+    expect(names.contains('screen_act'), isFalse);
+  });
+
+  test('ToolRegistry.execute aliases act to screen_act', () async {
+    var executed = false;
+    final registry = ToolRegistry([
+      Tool(
+        name: 'screen_act',
+        description: 'screen interaction',
+        parameters: const {},
+        handler: (c) async {
+          executed = true;
+          return ToolCallResult(id: c.id, ok: true, output: 'screen act done');
+        },
+      ),
+    ]);
+
+    final res = await registry.execute(
+      const ToolCall(id: 'c1', name: 'act', arguments: {'action': 'tap'}),
+    );
+    expect(res.ok, isTrue);
+    expect(res.output, equals('screen act done'));
+    expect(executed, isTrue);
   });
 
   test('ToolRegistry.defaults strictly excludes retired workspace tool', () {

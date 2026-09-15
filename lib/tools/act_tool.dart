@@ -21,7 +21,7 @@ Tool actTool({A11yService? service}) {
   final svc = service ?? A11yService();
 
   return Tool(
-    name: 'act',
+    name: 'screen_act',
     description:
         'Interact with the current phone screen: tap a button/link by its exact '
         'label from the screen outline or numeric "ref", type text into the focused '
