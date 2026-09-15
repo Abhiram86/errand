@@ -1,13 +1,13 @@
 # Errand (Flutter) — Architecture Overview
 
-This document maps the current implementation: a streaming chat UI, an OpenAI-compatible agent loop with reasoning, file reading (+ media) + on-device bash shell + web + Android intent + accessibility tools, structured document readers, Drift persistence (v4), ToolOutputFileService output caching, Full vs. Lite build flavors with split ABIs, and Android shared-storage access. Everything except the LLM and Tavily runs on-device.
+This document maps the current implementation: a streaming chat UI, an OpenAI-compatible agent loop with reasoning, file reading (+ media) + on-device bash shell + web + Android intent + embedded browser + memory + accessibility tools, structured document readers, Drift persistence (v5, memories), ToolOutputFileService output caching, Full vs. Lite build flavors with split ABIs, and Android shared-storage access. Everything except the LLM and Tavily runs on-device.
 
 ## Big picture
 
 The app keeps the conversation (and its persistence) on the phone and sends the history to the configured LLM. The LLM can call registered tools; tool results are fed back into the same loop until the model returns a final answer or 72 turns are reached. Streaming deltas and reasoning are forwarded to the UI live. History is budgeted in tokens against the selected model's native context window (`ContextBudget`), with automatic LLM-driven compaction when it overflows. Large tool outputs (>6,000 characters) are automatically cached to disk by `ToolOutputFileService` with head/tail previews.
 
 ```text
-chat UI (lib/main.dart: ChatScreen)
+chat UI (lib/screens/chat_screen.dart)
      │  owns Conversation, _messages, _pendingAttachments (staging),
      │  _working state, WorkingDirectory, sidebar/composer/model picker
      │  + Drift watch streams (summaries + pinned)
@@ -24,33 +24,32 @@ LLM client (lib/llm/llm_client.dart)  ◀── HTTP/SSE ─┤ OpenRouter / HF 
      ▼                                             │
 tool registry (lib/agent/tool_registry.dart)
      │  defaults: read (+media), bash, websearch, webfetch,
-     │            intent, attached_files, plus screen + act (Full flavor only)
-     ├──────────┬──────────────┬─────────────┴─────────┐
-     ▼          ▼              ▼                       ▼
- file tools   shell (bash)   web tools              intent tool
- (read+media) (/system/bin/  (websearch/webfetch    (5 core actions:
-              sh, Toybox)    → Tavily)               open_file/url/app,
-     │           │             │                     settings, intent)
-     └────┬──────┘             │                        │
-          ▼                    ▼                        ▼
-   WorkingDirectory ──▶ dart:io ──▶ /storage/emulated/0  IntentService
-   (root+current)      File/Dir   MANAGE_EXTERNAL_STORAGE (channel "intent")
-          │                  │       TavilyClient       │
-          │                  │       (api.tavily.com)   ▼
-          ▼                  │                     MainActivity.kt
-   document readers          │                     launch (FileProvider,
-     PDF · DOCX/XLSX/PPTX    │                     typed extras, BAL-safe
-     → LogicalDocument       │                     PendingIntent, chooser) /
-       (paged, char-budgeted)│                     canResolve / bringToFront
+     │            intent, attached_files, memory, browser, plus screen + screen_act (Full flavor only)
+     ├──────────┬──────────────┬─────────────┬─────────────┬─────────────┐
+     ▼          ▼              ▼             ▼             ▼             ▼
+ file tools   shell (bash)   web tools    intent tool   memory tool   browser tool
+ (read+media) (/system/bin/  (websearch/  (6 actions:   (save/recall/ (DOM JS bridge,
+              sh, Toybox)    webfetch)    open, docs)   update/list)   a11y snapshots)
+     │           │             │             │             │             │
+     └────┬──────┘             │             ▼             ▼             ▼
+          ▼                    ▼       IntentService  ErrandDatabase BrowserService
+   WorkingDirectory ──▶ dart:io     (channel "intent") (memories)  (InAppWebView)
+   (root+current)      File/Dir      MainActivity.kt       │             │
+          │                  │       (launch / BAL safe)   ▼             ▼
+          ▼                  │                     SQLite (Drift v5) BrowserWidget
+   document readers          │                     long-term recall  (dock/preview/
+     PDF · DOCX/XLSX/PPTX    │                                        full-screen)
+     → LogicalDocument       │
+       (paged, char-budgeted)│
                              │
      ToolOutputFileService ◀─┴── Cache outputs > 6k chars (<cacheDir>/tool_outputs/)
 
 a11y (P2) ──▶ ErrandAccessibilityService (channel "a11y", Full flavor only)
-             screen (read outline, globals) + act (tap/type/scroll, Draft policy)
+             screen (read outline, globals) + screen_act (tap/type/scroll, Draft policy)
 
 persistence (lib/services/database.dart)
-  ErrandDatabase (drift, v4) — Conversations / ConversationMessages (+attachedUrisJson) /
-                               ConversationAttachments / AppSettings
+  ErrandDatabase (drift, v5) — Conversations / ConversationMessages (+attachedUrisJson) /
+                               ConversationAttachments / Memories / AppSettings
   saveConversation (transaction, merge) · watchConversationSummaries · watchPinnedConversations
 
 model catalog (lib/services/model_catalog.dart → lib/models/model_option.dart)
@@ -215,11 +214,12 @@ Storage permission is checked on start and on `AppLifecycleState.resumed`, with 
 
 ## Persistence — `lib/services/database.dart`
 
-Drift database `ErrandDatabase` (4 tables + v4):
+Drift database `ErrandDatabase` (5 tables, schema v5):
 
 - `Conversations { id PK, localSystemPrompt?, title, currentDir, provider?, model?, isPinned, createdAt, updatedAt }`
 - `ConversationMessages { localId autoinc PK, conversationId FK→Conversations.id, messageId, sortOrder, messageType (user/assistant/tool/error/compacted), messageText, toolName?, toolArgumentsJson?, result?, reasoning?, reasoningDetailsJson?, error?, attachedUrisJson? }` — `attachedUrisJson` (v4) stores `UserMessage.attachedUris` as JSON array; `compacted` rows store the `CompactedNoticeMessage` summary in `result`.
 - `ConversationAttachments { conversationId FK, uri, PK(conversationId, uri) }` — global inventory per conversation (from Settings → Local + message history).
+- `Memories { id PK (UUID), key? unique, content, tagsJson, createdAt, updatedAt }` — persistent cross-conversation knowledge, facts, and user preferences (v5).
 - `AppSettings { key PK, value }` — generic runtime KV store: encrypted API secrets (OpenRouter/Tavily keys, base-URL override) + plain preferences (voice locale, last-selected model, a11y prompt flag). Encryption lives in `SecretStore` (AES-256-GCM, key file at `<app-support>/errand.key`, outside the DB); `AppSettingsService` is the typed access layer with an in-memory cache. Replaces the former shared_preferences usage.
 
 Key ops:
@@ -229,24 +229,61 @@ Key ops:
 - `deleteConversation`, `pinConversation` (toggle), `touchConversation` (bump `updatedAt`).
 - `loadConversation(id)` / `_loadMessages` / `_loadAttachmentUris`, plus `insertMessage`/`replaceMessage`/`deleteMessage`.
 - `watchConversationSummaries()` / `watchPinnedConversations()` — ordered streams for the sidebar.
+- Memory ops (`saveMemory`, `getMemoryByKey`, `recallMemories`, `updateMemory`, `deleteMemory`, `listMemories`, `watchAllMemories`).
 - `getSetting(key)` / `setSetting(key, value)` / `deleteSetting(key)` — raw KV upserts/removals consumed by `AppSettingsService`.
 
-`schemaVersion = 4`, `NativeDatabase` (or `drift_flutter` on device), `inMemory()` for tests. v1→v2 migration dedupes message rows, then creates the two indexes above; v2→v3 adds the app-settings table; v3→v4 adds `attachedUrisJson`.
+`schemaVersion = 5`, `NativeDatabase` (or `drift_flutter` on device), `inMemory()` for tests. v1→v2 migration dedupes message rows, then creates the two indexes above; v2→v3 adds the app-settings table; v3→v4 adds `attachedUrisJson`; v4→v5 adds the `memories` table.
+
+## The memory subsystem — `lib/services/memory_service.dart` & `lib/tools/memory_tool.dart` (P5b)
+
+- **`MemoryService`** — provides typed persistence operations over the Drift `memories` table:
+  - `save(content, {key, tags})` — saves or updates a memory with unique key collision resolution and JSON tags.
+  - `recall(query, {tags, limit})` — case-insensitive substring search matching across content, keys, and tags.
+  - `update(id/key, content, {tags})` — updates content or categorization.
+  - `delete(id/key)` — purges specific memories.
+  - `list({limit, offset, tags})` — browses recent memories.
+- **`memory` tool** (`lib/tools/memory_tool.dart`) — LLM tool exposing `save`, `recall`, `update`, `delete`, and `list` actions.
+- **Passive knowledge digest**: `SystemPromptService` automatically injects a compact, token-budgeted list of active user preferences and facts into the prompt on every turn without requiring explicit tool roundtrips.
+- **Memory management UI**: dedicated view in the Settings sheet allowing users to view, search, manually create, edit, or purge memories.
+
+## The embedded browser — `lib/services/browser_service.dart` & `lib/widgets/browser_widget.dart` (P6a)
+
+- **`BrowserService`** — singleton service managing the embedded browser lifecycle:
+  - Backed by `flutter_inappwebview` with `InAppWebViewController`.
+  - Maintains navigation state (`currentUrl`, `currentTitle`, `isLoading`, `progress`).
+  - Controls display modes via `ValueNotifier<BrowserDisplayMode>` (`closed`, `preview`, `fullScreen`).
+  - **Adaptive preview zoom**: sets zoom scale to `0.80` in preview mode to widen visible page content, restoring to `1.0` in full-screen mode.
+  - Exposes programmatic control: `openUrl(url)`, `goBack()`, `goForward()`, `reload()`, `stopLoading()`, `close()`.
+  - DOM JS execution via `evaluateJavascript` and visual screenshot fallback via `takeScreenshot`.
+  - Accessibility tree snapshot extraction: parses DOM elements (`a`, `button`, `input`, `select`, `textarea`, interactive roles) into a compact numbered tree with `[e1]`, `[e2]` references.
+- **`browser` tool** (`lib/tools/browser_tool.dart`) — unified agent tool with actions:
+  - `open`: loads target URL, validates HTTP/HTTPS schemes, auto-opens the preview card.
+  - `snapshot`: extracts the interactive DOM accessibility outline.
+  - `act`: interacts with page elements via click, type, select, or scroll using DOM events and JS dispatch.
+  - `screenshot`: captures visible viewport for multimodal models.
+  - `extract_text`: extracts cleaned text content from the current page.
+  - `close`: closes the browser session and collapses the UI.
+  - `back` / `forward` / `reload`: page history navigation.
+- **`BrowserWidget`** — responsive multi-mode overlay:
+  - Smooth morphing animations across compact dock bar (50px), preview card (floating above composer), and full-screen modal.
+  - **Composer focus isolation**: Preview card compacts to the 50px dock bar only when the chat composer is actively focused, keeping the preview expanded while typing inside web page inputs.
+  - Full-screen mode features floating glass address bar, reload/stop buttons, back/forward buttons, zoom restore, and minimize/close actions.
 
 ## Reading order
 
 1. `lib/types/message.dart`, `lib/types/conversation.dart`, `lib/types/tool.dart`
 2. `lib/agent/tool.dart` → `tool_registry.dart` → `agent_loop.dart` (+ `context_budget.dart`)
-3. `lib/services/workspace.dart` + `lib/tools/file_tools.dart` (incl. media branch) + `lib/tools/bash_tool.dart` (active shell) + `lib/tools/legacy_workspace_tool.dart` (legacy) + `lib/tools/attached_files_tool.dart`
-4. `lib/internal/document_reading/` (models → reader → open_xml/pdf)
-5. `lib/tools/web_tools.dart` + `lib/services/tavily_client.dart`
-6. `lib/tools/intent_tool.dart` + `lib/services/intent_service.dart` + `MainActivity.kt` (intent channel)
-7. `lib/tools/screen_tool.dart` + `lib/tools/act_tool.dart` + `lib/services/a11y_service.dart` + `ErrandAccessibilityService.kt` (a11y channel)
-8. `lib/llm/llm_client.dart`
-9. `lib/services/database.dart` + `lib/services/model_catalog.dart` + `lib/models/model_option.dart`
-10. `lib/main.dart` + `lib/widgets/` + `lib/theme/app_colors.dart`
+3. `lib/services/workspace.dart` + `lib/tools/file_tools.dart` (incl. media branch) + `lib/tools/bash_tool.dart` (active shell) + `lib/tools/memory_tool.dart` + `lib/tools/browser_tool.dart`
+4. `lib/services/browser_service.dart` + `lib/widgets/browser_widget.dart`
+5. `lib/internal/document_reading/` (models → reader → open_xml/pdf)
+6. `lib/tools/web_tools.dart` + `lib/services/tavily_client.dart`
+7. `lib/tools/intent_tool.dart` + `lib/services/intent_service.dart` + `MainActivity.kt` (intent channel)
+8. `lib/tools/screen_tool.dart` + `lib/tools/act_tool.dart` (`screen_act`) + `lib/services/a11y_service.dart` + `ErrandAccessibilityService.kt` (a11y channel)
+9. `lib/llm/llm_client.dart`
+10. `lib/services/database.dart` + `lib/services/model_catalog.dart` + `lib/models/model_option.dart`
+11. `lib/main.dart` + `lib/bootstrap.dart` + `lib/app.dart` + `lib/screens/chat_screen.dart` + `lib/widgets/`
 
-## The accessibility tools — `screen` + `act` (P2)
+## The accessibility tools — `screen` + `screen_act` (P2)
 
 One user-enabled accessibility service (`ErrandAccessibilityService`, bound
 via `BIND_ACCESSIBILITY_SERVICE`, config in `res/xml/`) backs two tools over
@@ -275,7 +312,7 @@ detected via AppOps and surfaced as enablement guidance.
   - `settle_ms` guards against stale reads after navigation.
   - Global actions: back / home / recents / notifications / quick_settings /
     lock_screen (API 28+).
-- **`act`** — gated injection, **Draft policy** (*agent prepares, user
+- **`screen_act` (formerly `act`)** — gated injection, **Draft policy** (*agent prepares, user
   sends*): tap-by-label walks up to the nearest clickable ancestor;
   tap-by-ref addresses `[ref]` from the last read;
   type uses ACTION_SET_TEXT on the focused field (never submits; password

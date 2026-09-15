@@ -1,7 +1,7 @@
-# Refactor Memory — P4a Guided Service-by-Service (v0.5.6)
+# Refactor Memory — P4a Guided Service-by-Service (v0.6.0)
 
 > **Purpose:** Long-context memory for this and future sessions. `next_plan.md` + `architecture.md` + `lib/screens/chat_screen.dart` are the big-3; this file is the *compressed* survivor when history truncates. Update it after every service step.
-> **Last updated:** 2026-09-14 | **Status:** v0.5.6 shipped (P4a modularization, intent docs, tool grouping, provider priority) | **Schema:** Drift v4 + `compacted` rows
+> **Last updated:** 2026-09-16 | **Status:** v0.6.0 shipped (embedded browser, memory subsystem, adaptive zoom) | **Schema:** Drift v5 (memories) + `compacted` rows
 
 ---
 

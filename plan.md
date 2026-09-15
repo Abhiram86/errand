@@ -95,10 +95,12 @@ class ToolCallResult { final String id; final bool ok; final String output; fina
 16. ✅ **Build Flavors & Intent UX (`v0.5.2`)** — Full and Lite flavor split (Lite completely removes accessibility service from manifest), installed app discovery with background caching and fuzzy suggestions, readable app names in tool bubbles, and selective bring-to-front.
 17. **P5 — Capabilities Beyond Accessibility (Closing the Lite vs. Full Gap)**:
     - ✅ **P5a (On-device shell tool — `v0.5.5`):** Execute commands via `/system/bin/sh` using `Process.start` in `dart:io`. Provides access to Android's Toybox/Toolbox utilities (`ls`, `find`, `cat`, `grep`, `sed`, `awk`, `cut`, `sort`, `uniq`, `wc`, `tr`, `head`, `tail`, `mkdir`, `cp`, `mv`, `rm`, `tar`, `gzip`, `df`, `du`, `ps`). Respects and persists `WorkingDirectory.current`, routes large outputs to `ToolOutputFileService`, enforces timeouts and destructive command confirmations under Draft policy, and retires legacy `workspace` tool.
-    - **P5b (Global memory system & tool — schema v5):** Cross-conversation persistent memory (`memories` table in Drift) for long-term recall of user preferences, device facts, and learned guidelines. Includes `memory` tool (`save`/`recall`/`update`/`delete`/`list`), system prompt knowledge digest, and user management UI.
+    - ✅ **P5b (Global memory system & tool — `v0.6.0`, schema v5):** Cross-conversation persistent memory (`memories` table in Drift) for long-term recall of user preferences, device facts, and learned guidelines. Includes `memory` tool (`save`/`recall`/`update`/`delete`/`list`), system prompt knowledge digest, and user management UI.
 18. ✅ **Intent Docs, Sequential Tool Grouping & Architecture Modularization (`v0.5.6`)** — Added on-demand intent documentation action (`action: 'docs'`) for alarms, timers, calendar, and location/maps; supported integer list extras (`MainActivity.kt`); grouped sequential tool executions into single collapsible bubbles with animated progress-to-completion states; prioritized keyed LLM providers; and decomposed `main.dart` into modular components.
-19. **P6 — Embedded Web Agent Tools**:
-    - **P6a (Embedded browser agent tools):** Interactive in-app web view for agent-driven web navigation. Dual-mode control using direct DOM JavaScript evaluation via JS bridge with visual screenshot fallback for vision models. Includes origin lockdown, session sandboxing, and Draft confirmation policy for sensitive web actions.
+19. **P6 — Embedded Web Agent Tools (`v0.6.0`)**:
+    - ✅ **P6a (Embedded browser agent tools):** Interactive in-app web view for agent-driven web navigation (`browser` tool). Dual-mode control using direct DOM JavaScript evaluation via JS bridge with visual screenshot fallback for vision models, accessibility-tree snapshots, responsive morphing UI (`BrowserWidget`), composer-focus compaction isolation, and adaptive preview zoom.
+    - **P6b (Browser rough edges & PlatformView optimization):** Eliminate `GlobalKey` reparenting jank, decouple offstage layout from bottom keyboard insets, and optimize Android `PlatformView` compositing.
+
 
 ## Cut-lines
 

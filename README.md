@@ -26,6 +26,17 @@ conversations are stored locally (Drift/SQLite) with no cloud sync.
     timeouts, Draft safety policies (blocks fork bombs and su/root; requires
     confirmation for destructive `rm -rf`), and automatic directory persistence
     on `cd` or `working_directory`.
+  - `browser` — autonomous, in-app web navigation directly within Errand on
+    both Full and Lite flavors (zero accessibility permissions required).
+    Features direct DOM JavaScript evaluation via JS bridge, accessibility tree
+    snapshots, visual screenshot fallback for multimodal models, text extraction,
+    and adaptive preview zoom (`0.80`). Accompanied by a responsive morphing UI
+    (`BrowserWidget`) spanning compact dock bar (50px), preview card, and
+    full-screen view with custom navigation controls and composer-focus isolation.
+  - `memory` — cross-conversation persistent memory (`memories` table in Drift,
+    schema v5) for long-term recall of user preferences, device context, and
+    guidelines across sessions (`save`, `recall`, `update`, `delete`, `list`),
+    with passive knowledge digests injected into the prompt and a management UI in Settings.
   - `websearch` / `webfetch` — Tavily search + Markdown extraction.
   - `intent` — 6 core Android actions (`open_file` via FileProvider,
     `open_url`, `open_app`, `settings`, raw `android_action` hatch, and `docs`
@@ -33,14 +44,14 @@ conversations are stored locally (Drift/SQLite) with no cloud sync.
     Supports typed extras (primitives, string lists, and integer lists) and
     backward-compatible routing for legacy actions. All open-style actions
     append a notice when screen access is off.
-  - `screen` / `act` — optional accessibility-backed screen reading (compact
+  - `screen` / `screen_act` — optional accessibility-backed screen reading (compact
     outline of the active window) and Draft-mode interaction: tap labeled
     controls, type into focused fields, scroll. Commit-looking actions
     (Send/Pay/Delete…) are refused — Errand prepares, the user sends.
     Requires enabling Errand in Accessibility settings.
   - `grep` filter — optional case-insensitive regex/substring on `screen` (outline),
     `read` (file content with line numbers),
-    and `act` (then_read). ReDoS-safe: overlong / nested-quantifier patterns
+    and `screen_act` (then_read). ReDoS-safe: overlong / nested-quantifier patterns
     fall back to literal; match cap 200 with overflow note.
 - **Large output spill** — `ToolOutputFileService` spills outputs > 6k chars to
   `cache/tool_outputs/tool-{id}_{hash}-output.txt` (512 KB store cap, max 50
@@ -57,20 +68,20 @@ conversations are stored locally (Drift/SQLite) with no cloud sync.
   with nested expandable steps for deep debugging. Multi-line composer:
   Enter inserts a newline; Send button fires the message. Dismissible a11y
   toast appears on cold start when screen access is off.
-- **Local persistence** — conversations/messages/attachments in Drift with
+- **Local persistence** — conversations/messages/attachments/memories in Drift (schema v5) with
   merge-based saves, pinned favourites, recency-ordered sidebar.
 - **In-app configuration** — API keys are entered in Settings (gear icon in
   the header), encrypted with AES-256-GCM, and stored in SQLite. Providers with
   active keys automatically take priority in the model picker while preserving
   stable relative order. Settings → Tools tab shows screen-access state,
-  Enable/Disable buttons, and Tavily key.
+  Enable/Disable buttons, Tavily key, and Memory Management.
 
 ## Flavors (Full vs. Lite)
 
 Errand is distributed in two build flavors:
 
-- **Full** (`com.errand.errand`, app name `Errand`): Includes the complete feature set. Declares the Android accessibility service in its manifest, enabling the `screen` and `act` tools for reading on-screen content, tapping UI elements, typing, and taking screenshots. Settings includes screen access controls and cold-start guidance for enabling the service.
-- **Lite** (`com.errand.errand.lite`, app name `Errand Lite`): Completely removes the accessibility service declaration from the Android manifest. It runs without asking for or relying on accessibility permissions. The `screen` and `act` tools are excluded from the agent tool registry. It handles file operations, document reading (PDF, DOCX, XLSX, PPTX), web search and extraction, and system intents (`open_app`, `open_file`, `open_url`, `settings`). It also includes on-device installed app caching with alias resolution, fuzzy matching for failed launches, and selective bring-to-front behavior when the agent produces follow-up responses.
+- **Full** (`com.errand.errand`, app name `Errand`): Includes the complete feature set. Declares the Android accessibility service in its manifest, enabling the `screen` and `screen_act` tools for reading on-screen content, tapping UI elements, typing, and taking screenshots. Settings includes screen access controls and cold-start guidance for enabling the service.
+- **Lite** (`com.errand.errand.lite`, app name `Errand Lite`): Completely removes the accessibility service declaration from the Android manifest. It runs without asking for or relying on accessibility permissions. The `screen` and `screen_act` tools are excluded from the agent tool registry. It handles in-app web browser automation (`browser`), on-device bash shell execution (`bash`), structured document reading (PDF, DOCX, XLSX, PPTX), memory persistence (`memory`), web search and extraction, and system intents (`open_app`, `open_file`, `open_url`, `settings`). It also includes on-device installed app caching with alias resolution, fuzzy matching for failed launches, and selective bring-to-front behavior when the agent produces follow-up responses.
 
 ## Configuration
 

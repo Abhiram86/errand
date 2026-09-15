@@ -1,40 +1,29 @@
 # Next Plan — Status & Roadmap
 
-> **Updated Sep 2026.** P0, P1, P1.5, P2, P3 (multimodality), P4 (refactor & hardening), P5a (on-device shell & workspace retirement), and v0.5.6 (intent docs, tool grouping UI, keyed provider priority, entrypoint modularization) are all **SHIPPED** (v0.5.6).
-> **Active Milestone:** **P5b — Global Memory System & Persistent Knowledge Tool** (schema v5).
-> **Upcoming Milestone:** **P6a — Embedded Browser Agent Tools** (in-app webview, DOM JS bridge + visual fallback).
+> **Updated Sep 2026.** P0 through P5a (v0.5.5), v0.5.6, P5b (memory subsystem, schema v5), and P6a (embedded browser agent tools) are all **SHIPPED** (v0.6.0).
+> **Active Milestone:** **P6b — Browser Rough Edges & Android PlatformView Optimizations**.
 
 ---
 
 ## 🧭 Active & Upcoming Roadmap
 
-### 🟡 P5b — Global Memory System & Persistent Knowledge Tool (NEXT — schema v5)
+### 🟡 P6b — Browser Rough Edges & Android PlatformView Optimizations (ACTIVE / NEXT)
 
-Cross-conversation persistent memory giving Errand long-term recall of user preferences, project facts, device context, and learned guidelines.
+Goal: Smooth out transitions, eliminate PlatformView reparenting, and decouple Android window insets from embedded web rendering.
 
-1. **Database Persistence (Schema v5 Migration):**
-   - New `memories` table in `lib/services/database.dart`:
-     - `id` (Text, UUID primary key)
-     - `key` (Text, nullable unique slug for keyed values like `user_name`, `preferred_model`, `work_dir`)
-     - `content` (Text, full memory text or fact description)
-     - `tags` (Text, JSON array or delimited tags for category filtering, e.g. `["preferences", "coding"]`)
-     - `created_at` / `updated_at` (DateTime, sorting and obsolescence tracking)
-   - Clean Drift schema migration from v4 (`attachedUrisJson`) to v5 with full test coverage (`test/database_test.dart`).
+#### Known Rough Edges & Potential Problems Identified
 
-2. **Agent Tool (`memory` in `lib/tools/memory_tool.dart`):**
-   - `action: "save"` — Save a new memory or fact with optional key and tags.
-   - `action: "recall"` — Search existing memories using query matching across content, keys, and tags.
-   - `action: "update"` — Update content or tags of an existing memory by ID or key.
-   - `action: "delete"` — Remove a specific memory or purge by tag/key.
-   - `action: "list"` — Browse recent memories with limit and tag filters.
+1. **Keyboard Transition Choppiness / Micro-Stutter:**
+   - *Symptom:* When focusing the Errand composer, the soft keyboard lifts smoothly before the browser has ever opened. Once the browser has opened (even if subsequently closed), the keyboard lift transition experiences noticeable frame drops.
+   - *Root Cause A (PlatformView Reparenting via GlobalKey):* When toggling between preview and compact/closed modes, `_buildPersistentWebView()` was moved between the active animated card container and the root offstage container. Live reparenting of a native `PlatformView` across widget tree branches at the exact frame the keyboard starts animating forces the native view hierarchy to reconcile and drop frames.
+   - *Root Cause B (Offstage Inset Synchronization):* The hidden offstage container was positioned at `bottom: 0` inside a `Scaffold` with `resizeToAvoidBottomInset: true`. Every frame of the ~250ms keyboard animation changed layout bounds, causing Android's `PlatformViewsController` and `SurfaceSyncGroup` to synchronize frame buffers across processes on every frame even while offstage.
+   - *Root Cause C (Hybrid Composition Overhead):* `useHybridComposition: true` delegates compositing directly to Android's `SurfaceFlinger`. Synchronization overhead during concurrent layout animations (`BrowserDockSpacer`, `BrowserWidget`, soft keyboard) spikes GPU/CPU load.
 
-3. **System Prompt Knowledge Digest (Passive Awareness):**
-   - Inject a compact, token-budgeted "Known Facts" block into `_systemPromptFor` / `SystemPromptService`.
-   - Core preferences and recent memories are passively visible to the agent on every turn without requiring explicit `memory recall` round-trips.
-
-4. **User Privacy & Control:**
-   - Dedicated Memory Management screen or Settings sheet tab allowing users to inspect, edit, manually add, or purge memories.
-   - Transparent logging: whenever the agent writes or updates a memory, it is clearly reported in the tool call output.
+2. **Planned P6b Mitigations:**
+   - **Zero-Reparenting Stable Hierarchy:** Mount `InAppWebView` in a single, permanent slot inside the browser container. In compact/dock mode, adjust container constraints and overlay the dock bar rather than reparenting the widget subtree across branches.
+   - **Decouple Hidden Bounds from Keyboard Insets:** Pin offstage/minimized views to fixed coordinates (`top: 0, left: 0, width: 1, height: 1`) independent of bottom insets, preventing unnecessary layout and frame-sync passes.
+   - **Render Layer Isolation:** Wrap the `PlatformView` in a `RepaintBoundary` to prevent chat timeline repaints from invalidating the native texture surface.
+   - **Release/Profile Mode Verification:** Profile using `flutter run --profile` and verify whether Texture Layer Hybrid Composition (TLHC) improves lower-end device performance.
 
 ---
 
@@ -145,3 +134,17 @@ Goal: give Lite the automation Full gets from a11y, for any task that can be don
 - **Grouped Tool Call UI (`ToolGroupBubble`):** Consecutive tool executions grouped into a unified timeline card with animated status transitions (`running`, `completed`, `failed`), step counter badges, and nested collapsible accordions.
 - **Keyed Provider Prioritization:** Providers with configured API keys appear first in the LLM selection UI.
 - **Entrypoint Modularization:** Decomposed `lib/main.dart` into `lib/bootstrap.dart`, `lib/app.dart`, and `lib/screens/chat_screen.dart`.
+
+### ✅ P5b — Global Memory System & Persistent Knowledge Tool (v0.6.0, Schema v5)
+- **Database Persistence (Schema v5):** Added `memories` table in Drift with UUID primary keys, unique slugs (`key`), content, JSON tags, and update tracking.
+- **Agent Memory Tool (`memory`):** Dedicated tool with actions `save`, `recall`, `update`, `delete`, and `list` for cross-conversation user memory.
+- **System Prompt Knowledge Digest:** Automatic passive injection of known user facts and preferences into the system prompt.
+- **User Memory Management UI:** Dedicated management view in Settings allowing inspection, manual creation, editing, and deletion of memories.
+
+### ✅ P6a — Embedded Browser Agent Tools & Morphing UI (v0.6.0)
+- **Autonomous Embedded Browser (`browser`):** In-app web agent capabilities based on `flutter_inappwebview` with direct DOM JS interaction, accessibility tree snapshots, screenshot fallback, and text extraction.
+- **Morphing Card & Dock UI (`BrowserWidget`):** Responsive embedded browser UI featuring smooth morphing across compact dock bar (50px), floating preview card (with adaptive 0.80 zoom), and full-screen modal with custom controls.
+- **Composer Focus Isolation:** Browser preview card collapses to the compact dock bar only when the chat composer is actively focused, keeping the preview expanded while typing inside web page inputs.
+- **Tool Hierarchy Alignment:** Streamlined tool selection policy: Intent $\to$ Browser $\to$ `screen_act` (accessibility).
+- **Native Action Renaming:** Renamed native accessibility action tool to `screen_act` for clear disambiguation from web browser actions.
+
