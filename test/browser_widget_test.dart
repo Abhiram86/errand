@@ -47,9 +47,21 @@ class FakeBrowserController implements BrowserController {
   @override
   Future<String?> getTitle() async => title;
 
+  bool timersPaused = false;
+
   @override
   Future<void> stopLoading() async {
     stopped = true;
+  }
+
+  @override
+  Future<void> pauseTimers() async {
+    timersPaused = true;
+  }
+
+  @override
+  Future<void> resumeTimers() async {
+    timersPaused = false;
   }
 }
 
@@ -80,7 +92,7 @@ void main() {
     expect(find.byKey(const ValueKey('browser_test_placeholder')), findsNothing);
   });
 
-  testWidgets('BrowserWidget renders expanded sheet when opened with expand: true', (tester) async {
+  testWidgets('BrowserWidget renders preview card when open in preview mode', (tester) async {
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
@@ -93,16 +105,18 @@ void main() {
       ),
     );
 
-    await service.open('https://flutter.dev', expand: true);
+    await service.open('https://flutter.dev');
+    service.setPreview();
     await tester.pumpAndSettle();
 
     expect(find.text('https://flutter.dev'), findsAtLeast(1));
     expect(find.byKey(const ValueKey('browser_test_placeholder')), findsOneWidget);
     expect(find.byTooltip('Close browser'), findsOneWidget);
-    expect(find.byTooltip('Collapse sheet'), findsOneWidget);
+    expect(find.byTooltip('Open full screen'), findsOneWidget);
+    expect(find.byTooltip('Minimize to dock'), findsOneWidget);
   });
 
-  testWidgets('BrowserWidget renders collapsed mini bar when collapsed', (tester) async {
+  testWidgets('BrowserWidget renders closed dock bar when in closed mode', (tester) async {
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
@@ -115,24 +129,56 @@ void main() {
       ),
     );
 
-    await service.open('https://flutter.dev', expand: false);
+    await service.open('https://flutter.dev');
+    service.setClosed();
     await tester.pumpAndSettle();
 
-    expect(find.byTooltip('Expand browser'), findsOneWidget);
+    expect(find.byTooltip('Open preview'), findsOneWidget);
+    expect(find.byTooltip('Open full screen'), findsOneWidget);
     expect(find.byTooltip('Reload page'), findsOneWidget);
+    expect(find.byTooltip('Close browser'), findsOneWidget);
 
-    // Tap expand button
-    await tester.tap(find.byTooltip('Expand browser'));
+    // Tap preview button to enter preview
+    await tester.tap(find.byTooltip('Open preview'));
     await tester.pumpAndSettle();
 
-    expect(service.isExpanded, isTrue);
-    expect(find.byTooltip('Collapse sheet'), findsOneWidget);
+    expect(service.displayMode, equals(BrowserDisplayMode.preview));
+    expect(find.byTooltip('Minimize to dock'), findsOneWidget);
 
-    // Tap collapse button
-    await tester.tap(find.byTooltip('Collapse sheet'));
+    // Tap minimize button to return to closed bar
+    await tester.tap(find.byTooltip('Minimize to dock'));
     await tester.pumpAndSettle();
 
-    expect(service.isExpanded, isFalse);
+    expect(service.displayMode, equals(BrowserDisplayMode.closed));
+  });
+
+  testWidgets('BrowserWidget renders fullScreen overlay and can restore to preview', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Stack(
+            children: [
+              BrowserWidget(service: service),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    await service.open('https://flutter.dev');
+    service.setFullScreen();
+    await tester.pumpAndSettle();
+
+    expect(service.displayMode, equals(BrowserDisplayMode.fullScreen));
+    expect(find.byTooltip('Exit full screen'), findsOneWidget);
+    expect(find.byKey(const ValueKey('browser_test_placeholder')), findsOneWidget);
+
+    // Tap restore button
+    await tester.tap(find.byTooltip('Exit full screen'));
+    await tester.pumpAndSettle();
+
+    expect(service.displayMode, equals(BrowserDisplayMode.preview));
+    expect(find.byTooltip('Open full screen'), findsOneWidget);
   });
 
   testWidgets('Close button closes browser', (tester) async {
@@ -148,7 +194,8 @@ void main() {
       ),
     );
 
-    await service.open('https://flutter.dev', expand: false);
+    await service.open('https://flutter.dev');
+    service.setClosed();
     await tester.pumpAndSettle();
 
     expect(service.isOpen, isTrue);
@@ -157,5 +204,43 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(service.isOpen, isFalse);
+  });
+
+  testWidgets('BrowserDockSpacer reserves space in closed and preview modes but collapses in fullScreen and closed state', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Column(
+            children: [
+              BrowserDockSpacer(service: service),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    // Initially closed: spacer is 0 height
+    expect(tester.getSize(find.byType(BrowserDockSpacer)).height, equals(0));
+
+    // Open in closed mode
+    await service.open('https://flutter.dev');
+    service.setClosed();
+    await tester.pumpAndSettle();
+    expect(tester.getSize(find.byType(BrowserDockSpacer)).height, equals(54));
+
+    // Preview mode
+    service.setPreview();
+    await tester.pumpAndSettle();
+    expect(tester.getSize(find.byType(BrowserDockSpacer)).height, greaterThan(200));
+
+    // Fullscreen mode: collapses to 0 because full overlay covers screen
+    service.setFullScreen();
+    await tester.pumpAndSettle();
+    expect(tester.getSize(find.byType(BrowserDockSpacer)).height, equals(0));
+
+    // Close browser: collapses to 0
+    await service.close();
+    await tester.pumpAndSettle();
+    expect(tester.getSize(find.byType(BrowserDockSpacer)).height, equals(0));
   });
 }

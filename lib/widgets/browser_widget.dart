@@ -5,13 +5,49 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import '../services/browser_service.dart';
 import '../theme/app_colors.dart';
 
-/// Embedded dark-themed browser widget that can expand to an interactive bottom
-/// sheet or collapse to a sleek floating mini-bar while keeping the underlying
-/// WebView state and DOM alive across turns.
-class BrowserWidget extends StatefulWidget {
+/// Spacer widget that reserves height in [ChatScreen]'s message column
+/// above the composer when the browser is docked in [BrowserDisplayMode.closed]
+/// or [BrowserDisplayMode.preview] mode.
+class BrowserDockSpacer extends StatelessWidget {
   final BrowserService? service;
 
-  const BrowserWidget({super.key, this.service});
+  const BrowserDockSpacer({super.key, this.service});
+
+  @override
+  Widget build(BuildContext context) {
+    final browser = service ?? BrowserService.instance;
+    return ListenableBuilder(
+      listenable: browser,
+      builder: (context, _) {
+        if (!browser.isOpen) {
+          return const SizedBox.shrink();
+        }
+        if (browser.displayMode == BrowserDisplayMode.closed) {
+          return const SizedBox(height: 54);
+        }
+        if (browser.displayMode == BrowserDisplayMode.preview) {
+          final screenHeight = MediaQuery.sizeOf(context).height;
+          final previewHeight = (screenHeight * 0.42).clamp(280.0, 420.0);
+          return SizedBox(height: previewHeight + 6);
+        }
+        // In fullScreen mode, no spacer is needed in the column because the overlay covers the whole screen.
+        return const SizedBox.shrink();
+      },
+    );
+  }
+}
+
+/// Embedded dark-themed browser widget supporting 3 user-controlled display modes:
+/// 1. `closed`: slim dock bar sitting directly above the composer ("Browser full closed").
+/// 2. `preview`: live preview card sitting directly above the composer ("Browser preview").
+/// 3. `fullScreen`: full-screen overlay covering the entire viewport ("Browser full screen").
+///
+/// WebView state and DOM controller are kept alive seamlessly across all transitions.
+class BrowserWidget extends StatefulWidget {
+  final BrowserService? service;
+  final GlobalKey? composerKey;
+
+  const BrowserWidget({super.key, this.service, this.composerKey});
 
   @override
   State<BrowserWidget> createState() => _BrowserWidgetState();
@@ -19,6 +55,7 @@ class BrowserWidget extends StatefulWidget {
 
 class _BrowserWidgetState extends State<BrowserWidget> {
   BrowserService get _service => widget.service ?? BrowserService.instance;
+  final GlobalKey _webViewKey = GlobalKey();
 
   bool _hasEverOpened = false;
 
@@ -43,81 +80,92 @@ class _BrowserWidgetState extends State<BrowserWidget> {
           return const SizedBox.shrink();
         }
 
+        final isOpen = _service.isOpen;
+        final mode = _service.displayMode;
+        final isFullScreen = mode == BrowserDisplayMode.fullScreen;
+        final isClosed = mode == BrowserDisplayMode.closed;
+
         final size = MediaQuery.sizeOf(context);
-        final sheetHeight = size.height * 0.72;
+        final previewHeight = (size.height * 0.42).clamp(280.0, 420.0);
+
+        double composerH = 68.0;
+        if (widget.composerKey?.currentContext?.findRenderObject() is RenderBox) {
+          final box = widget.composerKey!.currentContext!.findRenderObject() as RenderBox;
+          if (box.hasSize && box.size.height > 0) {
+            composerH = box.size.height;
+          }
+        }
+        final bottomOffset = MediaQuery.viewInsetsOf(context).bottom +
+            MediaQuery.paddingOf(context).bottom +
+            composerH +
+            4.0;
 
         return Stack(
           fit: StackFit.expand,
           children: [
-            // Dark scrim behind expanded sheet
-            if (_service.isOpen && _service.isExpanded)
-              Positioned.fill(
-                child: GestureDetector(
-                  onTap: () => _service.collapse(),
-                  child: AnimatedOpacity(
-                    duration: const Duration(milliseconds: 200),
-                    opacity: _service.isExpanded ? 1.0 : 0.0,
-                    child: ColoredBox(
-                      color: Colors.black.withValues(alpha: 0.52),
-                    ),
-                  ),
-                ),
-              ),
-
-            // Collapsed mini bar floating right above the composer
-            if (_service.isOpen && !_service.isExpanded)
+            // Mode 1: Closed dock bar floating directly above composer
+            if (isOpen && isClosed)
               Positioned(
-                left: 12,
-                right: 12,
-                bottom: 76,
-                child: _buildCollapsedBar(context),
+                left: 10,
+                right: 10,
+                bottom: bottomOffset,
+                height: 50,
+                child: _buildClosedDockBar(context),
               ),
 
-            // Expanded interactive sheet (kept in tree so WebView controller stays alive)
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 0,
-              height: sheetHeight,
-              child: AnimatedSlide(
-                duration: const Duration(milliseconds: 280),
-                curve: Curves.easeOutCubic,
-                offset: (_service.isOpen && _service.isExpanded)
-                    ? Offset.zero
-                    : const Offset(0, 1.2),
+            // Mode 2 & Mode 3: Active interactive browser (preview card or fullscreen overlay)
+            if (isOpen && !isClosed)
+              if (isFullScreen)
+                Positioned.fill(
+                  child: _buildActiveBrowser(context, isFullScreen: true),
+                )
+              else
+                Positioned(
+                  left: 10,
+                  right: 10,
+                  bottom: bottomOffset,
+                  height: previewHeight,
+                  child: _buildActiveBrowser(context, isFullScreen: false),
+                ),
+
+            // When closed or hidden, keep the WebView alive offstage so DOM & agent actions work
+            if (!isOpen || isClosed)
+              Positioned(
+                width: 1,
+                height: 1,
+                bottom: 0,
                 child: Offstage(
-                  offstage: !_service.isOpen,
-                  child: _buildExpandedSheet(context),
+                  offstage: true,
+                  child: _buildPersistentWebView(),
                 ),
               ),
-            ),
           ],
         );
       },
     );
   }
 
-  /// Compact mini dock shown when the browser is open but collapsed.
-  Widget _buildCollapsedBar(BuildContext context) {
+  /// Compact slim dock bar shown when browser is in [BrowserDisplayMode.closed] mode.
+  Widget _buildClosedDockBar(BuildContext context) {
     final title = _service.currentTitle?.trim();
     final url = _service.currentUrl?.trim();
     final displayText = (title != null && title.isNotEmpty)
         ? title
-        : ((url != null && url.isNotEmpty) ? url : 'Browser');
+        : ((url != null && url.isNotEmpty) ? url : 'Browser full closed');
 
     return Material(
       color: Colors.transparent,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         decoration: BoxDecoration(
           color: const Color(0xFF181D26),
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(12),
           border: Border.all(color: kBorder),
           boxShadow: [
             BoxShadow(
               color: Colors.black.withValues(alpha: 0.45),
-              blurRadius: 14,
-              offset: const Offset(0, 4),
+              blurRadius: 12,
+              offset: const Offset(0, 3),
             ),
           ],
         ),
@@ -138,11 +186,11 @@ class _BrowserWidgetState extends State<BrowserWidget> {
                 size: 18,
                 color: kBubbleUser,
               ),
-            const SizedBox(width: 10),
+            const SizedBox(width: 8),
             Expanded(
               child: GestureDetector(
                 behavior: HitTestBehavior.opaque,
-                onTap: () => _service.expand(),
+                onTap: () => _service.setPreview(),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -173,6 +221,7 @@ class _BrowserWidgetState extends State<BrowserWidget> {
               ),
             ),
             IconButton(
+              key: const ValueKey('browser_reload_button'),
               icon: const Icon(Icons.refresh_rounded, size: 18),
               onPressed: () => _service.reload(),
               color: kMuted,
@@ -180,11 +229,20 @@ class _BrowserWidgetState extends State<BrowserWidget> {
               tooltip: 'Reload page',
             ),
             IconButton(
-              icon: const Icon(Icons.open_in_full_rounded, size: 16),
-              onPressed: () => _service.expand(),
+              key: const ValueKey('browser_preview_button'),
+              icon: const Icon(Icons.picture_in_picture_alt_rounded, size: 17),
+              onPressed: () => _service.setPreview(),
               color: kText,
               visualDensity: VisualDensity.compact,
-              tooltip: 'Expand browser',
+              tooltip: 'Open preview',
+            ),
+            IconButton(
+              key: const ValueKey('browser_fullscreen_button'),
+              icon: const Icon(Icons.open_in_full_rounded, size: 16),
+              onPressed: () => _service.setFullScreen(),
+              color: kText,
+              visualDensity: VisualDensity.compact,
+              tooltip: 'Open full screen',
             ),
             IconButton(
               key: const ValueKey('browser_collapsed_close_button'),
@@ -192,7 +250,7 @@ class _BrowserWidgetState extends State<BrowserWidget> {
               onPressed: () => _service.close(),
               color: kMuted,
               visualDensity: VisualDensity.compact,
-              tooltip: 'Close mini browser',
+              tooltip: 'Close browser',
             ),
           ],
         ),
@@ -200,205 +258,236 @@ class _BrowserWidgetState extends State<BrowserWidget> {
     );
   }
 
-  /// Full interactive sheet with navigation header, progress bar, and WebView.
-  Widget _buildExpandedSheet(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-        color: const Color(0xFF13171F),
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(18)),
-        border: Border(
-          top: BorderSide(color: kBorder.withValues(alpha: 0.9)),
-          left: BorderSide(color: kBorder.withValues(alpha: 0.9)),
-          right: BorderSide(color: kBorder.withValues(alpha: 0.9)),
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.65),
-            blurRadius: 24,
-            offset: const Offset(0, -4),
-          ),
-        ],
-      ),
-      child: Column(
-        children: [
-          // Drag handle
-          GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onVerticalDragUpdate: (details) {
-              if (details.primaryDelta != null && details.primaryDelta! > 6) {
-                _service.collapse();
-              }
-            },
-            child: Container(
-              width: double.infinity,
-              padding: const EdgeInsets.only(top: 8, bottom: 6),
-              alignment: Alignment.center,
-              child: Container(
-                width: 38,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: kMuted.withValues(alpha: 0.45),
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-            ),
-          ),
-
-          // Navigation bar
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-            child: Row(
-              children: [
-                IconButton(
-                  icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 17),
-                  onPressed: _service.canGoBack ? () => _service.goBack() : null,
-                  color: _service.canGoBack ? kText : kMuted.withValues(alpha: 0.35),
-                  visualDensity: VisualDensity.compact,
-                  tooltip: 'Go back',
-                ),
-                IconButton(
-                  icon: const Icon(Icons.arrow_forward_ios_rounded, size: 17),
-                  onPressed:
-                      _service.canGoForward ? () => _service.goForward() : null,
-                  color:
-                      _service.canGoForward ? kText : kMuted.withValues(alpha: 0.35),
-                  visualDensity: VisualDensity.compact,
-                  tooltip: 'Go forward',
-                ),
-                IconButton(
-                  icon: Icon(
-                    _service.isLoading
-                        ? Icons.close_rounded
-                        : Icons.refresh_rounded,
-                    size: 19,
+  /// Interactive browser container used for both [preview] card and [fullScreen] overlay.
+  Widget _buildActiveBrowser(BuildContext context, {required bool isFullScreen}) {
+    final content = Material(
+      color: Colors.transparent,
+      child: Container(
+        decoration: BoxDecoration(
+          color: const Color(0xFF13171F),
+          borderRadius: isFullScreen ? BorderRadius.zero : BorderRadius.circular(14),
+          border: isFullScreen ? null : Border.all(color: kBorder),
+          boxShadow: isFullScreen
+              ? null
+              : [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.6),
+                    blurRadius: 16,
+                    offset: const Offset(0, 4),
                   ),
-                  onPressed: () {
-                    if (_service.isLoading) {
-                      _service.stopLoading();
-                    } else {
-                      _service.reload();
-                    }
-                  },
-                  color: kText,
-                  visualDensity: VisualDensity.compact,
-                  tooltip: _service.isLoading ? 'Stop' : 'Reload',
-                ),
-                const SizedBox(width: 4),
-
-                // Address bar
-                Expanded(
-                  child: Container(
-                    height: 36,
-                    padding: const EdgeInsets.symmetric(horizontal: 10),
-                    decoration: BoxDecoration(
-                      color: kInputBg,
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: kBorder),
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(
-                          _service.currentUrl?.startsWith('https') == true
-                              ? Icons.lock_outline_rounded
-                              : Icons.public_rounded,
-                          size: 14,
-                          color: kMuted,
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            _service.currentUrl ?? 'about:blank',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              color: kText,
-                              fontSize: 12,
-                              fontFamily: 'monospace',
+                ],
+        ),
+        clipBehavior: isFullScreen ? Clip.none : Clip.antiAlias,
+        child: Column(
+          children: [
+            _buildToolbar(context, isFullScreen: isFullScreen),
+            _buildProgressBar(),
+            Expanded(
+              child: ColoredBox(
+                color: Colors.white,
+                child: Stack(
+                  children: [
+                    _buildPersistentWebView(),
+                    if (_service.isLoading)
+                      Positioned.fill(
+                        child: Container(
+                          color: const Color(0xFF13171F).withValues(alpha: 0.85),
+                          child: Center(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const SizedBox(
+                                  width: 28,
+                                  height: 28,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2.5,
+                                    color: kBubbleUser,
+                                  ),
+                                ),
+                                const SizedBox(height: 12),
+                                Text(
+                                  _service.currentUrl ?? 'Loading...',
+                                  style: const TextStyle(
+                                    color: kMuted,
+                                    fontSize: 12,
+                                    fontFamily: 'monospace',
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
                         ),
-                      ],
-                    ),
-                  ),
+                      ),
+                  ],
                 ),
-                const SizedBox(width: 4),
-
-                IconButton(
-                  icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 24),
-                  onPressed: () => _service.collapse(),
-                  color: kText,
-                  visualDensity: VisualDensity.compact,
-                  tooltip: 'Collapse sheet',
-                ),
-                IconButton(
-                  icon: const Icon(Icons.close_rounded, size: 20),
-                  onPressed: () => _service.close(),
-                  color: kMuted,
-                  visualDensity: VisualDensity.compact,
-                  tooltip: 'Close browser',
-                ),
-              ],
+              ),
             ),
-          ),
+          ],
+        ),
+      ),
+    );
 
-          // Progress indicator bar
-          SizedBox(
-            height: 2,
-            child: _service.isLoading
-                ? LinearProgressIndicator(
-                    value: _service.progress > 0 && _service.progress < 100
-                        ? _service.progress / 100.0
-                        : null,
-                    minHeight: 2,
-                    backgroundColor: Colors.transparent,
-                    color: kBubbleUser,
-                  )
-                : const SizedBox.shrink(),
-          ),
+    if (isFullScreen) {
+      return ColoredBox(
+        color: const Color(0xFF13171F),
+        child: content,
+      );
+    }
+    return content;
+  }
 
-          // WebView viewport
+  /// Top navigation toolbar with URL bar and display mode action buttons.
+  Widget _buildToolbar(BuildContext context, {required bool isFullScreen}) {
+    final toolbarContent = Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+      child: Row(
+        children: [
+          IconButton(
+            icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 16),
+            onPressed: _service.canGoBack ? () => _service.goBack() : null,
+            color: _service.canGoBack ? kText : kMuted.withValues(alpha: 0.35),
+            visualDensity: VisualDensity.compact,
+            tooltip: 'Go back',
+          ),
+          IconButton(
+            icon: const Icon(Icons.arrow_forward_ios_rounded, size: 16),
+            onPressed: _service.canGoForward ? () => _service.goForward() : null,
+            color: _service.canGoForward ? kText : kMuted.withValues(alpha: 0.35),
+            visualDensity: VisualDensity.compact,
+            tooltip: 'Go forward',
+          ),
+          IconButton(
+            key: const ValueKey('browser_reload_button'),
+            icon: Icon(
+              _service.isLoading ? Icons.close_rounded : Icons.refresh_rounded,
+              size: 18,
+            ),
+            onPressed: () {
+              if (_service.isLoading) {
+                _service.stopLoading();
+              } else {
+                _service.reload();
+              }
+            },
+            color: kText,
+            visualDensity: VisualDensity.compact,
+            tooltip: _service.isLoading ? 'Stop' : 'Reload',
+          ),
+          const SizedBox(width: 4),
+          // Address bar
           Expanded(
-            child: ColoredBox(
-              color: Colors.white,
-              child: Stack(
+            child: Container(
+              height: 34,
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              decoration: BoxDecoration(
+                color: kInputBg,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: kBorder),
+              ),
+              child: Row(
                 children: [
-                  _buildWebView(),
-                  if (_service.isLoading)
-                    Positioned.fill(
-                      child: Container(
-                        color: const Color(0xFF13171F).withValues(alpha: 0.85),
-                        child: Center(
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              const SizedBox(
-                                width: 28,
-                                height: 28,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2.5,
-                                  color: kBubbleUser,
-                                ),
-                              ),
-                              const SizedBox(height: 12),
-                              Text(
-                                _service.currentUrl ?? 'Loading...',
-                                style: const TextStyle(
-                                  color: kMuted,
-                                  fontSize: 12,
-                                  fontFamily: 'monospace',
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
+                  Icon(
+                    _service.currentUrl?.startsWith('https') == true
+                        ? Icons.lock_outline_rounded
+                        : Icons.public_rounded,
+                    size: 13,
+                    color: kMuted,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      _service.currentUrl ?? 'about:blank',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: kText,
+                        fontSize: 12,
+                        fontFamily: 'monospace',
                       ),
                     ),
+                  ),
                 ],
               ),
             ),
           ),
+          const SizedBox(width: 4),
+          if (isFullScreen) ...[
+            IconButton(
+              key: const ValueKey('browser_restore_button'),
+              icon: const Icon(Icons.close_fullscreen_rounded, size: 18),
+              onPressed: () => _service.setPreview(),
+              color: kText,
+              visualDensity: VisualDensity.compact,
+              tooltip: 'Exit full screen',
+            ),
+            IconButton(
+              key: const ValueKey('browser_minimize_button'),
+              icon: const Icon(Icons.unfold_less_rounded, size: 18),
+              onPressed: () => _service.setClosed(),
+              color: kMuted,
+              visualDensity: VisualDensity.compact,
+              tooltip: 'Minimize to dock',
+            ),
+          ] else ...[
+            IconButton(
+              key: const ValueKey('browser_fullscreen_button'),
+              icon: const Icon(Icons.open_in_full_rounded, size: 16),
+              onPressed: () => _service.setFullScreen(),
+              color: kText,
+              visualDensity: VisualDensity.compact,
+              tooltip: 'Open full screen',
+            ),
+            IconButton(
+              key: const ValueKey('browser_minimize_button'),
+              icon: const Icon(Icons.unfold_less_rounded, size: 18),
+              onPressed: () => _service.setClosed(),
+              color: kText,
+              visualDensity: VisualDensity.compact,
+              tooltip: 'Minimize to dock',
+            ),
+          ],
+          IconButton(
+            key: const ValueKey('browser_close_button'),
+            icon: const Icon(Icons.close_rounded, size: 18),
+            onPressed: () => _service.close(),
+            color: kMuted,
+            visualDensity: VisualDensity.compact,
+            tooltip: 'Close browser',
+          ),
         ],
       ),
+    );
+
+    if (isFullScreen) {
+      return SafeArea(
+        bottom: false,
+        child: toolbarContent,
+      );
+    }
+    return toolbarContent;
+  }
+
+  /// Slim progress line indicator shown during page loads.
+  Widget _buildProgressBar() {
+    return SizedBox(
+      height: 2,
+      child: _service.isLoading
+          ? LinearProgressIndicator(
+              value: _service.progress > 0 && _service.progress < 100
+                  ? _service.progress / 100.0
+                  : null,
+              minHeight: 2,
+              backgroundColor: Colors.transparent,
+              color: kBubbleUser,
+            )
+          : const SizedBox.shrink(),
+    );
+  }
+
+  Widget _buildPersistentWebView() {
+    return KeyedSubtree(
+      key: _webViewKey,
+      child: _buildWebView(),
     );
   }
 
@@ -425,11 +514,11 @@ class _BrowserWidgetState extends State<BrowserWidget> {
           mediaPlaybackRequiresUserGesture: false,
           transparentBackground: true,
           useHybridComposition: true,
-          mixedContentMode: MixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
-          allowContentAccess: true,
-          allowFileAccess: true,
+          mixedContentMode: MixedContentMode.MIXED_CONTENT_NEVER_ALLOW,
+          allowContentAccess: false,
+          allowFileAccess: false,
           cacheEnabled: true,
-          safeBrowsingEnabled: false,
+          safeBrowsingEnabled: true,
         ),
         onWebViewCreated: (controller) {
           _service.attachInAppController(controller);

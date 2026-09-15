@@ -133,6 +133,62 @@ void main() {
     expect(secondExecuted, isTrue);
   });
 
+  test('AgentLoop treats browser calls and extract_text as stateful and runs them sequentially', () async {
+    final mockLlm = MockLlmClient();
+    final executionOrder = <String>[];
+
+    final browserTool = Tool(
+      name: 'browser',
+      description: 'browser tool',
+      parameters: const {},
+      handler: (c) async {
+        final action = c.arguments['action'] as String? ?? 'open';
+        executionOrder.add('browser.$action');
+        return ToolCallResult(id: c.id, ok: true, output: 'ok');
+      },
+    );
+
+    final extractTool = Tool(
+      name: 'extract_text',
+      description: 'extract tool',
+      parameters: const {},
+      handler: (c) async {
+        executionOrder.add('extract_text');
+        return ToolCallResult(id: c.id, ok: true, output: 'text');
+      },
+    );
+
+    final registry = ToolRegistry([browserTool, extractTool]);
+    final loop = AgentLoop(llm: mockLlm, registry: registry);
+
+    var turn = 0;
+    mockLlm.onChat = (messages) {
+      turn++;
+      if (turn == 1) {
+        return const LlmMessage(
+          content: null,
+          toolCalls: [
+            ToolCall(id: 'c1', name: 'browser', arguments: {'action': 'open'}),
+            ToolCall(id: 'c2', name: 'browser', arguments: {'action': 'snapshot'}),
+            ToolCall(id: 'c3', name: 'extract_text', arguments: {}),
+          ],
+        );
+      }
+      return const LlmMessage(content: 'Sequence finished');
+    };
+
+    final result = await loop.run(
+      Conversation(
+        id: 'c-seq',
+        messages: [const UserMessage(id: 'u1', text: 'browse and extract')],
+        currentDir: Directory('/'),
+      ),
+    );
+
+    expect(result, equals('Sequence finished'));
+    expect(executionOrder, equals(['browser.open', 'browser.snapshot', 'extract_text']));
+  });
+
   test('AgentLoop skips stateful followers after a batch failure with a typed marker', () async {
     final mockLlm = MockLlmClient();
     var firstExecuted = false;
@@ -370,7 +426,7 @@ void main() {
   });
 
   group('Repeated tool error loop guard', () {
-    test('aborts with LlmStoppedException and cancels cancelToken on 3 consecutive same tool errors', () async {
+    test('aborts with RepeatedToolFailureException on 3 consecutive same tool errors', () async {
       final client = MockLlmClient();
       final cancelToken = CancelToken();
 
@@ -416,11 +472,11 @@ void main() {
             currentDir: Directory('/'),
           ),
         ),
-        throwsA(isA<LlmStoppedException>()),
+        throwsA(isA<RepeatedToolFailureException>()),
       );
 
       expect(turnCount, equals(3));
-      expect(cancelToken.isCancelled, isTrue);
+      expect(cancelToken.isCancelled, isFalse);
     });
 
     test('breaks consecutive failure streak if a successful tool call occurs', () async {

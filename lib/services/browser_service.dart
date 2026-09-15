@@ -5,6 +5,18 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:html2md/html2md.dart' as html2md;
 
+/// Display modes for the embedded browser UI.
+enum BrowserDisplayMode {
+  /// Slim dock bar right above composer (ref mockup 1: "Browser full closed").
+  closed,
+
+  /// Embedded preview card sitting right above composer (ref mockup 2: "Browser preview").
+  preview,
+
+  /// Full-screen overlay covering the entire screen (ref mockup 3: "Browser full screen").
+  fullScreen,
+}
+
 /// Information about the currently loaded browser page.
 class BrowserPageInfo {
   final String url;
@@ -34,6 +46,8 @@ abstract class BrowserController {
   Future<String?> getUrl();
   Future<String?> getTitle();
   Future<void> stopLoading();
+  Future<void> pauseTimers();
+  Future<void> resumeTimers();
 }
 
 /// Real implementation of [BrowserController] wrapping [InAppWebViewController].
@@ -97,6 +111,16 @@ class InAppWebViewBrowserController implements BrowserController {
   Future<void> stopLoading() async {
     await _controller.stopLoading();
   }
+
+  @override
+  Future<void> pauseTimers() async {
+    await _controller.pauseTimers();
+  }
+
+  @override
+  Future<void> resumeTimers() async {
+    await _controller.resumeTimers();
+  }
 }
 
 /// Service managing the single, live embedded browser WebView and its agent interactions.
@@ -109,7 +133,7 @@ class BrowserService extends ChangeNotifier {
   Completer<void>? _loadCompleter;
 
   bool _isOpen = false;
-  bool _isExpanded = false;
+  BrowserDisplayMode _displayMode = BrowserDisplayMode.preview;
   String? _currentUrl;
   String? _currentTitle;
   int _progress = 0;
@@ -118,6 +142,7 @@ class BrowserService extends ChangeNotifier {
   bool _canGoForward = false;
   String? _targetLoadingUrl;
   String? _lastError;
+  int _navigationGeneration = 0;
 
   final BrowserController? _controllerOverride;
 
@@ -133,7 +158,8 @@ class BrowserService extends ChangeNotifier {
   // -- Reactive Getters -----------------------------------------------------
 
   bool get isOpen => _isOpen;
-  bool get isExpanded => _isExpanded;
+  BrowserDisplayMode get displayMode => _displayMode;
+  bool get isExpanded => _isOpen && _displayMode != BrowserDisplayMode.closed;
   String? get currentUrl => _currentUrl;
   String? get currentTitle => _currentTitle;
   int get progress => _progress;
@@ -143,6 +169,7 @@ class BrowserService extends ChangeNotifier {
   bool get hasController => _controller != null;
   String? get lastError => _lastError;
   String? get targetLoadingUrl => _targetLoadingUrl;
+  int get navigationGeneration => _navigationGeneration;
   BrowserController? get controllerOverride => _controllerOverride;
 
   // -- Controller Attachment & Event Callbacks ------------------------------
@@ -178,7 +205,6 @@ class BrowserService extends ChangeNotifier {
     }
 
     _isLoading = true;
-    _lastError = null;
     _progress = 0;
     if (cleanUrl != null && cleanUrl.isNotEmpty) {
       _currentUrl = cleanUrl;
@@ -199,12 +225,6 @@ class BrowserService extends ChangeNotifier {
     _progress = 100;
     if (cleanUrl != null && cleanUrl.isNotEmpty) {
       _currentUrl = cleanUrl;
-    }
-    if (_currentUrl != null &&
-        _currentUrl != 'about:blank' &&
-        _lastError != null &&
-        _lastError!.startsWith('HTTP ')) {
-      _lastError = null;
     }
     if (_loadCompleter != null && !_loadCompleter!.isCompleted) {
       _loadCompleter!.complete();
@@ -245,30 +265,68 @@ class BrowserService extends ChangeNotifier {
     } catch (_) {}
   }
 
-  // -- UI Visibility Toggles ------------------------------------------------
+  // -- Display Mode Controls -----------------------------------------------
 
-  void toggleExpand() {
-    _isExpanded = !_isExpanded;
-    notifyListeners();
-  }
-
-  void setExpanded(bool expanded) {
-    if (_isExpanded != expanded) {
-      _isExpanded = expanded;
+  /// Sets the active UI display mode (closed dock bar, preview card, or full screen).
+  void setDisplayMode(BrowserDisplayMode mode) {
+    if (_displayMode != mode) {
+      _displayMode = mode;
+      if (mode == BrowserDisplayMode.closed) {
+        _controller?.pauseTimers().catchError((_) {});
+      } else if (_isOpen) {
+        _controller?.resumeTimers().catchError((_) {});
+      }
       notifyListeners();
     }
   }
 
-  void expand() => setExpanded(true);
-  void collapse() => setExpanded(false);
+  /// Switches to slim dock bar right above composer ("Browser full closed").
+  void setClosed() => setDisplayMode(BrowserDisplayMode.closed);
+
+  /// Switches to live preview card sitting right above composer ("Browser preview").
+  void setPreview() => setDisplayMode(BrowserDisplayMode.preview);
+
+  /// Switches to full-screen overlay covering the entire screen ("Browser full screen").
+  void setFullScreen() => setDisplayMode(BrowserDisplayMode.fullScreen);
+
+  /// Toggles between closed dock bar and preview card.
+  void toggleExpand() {
+    if (!_isOpen || _displayMode == BrowserDisplayMode.closed) {
+      _isOpen = true;
+      _controller?.resumeTimers().catchError((_) {});
+      setPreview();
+    } else {
+      setClosed();
+    }
+  }
+
+  /// Sets expanded state: preview when true, closed when false.
+  void setExpanded(bool expanded) {
+    if (expanded) {
+      _isOpen = true;
+      _controller?.resumeTimers().catchError((_) {});
+      setPreview();
+    } else {
+      setClosed();
+    }
+  }
+
+  void expand() {
+    _isOpen = true;
+    _controller?.resumeTimers().catchError((_) {});
+    setPreview();
+  }
+
+  void collapse() => setClosed();
 
   // -- Browser Actions ------------------------------------------------------
 
   /// Opens the browser with the given [url] and waits for the page to load.
+  ///
+  /// The user's active display mode is preserved (defaulting to preview on initial launch).
   Future<BrowserPageInfo> open(
     String url, {
     Duration timeout = const Duration(seconds: 15),
-    bool expand = true,
   }) async {
     var targetUrl = url.trim();
     if (targetUrl.isEmpty) {
@@ -281,13 +339,15 @@ class BrowserService extends ChangeNotifier {
       targetUrl = 'https://$targetUrl';
     }
 
+    final generation = ++_navigationGeneration;
     _isOpen = true;
-    if (expand) {
-      _isExpanded = true;
-    }
     _currentUrl = targetUrl;
     _targetLoadingUrl = targetUrl;
+    _currentTitle = null;
     _lastError = null;
+    _isLoading = true;
+    _progress = 10;
+    _loadCompleter = Completer<void>();
     notifyListeners();
 
     // If controller is not yet ready, wait for it with timeout
@@ -306,19 +366,30 @@ class BrowserService extends ChangeNotifier {
       }
     }
 
-    _isLoading = true;
-    _progress = 10;
-    _loadCompleter = Completer<void>();
-    notifyListeners();
+    try {
+      await _controller!.resumeTimers();
+    } catch (_) {}
 
     if (_controllerOverride != null) {
       await _controller!.loadUrl(targetUrl);
     } else {
+      bool timedOut = false;
       try {
         await _controller!.loadUrl(targetUrl);
         await _loadCompleter!.future.timeout(timeout);
-      } catch (_) {
-        // Timeout is non-fatal: proceed with whatever content loaded
+      } on TimeoutException {
+        timedOut = true;
+        _lastError ??= 'Navigation timed out after ${timeout.inSeconds}s';
+      } catch (e) {
+        _lastError ??= e.toString();
+      }
+
+      if (generation != _navigationGeneration) {
+        return BrowserPageInfo(
+          url: _currentUrl ?? targetUrl,
+          title: _currentTitle ?? '',
+          status: 'superseded',
+        );
       }
 
       // Verify URL reported by controller
@@ -327,8 +398,7 @@ class BrowserService extends ChangeNotifier {
           actualUrl != 'about:blank' &&
           actualUrl.isNotEmpty) {
         _currentUrl = actualUrl;
-      } else if (_currentUrl == 'about:blank' || _currentUrl == null) {
-        // If controller still reports about:blank, give it a brief grace period and retry load once
+      } else if (!timedOut && (_currentUrl == 'about:blank' || _currentUrl == null)) {
         await Future.delayed(const Duration(milliseconds: 300));
         try {
           await _controller!.loadUrl(targetUrl);
@@ -342,40 +412,68 @@ class BrowserService extends ChangeNotifier {
         } catch (_) {}
       }
 
-      // Brief settle delay for dynamic rendering and client hydration
-      await Future.delayed(const Duration(milliseconds: 350));
+      // Brief settle delay for dynamic rendering if not errored
+      if (!timedOut && _lastError == null) {
+        await Future.delayed(const Duration(milliseconds: 350));
+      }
+    }
+
+    if (generation != _navigationGeneration) {
+      return BrowserPageInfo(
+        url: _currentUrl ?? targetUrl,
+        title: _currentTitle ?? '',
+        status: 'superseded',
+      );
     }
 
     _isLoading = false;
-    _currentUrl = await _controller!.getUrl() ?? _currentUrl ?? targetUrl;
-    _currentTitle = await _controller!.getTitle() ?? _currentTitle;
+    _targetLoadingUrl = null;
+    final isError = _lastError != null;
+    if (!isError) {
+      final reportedUrl = await _controller!.getUrl();
+      if (reportedUrl != null && reportedUrl.isNotEmpty && reportedUrl != 'about:blank') {
+        _currentUrl = reportedUrl;
+      }
+      final reportedTitle = await _controller!.getTitle();
+      if (reportedTitle != null && reportedTitle.isNotEmpty) {
+        _currentTitle = reportedTitle;
+      }
+    } else {
+      _currentTitle = null;
+    }
     await _updateNavState();
     notifyListeners();
 
-    final hasLoadedPage =
+    final hasLoadedPage = !isError &&
         _currentUrl != null &&
-        _currentUrl != 'about:blank' &&
-        (_currentTitle?.trim().isNotEmpty ?? false);
+        _currentUrl != 'about:blank';
 
     return BrowserPageInfo(
       url: _currentUrl ?? targetUrl,
       title: _currentTitle ?? '',
-      status: hasLoadedPage
-          ? 'loaded'
-          : (_lastError != null ? 'error: $_lastError' : 'unknown'),
+      status: isError
+          ? 'error: $_lastError'
+          : (hasLoadedPage ? 'loaded' : 'unknown'),
     );
   }
 
   /// Closes the browser sheet and optionally resets the page.
   Future<void> close({bool clear = false}) async {
     _isOpen = false;
-    _isExpanded = false;
-    if (clear && _controller != null) {
+    if (_controller != null) {
       try {
-        await _controller!.loadUrl('about:blank');
-        _currentUrl = null;
-        _currentTitle = null;
+        await _controller!.stopLoading();
       } catch (_) {}
+      try {
+        await _controller!.pauseTimers();
+      } catch (_) {}
+      if (clear) {
+        try {
+          await _controller!.loadUrl('about:blank');
+          _currentUrl = null;
+          _currentTitle = null;
+        } catch (_) {}
+      }
     }
     notifyListeners();
   }
@@ -386,30 +484,62 @@ class BrowserService extends ChangeNotifier {
   }) async {
     _ensureOpenAndReady();
 
+    final generation = ++_navigationGeneration;
     _isLoading = true;
     _progress = 10;
+    _lastError = null;
+    _currentTitle = null;
     _loadCompleter = Completer<void>();
     notifyListeners();
+
+    try {
+      await _controller!.resumeTimers();
+    } catch (_) {}
 
     if (_controllerOverride != null) {
       await _controller!.reload();
     } else {
+      bool timedOut = false;
       try {
         await _controller!.reload();
         await _loadCompleter!.future.timeout(timeout);
-      } catch (_) {}
-      await Future.delayed(const Duration(milliseconds: 300));
+      } on TimeoutException {
+        timedOut = true;
+        _lastError ??= 'Reload timed out after ${timeout.inSeconds}s';
+      } catch (e) {
+        _lastError ??= e.toString();
+      }
+      if (!timedOut && _lastError == null) {
+        await Future.delayed(const Duration(milliseconds: 300));
+      }
     }
+
+    if (generation != _navigationGeneration) {
+      return BrowserPageInfo(
+        url: _currentUrl ?? '',
+        title: _currentTitle ?? '',
+        status: 'superseded',
+      );
+    }
+
     _isLoading = false;
-    _currentUrl = await _controller!.getUrl() ?? _currentUrl;
-    _currentTitle = await _controller!.getTitle() ?? _currentTitle;
+    final isError = _lastError != null;
+    if (!isError) {
+      _currentUrl = await _controller!.getUrl() ?? _currentUrl;
+      final reportedTitle = await _controller!.getTitle();
+      if (reportedTitle != null && reportedTitle.isNotEmpty) {
+        _currentTitle = reportedTitle;
+      }
+    } else {
+      _currentTitle = null;
+    }
     await _updateNavState();
     notifyListeners();
 
     return BrowserPageInfo(
       url: _currentUrl ?? '',
       title: _currentTitle ?? '',
-      status: 'reloaded',
+      status: isError ? 'error: $_lastError' : 'reloaded',
     );
   }
 
@@ -442,28 +572,519 @@ class BrowserService extends ChangeNotifier {
 
   /// Extracts a structured DOM outline containing interactive elements,
   /// assigned `data-agent-id` references, scroll position, and text preview.
-  /// When [fullDump] is true, returns the pure DOM HTML dump.
-  Future<String> snapshot({int maxNodes = 200, bool fullDump = false}) async {
+  /// When [fullDump] is true, returns the pure DOM HTML dump paginated with [dumpOffset] and [dumpLimit].
+  Future<String> snapshot({
+    int maxNodes = 200,
+    bool fullDump = false,
+    int dumpOffset = 0,
+    int dumpLimit = 100000,
+  }) async {
     _ensureOpenAndReady();
 
     if (fullDump) {
-      const dumpScript = r'''
+      final safeOffset = dumpOffset.clamp(0, 50000000);
+      final safeLimit = dumpLimit.clamp(1000, 200000);
+      final dumpScript = '''
 (() => {
-  return document.documentElement ? document.documentElement.outerHTML : '';
+  try {
+    const html = document.documentElement ? document.documentElement.outerHTML : '';
+    const total = html.length;
+    const offset = $safeOffset;
+    const limit = $safeLimit;
+    const chunk = html.slice(offset, offset + limit);
+    return JSON.stringify({
+      chunk: chunk,
+      total: total,
+      offset: offset,
+      length: chunk.length,
+      hasMore: (offset + chunk.length) < total
+    });
+  } catch (e) {
+    return JSON.stringify({ error: e.toString() });
+  }
 })()
 ''';
       final raw = await _controller!.evaluateJavascript(dumpScript);
       if (raw == null || raw.toString().trim().isEmpty) {
         return 'Pure DOM dump returned empty.';
       }
-      return raw.toString().trim();
+      try {
+        final decoded = jsonDecode(raw.toString()) as Map<String, dynamic>;
+        if (decoded.containsKey('error')) {
+          return 'DOM dump error: ${decoded['error']}';
+        }
+        final chunk = decoded['chunk']?.toString() ?? '';
+        final total = decoded['total'] ?? chunk.length;
+        final offset = decoded['offset'] ?? safeOffset;
+        final hasMore = decoded['hasMore'] == true;
+        if (chunk.isEmpty) {
+          return 'Pure DOM dump returned empty (offset $offset >= total $total).';
+        }
+        final buffer = StringBuffer();
+        buffer.writeln('<!-- DOM Dump chunk [$offset..${offset + chunk.length} of $total chars] -->');
+        buffer.writeln(chunk);
+        if (hasMore) {
+          buffer.writeln();
+          buffer.writeln('<!-- [More DOM content available: call snapshot(full_dump: true, dump_offset: ${offset + chunk.length})] -->');
+        }
+        return buffer.toString().trim();
+      } catch (_) {
+        return raw.toString().trim();
+      }
     }
 
-    final script = r'''
+    final script = _kPlaywrightSnapshotScript.replaceFirst('__MAX_NODES__', '$maxNodes');
+    final raw = await _controller!.evaluateJavascript(script);
+
+    if (raw == null) {
+      return 'Snapshot failed: no response from browser DOM.';
+    }
+
+    try {
+      final decoded = jsonDecode(raw.toString()) as Map<String, dynamic>;
+
+      final meta = decoded['meta'] as Map<String, dynamic>? ?? {};
+      final stats = decoded['stats'] as Map<String, dynamic>? ?? {};
+
+      final buffer = StringBuffer();
+
+      buffer.writeln('Page Title: ${meta['title'] ?? ''}');
+      buffer.writeln('URL: ${meta['url'] ?? ''}');
+
+      final scroll = meta['scroll'] as Map<String, dynamic>? ?? {};
+      buffer.writeln(
+        'Scroll: (${scroll['x'] ?? 0}, ${scroll['y'] ?? 0}) '
+        '/ ${scroll['totalHeight'] ?? 0}px',
+      );
+      buffer.writeln();
+
+      final tree = decoded['tree']?.toString().trim() ?? '';
+      if (tree.isNotEmpty) {
+        buffer.writeln(tree);
+      } else {
+        // Backward-compatible fallback if structured 'nodes' list was provided
+        final nodes = decoded['nodes'] as List<dynamic>? ?? [];
+        if (nodes.isNotEmpty) {
+          for (final item in nodes) {
+            if (item is! Map) continue;
+            final ref = item['ref'];
+            final tag = item['tag'] ?? 'generic';
+            final name = item['name'];
+            final text = item['text'];
+            final domId = item['id'];
+            final domClass = item['class'];
+            final href = item['href'];
+            final role = item['role'] ?? tag;
+            final parts = <String>[
+              if (name != null && name.toString().isNotEmpty) '"$name"',
+              if (ref != null) '[ref=$ref]',
+              if (item['level'] != null) '[level=${item['level']}]',
+              if (domId != null && domId.toString().isNotEmpty) '[id="$domId"]',
+              if (domClass != null && domClass.toString().isNotEmpty) '[class="$domClass"]',
+              if (item['cursor'] == true || tag == 'a' || tag == 'button' || role == 'button' || role == 'link')
+                '[cursor=pointer]',
+              if (item['value'] != null) '[value="${item['value']}"]',
+            ];
+            final hasSub = href != null && href.toString().isNotEmpty;
+            buffer.writeln('- $role ${parts.join(' ')}${hasSub ? ':' : ''}');
+            if (hasSub) {
+              buffer.writeln('  - /url: $href');
+            }
+            if (text != null && text.toString().isNotEmpty && text != name) {
+              buffer.writeln('  - text: $text');
+            }
+          }
+        } else {
+          buffer.writeln('(Empty page or no visible content)');
+        }
+      }
+
+      if (stats['truncated'] == true) {
+        buffer.writeln();
+        final reason = stats['reason'];
+        if (reason == 'traversal_budget') {
+          buffer.writeln('[Snapshot capped by traversal/time budget (${stats['visitedCount']} elements visited)]');
+        } else {
+          buffer.writeln('[Snapshot truncated at $maxNodes nodes]');
+        }
+      }
+
+      return buffer.toString().trim();
+    } catch (e) {
+      return 'Snapshot parsing error: $e\nRaw: $raw';
+    }
+  }
+
+  /// Extracts clean Markdown text from the current page using html2md.
+  /// If [selector] is provided, extracts text only from the matching container element.
+  /// Caps internal HTML extraction at [maxChars] (default 150000) inside page JS to protect memory.
+  Future<String> extractText({String? selector, int maxChars = 150000}) async {
+    _ensureOpenAndReady();
+
+    final targetSel = selector?.trim();
+    final safeMaxChars = maxChars.clamp(1000, 500000);
+    final script = '''
+(() => {
+  try {
+    let target = null;
+    ${targetSel != null && targetSel.isNotEmpty ? 'target = document.querySelector(${jsonEncode(targetSel)});' : ''}
+    if (!target) target = document.body || document.documentElement;
+    if (!target) return JSON.stringify({ html: '', truncated: false, total: 0 });
+    const clone = target.cloneNode(true);
+    const toRemove = clone.querySelectorAll('script, style, noscript, svg, iframe, object, embed, applet');
+    toRemove.forEach(el => el.remove());
+    let rawHtml = clone.innerHTML || '';
+    const total = rawHtml.length;
+    const MAX_CHARS = $safeMaxChars;
+    const isTruncated = total > MAX_CHARS;
+    if (isTruncated) {
+      rawHtml = rawHtml.slice(0, MAX_CHARS);
+    }
+    return JSON.stringify({ html: rawHtml, truncated: isTruncated, total: total });
+  } catch (e) {
+    return JSON.stringify({ html: (document.body ? document.body.innerHTML.slice(0, $safeMaxChars) : ''), truncated: false, total: 0, error: e.toString() });
+  }
+})()
+''';
+
+    final raw = await _controller!.evaluateJavascript(script);
+    if (raw == null || raw.toString().trim().isEmpty) {
+      return 'Page returned empty content.';
+    }
+
+    String html = '';
+    bool truncated = false;
+    try {
+      final decoded = jsonDecode(raw.toString()) as Map<String, dynamic>;
+      html = decoded['html']?.toString() ?? '';
+      truncated = decoded['truncated'] == true;
+    } catch (_) {
+      html = raw.toString();
+    }
+
+    if (html.trim().isEmpty) {
+      return 'Page returned empty content.';
+    }
+
+    final markdown = html2md.convert(
+      html,
+      styleOptions: {'headingStyle': 'atx'},
+    );
+    if (markdown.trim().isEmpty) {
+      return 'No readable text could be extracted from the page.';
+    }
+    final result = markdown.trim();
+    if (truncated) {
+      return '$result\n\n[Content truncated at $safeMaxChars characters. Pass selector for specific section.]';
+    }
+    return result;
+  }
+
+  /// Evaluates arbitrary JavaScript in the page DOM and returns the result.
+  /// Result serialization is capped inside page JS at [maxChars] (default 50000) to protect memory.
+  Future<String> executeDomJs(String script, {int maxChars = 50000}) async {
+    _ensureOpenAndReady();
+
+    final trimmed = script.trim();
+    if (trimmed.isEmpty) {
+      throw ArgumentError('JavaScript script cannot be empty.');
+    }
+
+    final safeMaxChars = maxChars.clamp(500, 200000);
+    final wrapped = '''
+(() => {
+  const MAX_RES_CHARS = $safeMaxChars;
+  try {
+    const val = (function() { $trimmed })();
+    if (val === undefined) return JSON.stringify({ ok: true, result: null, type: 'undefined', truncated: false });
+    let serialized = '';
+    const type = typeof val;
+    if (type === 'string') {
+      serialized = val;
+    } else {
+      try {
+        serialized = JSON.stringify(val);
+      } catch (_) {
+        serialized = String(val);
+      }
+    }
+    const truncated = serialized.length > MAX_RES_CHARS;
+    if (truncated) {
+      serialized = serialized.slice(0, MAX_RES_CHARS);
+    }
+    return JSON.stringify({ ok: true, result: serialized, type: type, truncated: truncated });
+  } catch (err) {
+    return JSON.stringify({ ok: false, error: err.toString() });
+  }
+})()
+''';
+
+    final raw = await _controller!.evaluateJavascript(wrapped);
+    if (raw == null) {
+      return 'JavaScript execution returned null.';
+    }
+
+    try {
+      final decoded = jsonDecode(raw.toString());
+      if (decoded is Map) {
+        if (decoded['ok'] == false) {
+          return 'JavaScript error: ${decoded['error']}';
+        }
+        final res = decoded['result'];
+        final truncated = decoded['truncated'] == true;
+        final suffix = truncated ? '\n[Result capped at $safeMaxChars characters]' : '';
+        if (res == null) return 'Result: null$suffix';
+        if (decoded['type'] == 'string') return 'Result: "$res"$suffix';
+        return 'Result: $res$suffix';
+      }
+      return 'Result: $raw';
+    } catch (_) {
+      return 'Result: $raw';
+    }
+  }
+
+  /// Performs a high-level action (click, type, or scroll) on the page.
+  Future<String> act({
+    required String action,
+    String? ref,
+    String? selector,
+    String? text,
+    String? direction,
+  }) async {
+    _ensureOpenAndReady();
+
+    final actType = action.trim().toLowerCase();
+    switch (actType) {
+      case 'click':
+        return await _actClick(ref: ref, selector: selector);
+      case 'type':
+        return await _actType(ref: ref, selector: selector, text: text ?? '');
+      case 'scroll':
+        return await _actScroll(direction: direction ?? 'down');
+      case 'back':
+        await goBack();
+        return 'Navigated back.';
+      case 'forward':
+        await goForward();
+        return 'Navigated forward.';
+      default:
+        throw ArgumentError('Unknown act action "$action". Supported: click, type, scroll, back, forward.');
+    }
+  }
+
+  String _resolveElementJs(String? ref, String? sel) {
+    return '''
+  let el = null;
+  ${ref != null && ref.isNotEmpty ? '''
+  el = document.querySelector('[data-agent-id="$ref"]');
+  if (!el) el = document.getElementById(${jsonEncode(ref)});
+  if (!el) {
+    try { el = document.querySelector(${jsonEncode(ref)}); } catch (_) {}
+  }
+  ''' : ''}
+  if (!el && ${sel != null && sel.isNotEmpty ? 'true' : 'false'}) {
+    try { el = document.querySelector(${jsonEncode(sel)}); } catch (_) {}
+  }
+''';
+  }
+
+  Future<String> _actClick({String? ref, String? selector}) async {
+    final targetRef = ref?.trim();
+    final targetSel = selector?.trim();
+    if ((targetRef == null || targetRef.isEmpty) && (targetSel == null || targetSel.isEmpty)) {
+      throw ArgumentError('Either ref or selector is required to click an element.');
+    }
+
+    final script = '''
+(() => {
+  ${_resolveElementJs(targetRef, targetSel)}
+  if (!el) return JSON.stringify({ ok: false, error: 'Element not found' });
+  try {
+    el.scrollIntoView({ behavior: 'instant', block: 'center' });
+    if (typeof el.focus === 'function') el.focus();
+
+    const mouseEvents = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
+    for (const evtName of mouseEvents) {
+      try {
+        const evt = new MouseEvent(evtName, {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+          buttons: 1
+        });
+        el.dispatchEvent(evt);
+      } catch (_) {}
+    }
+    if (typeof el.click === 'function') {
+      el.click();
+    }
+    return JSON.stringify({
+      ok: true,
+      tag: el.tagName.toLowerCase(),
+      text: (el.innerText || el.textContent || '').trim().slice(0, 50)
+    });
+  } catch (err) {
+    return JSON.stringify({ ok: false, error: err.toString() });
+  }
+})()
+''';
+
+    final raw = await _controller!.evaluateJavascript(script);
+    try {
+      final decoded = jsonDecode(raw.toString()) as Map<String, dynamic>;
+      if (decoded['ok'] == true) {
+        final tag = decoded['tag'] ?? 'element';
+        final text = decoded['text'] ?? '';
+        final targetStr = targetRef != null ? '[$targetRef]' : (targetSel ?? '');
+        return 'Clicked $targetStr <$tag>${text.isNotEmpty ? ' "$text"' : ''}.';
+      } else {
+        return 'Click failed: ${decoded['error']}.';
+      }
+    } catch (_) {
+      return 'Click executed.';
+    }
+  }
+
+  Future<String> _actType({String? ref, String? selector, required String text}) async {
+    final targetRef = ref?.trim();
+    final targetSel = selector?.trim();
+    if ((targetRef == null || targetRef.isEmpty) && (targetSel == null || targetSel.isEmpty)) {
+      throw ArgumentError('Either ref or selector is required to type into an element.');
+    }
+
+    final script = '''
+(() => {
+  ${_resolveElementJs(targetRef, targetSel)}
+  if (!el) return JSON.stringify({ ok: false, error: 'Element not found' });
+  try {
+    el.scrollIntoView({ behavior: 'instant', block: 'center' });
+    if (typeof el.focus === 'function') el.focus();
+
+    const val = ${jsonEncode(text)};
+
+    if (el.isContentEditable) {
+      try {
+        document.execCommand('selectAll', false, null);
+        document.execCommand('insertText', false, val);
+      } catch (_) {
+        el.innerText = val;
+      }
+    } else if (
+      el instanceof HTMLInputElement ||
+      el instanceof HTMLTextAreaElement ||
+      'value' in el
+    ) {
+      const proto = el instanceof HTMLTextAreaElement
+        ? window.HTMLTextAreaElement.prototype
+        : window.HTMLInputElement.prototype;
+      const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+      if (desc && desc.set) {
+        desc.set.call(el, val);
+      } else {
+        el.value = val;
+      }
+
+      if (el._valueTracker) {
+        el._valueTracker.setValue('');
+      }
+    } else {
+      el.value = val;
+    }
+
+    try {
+      el.dispatchEvent(new InputEvent('input', {
+        bubbles: true,
+        composed: true,
+        data: val,
+        inputType: 'insertText'
+      }));
+    } catch (_) {
+      el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+    }
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+
+    return JSON.stringify({ ok: true, tag: el.tagName.toLowerCase() });
+  } catch (err) {
+    return JSON.stringify({ ok: false, error: err.toString() });
+  }
+})()
+''';
+
+    final raw = await _controller!.evaluateJavascript(script);
+    try {
+      final decoded = jsonDecode(raw.toString()) as Map<String, dynamic>;
+      if (decoded['ok'] == true) {
+        final tag = decoded['tag'] ?? 'element';
+        final targetStr = targetRef != null ? '[$targetRef]' : (targetSel ?? '');
+        return 'Typed "$text" into $targetStr <$tag>.';
+      } else {
+        return 'Type failed: ${decoded['error']}.';
+      }
+    } catch (_) {
+      return 'Typed text.';
+    }
+  }
+
+  Future<String> _actScroll({required String direction}) async {
+    final dir = direction.trim().toLowerCase();
+    final script = '''
+(() => {
+  const dir = '$dir';
+  if (dir === 'top') {
+    window.scrollTo({ top: 0, behavior: 'instant' });
+  } else if (dir === 'bottom') {
+    window.scrollTo({ top: document.body.scrollHeight, behavior: 'instant' });
+  } else if (dir === 'up') {
+    window.scrollBy({ top: -Math.round(window.innerHeight * 0.7), behavior: 'instant' });
+  } else {
+    window.scrollBy({ top: Math.round(window.innerHeight * 0.7), behavior: 'instant' });
+  }
+  return JSON.stringify({
+    ok: true,
+    scrollY: Math.round(window.scrollY),
+    totalH: Math.round(document.documentElement.scrollHeight || document.body.scrollHeight)
+  });
+})()
+''';
+
+    final raw = await _controller!.evaluateJavascript(script);
+    try {
+      final decoded = jsonDecode(raw.toString()) as Map<String, dynamic>;
+      final y = decoded['scrollY'] ?? 0;
+      final total = decoded['totalH'] ?? 0;
+      return 'Scrolled $dir (current scroll: ${y}px / ${total}px).';
+    } catch (_) {
+      return 'Scrolled $dir.';
+    }
+  }
+
+  /// Takes a screenshot of the visible browser viewport.
+  Future<Uint8List?> takeScreenshot() async {
+    _ensureOpenAndReady();
+    return await _controller!.takeScreenshot();
+  }
+
+  void _ensureOpenAndReady() {
+    if (!_isOpen) {
+      throw StateError('Browser is not open. Call browser(action: "open", url: "...") first.');
+    }
+    if (_controller == null) {
+      throw StateError('Browser controller is not ready.');
+    }
+  }
+}
+
+/// Token-efficient Playwright-style accessibility tree snapshot generator script.
+const String _kPlaywrightSnapshotScript = r'''
 (() => {
   const MAX_NODES = __MAX_NODES__;
+  const MAX_TRAVERSAL = Math.max(MAX_NODES * 10, 1500);
+  const TIME_BUDGET_MS = 1000;
+  const startTime = Date.now();
   let nextId = 1;
   let nodeCount = 0;
+  let visitedCount = 0;
+  let hitBudget = false;
 
   function cleanText(val, max = 150) {
     if (!val) return '';
@@ -699,6 +1320,14 @@ class BrowserService extends ChangeNotifier {
 
   function walk(el, depth = 0) {
     if (nodeCount >= MAX_NODES) return null;
+    if (++visitedCount >= MAX_TRAVERSAL) {
+      hitBudget = true;
+      return null;
+    }
+    if (Date.now() - startTime > TIME_BUDGET_MS) {
+      hitBudget = true;
+      return null;
+    }
     if (!isVisible(el)) return null;
     if (depth > 16) return null;
 
@@ -865,402 +1494,10 @@ class BrowserService extends ChangeNotifier {
     tree: lines.join('\n'),
     stats: {
       nodeCount,
-      truncated: nodeCount >= MAX_NODES
+      visitedCount,
+      truncated: nodeCount >= MAX_NODES || hitBudget,
+      reason: nodeCount >= MAX_NODES ? 'node_cap' : (hitBudget ? 'traversal_budget' : 'none')
     }
   });
 })()
-'''.replaceFirst('__MAX_NODES__', '$maxNodes');
-
-    final raw = await _controller!.evaluateJavascript(script);
-
-    if (raw == null) {
-      return 'Snapshot failed: no response from browser DOM.';
-    }
-
-    try {
-      final decoded = jsonDecode(raw.toString()) as Map<String, dynamic>;
-
-      final meta = decoded['meta'] as Map<String, dynamic>? ?? {};
-      final stats = decoded['stats'] as Map<String, dynamic>? ?? {};
-
-      final buffer = StringBuffer();
-
-      buffer.writeln('Page Title: ${meta['title'] ?? ''}');
-      buffer.writeln('URL: ${meta['url'] ?? ''}');
-
-      final scroll = meta['scroll'] as Map<String, dynamic>? ?? {};
-      buffer.writeln(
-        'Scroll: (${scroll['x'] ?? 0}, ${scroll['y'] ?? 0}) '
-        '/ ${scroll['totalHeight'] ?? 0}px',
-      );
-      buffer.writeln();
-
-      final tree = decoded['tree']?.toString().trim() ?? '';
-      if (tree.isNotEmpty) {
-        buffer.writeln(tree);
-      } else {
-        // Backward-compatible fallback if structured 'nodes' list was provided
-        final nodes = decoded['nodes'] as List<dynamic>? ?? [];
-        if (nodes.isNotEmpty) {
-          for (final item in nodes) {
-            if (item is! Map) continue;
-            final ref = item['ref'];
-            final tag = item['tag'] ?? 'generic';
-            final name = item['name'];
-            final text = item['text'];
-            final domId = item['id'];
-            final domClass = item['class'];
-            final href = item['href'];
-            final role = item['role'] ?? tag;
-            final parts = <String>[
-              if (name != null && name.toString().isNotEmpty) '"$name"',
-              if (ref != null) '[ref=$ref]',
-              if (item['level'] != null) '[level=${item['level']}]',
-              if (domId != null && domId.toString().isNotEmpty) '[id="$domId"]',
-              if (domClass != null && domClass.toString().isNotEmpty) '[class="$domClass"]',
-              if (item['cursor'] == true || tag == 'a' || tag == 'button' || role == 'button' || role == 'link')
-                '[cursor=pointer]',
-              if (item['value'] != null) '[value="${item['value']}"]',
-            ];
-            final hasSub = href != null && href.toString().isNotEmpty;
-            buffer.writeln('- $role ${parts.join(' ')}${hasSub ? ':' : ''}');
-            if (hasSub) {
-              buffer.writeln('  - /url: $href');
-            }
-            if (text != null && text.toString().isNotEmpty && text != name) {
-              buffer.writeln('  - text: $text');
-            }
-          }
-        } else {
-          buffer.writeln('(Empty page or no visible content)');
-        }
-      }
-
-      if (stats['truncated'] == true) {
-        buffer.writeln();
-        buffer.writeln('[Snapshot truncated at $maxNodes nodes]');
-      }
-
-      return buffer.toString().trim();
-    } catch (e) {
-      return 'Snapshot parsing error: $e\nRaw: $raw';
-    }
-}
-
-  /// Extracts clean Markdown text from the current page using html2md.
-  /// If [selector] is provided, extracts text only from the matching container element.
-  Future<String> extractText({String? selector}) async {
-    _ensureOpenAndReady();
-
-    final targetSel = selector?.trim();
-    final script = '''
-(() => {
-  try {
-    let target = null;
-    ${targetSel != null && targetSel.isNotEmpty ? 'target = document.querySelector(${jsonEncode(targetSel)});' : ''}
-    if (!target) target = document.body || document.documentElement;
-    if (!target) return '';
-    const clone = target.cloneNode(true);
-    const toRemove = clone.querySelectorAll('script, style, noscript, svg, iframe, object, embed, applet');
-    toRemove.forEach(el => el.remove());
-    return clone.innerHTML || '';
-  } catch (e) {
-    return document.body ? document.body.innerHTML : '';
-  }
-})()
 ''';
-
-    final raw = await _controller!.evaluateJavascript(script);
-    if (raw == null || raw.toString().trim().isEmpty) {
-      return 'Page returned empty content.';
-    }
-
-    final html = raw.toString();
-    final markdown = html2md.convert(
-      html,
-      styleOptions: {'headingStyle': 'atx'},
-    );
-    if (markdown.trim().isEmpty) {
-      return 'No readable text could be extracted from the page.';
-    }
-    return markdown.trim();
-  }
-
-  /// Evaluates arbitrary JavaScript in the page DOM and returns the result.
-  Future<String> executeDomJs(String script) async {
-    _ensureOpenAndReady();
-
-    final trimmed = script.trim();
-    if (trimmed.isEmpty) {
-      throw ArgumentError('JavaScript script cannot be empty.');
-    }
-
-    final wrapped = '''
-(() => {
-  try {
-    const val = (function() { $trimmed })();
-    if (val === undefined) return JSON.stringify({ ok: true, result: null, type: 'undefined' });
-    if (typeof val === 'object') return JSON.stringify({ ok: true, result: val, type: 'object' });
-    return JSON.stringify({ ok: true, result: val, type: typeof val });
-  } catch (err) {
-    return JSON.stringify({ ok: false, error: err.toString() });
-  }
-})()
-''';
-
-    final raw = await _controller!.evaluateJavascript(wrapped);
-    if (raw == null) {
-      return 'JavaScript execution returned null.';
-    }
-
-    try {
-      final decoded = jsonDecode(raw.toString());
-      if (decoded is Map) {
-        if (decoded['ok'] == false) {
-          return 'JavaScript error: ${decoded['error']}';
-        }
-        final res = decoded['result'];
-        if (res == null) return 'Result: null';
-        if (res is String) return 'Result: "$res"';
-        return 'Result: ${jsonEncode(res)}';
-      }
-      return 'Result: $raw';
-    } catch (_) {
-      return 'Result: $raw';
-    }
-  }
-
-  /// Performs a high-level action (click, type, or scroll) on the page.
-  Future<String> act({
-    required String action,
-    String? ref,
-    String? selector,
-    String? text,
-    String? direction,
-  }) async {
-    _ensureOpenAndReady();
-
-    final actType = action.trim().toLowerCase();
-    switch (actType) {
-      case 'click':
-        return await _actClick(ref: ref, selector: selector);
-      case 'type':
-        return await _actType(ref: ref, selector: selector, text: text ?? '');
-      case 'scroll':
-        return await _actScroll(direction: direction ?? 'down');
-      case 'back':
-        await goBack();
-        return 'Navigated back.';
-      case 'forward':
-        await goForward();
-        return 'Navigated forward.';
-      default:
-        throw ArgumentError('Unknown act action "$action". Supported: click, type, scroll, back, forward.');
-    }
-  }
-
-  Future<String> _actClick({String? ref, String? selector}) async {
-    final targetRef = ref?.trim();
-    final targetSel = selector?.trim();
-    if ((targetRef == null || targetRef.isEmpty) && (targetSel == null || targetSel.isEmpty)) {
-      throw ArgumentError('Either ref or selector is required to click an element.');
-    }
-
-    final script = '''
-(() => {
-  let el = null;
-  ${targetRef != null && targetRef.isNotEmpty ? '''
-  el = document.querySelector('[data-agent-id="$targetRef"]');
-  if (!el) el = document.getElementById(${jsonEncode(targetRef)});
-  if (!el) {
-    try { el = document.querySelector(${jsonEncode(targetRef)}); } catch (_) {}
-  }
-  ''' : ''}
-  if (!el && ${targetSel != null && targetSel.isNotEmpty ? 'true' : 'false'}) {
-    el = document.querySelector(${jsonEncode(targetSel)});
-  }
-  if (!el) return JSON.stringify({ ok: false, error: 'Element not found' });
-  try {
-    el.scrollIntoView({ behavior: 'instant', block: 'center' });
-    if (typeof el.focus === 'function') el.focus();
-
-    const mouseEvents = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
-    for (const evtName of mouseEvents) {
-      try {
-        const evt = new MouseEvent(evtName, {
-          bubbles: true,
-          cancelable: true,
-          view: window,
-          buttons: 1
-        });
-        el.dispatchEvent(evt);
-      } catch (_) {}
-    }
-    if (typeof el.click === 'function') {
-      el.click();
-    }
-    return JSON.stringify({
-      ok: true,
-      tag: el.tagName.toLowerCase(),
-      text: (el.innerText || el.textContent || '').trim().slice(0, 50)
-    });
-  } catch (err) {
-    return JSON.stringify({ ok: false, error: err.toString() });
-  }
-})()
-''';
-
-    final raw = await _controller!.evaluateJavascript(script);
-    try {
-      final decoded = jsonDecode(raw.toString()) as Map<String, dynamic>;
-      if (decoded['ok'] == true) {
-        final tag = decoded['tag'] ?? 'element';
-        final text = decoded['text'] ?? '';
-        final targetStr = targetRef != null ? '[$targetRef]' : (targetSel ?? '');
-        return 'Clicked $targetStr <$tag>${text.isNotEmpty ? ' "$text"' : ''}.';
-      } else {
-        return 'Click failed: ${decoded['error']}.';
-      }
-    } catch (_) {
-      return 'Click executed.';
-    }
-  }
-
-  Future<String> _actType({String? ref, String? selector, required String text}) async {
-    final targetRef = ref?.trim();
-    final targetSel = selector?.trim();
-    if ((targetRef == null || targetRef.isEmpty) && (targetSel == null || targetSel.isEmpty)) {
-      throw ArgumentError('Either ref or selector is required to type into an element.');
-    }
-
-    final script = '''
-(() => {
-  let el = null;
-  ${targetRef != null && targetRef.isNotEmpty ? '''
-  el = document.querySelector('[data-agent-id="$targetRef"]');
-  if (!el) el = document.getElementById(${jsonEncode(targetRef)});
-  if (!el) {
-    try { el = document.querySelector(${jsonEncode(targetRef)}); } catch (_) {}
-  }
-  ''' : ''}
-  if (!el && ${targetSel != null && targetSel.isNotEmpty ? 'true' : 'false'}) {
-    el = document.querySelector(${jsonEncode(targetSel)});
-  }
-  if (!el) return JSON.stringify({ ok: false, error: 'Element not found' });
-  try {
-    el.scrollIntoView({ behavior: 'instant', block: 'center' });
-    if (typeof el.focus === 'function') el.focus();
-
-    const val = ${jsonEncode(text)};
-
-    if (el.isContentEditable) {
-      try {
-        document.execCommand('selectAll', false, null);
-        document.execCommand('insertText', false, val);
-      } catch (_) {
-        el.innerText = val;
-      }
-    } else if (
-      el instanceof HTMLInputElement ||
-      el instanceof HTMLTextAreaElement ||
-      'value' in el
-    ) {
-      const proto = el instanceof HTMLTextAreaElement
-        ? window.HTMLTextAreaElement.prototype
-        : window.HTMLInputElement.prototype;
-      const desc = Object.getOwnPropertyDescriptor(proto, 'value');
-      if (desc && desc.set) {
-        desc.set.call(el, val);
-      } else {
-        el.value = val;
-      }
-
-      if (el._valueTracker) {
-        el._valueTracker.setValue('');
-      }
-    } else {
-      el.value = val;
-    }
-
-    try {
-      el.dispatchEvent(new InputEvent('input', {
-        bubbles: true,
-        composed: true,
-        data: val,
-        inputType: 'insertText'
-      }));
-    } catch (_) {
-      el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-    }
-    el.dispatchEvent(new Event('change', { bubbles: true }));
-
-    return JSON.stringify({ ok: true, tag: el.tagName.toLowerCase() });
-  } catch (err) {
-    return JSON.stringify({ ok: false, error: err.toString() });
-  }
-})()
-''';
-
-    final raw = await _controller!.evaluateJavascript(script);
-    try {
-      final decoded = jsonDecode(raw.toString()) as Map<String, dynamic>;
-      if (decoded['ok'] == true) {
-        final tag = decoded['tag'] ?? 'element';
-        final targetStr = targetRef != null ? '[$targetRef]' : (targetSel ?? '');
-        return 'Typed "$text" into $targetStr <$tag>.';
-      } else {
-        return 'Type failed: ${decoded['error']}.';
-      }
-    } catch (_) {
-      return 'Typed text.';
-    }
-  }
-
-  Future<String> _actScroll({required String direction}) async {
-    final dir = direction.trim().toLowerCase();
-    final script = '''
-(() => {
-  const dir = '$dir';
-  if (dir === 'top') {
-    window.scrollTo({ top: 0, behavior: 'instant' });
-  } else if (dir === 'bottom') {
-    window.scrollTo({ top: document.body.scrollHeight, behavior: 'instant' });
-  } else if (dir === 'up') {
-    window.scrollBy({ top: -Math.round(window.innerHeight * 0.7), behavior: 'instant' });
-  } else {
-    window.scrollBy({ top: Math.round(window.innerHeight * 0.7), behavior: 'instant' });
-  }
-  return JSON.stringify({
-    ok: true,
-    scrollY: Math.round(window.scrollY),
-    totalH: Math.round(document.documentElement.scrollHeight || document.body.scrollHeight)
-  });
-})()
-''';
-
-    final raw = await _controller!.evaluateJavascript(script);
-    try {
-      final decoded = jsonDecode(raw.toString()) as Map<String, dynamic>;
-      final y = decoded['scrollY'] ?? 0;
-      final total = decoded['totalH'] ?? 0;
-      return 'Scrolled $dir (current scroll: ${y}px / ${total}px).';
-    } catch (_) {
-      return 'Scrolled $dir.';
-    }
-  }
-
-  /// Takes a screenshot of the visible browser viewport.
-  Future<Uint8List?> takeScreenshot() async {
-    _ensureOpenAndReady();
-    return await _controller!.takeScreenshot();
-  }
-
-  void _ensureOpenAndReady() {
-    if (!_isOpen) {
-      throw StateError('Browser is not open. Call browser(action: "open", url: "...") first.');
-    }
-    if (_controller == null) {
-      throw StateError('Browser controller is not ready.');
-    }
-  }
-}

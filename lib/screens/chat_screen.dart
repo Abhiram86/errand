@@ -150,6 +150,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   List<Conversation> _cachedSortedConversations = [];
   bool _sortedConversationsDirty = true;
   final Set<String> _animatedMessageIds = <String>{};
+  final GlobalKey _composerKey = GlobalKey();
 
   void _updateEstimatedTokens() {
     final lastCompactedIdx =
@@ -1448,6 +1449,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     } on LlmStoppedException {
       // Stop pressed: keep whatever streamed so far as the final answer.
       _finishStopped();
+    } on RepeatedToolFailureException catch (e) {
+      _failWorking(e.message);
     } catch (e) {
       // Transport/API failures (connection aborts, timeouts, HTTP 429/5xx)
       // are not the agent's fault — show a transient toast instead of adding
@@ -1935,12 +1938,16 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                     if (kDebugMode) _buildContextFooter(),
                     if (_pendingAttachments.isNotEmpty) _buildPendingAttachments(),
                     if (_editingMessageId != null) _buildEditingBanner(),
-                    _buildComposer(),
+                    const BrowserDockSpacer(),
+                    KeyedSubtree(
+                      key: _composerKey,
+                      child: _buildComposer(),
+                    ),
                   ],
                 ),
               ),
               _buildA11yToastOverlay(),
-              const BrowserWidget(),
+              BrowserWidget(composerKey: _composerKey),
               Positioned.fill(
                 child: IgnorePointer(
                   ignoring: !_sidebarOpen,

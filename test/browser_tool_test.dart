@@ -55,9 +55,21 @@ class FakeBrowserController implements BrowserController {
   @override
   Future<String?> getTitle() async => title;
 
+  bool timersPaused = false;
+
   @override
   Future<void> stopLoading() async {
     stopped = true;
+  }
+
+  @override
+  Future<void> pauseTimers() async {
+    timersPaused = true;
+  }
+
+  @override
+  Future<void> resumeTimers() async {
+    timersPaused = false;
   }
 }
 
@@ -337,6 +349,12 @@ void main() {
       final result = await tool.handler(call);
       expect(result.ok, isTrue);
       expect(result.output, contains('Captured browser viewport screenshot (3 bytes)'));
+      expect(result.contentParts, isNotNull);
+      expect(result.contentParts!.first['type'], equals('image_url'));
+      expect(
+        result.contentParts!.first['image_url']['url'],
+        equals('data:image/png;base64,${base64Encode([1, 2, 3])}'),
+      );
     });
 
     test('handles browser.open prefix call', () async {

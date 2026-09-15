@@ -52,9 +52,21 @@ class FakeBrowserController implements BrowserController {
   @override
   Future<String?> getTitle() async => title;
 
+  bool timersPaused = false;
+
   @override
   Future<void> stopLoading() async {
     stopped = true;
+  }
+
+  @override
+  Future<void> pauseTimers() async {
+    timersPaused = true;
+  }
+
+  @override
+  Future<void> resumeTimers() async {
+    timersPaused = false;
   }
 }
 
@@ -136,6 +148,56 @@ void main() {
       expect(info.status, equals('loaded'));
     });
 
+    test('failed navigation reports error and does not retain prior title', () async {
+      final realService = BrowserService();
+      final controller = FakeBrowserController();
+      controller.title = 'Initial Success Page';
+      realService.setController(controller);
+
+      // First navigation succeeds
+      final open1 = realService.open('https://example.com');
+      realService.onLoadStart('https://example.com');
+      realService.onLoadStop('https://example.com');
+      final info1 = await open1;
+      expect(info1.status, equals('loaded'));
+      expect(info1.title, equals('Initial Success Page'));
+
+      // Second navigation fails on main frame
+      final open2 = realService.open('https://example.com/not-found');
+      realService.onLoadStart('https://example.com/not-found');
+      realService.onLoadError('https://example.com/not-found', 'HTTP 404', isForMainFrame: true);
+      final info2 = await open2;
+      expect(info2.status, equals('error: HTTP 404'));
+      expect(info2.title, isEmpty);
+    });
+
+    test('timed out navigation reports timeout error', () async {
+      final realService = BrowserService();
+      final controller = FakeBrowserController();
+      realService.setController(controller);
+
+      final openFuture = realService.open(
+        'https://slow-website.com',
+        timeout: const Duration(milliseconds: 100),
+      );
+      realService.onLoadStart('https://slow-website.com');
+      // No onLoadStop fired before timeout
+      final info = await openFuture;
+      expect(info.status, contains('error: Navigation timed out'));
+    });
+
+    test('close pauses timers and stops loading, open resumes timers', () async {
+      await service.open('https://example.com');
+      expect(fakeController.timersPaused, isFalse);
+
+      await service.close();
+      expect(fakeController.stopped, isTrue);
+      expect(fakeController.timersPaused, isTrue);
+
+      await service.open('https://example.com');
+      expect(fakeController.timersPaused, isFalse);
+    });
+
     test('close resets open and expanded state', () async {
       await service.open('https://example.com');
       expect(service.isOpen, isTrue);
@@ -159,6 +221,24 @@ void main() {
       service.collapse();
       expect(service.isExpanded, isFalse);
       service.toggleExpand();
+      expect(service.isExpanded, isTrue);
+    });
+
+    test('displayMode controls switch between closed, preview, and fullScreen', () async {
+      await service.open('https://example.com');
+      expect(service.displayMode, equals(BrowserDisplayMode.preview));
+      expect(service.isExpanded, isTrue);
+
+      service.setClosed();
+      expect(service.displayMode, equals(BrowserDisplayMode.closed));
+      expect(service.isExpanded, isFalse);
+
+      service.setFullScreen();
+      expect(service.displayMode, equals(BrowserDisplayMode.fullScreen));
+      expect(service.isExpanded, isTrue);
+
+      service.setPreview();
+      expect(service.displayMode, equals(BrowserDisplayMode.preview));
       expect(service.isExpanded, isTrue);
     });
 
@@ -321,6 +401,69 @@ void main() {
       final bytes = await service.takeScreenshot();
       expect(bytes, isNotNull);
       expect(bytes!.length, equals(4));
+    });
+
+    test('snapshot formats traversal budget truncation', () async {
+      await service.open('https://news.ycombinator.com');
+      fakeController.jsResult = jsonEncode({
+        'meta': {
+          'url': 'https://news.ycombinator.com',
+          'title': 'Hacker News',
+          'scroll': {'x': 0, 'y': 0, 'totalHeight': 1000},
+        },
+        'tree': '- link "Hacker News" [ref=e1]',
+        'stats': {
+          'nodeCount': 50,
+          'visitedCount': 1500,
+          'truncated': true,
+          'reason': 'traversal_budget',
+        },
+      });
+
+      final output = await service.snapshot();
+      expect(output, contains('[Snapshot capped by traversal/time budget (1500 elements visited)]'));
+    });
+
+    test('snapshot fullDump formats paginated chunk with metadata', () async {
+      await service.open('https://example.com');
+      fakeController.jsResult = jsonEncode({
+        'chunk': '<html><body>Hello Paginated Chunk</body></html>',
+        'total': 5000,
+        'offset': 100,
+        'hasMore': true,
+      });
+
+      final output = await service.snapshot(fullDump: true, dumpOffset: 100, dumpLimit: 50);
+      expect(output, contains('<!-- DOM Dump chunk [100..147 of 5000 chars] -->'));
+      expect(output, contains('<html><body>Hello Paginated Chunk</body></html>'));
+      expect(output, contains('<!-- [More DOM content available: call snapshot(full_dump: true, dump_offset: 147)] -->'));
+    });
+
+    test('extractText reports truncation when HTML exceeds maxChars', () async {
+      await service.open('https://example.com');
+      fakeController.jsResult = jsonEncode({
+        'html': '<h1>Truncated Article</h1><p>Partial text...</p>',
+        'truncated': true,
+        'total': 300000,
+      });
+
+      final text = await service.extractText(maxChars: 150000);
+      expect(text, contains('# Truncated Article'));
+      expect(text, contains('[Content truncated at 150000 characters. Pass selector for specific section.]'));
+    });
+
+    test('executeDomJs reports capped result when serialized output exceeds maxChars', () async {
+      await service.open('https://example.com');
+      fakeController.jsResult = jsonEncode({
+        'ok': true,
+        'result': 'very long string...',
+        'type': 'string',
+        'truncated': true,
+      });
+
+      final res = await service.executeDomJs('largeData()', maxChars: 50000);
+      expect(res, contains('Result: "very long string..."'));
+      expect(res, contains('[Result capped at 50000 characters]'));
     });
 
     test('throws StateError when operating on closed browser', () async {

@@ -40,6 +40,21 @@ class AgentToolCall extends AgentEvent {
   });
 }
 
+/// Thrown when the agent loop encounters repeated consecutive identical tool call errors,
+/// indicating an unrecoverable model loop rather than a user-requested stop.
+class RepeatedToolFailureException implements Exception {
+  final ToolCall call;
+  final int count;
+  final String message;
+
+  RepeatedToolFailureException(this.call, this.count, [String? customMessage])
+      : message = customMessage ??
+            'Execution aborted: tool "${call.name}" failed $count times consecutively with identical arguments.';
+
+  @override
+  String toString() => message;
+}
+
 class AgentLoop {
   static const int defaultMaxTurns = 72;
   static const int maxTurns = defaultMaxTurns;
@@ -207,8 +222,7 @@ class AgentLoop {
             consecutiveSameErrorCount = 1;
           }
           if (consecutiveSameErrorCount >= maxConsecutiveSameToolErrors) {
-            cancelToken?.cancel();
-            throw const LlmStoppedException();
+            throw RepeatedToolFailureException(call, consecutiveSameErrorCount);
           }
         } else {
           lastFailedCall = null;
@@ -243,14 +257,21 @@ class AgentLoop {
   }
 
   /// True for calls that mutate shared state (screen, foreground app,
-  /// working directory): they must run in order, never concurrently.
+  /// working directory, or browser WebView): they must run in order, never concurrently.
   /// Launches count — an `open_app` changes what subsequent screen reads see.
+  /// Browser calls all operate on a single shared WebView and must run sequentially.
   static bool _isStatefulCall(ToolCall call) {
     if (call.name == 'act') return true;
     if (call.name == 'intent') return true;
     if (call.name == 'bash') return true;
     if (call.name == 'workspace' && call.arguments['action'] == 'cd') return true;
     if (call.name == 'screen' && call.arguments['action'] == 'global') return true;
+    if (call.name == 'browser' ||
+        call.name.startsWith('browser.') ||
+        call.name == 'extract_text' ||
+        call.name.startsWith('extract_text.')) {
+      return true;
+    }
     return false;
   }
 

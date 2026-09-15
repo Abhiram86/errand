@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import '../agent/tool.dart';
 import '../services/browser_service.dart';
 import '../types/tool.dart';
@@ -7,6 +9,7 @@ import '../types/tool.dart';
 /// - `close` (`browser.close`): dismiss the browser
 /// - `reload` (`browser.reload`): reload the current page
 /// - `snapshot` (`browser.snapshot`): extract a token-efficient DOM outline with interactive refs
+/// - `extract_text` (`browser.extract_text`): extract clean Markdown text of the page via html2md
 /// - `execute_dom_js` (`browser.execute_dom_js`): evaluate arbitrary JS in the DOM
 /// - `act` (`browser.act`): perform clicks, typing, or scrolling
 /// - `screenshot` (`browser.screenshot`): capture the visible viewport
@@ -54,6 +57,21 @@ Tool browserTool({BrowserService? browserService}) {
           'description':
               'When true for action:"snapshot", returns the raw HTML DOM of the page instead of the structured element outline.',
         },
+        'dump_offset': {
+          'type': 'integer',
+          'description':
+              'Character offset for full_dump pagination (default 0).',
+        },
+        'dump_limit': {
+          'type': 'integer',
+          'description':
+              'Maximum characters for full_dump chunk (default 100000, max 200000).',
+        },
+        'max_chars': {
+          'type': 'integer',
+          'description':
+              'Maximum characters for action:"extract_text" (default 150000) or action:"execute_dom_js" (default 50000).',
+        },
         'script': {
           'type': 'string',
           'description':
@@ -84,11 +102,6 @@ Tool browserTool({BrowserService? browserService}) {
           'enum': ['up', 'down', 'top', 'bottom'],
           'description':
               'Scroll direction for action:"act" with act_action:"scroll" (default "down").',
-        },
-        'expand': {
-          'type': 'boolean',
-          'description':
-              'Whether to expand the browser sheet in the UI (default true).',
         },
         'clear': {
           'type': 'boolean',
@@ -161,8 +174,7 @@ Tool browserTool({BrowserService? browserService}) {
                 'URL parameter is required for browser open.',
               );
             }
-            final expand = args['expand'] != false;
-            final pageInfo = await service.open(rawUrl, expand: expand);
+            final pageInfo = await service.open(rawUrl);
             final buffer = StringBuffer();
             buffer.writeln('Opened browser at ${pageInfo.url}');
             if (pageInfo.title.isNotEmpty) {
@@ -208,7 +220,15 @@ Tool browserTool({BrowserService? browserService}) {
 
           case 'snapshot':
             final fullDump = args['full_dump'] == true || args['fullDump'] == true;
-            final snapshotOutput = await service.snapshot(fullDump: fullDump);
+            final dumpOffset = (args['dump_offset'] ?? args['offset']) as int? ?? 0;
+            final dumpLimit = (args['dump_limit'] ?? args['limit']) as int? ?? 100000;
+            final maxNodes = (args['max_nodes'] ?? args['maxNodes']) as int? ?? 200;
+            final snapshotOutput = await service.snapshot(
+              maxNodes: maxNodes,
+              fullDump: fullDump,
+              dumpOffset: dumpOffset,
+              dumpLimit: dumpLimit,
+            );
             return ToolCallResult(
               id: call.id,
               ok: true,
@@ -217,7 +237,8 @@ Tool browserTool({BrowserService? browserService}) {
 
           case 'extract_text':
             final selector = (args['selector'] ?? args['target'])?.toString();
-            final text = await service.extractText(selector: selector);
+            final maxChars = (args['max_chars'] ?? args['maxChars']) as int? ?? 150000;
+            final text = await service.extractText(selector: selector, maxChars: maxChars);
             return ToolCallResult(
               id: call.id,
               ok: true,
@@ -233,7 +254,8 @@ Tool browserTool({BrowserService? browserService}) {
                 'Missing "script" parameter for execute_dom_js.',
               );
             }
-            final result = await service.executeDomJs(script);
+            final maxChars = (args['max_chars'] ?? args['maxChars']) as int? ?? 50000;
+            final result = await service.executeDomJs(script, maxChars: maxChars);
             return ToolCallResult(
               id: call.id,
               ok: true,
@@ -284,11 +306,20 @@ Tool browserTool({BrowserService? browserService}) {
                 'Failed to capture viewport screenshot.',
               );
             }
+            final base64Data = base64Encode(bytes);
             return ToolCallResult(
               id: call.id,
               ok: true,
               output:
                   'Captured browser viewport screenshot (${bytes.lengthInBytes} bytes).',
+              contentParts: [
+                {
+                  'type': 'image_url',
+                  'image_url': {
+                    'url': 'data:image/png;base64,$base64Data',
+                  },
+                },
+              ],
             );
 
           default:
@@ -321,13 +352,19 @@ Tool extractTextTool({BrowserService? browserService}) {
           'description':
               'Optional CSS selector to extract text from a specific element (e.g. "article", "main", "#content"). Defaults to entire page.',
         },
+        'max_chars': {
+          'type': 'integer',
+          'description':
+              'Maximum characters of HTML to extract before converting to markdown (default 150000).',
+        },
       },
     },
     handler: (call) async {
       try {
         final selector =
             (call.arguments['selector'] ?? call.arguments['target'])?.toString();
-        final text = await service.extractText(selector: selector);
+        final maxChars = (call.arguments['max_chars'] ?? call.arguments['maxChars']) as int? ?? 150000;
+        final text = await service.extractText(selector: selector, maxChars: maxChars);
         return ToolCallResult(
           id: call.id,
           ok: true,
