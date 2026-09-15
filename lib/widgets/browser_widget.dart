@@ -19,19 +19,21 @@ class BrowserDockSpacer extends StatelessWidget {
     return ListenableBuilder(
       listenable: browser,
       builder: (context, _) {
-        if (!browser.isOpen) {
-          return const SizedBox.shrink();
+        double targetHeight = 0.0;
+        if (browser.isOpen) {
+          if (browser.displayMode == BrowserDisplayMode.closed) {
+            targetHeight = 54.0;
+          } else if (browser.displayMode == BrowserDisplayMode.preview) {
+            final screenHeight = MediaQuery.sizeOf(context).height;
+            final previewHeight = (screenHeight * 0.42).clamp(280.0, 420.0);
+            targetHeight = previewHeight + 6;
+          }
         }
-        if (browser.displayMode == BrowserDisplayMode.closed) {
-          return const SizedBox(height: 54);
-        }
-        if (browser.displayMode == BrowserDisplayMode.preview) {
-          final screenHeight = MediaQuery.sizeOf(context).height;
-          final previewHeight = (screenHeight * 0.42).clamp(280.0, 420.0);
-          return SizedBox(height: previewHeight + 6);
-        }
-        // In fullScreen mode, no spacer is needed in the column because the overlay covers the whole screen.
-        return const SizedBox.shrink();
+        return AnimatedContainer(
+          duration: const Duration(milliseconds: 280),
+          curve: Curves.easeInOutCubicEmphasized,
+          height: targetHeight,
+        );
       },
     );
   }
@@ -100,33 +102,54 @@ class _BrowserWidgetState extends State<BrowserWidget> {
             composerH +
             4.0;
 
+        final double targetHeight = isFullScreen
+            ? size.height
+            : (isClosed ? 50.0 : previewHeight);
+        final double targetLeft = isFullScreen ? 0.0 : 10.0;
+        final double targetRight = isFullScreen ? 0.0 : 10.0;
+        final double targetBottom = isFullScreen ? 0.0 : bottomOffset;
+        final double targetRadius = isFullScreen ? 0.0 : (isClosed ? 12.0 : 14.0);
+
         return Stack(
           fit: StackFit.expand,
           children: [
-            // Mode 1: Closed dock bar floating directly above composer
-            if (isOpen && isClosed)
-              Positioned(
-                left: 10,
-                right: 10,
-                bottom: bottomOffset,
-                height: 50,
-                child: _buildClosedDockBar(context),
-              ),
-
-            // Mode 2 & Mode 3: Active interactive browser (preview card or fullscreen overlay)
-            if (isOpen && !isClosed)
-              if (isFullScreen)
-                Positioned.fill(
-                  child: _buildActiveBrowser(context, isFullScreen: true),
-                )
-              else
-                Positioned(
-                  left: 10,
-                  right: 10,
-                  bottom: bottomOffset,
-                  height: previewHeight,
-                  child: _buildActiveBrowser(context, isFullScreen: false),
+            if (isOpen)
+              AnimatedPositioned(
+                duration: const Duration(milliseconds: 280),
+                curve: Curves.easeInOutCubicEmphasized,
+                left: targetLeft,
+                right: targetRight,
+                bottom: targetBottom,
+                height: targetHeight,
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 280),
+                  curve: Curves.easeInOutCubicEmphasized,
+                  decoration: BoxDecoration(
+                    color: isFullScreen
+                        ? const Color(0xFF13171F)
+                        : (isClosed ? const Color(0xFF181D26) : const Color(0xFF13171F)),
+                    borderRadius: BorderRadius.circular(targetRadius),
+                    border: isFullScreen ? null : Border.all(color: kBorder),
+                    boxShadow: isFullScreen
+                        ? null
+                        : [
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: isClosed ? 0.45 : 0.6),
+                              blurRadius: isClosed ? 12 : 16,
+                              offset: Offset(0, isClosed ? 3 : 4),
+                            ),
+                          ],
+                  ),
+                  clipBehavior: isFullScreen ? Clip.none : Clip.antiAlias,
+                  child: isClosed
+                      ? _buildClosedDockBar(context)
+                      : _buildActiveBrowser(
+                          context,
+                          isFullScreen: isFullScreen,
+                          contentHeight: isFullScreen ? size.height : (previewHeight - 2.0),
+                        ),
                 ),
+              ),
 
             // When closed or hidden, keep the WebView alive offstage so DOM & agent actions work
             if (!isOpen || isClosed)
@@ -155,185 +178,171 @@ class _BrowserWidgetState extends State<BrowserWidget> {
 
     return Material(
       color: Colors.transparent,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-        decoration: BoxDecoration(
-          color: const Color(0xFF181D26),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: kBorder),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.45),
-              blurRadius: 12,
-              offset: const Offset(0, 3),
-            ),
-          ],
-        ),
-        child: Row(
-          children: [
-            if (_service.isLoading)
-              const SizedBox(
-                width: 16,
-                height: 16,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: kBubbleUser,
-                ),
-              )
-            else
-              const Icon(
-                Icons.public_rounded,
-                size: 18,
-                color: kBubbleUser,
-              ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTap: () => _service.setPreview(),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      displayText,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: kText,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                      ),
+      child: OverflowBox(
+        alignment: Alignment.topCenter,
+        minHeight: 48.0,
+        maxHeight: 48.0,
+        child: SizedBox(
+          height: 48.0,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            child: Row(
+              children: [
+                if (_service.isLoading)
+                  const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: kBubbleUser,
                     ),
-                    if (url != null && title != null && title.isNotEmpty)
-                      Text(
-                        url,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: kMuted,
-                          fontSize: 11,
-                          fontFamily: 'monospace',
+                  )
+                else
+                  const Icon(
+                    Icons.public_rounded,
+                    size: 18,
+                    color: kBubbleUser,
+                  ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () => _service.setPreview(),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Text(
+                          displayText,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: kText,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            height: 1.2,
+                          ),
                         ),
-                      ),
-                  ],
+                        if (url != null && title != null && title.isNotEmpty)
+                          Text(
+                            url,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: kMuted,
+                              fontSize: 11,
+                              fontFamily: 'monospace',
+                              height: 1.1,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
                 ),
-              ),
+                IconButton(
+                  key: const ValueKey('browser_reload_button'),
+                  icon: const Icon(Icons.refresh_rounded, size: 18),
+                  onPressed: () => _service.reload(),
+                  color: kMuted,
+                  visualDensity: VisualDensity.compact,
+                  tooltip: 'Reload page',
+                ),
+                IconButton(
+                  key: const ValueKey('browser_preview_button'),
+                  icon: const Icon(Icons.picture_in_picture_alt_rounded, size: 17),
+                  onPressed: () => _service.setPreview(),
+                  color: kText,
+                  visualDensity: VisualDensity.compact,
+                  tooltip: 'Open preview',
+                ),
+                IconButton(
+                  key: const ValueKey('browser_fullscreen_button'),
+                  icon: const Icon(Icons.open_in_full_rounded, size: 16),
+                  onPressed: () => _service.setFullScreen(),
+                  color: kText,
+                  visualDensity: VisualDensity.compact,
+                  tooltip: 'Open full screen',
+                ),
+                IconButton(
+                  key: const ValueKey('browser_collapsed_close_button'),
+                  icon: const Icon(Icons.close_rounded, size: 18),
+                  onPressed: () => _service.close(),
+                  color: kMuted,
+                  visualDensity: VisualDensity.compact,
+                  tooltip: 'Close browser',
+                ),
+              ],
             ),
-            IconButton(
-              key: const ValueKey('browser_reload_button'),
-              icon: const Icon(Icons.refresh_rounded, size: 18),
-              onPressed: () => _service.reload(),
-              color: kMuted,
-              visualDensity: VisualDensity.compact,
-              tooltip: 'Reload page',
-            ),
-            IconButton(
-              key: const ValueKey('browser_preview_button'),
-              icon: const Icon(Icons.picture_in_picture_alt_rounded, size: 17),
-              onPressed: () => _service.setPreview(),
-              color: kText,
-              visualDensity: VisualDensity.compact,
-              tooltip: 'Open preview',
-            ),
-            IconButton(
-              key: const ValueKey('browser_fullscreen_button'),
-              icon: const Icon(Icons.open_in_full_rounded, size: 16),
-              onPressed: () => _service.setFullScreen(),
-              color: kText,
-              visualDensity: VisualDensity.compact,
-              tooltip: 'Open full screen',
-            ),
-            IconButton(
-              key: const ValueKey('browser_collapsed_close_button'),
-              icon: const Icon(Icons.close_rounded, size: 18),
-              onPressed: () => _service.close(),
-              color: kMuted,
-              visualDensity: VisualDensity.compact,
-              tooltip: 'Close browser',
-            ),
-          ],
+          ),
         ),
       ),
     );
   }
 
   /// Interactive browser container used for both [preview] card and [fullScreen] overlay.
-  Widget _buildActiveBrowser(BuildContext context, {required bool isFullScreen}) {
-    final content = Material(
+  Widget _buildActiveBrowser(
+    BuildContext context, {
+    required bool isFullScreen,
+    required double contentHeight,
+  }) {
+    return Material(
       color: Colors.transparent,
-      child: Container(
-        decoration: BoxDecoration(
-          color: const Color(0xFF13171F),
-          borderRadius: isFullScreen ? BorderRadius.zero : BorderRadius.circular(14),
-          border: isFullScreen ? null : Border.all(color: kBorder),
-          boxShadow: isFullScreen
-              ? null
-              : [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.6),
-                    blurRadius: 16,
-                    offset: const Offset(0, 4),
-                  ),
-                ],
-        ),
-        clipBehavior: isFullScreen ? Clip.none : Clip.antiAlias,
-        child: Column(
-          children: [
-            _buildToolbar(context, isFullScreen: isFullScreen),
-            _buildProgressBar(),
-            Expanded(
-              child: ColoredBox(
-                color: Colors.white,
-                child: Stack(
-                  children: [
-                    _buildPersistentWebView(),
-                    if (_service.isLoading)
-                      Positioned.fill(
-                        child: Container(
-                          color: const Color(0xFF13171F).withValues(alpha: 0.85),
-                          child: Center(
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const SizedBox(
-                                  width: 28,
-                                  height: 28,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2.5,
-                                    color: kBubbleUser,
+      child: OverflowBox(
+        alignment: Alignment.topCenter,
+        minHeight: contentHeight,
+        maxHeight: contentHeight,
+        child: SizedBox(
+          height: contentHeight,
+          child: Column(
+            children: [
+              _buildToolbar(context, isFullScreen: isFullScreen),
+              _buildProgressBar(),
+              Expanded(
+                child: ColoredBox(
+                  color: Colors.white,
+                  child: Stack(
+                    children: [
+                      _buildPersistentWebView(),
+                      if (_service.isLoading)
+                        Positioned.fill(
+                          child: Container(
+                            color: const Color(0xFF13171F).withValues(alpha: 0.85),
+                            child: Center(
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const SizedBox(
+                                    width: 28,
+                                    height: 28,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2.5,
+                                      color: kBubbleUser,
+                                    ),
                                   ),
-                                ),
-                                const SizedBox(height: 12),
-                                Text(
-                                  _service.currentUrl ?? 'Loading...',
-                                  style: const TextStyle(
-                                    color: kMuted,
-                                    fontSize: 12,
-                                    fontFamily: 'monospace',
+                                  const SizedBox(height: 12),
+                                  Text(
+                                    _service.currentUrl ?? 'Loading...',
+                                    style: const TextStyle(
+                                      color: kMuted,
+                                      fontSize: 12,
+                                      fontFamily: 'monospace',
+                                    ),
                                   ),
-                                ),
-                              ],
+                                ],
+                              ),
                             ),
                           ),
                         ),
-                      ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
-
-    if (isFullScreen) {
-      return ColoredBox(
-        color: const Color(0xFF13171F),
-        child: content,
-      );
-    }
-    return content;
   }
 
   /// Top navigation toolbar with URL bar and display mode action buttons.
