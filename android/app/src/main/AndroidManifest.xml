@@ -24,6 +24,9 @@
 
     <!-- Device Interaction Feedback (Safe normal permission) -->
     <uses-permission android:name="android.permission.VIBRATE"/>
+
+    <!-- In-app OTA updates via package installer -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
     <application
         android:label="${appName}"
         android:name="${applicationName}"

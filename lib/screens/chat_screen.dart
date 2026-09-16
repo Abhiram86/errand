@@ -11,6 +11,7 @@ import '../agent/context_budget.dart';
 import '../agent/system_prompt.dart';
 import '../agent/tool_registry.dart';
 import '../llm/llm_client.dart';
+import '../models/app_update_info.dart';
 import '../models/llm_provider.dart';
 import '../models/model_option.dart';
 import '../services/a11y_service.dart';
@@ -21,6 +22,7 @@ import '../services/intent_service.dart';
 import '../services/model_catalog.dart';
 import '../services/models_dev_service.dart';
 import '../services/speech_service.dart';
+import '../services/update_service.dart';
 import '../services/workspace.dart';
 import '../theme/app_colors.dart';
 import '../tools/file_tools.dart';
@@ -36,6 +38,7 @@ import '../widgets/model_picker.dart';
 import '../widgets/paging.dart';
 import '../widgets/pending_attachments_banner.dart';
 import '../widgets/settings_sheet.dart';
+import '../widgets/update_toast.dart';
 
 final database = ErrandDatabase.instance;
 
@@ -234,6 +237,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       if (mounted) {
         await _refreshA11yState(triggerToast: true);
       }
+      unawaited(UpdateService.instance.initialize());
       unawaited(InstalledAppsService.instance.initAndRefresh());
     });
   }
@@ -1954,6 +1958,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                 child: Column(
                   children: [
                     _buildHeader(),
+                    _buildUpdateToast(),
                     Expanded(child: _buildMessageList()),
                     if (kDebugMode) _buildContextFooter(),
                     if (_pendingAttachments.isNotEmpty) _buildPendingAttachments(),
@@ -2120,6 +2125,31 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildUpdateToast() {
+    return ValueListenableBuilder<AppUpdateInfo?>(
+      valueListenable: UpdateService.instance.activeUpdate,
+      builder: (context, updateInfo, _) {
+        if (updateInfo == null) return const SizedBox.shrink();
+        return ValueListenableBuilder<double?>(
+          valueListenable: UpdateService.instance.downloadProgress,
+          builder: (context, progress, _) {
+            return UpdateToast(
+              updateInfo: updateInfo,
+              isBusy: _busy,
+              downloadProgress: progress,
+              onInstall: () {
+                unawaited(UpdateService.instance.installUpdate(updateInfo));
+              },
+              onDismiss: () {
+                unawaited(UpdateService.instance.dismissUpdate());
+              },
+            );
+          },
+        );
+      },
     );
   }
 

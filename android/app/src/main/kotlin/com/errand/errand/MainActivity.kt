@@ -28,6 +28,7 @@ class MainActivity : FlutterActivity() {
     private val STORAGE_CHANNEL = "storage_access"
     private val INTENT_CHANNEL = "intent"
     private val A11Y_CHANNEL = "a11y"
+    private val APP_INFO_CHANNEL = "app_info"
 
     private val MIC_PERMISSION_CODE = 9001
     private var micPermissionResult: MethodChannel.Result? = null
@@ -759,6 +760,70 @@ class MainActivity : FlutterActivity() {
                         } catch (e: Exception) {
                             result.error("SCROLL_ERR", e.message, null)
                         }
+                    }
+                }
+                else -> result.notImplemented()
+            }
+        }
+
+        // ---- App Info & OTA installer channel ----
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            APP_INFO_CHANNEL
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "getVersion" -> {
+                    try {
+                        val packageInfo = packageManager.getPackageInfo(packageName, 0)
+                        result.success(packageInfo.versionName)
+                    } catch (e: Exception) {
+                        result.error("VERSION_ERR", e.message, null)
+                    }
+                }
+                "getAppInfo" -> {
+                    try {
+                        val packageInfo = packageManager.getPackageInfo(packageName, 0)
+                        val installer = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                            packageManager.getInstallSourceInfo(packageName).installingPackageName
+                        } else {
+                            @Suppress("DEPRECATION")
+                            packageManager.getInstallerPackageName(packageName)
+                        }
+                        result.success(
+                            mapOf(
+                                "versionName" to packageInfo.versionName,
+                                "packageName" to packageName,
+                                "abi" to (Build.SUPPORTED_ABIS.firstOrNull() ?: "arm64-v8a"),
+                                "installerPackage" to installer
+                            )
+                        )
+                    } catch (e: Exception) {
+                        result.error("APP_INFO_ERR", e.message, null)
+                    }
+                }
+                "installApk" -> {
+                    val path = call.argument<String>("filePath")
+                    if (path.isNullOrEmpty()) {
+                        result.error("NO_PATH", "filePath is required", null)
+                        return@setMethodCallHandler
+                    }
+                    val file = File(path)
+                    if (!file.exists()) {
+                        result.error("FILE_NOT_FOUND", "APK file does not exist: $path", null)
+                        return@setMethodCallHandler
+                    }
+                    try {
+                        val authority = "$packageName.fileprovider"
+                        val contentUri = FileProvider.getUriForFile(this, authority, file)
+                        val intent = Intent(Intent.ACTION_VIEW).apply {
+                            setDataAndType(contentUri, "application/vnd.android.package-archive")
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        startActivity(intent)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.error("INSTALL_ERR", e.message, null)
                     }
                 }
                 else -> result.notImplemented()
