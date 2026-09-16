@@ -231,6 +231,13 @@ class _SidebarRow extends StatelessWidget {
         borderRadius: BorderRadius.circular(14),
         child: InkWell(
           onTap: onTap,
+          onLongPress: () => _showChatOptions(
+            context,
+            title: title,
+            onDelete: onDelete,
+            options: options,
+            isPinned: isPinned,
+          ),
           borderRadius: BorderRadius.circular(14),
           splashColor: kBubbleAssistant,
           highlightColor: kBubbleAssistant.withValues(alpha: 0.5),
@@ -258,6 +265,13 @@ class _SidebarRow extends StatelessWidget {
                       color: Colors.transparent,
                       child: InkWell(
                         onTap: () => _showChatOptions(
+                          context,
+                          title: title,
+                          onDelete: onDelete,
+                          options: options,
+                          isPinned: isPinned,
+                        ),
+                        onLongPress: () => _showChatOptions(
                           context,
                           title: title,
                           onDelete: onDelete,

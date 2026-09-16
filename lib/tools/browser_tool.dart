@@ -103,6 +103,12 @@ Tool browserTool({BrowserService? browserService}) {
           'description':
               'Scroll direction for action:"act" with act_action:"scroll" (default "down").',
         },
+        'settle_ms': {
+          'type': 'integer',
+          'description':
+              'Milliseconds to wait before performing read activities (snapshot, extract_text, screenshot) '
+              'so dynamic DOM/SPA content has time to render (default 350). Set to 0 to read immediately.',
+        },
         'clear': {
           'type': 'boolean',
           'description':
@@ -225,6 +231,10 @@ Tool browserTool({BrowserService? browserService}) {
             );
 
           case 'snapshot':
+            final settleMs = _parseSettleMs(args['settle_ms'] ?? args['settleMs'] ?? args['wait_ms']);
+            if (settleMs > 0) {
+              await Future<void>.delayed(Duration(milliseconds: settleMs));
+            }
             final fullDump = args['full_dump'] == true || args['fullDump'] == true;
             final dumpOffset = (args['dump_offset'] ?? args['offset']) as int? ?? 0;
             final dumpLimit = (args['dump_limit'] ?? args['limit']) as int? ?? 100000;
@@ -246,6 +256,10 @@ Tool browserTool({BrowserService? browserService}) {
             );
 
           case 'extract_text':
+            final settleMs = _parseSettleMs(args['settle_ms'] ?? args['settleMs'] ?? args['wait_ms']);
+            if (settleMs > 0) {
+              await Future<void>.delayed(Duration(milliseconds: settleMs));
+            }
             final selector = (args['selector'] ?? args['target'])?.toString();
             final maxChars = (args['max_chars'] ?? args['maxChars']) as int? ?? 150000;
             final text = await service.extractText(selector: selector, maxChars: maxChars);
@@ -313,6 +327,10 @@ Tool browserTool({BrowserService? browserService}) {
             );
 
           case 'screenshot':
+            final settleMs = _parseSettleMs(args['settle_ms'] ?? args['settleMs'] ?? args['wait_ms']);
+            if (settleMs > 0) {
+              await Future<void>.delayed(Duration(milliseconds: settleMs));
+            }
             final bytes = await service.takeScreenshot();
             if (bytes == null || bytes.isEmpty) {
               return ToolCallResult.failure(
@@ -349,6 +367,13 @@ Tool browserTool({BrowserService? browserService}) {
   );
 }
 
+int _parseSettleMs(dynamic raw, {int defaultValue = 350}) {
+  if (raw is num) {
+    return raw.toInt().clamp(0, 10000);
+  }
+  return defaultValue;
+}
+
 /// Tool allowing direct extraction of clean Markdown text from the current browser page.
 Tool extractTextTool({BrowserService? browserService}) {
   final service = browserService ?? BrowserService.instance;
@@ -366,6 +391,11 @@ Tool extractTextTool({BrowserService? browserService}) {
           'description':
               'Optional CSS selector to extract text from a specific element (e.g. "article", "main", "#content"). Defaults to entire page.',
         },
+        'settle_ms': {
+          'type': 'integer',
+          'description':
+              'Milliseconds to wait before extracting text so dynamic DOM/SPA content has time to render (default 350). Set to 0 to read immediately.',
+        },
         'max_chars': {
           'type': 'integer',
           'description':
@@ -375,6 +405,14 @@ Tool extractTextTool({BrowserService? browserService}) {
     },
     handler: (call) async {
       try {
+        final settleMs = _parseSettleMs(
+          call.arguments['settle_ms'] ??
+              call.arguments['settleMs'] ??
+              call.arguments['wait_ms'],
+        );
+        if (settleMs > 0) {
+          await Future<void>.delayed(Duration(milliseconds: settleMs));
+        }
         final selector =
             (call.arguments['selector'] ?? call.arguments['target'])?.toString();
         final maxChars = (call.arguments['max_chars'] ?? call.arguments['maxChars']) as int? ?? 150000;

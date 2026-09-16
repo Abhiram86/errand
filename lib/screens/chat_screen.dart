@@ -1064,7 +1064,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     if (_activeConversation.id == id) {
       _startNewChat();
     }
-    _closeSidebar();
+    // Keep the sidebar open so the user can continue managing history.
   }
 
   /// Rename dialog → update the title in the DB. The sidebar refreshes via
@@ -1963,6 +1963,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
               BrowserWidget(
                 composerKey: _composerKey,
                 isComposerFocused: isComposerFocused,
+                onUnfocusComposer: () {
+                  if (_composerFocusNode.hasFocus) {
+                    _composerFocusNode.unfocus();
+                  }
+                },
               ),
               Positioned.fill(
                 child: IgnorePointer(

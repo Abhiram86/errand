@@ -1038,6 +1038,85 @@ class _ReopenButton extends StatelessWidget {
   }
 }
 
+void _showUserMessageOptions(
+  BuildContext context, {
+  required String text,
+  VoidCallback? onEdit,
+}) {
+  showModalBottomSheet<void>(
+    context: context,
+    backgroundColor: kInputBg,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(
+        top: Radius.circular(24),
+      ),
+    ),
+    builder: (sheetContext) => SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                width: 36,
+                height: 4,
+                margin: const EdgeInsets.only(bottom: 12),
+                decoration: BoxDecoration(
+                  color: kBorder,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            if (onEdit != null)
+              ListTile(
+                dense: true,
+                contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                leading: const Icon(Icons.edit_rounded, color: kMuted, size: 20),
+                title: const Text(
+                  'Edit',
+                  style: TextStyle(color: kText, fontSize: 14),
+                ),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                onTap: () {
+                  Navigator.of(sheetContext).pop();
+                  onEdit();
+                },
+              ),
+            ListTile(
+              dense: true,
+              contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+              leading: const Icon(Icons.copy_rounded, color: kMuted, size: 20),
+              title: const Text(
+                'Copy message',
+                style: TextStyle(color: kText, fontSize: 14),
+              ),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+              onTap: () async {
+                Navigator.of(sheetContext).pop();
+                await Clipboard.setData(ClipboardData(text: text));
+                if (!context.mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Copied'),
+                    duration: Duration(seconds: 1),
+                    behavior: SnackBarBehavior.floating,
+                  ),
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
 class MessageBubble extends StatelessWidget {
   final Message message;
 
@@ -1112,39 +1191,27 @@ class MessageBubble extends StatelessWidget {
           ),
         );
 
-        // User bubbles carry an explicit pen affordance on their left — more
-        // discoverable than tap-to-edit and immune to the SelectionArea
-        // swallowing taps on desktop/pointer devices.
+        // User bubbles support tap and long-press to open options (Edit, Copy message).
+        // SelectionContainer.disabled ensures gestures are not swallowed by parent SelectionArea.
         if (isUser) {
           final attached = (message is UserMessage)
               ? (message as UserMessage).attachedUris
               : const <String>[];
-          final userRow = Row(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              if (onEdit != null)
-                Padding(
-                  padding: const EdgeInsets.only(right: 4, bottom: 2),
-                  child: IconButton(
-                    onPressed: onEdit,
-                    tooltip: 'Edit',
-                    style: IconButton.styleFrom(
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      visualDensity: VisualDensity.compact,
-                    ),
-                    constraints: const BoxConstraints.tightFor(
-                      width: 24,
-                      height: 24,
-                    ),
-                    padding: EdgeInsets.zero,
-                    iconSize: 14,
-                    color: kMuted.withValues(alpha: 0.8),
-                    icon: const Icon(Icons.edit_rounded),
-                  ),
-                ),
-              Flexible(child: bubble),
-            ],
+          final interactiveBubble = SelectionContainer.disabled(
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => _showUserMessageOptions(
+                context,
+                text: text,
+                onEdit: onEdit,
+              ),
+              onLongPress: () => _showUserMessageOptions(
+                context,
+                text: text,
+                onEdit: onEdit,
+              ),
+              child: bubble,
+            ),
           );
           final card = Container(
             margin: const EdgeInsets.only(top: 6),
@@ -1194,11 +1261,11 @@ class MessageBubble extends StatelessWidget {
             child: Align(
               alignment: Alignment.centerRight,
               child: attached.isEmpty
-                  ? userRow
+                  ? interactiveBubble
                   : Column(
                       crossAxisAlignment: CrossAxisAlignment.end,
                       mainAxisSize: MainAxisSize.min,
-                      children: [userRow, card],
+                      children: [interactiveBubble, card],
                     ),
             ),
           );

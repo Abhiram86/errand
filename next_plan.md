@@ -19,11 +19,17 @@ Goal: Smooth out transitions, eliminate PlatformView reparenting, and decouple A
    - *Root Cause B (Offstage Inset Synchronization):* The hidden offstage container was positioned at `bottom: 0` inside a `Scaffold` with `resizeToAvoidBottomInset: true`. Every frame of the ~250ms keyboard animation changed layout bounds, causing Android's `PlatformViewsController` and `SurfaceSyncGroup` to synchronize frame buffers across processes on every frame even while offstage.
    - *Root Cause C (Hybrid Composition Overhead):* `useHybridComposition: true` delegates compositing directly to Android's `SurfaceFlinger`. Synchronization overhead during concurrent layout animations (`BrowserDockSpacer`, `BrowserWidget`, soft keyboard) spikes GPU/CPU load.
 
-2. **Planned P6b Mitigations:**
-   - **Zero-Reparenting Stable Hierarchy:** Mount `InAppWebView` in a single, permanent slot inside the browser container. In compact/dock mode, adjust container constraints and overlay the dock bar rather than reparenting the widget subtree across branches.
-   - **Decouple Hidden Bounds from Keyboard Insets:** Pin offstage/minimized views to fixed coordinates (`top: 0, left: 0, width: 1, height: 1`) independent of bottom insets, preventing unnecessary layout and frame-sync passes.
-   - **Render Layer Isolation:** Wrap the `PlatformView` in a `RepaintBoundary` to prevent chat timeline repaints from invalidating the native texture surface.
-   - **Release/Profile Mode Verification:** Profile using `flutter run --profile` and verify whether Texture Layer Hybrid Composition (TLHC) improves lower-end device performance.
+2. **Architectural Evaluation & Selected Solution:**
+   - Three architectural approaches were evaluated to resolve the keyboard transition choppiness:
+     * **Case 1 (Live GlobalKey Reparenting across branches):** *Rejected.* Reparenting a live native `PlatformView` between the preview card and root offstage tree during window inset animation forces Android `PlatformViewsController` to reconcile surfaces mid-animation, dropping frames.
+     * **Case 2 (Zero-Reparenting Stable Hierarchy + Fixed Offstage Bounds):**  ***SELECTED BEST SOLUTION.*** Mount the `InAppWebView` permanently in a single slot. In preview/dock modes, resize container constraints and overlay controls rather than reparenting across widget tree branches. When closed/minimized, pin the offstage view to fixed coordinates (`top: 0, left: 0, width: 1, height: 1`) completely decoupled from bottom keyboard insets, and pause JS timers via `pauseTimers()`. This provides smooth 60/120 FPS keyboard animations while preserving 100% of DOM state, form drafts, active sessions, and autonomous agent JS execution.
+     * **Case 3 (Complete Unmounting / Destruction on Close):** *Rejected.* Disposing the WebView on close destroys the Chromium process. This wipes active DOM state, aborts running agent web actions if preview closes, and loses multi-turn continuity.
+   - **Implementation Blueprint for Case 2:**
+     * **Single Permanent Slot:** Keep `InAppWebView` mounted in a dedicated persistent subtree.
+     * **Decoupled Offstage Geometry:** Pin the offstage container to `top: 0, left: 0` so Android soft keyboard window insets never trigger layout passes or `SurfaceSyncGroup` buffer re-allocation on the hidden view.
+     * **Render Layer Isolation:** Wrap the `PlatformView` in a `RepaintBoundary` to prevent chat timeline repaints from invalidating the native texture surface.
+     * **Timer Management:** Call `pauseTimers()` when minimized/offstage and `resumeTimers()` when brought back to foreground preview/fullscreen.
+     * **Profile Mode Verification:** Profile using `flutter run --profile` to ensure zero dropped frames on lower-end Android hardware.
 
 ---
 

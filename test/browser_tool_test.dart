@@ -480,5 +480,33 @@ void main() {
       expect(extractRes.ok, isTrue);
       expect(extractRes.output, contains('# Heading'));
     });
+
+    test('respects settle_ms parameter on snapshot and extract_text', () async {
+      await tool.handler(ToolCall(
+        id: 'c_open',
+        name: 'browser',
+        arguments: {'action': 'open', 'url': 'https://example.com'},
+      ));
+
+      fakeController.jsResult = jsonEncode({
+        'meta': {'url': 'https://example.com', 'title': 'Settle Test'},
+        'nodes': [],
+      });
+
+      final stopwatch = Stopwatch()..start();
+      final call = ToolCall(
+        id: 'c17',
+        name: 'browser',
+        arguments: {
+          'action': 'snapshot',
+          'settle_ms': 50,
+        },
+      );
+      final result = await tool.handler(call);
+      stopwatch.stop();
+
+      expect(result.ok, isTrue);
+      expect(stopwatch.elapsedMilliseconds, greaterThanOrEqualTo(40));
+    });
   });
 }

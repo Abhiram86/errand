@@ -54,12 +54,14 @@ class BrowserWidget extends StatefulWidget {
   final BrowserService? service;
   final GlobalKey? composerKey;
   final bool? isComposerFocused;
+  final VoidCallback? onUnfocusComposer;
 
   const BrowserWidget({
     super.key,
     this.service,
     this.composerKey,
     this.isComposerFocused,
+    this.onUnfocusComposer,
   });
 
   @override
@@ -71,6 +73,13 @@ class _BrowserWidgetState extends State<BrowserWidget> {
   final GlobalKey _webViewKey = GlobalKey();
 
   bool _hasEverOpened = false;
+
+  void _unfocusComposerIfNeeded() {
+    if (widget.isComposerFocused == true) {
+      widget.onUnfocusComposer?.call();
+      FocusScope.of(context).unfocus();
+    }
+  }
 
   bool get _canRenderNativeWebView {
     if (kIsWeb) return false;
@@ -134,33 +143,37 @@ class _BrowserWidgetState extends State<BrowserWidget> {
                 right: targetRight,
                 bottom: targetBottom,
                 height: targetHeight,
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 280),
-                  curve: Curves.easeInOutCubicEmphasized,
-                  decoration: BoxDecoration(
-                    color: isFullScreen
-                        ? const Color(0xFF13171F)
-                        : (isClosed ? const Color(0xFF181D26) : const Color(0xFF13171F)),
-                    borderRadius: BorderRadius.circular(targetRadius),
-                    border: isFullScreen ? null : Border.all(color: kBorder),
-                    boxShadow: isFullScreen
-                        ? null
-                        : [
-                            BoxShadow(
-                              color: Colors.black.withValues(alpha: isClosed ? 0.45 : 0.6),
-                              blurRadius: isClosed ? 12 : 16,
-                              offset: Offset(0, isClosed ? 3 : 4),
-                            ),
-                          ],
+                child: Listener(
+                  behavior: HitTestBehavior.translucent,
+                  onPointerDown: (_) => _unfocusComposerIfNeeded(),
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 280),
+                    curve: Curves.easeInOutCubicEmphasized,
+                    decoration: BoxDecoration(
+                      color: isFullScreen
+                          ? const Color(0xFF13171F)
+                          : (isClosed ? const Color(0xFF181D26) : const Color(0xFF13171F)),
+                      borderRadius: BorderRadius.circular(targetRadius),
+                      border: isFullScreen ? null : Border.all(color: kBorder),
+                      boxShadow: isFullScreen
+                          ? null
+                          : [
+                              BoxShadow(
+                                color: Colors.black.withValues(alpha: isClosed ? 0.45 : 0.6),
+                                blurRadius: isClosed ? 12 : 16,
+                                offset: Offset(0, isClosed ? 3 : 4),
+                              ),
+                            ],
+                    ),
+                    clipBehavior: isFullScreen ? Clip.none : Clip.antiAlias,
+                    child: isCompact
+                        ? _buildClosedDockBar(context)
+                        : _buildActiveBrowser(
+                            context,
+                            isFullScreen: isFullScreen,
+                            contentHeight: isFullScreen ? size.height : (previewHeight - 2.0),
+                          ),
                   ),
-                  clipBehavior: isFullScreen ? Clip.none : Clip.antiAlias,
-                  child: isCompact
-                      ? _buildClosedDockBar(context)
-                      : _buildActiveBrowser(
-                          context,
-                          isFullScreen: isFullScreen,
-                          contentHeight: isFullScreen ? size.height : (previewHeight - 2.0),
-                        ),
                 ),
               ),
 
@@ -220,7 +233,10 @@ class _BrowserWidgetState extends State<BrowserWidget> {
                 Expanded(
                   child: GestureDetector(
                     behavior: HitTestBehavior.opaque,
-                    onTap: () => _service.setPreview(),
+                    onTap: () {
+                      _unfocusComposerIfNeeded();
+                      _service.setPreview();
+                    },
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -264,7 +280,10 @@ class _BrowserWidgetState extends State<BrowserWidget> {
                 IconButton(
                   key: const ValueKey('browser_preview_button'),
                   icon: const Icon(Icons.picture_in_picture_alt_rounded, size: 17),
-                  onPressed: () => _service.setPreview(),
+                  onPressed: () {
+                    _unfocusComposerIfNeeded();
+                    _service.setPreview();
+                  },
                   color: kText,
                   visualDensity: VisualDensity.compact,
                   tooltip: 'Open preview',
@@ -272,7 +291,10 @@ class _BrowserWidgetState extends State<BrowserWidget> {
                 IconButton(
                   key: const ValueKey('browser_fullscreen_button'),
                   icon: const Icon(Icons.open_in_full_rounded, size: 16),
-                  onPressed: () => _service.setFullScreen(),
+                  onPressed: () {
+                    _unfocusComposerIfNeeded();
+                    _service.setFullScreen();
+                  },
                   color: kText,
                   visualDensity: VisualDensity.compact,
                   tooltip: 'Open full screen',

@@ -295,4 +295,63 @@ void main() {
     await tester.pumpAndSettle();
     expect(tester.getSize(find.byType(BrowserDockSpacer)).height, greaterThan(200));
   });
+
+  testWidgets('tapping preview when focused on composer unfocuses composer', (tester) async {
+    final composerKey = GlobalKey();
+    final focusNotifier = ValueNotifier<bool>(false);
+    bool unfocusCallbackCalled = false;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ValueListenableBuilder<bool>(
+          valueListenable: focusNotifier,
+          builder: (context, isFocused, _) {
+            return Scaffold(
+              body: Stack(
+                children: [
+                  Column(
+                    children: [
+                      BrowserDockSpacer(
+                        service: service,
+                        isComposerFocused: isFocused,
+                      ),
+                      SizedBox(key: composerKey, height: 68),
+                    ],
+                  ),
+                  BrowserWidget(
+                    service: service,
+                    composerKey: composerKey,
+                    isComposerFocused: isFocused,
+                    onUnfocusComposer: () {
+                      unfocusCallbackCalled = true;
+                      focusNotifier.value = false;
+                    },
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+      ),
+    );
+
+    await service.open('https://flutter.dev');
+    service.setPreview();
+    await tester.pumpAndSettle();
+
+    // Focus composer -> browser compacts
+    focusNotifier.value = true;
+    await tester.pumpAndSettle();
+    expect(tester.getSize(find.byType(BrowserDockSpacer)).height, equals(54));
+
+    // Tap on the preview button in the compact dock bar
+    await tester.tap(find.byKey(const ValueKey('browser_preview_button')));
+    await tester.pumpAndSettle();
+
+    // Verify callback was called and preview expanded back
+    expect(unfocusCallbackCalled, isTrue);
+    expect(focusNotifier.value, isFalse);
+    expect(tester.getSize(find.byType(BrowserDockSpacer)).height, greaterThan(200));
+  });
 }
+
