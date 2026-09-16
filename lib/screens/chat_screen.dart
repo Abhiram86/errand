@@ -1445,6 +1445,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           a11ySupported: _a11ySupported,
         ),
         cancelToken: _cancelToken,
+        supportsInput: (modality) =>
+            ModelCatalogService.supportsInput(
+              _selectedModel,
+              modality,
+              baseUrl: AppSettingsService.instance.effectiveBaseUrl,
+            ) !=
+            false,
         onEvent: _handleEvent,
         onTextDelta: _handleTextDelta,
         onReasoningDelta: _handleReasoningDelta,
@@ -2186,6 +2193,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                   message: message,
                   onEdit:
                       message is UserMessage ? () => _editUserMessage(message) : null,
+                  onRetry:
+                      message is UserMessage && !_busy
+                          ? () => _regenerate(message.id)
+                          : null,
                   onRegenerate: regenerateUserId == null
                       ? null
                       : () => _regenerate(regenerateUserId),

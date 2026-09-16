@@ -39,11 +39,19 @@ void main() {
           'id': 'acme/roadrunner-9b',
           'name': 'Roadrunner 9B',
           'limit': {'context': 65536, 'output': 8192},
+          'modalities': {
+            'input': ['text', 'image'],
+            'output': ['text'],
+          },
         },
         'acme/coyote-70b': {
           'id': 'acme/coyote-70b',
           'name': 'Coyote 70B',
           'limit': {'context': 131072, 'output': 16384},
+          'modalities': {
+            'input': ['text'],
+            'output': ['text'],
+          },
         }
       });
 
@@ -60,6 +68,20 @@ void main() {
       expect(ModelsDevService.lookupContextTokens('acme/roadrunner-9b'), 65536);
       expect(ModelsDevService.lookupContextTokens('roadrunner-9b'), 65536);
       expect(ModelsDevService.lookupContextTokens('coyote-70b'), 131072);
+
+      // Modalities lookups
+      expect(ModelsDevService.lookupInputModalities('acme/roadrunner-9b'), ['text', 'image']);
+      expect(ModelsDevService.lookupInputModalities('roadrunner-9b'), ['text', 'image']);
+      expect(ModelsDevService.lookupInputModalities('coyote-70b'), ['text']);
+
+      expect(ModelsDevService.supportsInputModality('roadrunner-9b', 'image'), isTrue);
+      expect(ModelsDevService.supportsInputModality('coyote-70b', 'image'), isFalse);
+      expect(ModelsDevService.supportsInputModality('coyote-70b', 'text'), isTrue);
+      expect(ModelsDevService.supportsInputModality('unknown-model', 'image'), isNull);
+
+      // ModelCatalogService integration fallback check
+      expect(ModelCatalogService.supportsInput('roadrunner-9b', 'image'), isTrue);
+      expect(ModelCatalogService.supportsInput('coyote-70b', 'image'), isFalse);
     });
   });
 

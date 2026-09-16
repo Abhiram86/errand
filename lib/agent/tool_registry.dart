@@ -62,9 +62,12 @@ class ToolRegistry {
       ),
       browserTool(
         browserService: browserService,
+        supportsInput: supportsInput,
       ),
       if (enableA11yTools) ...[
-        screenTool(),
+        screenTool(
+          supportsInput: supportsInput,
+        ),
         actTool(),
       ],
       attachedFilesTool(

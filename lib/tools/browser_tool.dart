@@ -13,7 +13,10 @@ import '../types/tool.dart';
 /// - `execute_dom_js` (`browser.execute_dom_js`): evaluate arbitrary JS in the DOM
 /// - `act` (`browser.act`): perform clicks, typing, or scrolling
 /// - `screenshot` (`browser.screenshot`): capture the visible viewport
-Tool browserTool({BrowserService? browserService}) {
+Tool browserTool({
+  BrowserService? browserService,
+  bool Function(String modality)? supportsInput,
+}) {
   final service = browserService ?? BrowserService.instance;
 
   return Tool(
@@ -327,6 +330,14 @@ Tool browserTool({BrowserService? browserService}) {
             );
 
           case 'screenshot':
+            if (supportsInput != null && !supportsInput('image')) {
+              return ToolCallResult.failure(
+                call.id,
+                'The current model does not support image/vision inputs (screenshot cannot be viewed or analyzed). '
+                'Use action:"snapshot" to inspect interactive DOM elements, or action:"extract_text" to read page content in Markdown.',
+                type: 'unsupported_modality',
+              );
+            }
             final settleMs = _parseSettleMs(args['settle_ms'] ?? args['settleMs'] ?? args['wait_ms']);
             if (settleMs > 0) {
               await Future<void>.delayed(Duration(milliseconds: settleMs));

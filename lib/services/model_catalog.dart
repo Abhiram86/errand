@@ -394,7 +394,8 @@ class ModelCatalogService {
   /// Extracts input modalities.
   ///
   /// If OpenRouter's `architecture.input_modalities` is present, honors it.
-  /// If absent, infers vision capabilities from well-known model family patterns.
+  /// If absent, defaults to text-only with explicit=false so that models.dev
+  /// metadata can resolve it dynamically.
   static ({List<String> modalities, bool explicit}) _inputModalitiesFor(
     String id,
     Map rawModel,
@@ -412,6 +413,8 @@ class ModelCatalogService {
       }
     }
 
+    // No architecture data from the API — default to text-only.
+    // Dynamic queries via supportsInput() will check models.dev metadata.
     return (modalities: const ['text'], explicit: false);
   }
 
@@ -423,14 +426,14 @@ class ModelCatalogService {
     if (baseUrl != null) {
       final key = _normalizeBaseUrl(baseUrl);
       final models = _cache[key];
-      if (models == null) return null;
-      for (final option in models) {
-        if (option.id != modelId) continue;
-        if (option.supportsInput(modality)) return true;
-        if (option.hasExplicitModalities) return false;
-        return null;
+      if (models != null) {
+        for (final option in models) {
+          if (option.id != modelId) continue;
+          if (option.supportsInput(modality)) return true;
+          if (option.hasExplicitModalities) return false;
+          break;
+        }
       }
-      return null;
     }
 
     for (final models in _cache.values) {
@@ -438,9 +441,22 @@ class ModelCatalogService {
         if (option.id != modelId) continue;
         if (option.supportsInput(modality)) return true;
         if (option.hasExplicitModalities) return false;
-        return null;
+        break;
       }
     }
+
+    // Check pre-configured fallback models
+    for (final option in kFallbackModels) {
+      if (option.id == modelId) {
+        if (option.supportsInput(modality)) return true;
+        if (option.hasExplicitModalities) return false;
+      }
+    }
+
+    // Check models.dev metadata collected from https://models.dev/models.json
+    final fromModelsDev = ModelsDevService.supportsInputModality(modelId, modality);
+    if (fromModelsDev != null) return fromModelsDev;
+
     return null;
   }
 

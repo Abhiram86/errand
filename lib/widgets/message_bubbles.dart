@@ -1042,6 +1042,7 @@ void _showUserMessageOptions(
   BuildContext context, {
   required String text,
   VoidCallback? onEdit,
+  VoidCallback? onRetry,
 }) {
   showModalBottomSheet<void>(
     context: context,
@@ -1110,6 +1111,23 @@ void _showUserMessageOptions(
                 );
               },
             ),
+            if (onRetry != null)
+              ListTile(
+                dense: true,
+                contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                leading: const Icon(Icons.refresh_rounded, color: kMuted, size: 20),
+                title: const Text(
+                  'Retry',
+                  style: TextStyle(color: kText, fontSize: 14),
+                ),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                onTap: () {
+                  Navigator.of(sheetContext).pop();
+                  onRetry();
+                },
+              ),
           ],
         ),
       ),
@@ -1123,6 +1141,9 @@ class MessageBubble extends StatelessWidget {
   /// User bubbles only: load the text into the composer for edit-resend.
   final VoidCallback? onEdit;
 
+  /// User bubbles only: drop the turns after this user message and re-run.
+  final VoidCallback? onRetry;
+
   /// Assistant bubbles only: drop the turns after the last user message
   /// and re-run. Only wired for the last message of a completed turn.
   final VoidCallback? onRegenerate;
@@ -1131,6 +1152,7 @@ class MessageBubble extends StatelessWidget {
     super.key,
     required this.message,
     this.onEdit,
+    this.onRetry,
     this.onRegenerate,
   });
 
@@ -1204,11 +1226,13 @@ class MessageBubble extends StatelessWidget {
                 context,
                 text: text,
                 onEdit: onEdit,
+                onRetry: onRetry,
               ),
               onLongPress: () => _showUserMessageOptions(
                 context,
                 text: text,
                 onEdit: onEdit,
+                onRetry: onRetry,
               ),
               child: bubble,
             ),

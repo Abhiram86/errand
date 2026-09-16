@@ -80,6 +80,7 @@ class AgentLoop {
   /// Set by the UI stop button; checked at every turn boundary and between
   /// SSE events. Throws [LlmStoppedException] at the next safe boundary.
   final CancelToken? cancelToken;
+  final bool Function(String modality)? supportsInput;
   final AgentObserver? _onEvent;
   final AgentTextObserver? onTextDelta;
   final AgentReasoningObserver? onReasoningDelta;
@@ -95,11 +96,13 @@ class AgentLoop {
     int? maxConsecutiveSameToolErrors,
     this.systemPromptBuilder,
     this.cancelToken,
-    this._onEvent,
+    this.supportsInput,
+    AgentObserver? onEvent,
     this.onTextDelta,
     this.onReasoningDelta,
     this.onCompacted,
-  })  : budget = budget ??
+  })  : _onEvent = onEvent,
+        budget = budget ??
             (modelContextSize != null
                 ? ContextBudget(contextSize: modelContextSize)
                 : ContextBudget.defaultBudget),
@@ -231,7 +234,16 @@ class AgentLoop {
 
         // Media content parts can't ride the tool role portably across
         // providers — deliver them as a user message after this batch.
-        pendingMediaParts.addAll(result.contentParts ?? const []);
+        final parts = result.contentParts;
+        if (parts != null && parts.isNotEmpty) {
+          for (final part in parts) {
+            // Guard against sending image_url to models that cannot accept images (prevents HTTP 400/500)
+            if (part['type'] == 'image_url' && supportsInput?.call('image') == false) {
+              continue;
+            }
+            pendingMediaParts.add(part);
+          }
+        }
       }
       if (pendingMediaParts.isNotEmpty) {
         messages.add({

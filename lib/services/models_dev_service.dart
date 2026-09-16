@@ -12,6 +12,9 @@ class ModelsDevService {
 
   /// In-memory cache of normalized model identifier -> context limit in tokens.
   static final Map<String, int> _cache = {};
+
+  /// In-memory cache of normalized model identifier -> input modalities (e.g. `['text', 'image']`).
+  static final Map<String, List<String>> _modalitiesCache = {};
   static bool _hasLoaded = false;
   static Future<void>? _inFlight;
 
@@ -77,6 +80,7 @@ class ModelsDevService {
   /// Clears the models.dev memory cache (primarily used for testing).
   static void clearCache() {
     _cache.clear();
+    _modalitiesCache.clear();
     _hasLoaded = false;
     _inFlight = null;
   }
@@ -116,12 +120,25 @@ class ModelsDevService {
       for (final entry in decoded.entries) {
         final val = entry.value;
         if (val is! Map) continue;
+        final key = entry.key.toLowerCase().trim();
+
         final limit = val['limit'];
         if (limit is Map && limit['context'] is num) {
           final ctx = (limit['context'] as num).toInt();
           if (ctx > 0) {
-            final key = entry.key.toLowerCase().trim();
             _cache[key] = ctx;
+          }
+        }
+
+        final modalities = val['modalities'];
+        if (modalities is Map && modalities['input'] is List) {
+          final input = (modalities['input'] as List)
+              .whereType<String>()
+              .map((s) => s.toLowerCase().trim())
+              .where((s) => s.isNotEmpty)
+              .toList();
+          if (input.isNotEmpty) {
+            _modalitiesCache[key] = input;
           }
         }
       }
@@ -130,44 +147,73 @@ class ModelsDevService {
     }
   }
 
+  static T? _lookupInMap<T>(Map<String, T> map, String modelId) {
+    final raw = modelId.trim().toLowerCase();
+    if (raw.isEmpty) return null;
+
+    // 1. Exact match in map
+    if (map.containsKey(raw)) return map[raw];
+
+    final normalized = _normalizeSlug(raw);
+    if (map.containsKey(normalized)) return map[normalized];
+
+    // 2. Base name match without provider prefix
+    final baseName = _baseName(normalized);
+    for (final entry in map.entries) {
+      if (_baseName(_normalizeSlug(entry.key)) == baseName) {
+        return entry.value;
+      }
+    }
+
+    // 3. Qualifier-stripped matching against map
+    final cleanQuery = _stripQualifiers(baseName);
+    for (final entry in map.entries) {
+      final cleanKey = _stripQualifiers(_baseName(_normalizeSlug(entry.key)));
+      if (cleanKey.isNotEmpty &&
+          (cleanKey == cleanQuery ||
+              cleanKey.contains(cleanQuery) ||
+              cleanQuery.contains(cleanKey))) {
+        return entry.value;
+      }
+    }
+
+    // 4. Alphanumeric match (e.g. qwen-2.5-vl matching qwen2-5-vl)
+    final alphaQuery = _toAlpha(cleanQuery);
+    if (alphaQuery.length >= 4) {
+      for (final entry in map.entries) {
+        final alphaKey = _toAlpha(_stripQualifiers(_baseName(entry.key)));
+        if (alphaKey.isNotEmpty &&
+            (alphaKey == alphaQuery ||
+                alphaKey.contains(alphaQuery) ||
+                alphaQuery.contains(alphaKey))) {
+          return entry.value;
+        }
+      }
+    }
+
+    return null;
+  }
+
   /// Looks up the native context limit in tokens for [modelId].
   ///
   /// Evaluates in order:
-  /// 1. Dynamic cache from models.dev (exact key match)
-  /// 2. Normalized slug match (dots replaced with dashes)
-  /// 3. Model basename match (excluding provider prefix e.g. "anthropic/claude-3.7-sonnet" -> "claude-3-7-sonnet")
-  /// 4. Qualifier-stripped fuzzy match (removing "-instruct", "-versatile", dates, etc.)
-  /// 5. Pre-seeded fallback limits
+  /// 1. Dynamic cache from models.dev (exact key match, slug, basename, qualifier-stripped)
+  /// 2. Pre-seeded fallback limits
+  /// 3. Name indicator (e.g. 32k, 1m)
   ///
   /// Returns `null` if no context limit could be inferred.
   static int? lookupContextTokens(String modelId) {
     final raw = modelId.trim().toLowerCase();
     if (raw.isEmpty) return null;
 
-    // 1. Exact match in models.dev cache
-    if (_cache.containsKey(raw)) return _cache[raw];
+    final cached = _lookupInMap(_cache, raw);
+    if (cached != null) return cached;
 
+    // Pre-seeded table matching
     final normalized = _normalizeSlug(raw);
-    if (_cache.containsKey(normalized)) return _cache[normalized];
-
-    // 2. Base name match without provider prefix
     final baseName = _baseName(normalized);
-    for (final entry in _cache.entries) {
-      if (_baseName(_normalizeSlug(entry.key)) == baseName) {
-        return entry.value;
-      }
-    }
-
-    // 3. Qualifier-stripped matching against models.dev
     final cleanQuery = _stripQualifiers(baseName);
-    for (final entry in _cache.entries) {
-      final cleanKey = _stripQualifiers(_baseName(_normalizeSlug(entry.key)));
-      if (cleanKey.isNotEmpty && (cleanKey == cleanQuery || cleanKey.contains(cleanQuery) || cleanQuery.contains(cleanKey))) {
-        return entry.value;
-      }
-    }
 
-    // 4. Pre-seeded table matching
     for (final entry in _seedLimits.entries) {
       final seedNorm = _normalizeSlug(entry.key.toLowerCase());
       final seedClean = _stripQualifiers(seedNorm);
@@ -181,11 +227,27 @@ class ModelsDevService {
       }
     }
 
-    // 5. Check if model name has an explicit token indicator (e.g. "32k", "128k", "1m")
+    // Check if model name has an explicit token indicator (e.g. "32k", "128k", "1m")
     final nameIndicator = _extractContextFromName(raw);
     if (nameIndicator != null) return nameIndicator;
 
     return null;
+  }
+
+  /// Looks up the input modalities (e.g. `['text', 'image']`) for [modelId] from models.dev.
+  ///
+  /// Returns `null` if no modalities could be resolved.
+  static List<String>? lookupInputModalities(String modelId) {
+    return _lookupInMap(_modalitiesCache, modelId);
+  }
+
+  /// Whether [modelId] supports [modality] (e.g. 'image', 'text') according to models.dev metadata.
+  ///
+  /// Returns `true` if supported, `false` if explicitly not supported, or `null` if unknown.
+  static bool? supportsInputModality(String modelId, String modality) {
+    final modalities = lookupInputModalities(modelId);
+    if (modalities == null) return null;
+    return modalities.contains(modality.toLowerCase().trim());
   }
 
   static String _normalizeSlug(String s) => s.replaceAll('.', '-');
@@ -230,4 +292,6 @@ class ModelsDevService {
     }
     return null;
   }
+
+  static String _toAlpha(String s) => s.replaceAll(RegExp(r'[^a-z0-9]'), '');
 }

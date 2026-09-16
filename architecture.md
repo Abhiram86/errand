@@ -191,7 +191,7 @@ Missing/failed channel calls are mapped to "no permission" rather than crashing.
 
 - `ModelCatalogService { load(baseUrl, apiKey) }` — `GET {baseUrl}/models`, parses `data[].id/name` + `architecture.input_modalities` (e.g. `["text","image","audio","file"]`, default `["text"]` when absent) + `context_length` (else `ModelsDevService` offline lookup, else null). Static `_cache` + `_inFlight` dedup; `supportsInput(modelId, modality, {baseUrl})` hits a single normalized catalog in O(n) when `baseUrl` is given (`true`/`false`/`null` = unknown endpoint). Deprecated entries (`status`/`deprecated` flags + known-dead ids) are filtered. Fallback is `kFallbackModels` + `kDefaultModelId`; the last user-picked model persists in the settings table. Provider mapped from `id` prefix (`qwen/… → Qwen`).
 - `ModelOption { id, name, provider, inputModalities, hasExplicitModalities, contextLength? }` → consumed by `ModelPicker` (searchable dialog, header + list rows use marquee ` _ScrollingModelName` for long names) and by `AgentLoop` budget resolution (`getContextLength` → per-model `ContextBudget`).
-- `ModelsDevService` — offline `models.dev` snapshot resolving native context-window tokens per model id for the dynamic budget when the catalog omits `context_length`.
+- `ModelsDevService` — `models.dev` dynamic metadata service resolving native context-window tokens and input modalities (`modalities.input` e.g. text, image, audio, video) per model id when the provider catalog omits explicit specifications.
 
 ## The UI — `lib/main.dart` + `lib/widgets/` + `lib/theme/`
 

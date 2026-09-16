@@ -11,7 +11,10 @@ import 'package:errand/types/tool.dart';
 ///
 /// Same layered design as the intent tool:
 /// curated actions -> honest failure with enablement guidance.
-Tool screenTool({A11yService? service}) {
+Tool screenTool({
+  A11yService? service,
+  bool Function(String modality)? supportsInput,
+}) {
   final svc = service ?? A11yService();
 
   return Tool(
@@ -23,7 +26,7 @@ Tool screenTool({A11yService? service}) {
         '(interactive elements carry numeric refs [n] — address them via act '
         'ref:n). Only use action "screenshot" as a visual fallback when "read" '
         'returns empty/unlabeled canvas nodes (e.g. games, webviews, canvas graphics, '
-        'unlabeled icon buttons) or when answering visual appearance questions. '
+        'unlabeled icon buttons) or when answering visual appearance questions (requires vision model). '
         'Use action "global" for system navigation: back, home, recents, '
         'notifications shade, quick settings, lock_screen. Requires Errand in '
         'Accessibility settings.',
@@ -101,7 +104,7 @@ Tool screenTool({A11yService? service}) {
     },
     handler: (call) async {
       try {
-        return await handleScreenAction(call, svc);
+        return await handleScreenAction(call, svc, supportsInput: supportsInput);
       } catch (e) {
         return ToolCallResult.failure(call.id, 'Screen failed: $e');
       }
@@ -109,7 +112,11 @@ Tool screenTool({A11yService? service}) {
   );
 }
 
-Future<ToolCallResult> handleScreenAction(ToolCall call, A11yService svc) async {
+Future<ToolCallResult> handleScreenAction(
+  ToolCall call,
+  A11yService svc, {
+  bool Function(String modality)? supportsInput,
+}) async {
   final action = call.arguments['action'] as String?;
   if (action == null || action.isEmpty) {
     return ToolCallResult.failure(call.id, 'Missing required argument: action');
@@ -145,7 +152,7 @@ Future<ToolCallResult> handleScreenAction(ToolCall call, A11yService svc) async 
     case 'global':
       return _global(call, svc);
     case 'screenshot':
-      return _screenshot(call, svc);
+      return _screenshot(call, svc, supportsInput: supportsInput);
     default:
       return ToolCallResult.failure(
         call.id,
@@ -272,7 +279,11 @@ Future<ToolCallResult> _global(ToolCall call, A11yService svc) async {
   return ToolCallResult(id: call.id, ok: true, output: '$name done');
 }
 
-Future<ToolCallResult> _screenshot(ToolCall call, A11yService svc) async {
+Future<ToolCallResult> _screenshot(
+  ToolCall call,
+  A11yService svc, {
+  bool Function(String modality)? supportsInput,
+}) async {
   final settleMsRaw = call.arguments['settle_ms'];
   final settleMs =
       settleMsRaw is int && settleMsRaw > 0 ? settleMsRaw.clamp(0, 5000) : 350;
@@ -281,6 +292,15 @@ Future<ToolCallResult> _screenshot(ToolCall call, A11yService svc) async {
   }
 
   final temp = (call.arguments['temp'] as bool?) ?? true;
+  if (temp && supportsInput != null && !supportsInput('image')) {
+    return ToolCallResult.failure(
+      call.id,
+      'The current model does not support image/vision inputs (screenshot cannot be viewed or analyzed). '
+      'Use action:"read" to get the UI accessibility outline with interactive element refs [n].',
+      type: 'unsupported_modality',
+    );
+  }
+
   final qualityRaw = (call.arguments['quality'] as String?)?.trim().toLowerCase();
   final quality = (qualityRaw == 'hd' || qualityRaw == 'sd')
       ? qualityRaw!
@@ -304,7 +324,9 @@ Future<ToolCallResult> _screenshot(ToolCall call, A11yService svc) async {
       : 'Captured ${quality.toUpperCase()} screenshot (${width}x$height, $sizeKb KB, $storageDesc).';
 
   final contentParts = <Map<String, dynamic>>[];
-  if (base64Data != null && base64Data.isNotEmpty) {
+  if (base64Data != null &&
+      base64Data.isNotEmpty &&
+      (supportsInput == null || supportsInput('image'))) {
     contentParts.add({
       'type': 'image_url',
       'image_url': {
