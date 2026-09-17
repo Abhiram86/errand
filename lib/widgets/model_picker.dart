@@ -39,10 +39,12 @@ class ModelPicker extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final selected = _findSelectedModel();
-    final options = [
+    final rawOptions = [
       ...models,
       if (!models.any((model) => model.id == selectedModel)) selected,
     ];
+    final options = List<ModelOption>.from(rawOptions)
+      ..sort(ModelOption.compareByReleaseDate);
     final maxWidth = math.max(0.0, MediaQuery.of(context).size.width - 32);
 
     return Semantics(
@@ -272,11 +274,11 @@ class _ModelPickerDialogState extends State<_ModelPickerDialog> {
     final cached = provider != null
         ? ModelCatalogService.getCachedModels(provider.baseUrl)
         : null;
-    if (cached != null && cached.isNotEmpty) {
-      _currentOptions = List.of(cached);
-    } else {
-      _currentOptions = List.of(widget.options);
-    }
+    final baseOptions = (cached != null && cached.isNotEmpty)
+        ? cached
+        : widget.options;
+    _currentOptions = List<ModelOption>.from(baseOptions)
+      ..sort(ModelOption.compareByReleaseDate);
 
     if (cached == null && _currentProviderHasKey) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -313,19 +315,35 @@ class _ModelPickerDialogState extends State<_ModelPickerDialog> {
     if (provider.id == _currentProvider?.id) return;
 
     final cached = ModelCatalogService.getCachedModels(provider.baseUrl);
-    final initialModels = (cached != null && cached.isNotEmpty)
+    final rawModels = (cached != null && cached.isNotEmpty)
         ? cached
         : provider.defaultModels;
-
-    final firstModel = initialModels.isNotEmpty
-        ? initialModels.first.id
-        : (provider.defaultModels.isNotEmpty
-            ? provider.defaultModels.first.id
-            : kDefaultModelId);
+    final initialModels = List<ModelOption>.from(rawModels)
+      ..sort(ModelOption.compareByReleaseDate);
 
     final hasKey = provider.hasKey ||
         (provider.id == ProviderPresetType.openRouter.id &&
             AppSettingsService.instance.hasOpenRouterKey);
+
+    final isUnconfiguredOpenRouter =
+        (provider.id == ProviderPresetType.openRouter.id ||
+            provider.baseUrl.contains('openrouter.ai')) &&
+        !hasKey;
+
+    final firstModel = initialModels.isNotEmpty
+        ? (isUnconfiguredOpenRouter
+            ? (initialModels.firstWhere(
+                (m) =>
+                    m.id == 'openrouter/free' ||
+                    m.id.toLowerCase().contains('openrouter/free') ||
+                    m.name.toLowerCase().contains('free models router'),
+                orElse: () => initialModels.first,
+              ).id)
+            : initialModels.first.id)
+        : (provider.defaultModels.isNotEmpty
+            ? provider.defaultModels.first.id
+            : kDefaultModelId);
+
     final needsFetch = cached == null && hasKey;
 
     setState(() {
@@ -340,7 +358,8 @@ class _ModelPickerDialogState extends State<_ModelPickerDialog> {
       if (mounted && _currentProvider?.id == provider.id) {
         setState(() {
           if (updated.isNotEmpty) {
-            _currentOptions = updated;
+            _currentOptions = List<ModelOption>.from(updated)
+              ..sort(ModelOption.compareByReleaseDate);
           }
           _refreshing = false;
         });
@@ -359,7 +378,8 @@ class _ModelPickerDialogState extends State<_ModelPickerDialog> {
         );
         if (mounted && _currentProvider?.id == provider.id) {
           setState(() {
-            _currentOptions = models;
+            _currentOptions = List<ModelOption>.from(models)
+              ..sort(ModelOption.compareByReleaseDate);
             _refreshing = false;
           });
         }
@@ -424,7 +444,8 @@ class _ModelPickerDialogState extends State<_ModelPickerDialog> {
         }
         if (mounted && cached != null && cached.isNotEmpty) {
           setState(() {
-            _currentOptions = cached!;
+            _currentOptions = List<ModelOption>.from(cached!)
+              ..sort(ModelOption.compareByReleaseDate);
           });
         }
       }

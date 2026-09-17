@@ -258,4 +258,72 @@ void main() {
 
     service.close();
   });
+
+  testWidgets('ModelPicker sorts models by release date (newest first)', (tester) async {
+    final now = DateTime.now();
+    final provider = LlmProvider(
+      id: 'sort-prov',
+      name: 'Sort Provider',
+      baseUrl: 'https://sort-prov.invalid/v1',
+      apiKey: null,
+      createdAt: now,
+      updatedAt: now,
+    );
+
+    final models = [
+      ModelOption(
+        id: 'older-model',
+        name: 'Older Model',
+        provider: 'Sort Provider',
+        releaseDate: DateTime(2024, 5, 1),
+      ),
+      ModelOption(
+        id: 'newest-model',
+        name: 'Newest Model',
+        provider: 'Sort Provider',
+        releaseDate: DateTime(2026, 7, 15),
+      ),
+      ModelOption(
+        id: 'mid-model',
+        name: 'Mid Model',
+        provider: 'Sort Provider',
+        releaseDate: DateTime(2025, 3, 1),
+      ),
+    ];
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ModelPicker(
+            selectedModel: 'newest-model',
+            models: models,
+            activeProvider: provider,
+            providers: [provider],
+            onChanged: (_) {},
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.byType(ModelPicker));
+    await tester.pumpAndSettle();
+
+    final textFinders = find.byType(ListTile);
+    expect(textFinders, findsNWidgets(3));
+
+    // Inspect the order of ListTiles rendered
+    final firstTile = tester.widget<ListTile>(textFinders.at(0));
+    final secondTile = tester.widget<ListTile>(textFinders.at(1));
+    final thirdTile = tester.widget<ListTile>(textFinders.at(2));
+
+    expect((firstTile.title as Row).children.first, isA<Expanded>());
+    expect(((firstTile.title as Row).children.first as Expanded).child, isA<Text>());
+    final firstText = (((firstTile.title as Row).children.first as Expanded).child as Text).data;
+    final secondText = (((secondTile.title as Row).children.first as Expanded).child as Text).data;
+    final thirdText = (((thirdTile.title as Row).children.first as Expanded).child as Text).data;
+
+    expect(firstText, 'Newest Model');
+    expect(secondText, 'Mid Model');
+    expect(thirdText, 'Older Model');
+  });
 }

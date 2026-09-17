@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:errand/models/model_option.dart';
 import 'package:errand/services/model_catalog.dart';
 import 'package:errand/services/models_dev_service.dart';
 
@@ -39,6 +40,7 @@ void main() {
           'id': 'acme/roadrunner-9b',
           'name': 'Roadrunner 9B',
           'limit': {'context': 65536, 'output': 8192},
+          'last_updated': '2026-03-15',
           'modalities': {
             'input': ['text', 'image'],
             'output': ['text'],
@@ -48,6 +50,7 @@ void main() {
           'id': 'acme/coyote-70b',
           'name': 'Coyote 70B',
           'limit': {'context': 131072, 'output': 16384},
+          'last_updated': '2025-09',
           'modalities': {
             'input': ['text'],
             'output': ['text'],
@@ -69,6 +72,29 @@ void main() {
       expect(ModelsDevService.lookupContextTokens('roadrunner-9b'), 65536);
       expect(ModelsDevService.lookupContextTokens('coyote-70b'), 131072);
 
+      // Release date lookups
+      expect(
+        ModelsDevService.lookupReleaseDate('acme/roadrunner-9b'),
+        DateTime(2026, 3, 15),
+      );
+      expect(
+        ModelsDevService.lookupReleaseDate('roadrunner-9b'),
+        DateTime(2026, 3, 15),
+      );
+      expect(
+        ModelsDevService.lookupReleaseDate('coyote-70b'),
+        DateTime(2025, 9, 1),
+      );
+      // Slug-embedded date fallback
+      expect(
+        ModelsDevService.lookupReleaseDate('custom-model-20250731'),
+        DateTime(2025, 7, 31),
+      );
+      expect(
+        ModelsDevService.lookupReleaseDate('other-model-2024-11-20'),
+        DateTime(2024, 11, 20),
+      );
+
       // Modalities lookups
       expect(ModelsDevService.lookupInputModalities('acme/roadrunner-9b'), ['text', 'image']);
       expect(ModelsDevService.lookupInputModalities('roadrunner-9b'), ['text', 'image']);
@@ -82,6 +108,35 @@ void main() {
       // ModelCatalogService integration fallback check
       expect(ModelCatalogService.supportsInput('roadrunner-9b', 'image'), isTrue);
       expect(ModelCatalogService.supportsInput('coyote-70b', 'image'), isFalse);
+    });
+  });
+
+  group('ModelOption.compareByReleaseDate', () {
+    test('sorts models by release date descending (newest first)', () {
+      final oldModel = ModelOption(
+        id: 'old-m',
+        name: 'Old Model',
+        provider: 'Prov',
+        releaseDate: DateTime(2024, 1, 1),
+      );
+      final newModel = ModelOption(
+        id: 'new-m',
+        name: 'New Model',
+        provider: 'Prov',
+        releaseDate: DateTime(2026, 8, 1),
+      );
+      final undatedModel = const ModelOption(
+        id: 'undated-m',
+        name: 'Undated Model',
+        provider: 'Prov',
+      );
+
+      final list = [oldModel, undatedModel, newModel]
+        ..sort(ModelOption.compareByReleaseDate);
+
+      expect(list[0].id, 'new-m');
+      expect(list[1].id, 'old-m');
+      expect(list[2].id, 'undated-m');
     });
   });
 

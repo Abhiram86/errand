@@ -2,7 +2,13 @@ import 'package:flutter/material.dart';
 
 import '../theme/app_colors.dart';
 import '../types/conversation.dart';
+import 'options_modal_sheet.dart';
 import 'paging.dart';
+
+export 'options_modal_sheet.dart' show SheetOption, SheetOptionType;
+
+typedef ChatOptionType = SheetOptionType;
+typedef ChatOption = SheetOption;
 
 class ChatSidebar extends StatelessWidget {
   final VoidCallback onClose;
@@ -308,97 +314,19 @@ Future<void> _showChatOptions(
   required VoidCallback onDelete,
   required List<ChatOption> options,
 }) {
-  return showModalBottomSheet<void>(
-    context: context,
-    backgroundColor: kInputBg,
-    shape: const RoundedRectangleBorder(
-      borderRadius: BorderRadius.vertical(
-        top: Radius.circular(24),
-      ),
-    ),
-    builder: (sheetContext) => SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 18, 20, 12),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: kText,
-                fontSize: 14,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-
-            const SizedBox(height: 4),
-
-            const Text(
-              'Chat options will appear here.',
-              style: TextStyle(
-                color: kMuted,
-                fontSize: 13,
-              ),
-            ),
-
-            const SizedBox(height: 8),
-
-            ...options.map(
-              (option) => ListTile(
-                dense: true,
-                visualDensity: const VisualDensity(vertical: -3),
-                contentPadding: EdgeInsets.zero,
-                minVerticalPadding: 0,
-                leading: Icon(
-                  option.icon,
-                  color: option.type == ChatOptionType.destructive
-                      ? kDanger
-                      : kMuted,
-                  size: 18,
-                ),
-                title: Text(
-                  option.title == "Pin" ? isPinned ? "Unpin Conversation" : "Pin Conversation" : option.title,
-                  style: TextStyle(
-                    color: option.type == ChatOptionType.destructive
-                        ? kDanger
-                        : kMuted,
-                    fontSize: 14,
-                  ),
-                ),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                onTap: () {
-                  Navigator.of(sheetContext).pop();
-                  option.onTap();
-                },
-              ),
-            ),
-          ],
-        ),
-      ),
-    ),
+  return showOptionsModalSheet<void>(
+    context,
+    title: title,
+    options: options.map((option) {
+      if (option.title == 'Pin') {
+        return SheetOption(
+          title: isPinned ? 'Unpin Conversation' : 'Pin Conversation',
+          icon: option.icon,
+          type: option.type,
+          onTap: option.onTap,
+        );
+      }
+      return option;
+    }).toList(),
   );
-}
-
-enum ChatOptionType {
-  normal,
-  destructive,
-}
-
-class ChatOption {
-  final String title;
-  final IconData icon;
-  final ChatOptionType type;
-  final VoidCallback onTap;
-
-  const ChatOption({
-    required this.title,
-    required this.icon,
-    this.type = ChatOptionType.normal,
-    required this.onTap,
-  });
 }

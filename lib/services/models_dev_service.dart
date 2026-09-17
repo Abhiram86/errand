@@ -15,6 +15,9 @@ class ModelsDevService {
 
   /// In-memory cache of normalized model identifier -> input modalities (e.g. `['text', 'image']`).
   static final Map<String, List<String>> _modalitiesCache = {};
+
+  /// In-memory cache of normalized model identifier -> release/update date.
+  static final Map<String, DateTime> _releaseDateCache = {};
   static bool _hasLoaded = false;
   static Future<void>? _inFlight;
 
@@ -81,6 +84,7 @@ class ModelsDevService {
   static void clearCache() {
     _cache.clear();
     _modalitiesCache.clear();
+    _releaseDateCache.clear();
     _hasLoaded = false;
     _inFlight = null;
   }
@@ -139,6 +143,14 @@ class ModelsDevService {
               .toList();
           if (input.isNotEmpty) {
             _modalitiesCache[key] = input;
+          }
+        }
+
+        final rawUpdated = val['last_updated'] ?? val['release_date'];
+        if (rawUpdated != null) {
+          final parsedDate = parseDate(rawUpdated.toString());
+          if (parsedDate != null) {
+            _releaseDateCache[key] = parsedDate;
           }
         }
       }
@@ -250,6 +262,49 @@ class ModelsDevService {
     return modalities.contains(modality.toLowerCase().trim());
   }
 
+  /// Looks up the release or last updated date for [modelId] from models.dev.
+  ///
+  /// Evaluates in order:
+  /// 1. Dynamic cache from models.dev (exact match, slug, basename, qualifier-stripped)
+  /// 2. Date embedded in model slug (e.g. -20250731 or -2025-07-31)
+  ///
+  /// Returns `null` if no release date could be resolved.
+  static DateTime? lookupReleaseDate(String modelId) {
+    final raw = modelId.trim().toLowerCase();
+    if (raw.isEmpty) return null;
+
+    final cached = _lookupInMap(_releaseDateCache, raw);
+    if (cached != null) return cached;
+
+    // Fallback: extract date from slug if present (e.g. -20250731 or -2024-05-13)
+    final dateMatch = RegExp(r'-(\d{4})-(\d{2})-(\d{2})\b').firstMatch(raw);
+    if (dateMatch != null) {
+      return DateTime.tryParse('${dateMatch.group(1)}-${dateMatch.group(2)}-${dateMatch.group(3)}');
+    }
+    final compactMatch = RegExp(r'-(\d{4})(\d{2})(\d{2})\b').firstMatch(raw);
+    if (compactMatch != null) {
+      return DateTime.tryParse('${compactMatch.group(1)}-${compactMatch.group(2)}-${compactMatch.group(3)}');
+    }
+
+    return null;
+  }
+
+  /// Parses ISO 8601 date, 'YYYY-MM', or 'YYYY' date strings from models.dev.
+  static DateTime? parseDate(String? raw) {
+    if (raw == null) return null;
+    final trimmed = raw.trim();
+    if (trimmed.isEmpty) return null;
+    final direct = DateTime.tryParse(trimmed);
+    if (direct != null) return direct;
+    if (RegExp(r'^\d{4}-\d{2}$').hasMatch(trimmed)) {
+      return DateTime.tryParse('$trimmed-01');
+    }
+    if (RegExp(r'^\d{4}$').hasMatch(trimmed)) {
+      return DateTime.tryParse('$trimmed-01-01');
+    }
+    return null;
+  }
+
   static String _normalizeSlug(String s) => s.replaceAll('.', '-');
 
   static String _baseName(String s) {
@@ -273,6 +328,8 @@ class ModelsDevService {
     for (final q in qualifiers) {
       result = result.replaceAll(q, '');
     }
+    // Remove context sizes like -32768, -128k
+    result = result.replaceAll(RegExp(r'-\d+k?\b'), '');
     // Remove date stamps like -20250219 or -2024-05-13, and revision suffixes like -001, -002
     result = result.replaceAll(RegExp(r'-\d{8}\b'), '');
     result = result.replaceAll(RegExp(r'-\d{4}-\d{2}-\d{2}\b'), '');

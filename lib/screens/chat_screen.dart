@@ -267,10 +267,16 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       return provider.defaultModels.firstOrNull?.id ?? kDefaultModelId;
     }
 
-    final isOpenRouter = provider.id == ProviderPresetType.openRouter.id ||
-        provider.baseUrl.contains('openrouter.ai');
+    final hasKey = provider.hasKey ||
+        (provider.id == ProviderPresetType.openRouter.id &&
+            AppSettingsService.instance.hasOpenRouterKey);
 
-    if (isOpenRouter) {
+    final isUnconfiguredOpenRouter =
+        (provider.id == ProviderPresetType.openRouter.id ||
+            provider.baseUrl.contains('openrouter.ai')) &&
+        !hasKey;
+
+    if (isUnconfiguredOpenRouter) {
       final freeRouter = availableModels.cast<ModelOption?>().firstWhere(
         (m) =>
             m != null &&
@@ -281,24 +287,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         orElse: () => null,
       );
       if (freeRouter != null) return freeRouter.id;
-      return availableModels.first.id;
     }
 
-    final freeModel = availableModels.cast<ModelOption?>().firstWhere(
-      (m) {
-        if (m == null) return false;
-        final id = m.id.toLowerCase();
-        final name = m.name.toLowerCase();
-        return id.startsWith('free') ||
-            id.endsWith('-free') ||
-            id.endsWith(':free') ||
-            id.contains('free') ||
-            name.contains('free');
-      },
-      orElse: () => null,
-    );
-
-    if (freeModel != null) return freeModel.id;
     return availableModels.first.id;
   }
 
@@ -309,15 +299,37 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     await AppSettingsService.instance.ensureLoaded();
     if (!mounted) return;
     final settings = AppSettingsService.instance;
-    final provider = settings.activeProvider;
+
+    // 3. ofcourse all this only if any model is not selected until now
+    // if selected then we will use that like currently how we are doing
+    final hasCachedModel = settings.hasSelectedModel;
+
+    final LlmProvider provider;
+    if (!hasCachedModel) {
+      // 1. if no provider configured then openrouter
+      // 2. if any provider configured then that provider is the most defaulted
+      provider = settings.defaultStartupProvider;
+      if (provider.id != settings.activeProvider.id) {
+        await settings.setActiveProvider(provider.id);
+      }
+    } else {
+      provider = settings.activeProvider;
+    }
+
     final cached = ModelCatalogService.getCachedModels(provider.baseUrl);
-    final availableModels = (cached != null && cached.isNotEmpty)
+    final rawAvailable = (cached != null && cached.isNotEmpty)
         ? cached
         : provider.defaultModels;
 
-    // Preserve the user's last selected model. Only pick a default if empty.
-    var model = settings.selectedModel;
-    if (model.trim().isEmpty) {
+    // Sort the list in model picker with release date (update date from models.dev)
+    final availableModels = List<ModelOption>.from(rawAvailable)
+      ..sort(ModelOption.compareByReleaseDate);
+
+    final String model;
+    if (hasCachedModel) {
+      model = settings.selectedModel;
+    } else {
+      // Select the first model from this sorted if no cached previous selected model
       model = _pickDefaultModelForProvider(provider, availableModels);
       unawaited(settings.setSelectedModel(model));
     }
@@ -373,9 +385,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       final activeProvider = AppSettingsService.instance.activeProvider;
       final providerChanged = activeProvider.id != previousProviderId;
       final cached = ModelCatalogService.getCachedModels(activeProvider.baseUrl);
-      final availableModels = (cached != null && cached.isNotEmpty)
+      final rawAvailable = (cached != null && cached.isNotEmpty)
           ? cached
           : activeProvider.defaultModels;
+      final availableModels = List<ModelOption>.from(rawAvailable)
+        ..sort(ModelOption.compareByReleaseDate);
 
       String modelToUse = _selectedModel;
       if (providerChanged) {
@@ -426,9 +440,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   Future<List<ModelOption>> _selectProvider(LlmProvider provider) async {
     await AppSettingsService.instance.setActiveProvider(provider.id);
     final cached = ModelCatalogService.getCachedModels(provider.baseUrl);
-    final availableModels = (cached != null && cached.isNotEmpty)
+    final rawAvailable = (cached != null && cached.isNotEmpty)
         ? cached
         : provider.defaultModels;
+    final availableModels = List<ModelOption>.from(rawAvailable)
+      ..sort(ModelOption.compareByReleaseDate);
     final modelToUse = _pickDefaultModelForProvider(provider, availableModels);
 
     _llm.close();
@@ -587,8 +603,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
     if (!hasKey) {
       if (mounted) {
+        final sorted = List<ModelOption>.from(provider.defaultModels)
+          ..sort(ModelOption.compareByReleaseDate);
         setState(() {
-          _models = provider.defaultModels;
+          _models = sorted;
         });
       }
       return;
@@ -610,16 +628,34 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       );
       if (!mounted) return;
 
+      final sortedModels = List<ModelOption>.from(models)
+        ..sort(ModelOption.compareByReleaseDate);
+
+      final String modelToUse;
+      if (!settings.hasSelectedModel && sortedModels.isNotEmpty) {
+        modelToUse = _pickDefaultModelForProvider(provider, sortedModels);
+        unawaited(settings.setSelectedModel(modelToUse));
+      } else {
+        modelToUse = _selectedModel;
+      }
+      final modelChanged = modelToUse != _selectedModel;
+
       setState(() {
+        _selectedModel = modelToUse;
+        _activeConversation.model = modelToUse;
         _models = [
-          ...models,
-          if (!models.any((model) => model.id == _selectedModel))
+          ...sortedModels,
+          if (!sortedModels.any((model) => model.id == modelToUse))
             ModelOption(
-              id: _selectedModel,
-              name: _selectedModel,
+              id: modelToUse,
+              name: modelToUse,
               provider: provider.name,
             ),
         ];
+        if (modelChanged) {
+          _llm.close();
+          _llm = _createLlmClient(modelToUse);
+        }
       });
     } catch (_) {
       // The fallback catalog keeps the picker usable when offline or when

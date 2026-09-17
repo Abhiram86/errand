@@ -335,6 +335,17 @@ class ModelCatalogService {
           contextLength = ModelsDevService.lookupContextTokens(id);
         }
 
+        DateTime? releaseDate = ModelsDevService.lookupReleaseDate(id);
+        if (releaseDate == null) {
+          final created = rawModel['created'];
+          if (created is num && created > 0) {
+            releaseDate = DateTime.fromMillisecondsSinceEpoch(
+              (created * 1000).toInt(),
+              isUtc: true,
+            );
+          }
+        }
+
         models.add(
           ModelOption(
             id: id,
@@ -343,6 +354,7 @@ class ModelCatalogService {
             inputModalities: modalityInfo.modalities,
             hasExplicitModalities: modalityInfo.explicit,
             contextLength: contextLength,
+            releaseDate: releaseDate,
           ),
         );
       }
@@ -350,6 +362,8 @@ class ModelCatalogService {
       if (models.isEmpty) {
         throw const ModelCatalogException('Model catalog was empty');
       }
+
+      models.sort(ModelOption.compareByReleaseDate);
 
       final result = List<ModelOption>.unmodifiable(models);
       _cache[_normalizeBaseUrl(baseUrl)] = result;

@@ -87,12 +87,34 @@ final class AppSettingsService {
     return List.unmodifiable([...withKeys, ...withoutKeys]);
   }
 
+  bool get hasAnyConfiguredProvider => providers.any(_providerHasKey);
+
+  /// Default provider resolution:
+  /// 1. If any provider is configured (has API key), that provider is defaulted.
+  /// 2. If no provider is configured, OpenRouter is defaulted.
+  LlmProvider get defaultStartupProvider {
+    for (final p in providers) {
+      if (_providerHasKey(p)) {
+        return p;
+      }
+    }
+    for (final p in _providers) {
+      if (p.id == ProviderPresetType.openRouter.id) {
+        if (hasOpenRouterKey) {
+          return p.copyWith(apiKey: openRouterKey);
+        }
+        return p;
+      }
+    }
+    return ProviderPresetType.openRouter.createProvider(isDefault: true);
+  }
+
   String get activeProviderId {
     if (_activeProviderId != null &&
         _providers.any((p) => p.id == _activeProviderId)) {
       return _activeProviderId!;
     }
-    return providers.isNotEmpty ? providers.first.id : ProviderPresetType.openRouter.id;
+    return defaultStartupProvider.id;
   }
 
   LlmProvider get activeProvider {
@@ -356,6 +378,13 @@ final class AppSettingsService {
 
   /// Last model picked by the user.
   String get selectedModel => _selectedModel ?? kDefaultModelId;
+
+  /// Whether the user has an explicitly cached / selected model.
+  bool get hasSelectedModel =>
+      _selectedModel != null && _selectedModel!.trim().isNotEmpty;
+
+  /// The raw persisted model string, or null if no model has been selected yet.
+  String? get rawSelectedModel => _selectedModel;
 
   Future<void> setSelectedModel(String value) async {
     _selectedModel = value;

@@ -10,6 +10,7 @@ import '../services/installed_apps_service.dart';
 import '../theme/app_colors.dart';
 import '../tools/intent_tool.dart';
 import '../types/message.dart';
+import 'options_modal_sheet.dart';
 
 const kMaxToolHeaderChars = 96;
 const kMaxToolOutputChars = 4000;
@@ -1044,94 +1045,37 @@ void _showUserMessageOptions(
   VoidCallback? onEdit,
   VoidCallback? onRetry,
 }) {
-  showModalBottomSheet<void>(
-    context: context,
-    backgroundColor: kInputBg,
-    shape: const RoundedRectangleBorder(
-      borderRadius: BorderRadius.vertical(
-        top: Radius.circular(24),
-      ),
-    ),
-    builder: (sheetContext) => SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Center(
-              child: Container(
-                width: 36,
-                height: 4,
-                margin: const EdgeInsets.only(bottom: 12),
-                decoration: BoxDecoration(
-                  color: kBorder,
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-            ),
-            if (onEdit != null)
-              ListTile(
-                dense: true,
-                contentPadding: const EdgeInsets.symmetric(horizontal: 8),
-                leading: const Icon(Icons.edit_rounded, color: kMuted, size: 20),
-                title: const Text(
-                  'Edit',
-                  style: TextStyle(color: kText, fontSize: 14),
-                ),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                onTap: () {
-                  Navigator.of(sheetContext).pop();
-                  onEdit();
-                },
-              ),
-            ListTile(
-              dense: true,
-              contentPadding: const EdgeInsets.symmetric(horizontal: 8),
-              leading: const Icon(Icons.copy_rounded, color: kMuted, size: 20),
-              title: const Text(
-                'Copy message',
-                style: TextStyle(color: kText, fontSize: 14),
-              ),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(10),
-              ),
-              onTap: () async {
-                Navigator.of(sheetContext).pop();
-                await Clipboard.setData(ClipboardData(text: text));
-                if (!context.mounted) return;
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('Copied'),
-                    duration: Duration(seconds: 1),
-                    behavior: SnackBarBehavior.floating,
-                  ),
-                );
-              },
-            ),
-            if (onRetry != null)
-              ListTile(
-                dense: true,
-                contentPadding: const EdgeInsets.symmetric(horizontal: 8),
-                leading: const Icon(Icons.refresh_rounded, color: kMuted, size: 20),
-                title: const Text(
-                  'Retry',
-                  style: TextStyle(color: kText, fontSize: 14),
-                ),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                onTap: () {
-                  Navigator.of(sheetContext).pop();
-                  onRetry();
-                },
-              ),
-          ],
+  showOptionsModalSheet<void>(
+    context,
+    options: [
+      if (onEdit != null)
+        SheetOption(
+          title: 'Edit',
+          icon: Icons.edit_rounded,
+          onTap: onEdit,
         ),
+      SheetOption(
+        title: 'Copy message',
+        icon: Icons.copy_rounded,
+        onTap: () async {
+          await Clipboard.setData(ClipboardData(text: text));
+          if (!context.mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Copied'),
+              duration: Duration(seconds: 1),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        },
       ),
-    ),
+      if (onRetry != null)
+        SheetOption(
+          title: 'Retry',
+          icon: Icons.refresh_rounded,
+          onTap: onRetry,
+        ),
+    ],
   );
 }
 

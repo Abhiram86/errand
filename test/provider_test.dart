@@ -188,4 +188,29 @@ void main() {
     expect(ordered[2].hasKey, isFalse);
     expect(ordered[3].hasKey, isFalse);
   });
+
+  test('defaultStartupProvider defaults to OpenRouter when no provider is configured', () async {
+    await settings.ensureLoaded();
+    expect(settings.hasAnyConfiguredProvider, isFalse);
+    expect(settings.defaultStartupProvider.id, 'openrouter');
+  });
+
+  test('defaultStartupProvider defaults to configured provider when one has key', () async {
+    await settings.ensureLoaded();
+
+    final nvidia = settings.providers.firstWhere((p) => p.id == 'nvidia');
+    await settings.saveProvider(nvidia, apiKey: 'nvapi-key');
+
+    expect(settings.hasAnyConfiguredProvider, isTrue);
+    expect(settings.defaultStartupProvider.id, 'nvidia');
+  });
+
+  test('hasSelectedModel accurately reflects cached selection status', () async {
+    await settings.ensureLoaded();
+    expect(settings.hasSelectedModel, isFalse);
+
+    await settings.setSelectedModel('custom/model-x');
+    expect(settings.hasSelectedModel, isTrue);
+    expect(settings.selectedModel, 'custom/model-x');
+  });
 }
