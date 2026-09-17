@@ -375,9 +375,12 @@ Errand is structured into two Gradle product flavors (`android/app/build.gradle.
 - ✅ Done Sep 2026: Android custom intent normalization (core actions, typed extra preservation for primitives, string lists & integer lists, null-skipping, `logIntent` boundary debugging, BAL safety).
 - ✅ Done Sep 2026: Tool UX refinements (`ToolMessageBubble` one-tap collapse via `ExpansibleController`, debug full tool-call copying, friendly action headers, and `ToolGroupBubble` sequential tool call grouping with animated morphing).
 - ✅ Done Sep 2026: Intent on-demand documentation tool (`action: 'docs'`) with verified specifications for `alarm`, `calendar`, `timer`, and `location`/`maps`.
-- ✅ Done Sep 2026: Keyed LLM provider prioritization with stable ordering in model picker.
 - ✅ Done Sep 2026: Architectural modularization decomposing `lib/main.dart` from 2,570 lines to 41 lines.
 - ✅ Done Sep 2026: Full vs. Lite build flavors with dynamic accessibility service stripping and split-per-ABI release packaging.
+- ✅ Done Sep 2026 (v0.6.1): In-app background OTA update system with flavor/ABI matching, atomic download verification, 2-day TTL cache, and post-update first launch release notes sheet (`UpdateService`).
+- ✅ Done Sep 2026 (v0.6.1): Dynamic provider defaulting and model sorting by release date via `models.dev` catalog.
+- ✅ Done Sep 2026 (v0.6.1): Unified `OptionsModalSheet` with 75% max height limit and scrollable content across sidebar and message bubble menus.
+- ✅ Done Sep 2026 (v0.6.1): Animated multi-color sweep-gradient glowing border around `ChatComposer` while the assistant is processing turns.
 - Safe-edit tool (`write`/`edit_file` with diff preview + undo) — needs the write-policy decision originally blocking it.
 - Local retrieval (embeddings/FTS) over recent docs for context budgeting.
 - Evaluate SAF as an alternative to `MANAGE_EXTERNAL_STORAGE` for Play distribution.

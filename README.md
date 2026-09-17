@@ -62,12 +62,13 @@ conversations are stored locally (Drift/SQLite) with no cloud sync.
   (deterministic fallback), plus message windowing (newest 50 on open, paged
   scroll-up) and sidebar pagination.
 - **Chat UI** — Material 3 dark theme, markdown rendering for assistant
-  messages (code, tables, LaTeX), text selection, searchable model picker.
-  Sequential tool calls automatically group into clean collapsible bubbles
-  with live streaming summaries and animated transitions to `"Ran X steps"`,
-  with nested expandable steps for deep debugging. Multi-line composer:
-  Enter inserts a newline; Send button fires the message. Dismissible a11y
-  toast appears on cold start when screen access is off.
+  messages (code, tables, LaTeX), text selection, searchable model picker
+  with release date sorting and dynamic provider defaults. Sequential tool
+  calls automatically group into clean collapsible bubbles with live
+  streaming summaries. Multi-line composer with an animated multi-color
+  glowing border while the assistant is processing turns (zero idle battery
+  overhead). Unified compact options modal sheet (75% screen height cap)
+  for chat actions, message editing, and message retry.
 - **Local persistence** — conversations/messages/attachments/memories in Drift (schema v5) with
   merge-based saves, pinned favourites, recency-ordered sidebar.
 - **In-app configuration** — API keys are entered in Settings (gear icon in
@@ -75,7 +76,7 @@ conversations are stored locally (Drift/SQLite) with no cloud sync.
   active keys automatically take priority in the model picker while preserving
   stable relative order. Settings → Tools tab shows screen-access state,
   Enable/Disable buttons, Tavily key, and Memory Management.
-- **Background OTA updates** — periodic background checks against GitHub releases (`GET /repos/Abhiram86/errand/releases/latest`) on a 2-hour cadence. Matches device ABI (`arm64-v8a`, `armeabi-v7a`, `x86_64`) and flavor (`full` vs `lite`), streams APKs with atomic `.tmp` download and size verification, caches with 2-day TTL in SQLite (`pref.app_update_info`), and presents a floating pill under the model picker for 1-tap package installation.
+- **Background OTA updates & release notes** — periodic background checks against GitHub releases (`GET /repos/Abhiram86/errand/releases/latest`) on a 2-hour cadence. Matches device ABI (`arm64-v8a`, `armeabi-v7a`, `x86_64`) and flavor (`full` vs `lite`), streams APKs with atomic `.tmp` download and size verification, caches with 2-day TTL in SQLite (`pref.app_update_info`), and presents a floating pill under the model picker for 1-tap package installation. Automatically detects the first launch after an update to show parsed release notes (suppressed on fresh installs), with a manual release notes button in the sidebar header and auto-cleanup of stale downloaded APKs.
 
 ## Flavors (Full vs. Lite)
 

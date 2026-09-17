@@ -1,6 +1,6 @@
 # Next Plan — Status & Roadmap
 
-> **Updated Sep 2026.** P0 through P5a (v0.5.5), v0.5.6, P5b (memory subsystem, schema v5), and P6a (embedded browser agent tools) are all **SHIPPED** (v0.6.0).
+> **Updated Sep 2026.** P0 through P5a (v0.5.5), v0.5.6, P5b (memory subsystem, schema v5), P6a (embedded browser agent tools, v0.6.0), and v0.6.1 (background OTA updates, post-update release notes, model sorting by release date, dynamic provider defaults, unified options modal sheet, animated composer glow) are all **SHIPPED**.
 > **Active Milestone:** **P6b — Browser Rough Edges & Android PlatformView Optimizations**.
 
 ---
