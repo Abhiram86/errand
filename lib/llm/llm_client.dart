@@ -139,6 +139,7 @@ class LlmClient {
   static const _streamTimeout = Duration(seconds: 60);
   static const _streamInactivityTimeout = Duration(seconds: 30);
   static const _maxAttempts = 3;
+  static const _maxTotalAttempts = 10;
 
   Uri _chatCompletionsUri() {
     final base = config.baseUrl.endsWith('/')
@@ -301,14 +302,28 @@ class LlmClient {
   /// Text is forwarded as it arrives via [onTextDelta]. If an interruption
   /// occurs mid-stream (socket drop, connection abort, inactivity timeout,
   /// upstream 5xx), [onReset] is called before the next attempt so the caller
-  /// can reset any partial buffer. Retries up to [_maxAttempts] with exponential
-  /// backoff, throwing [LlmException] only when all 3 attempts have failed.
+  /// can reset any partial buffer. [onReset] fires only when the failed
+  /// attempt actually emitted partial UI data, and only after the next
+  /// attempt has established a stream — so a cancel during redial keeps the
+  /// already-streamed text instead of wiping it.
+  ///
+  /// Retry budget: up to [_maxAttempts] *consecutive* transport failures at
+  /// the same progress frontier. A failed attempt that got strictly further
+  /// than any previous attempt (more streamed chars) resets the consecutive
+  /// counter, so a recovered crash gets a fresh 3. [_maxTotalAttempts] caps
+  /// total attempts per call to bound cost when every attempt creeps
+  /// slightly further before stalling.
+  ///
+  /// [onRetry] fires before each redial (never on the final failure) with
+  /// the 1-based number of the upcoming attempt and a short human-readable
+  /// reason, so the UI can show a retry indicator.
   Future<LlmMessage> chatStream({
     required List<Map<String, dynamic>> messages,
     List<Tool> tools = const [],
     required void Function(String delta) onTextDelta,
     void Function()? onReasoningDelta,
     void Function()? onReset,
+    void Function(int attempt, String reason)? onRetry,
     CancelToken? cancelToken,
   }) async {
     if (cancelToken?.isCancelled ?? false) throw const LlmStoppedException();
@@ -317,17 +332,39 @@ class LlmClient {
       'stream': true,
     });
 
-    for (var attempt = 1;; attempt++) {
+    var consecutiveFailures = 0;
+    var totalAttempts = 0;
+    var bestProgress = 0;
+    var hadPartialUiData = false;
+
+    for (;;) {
       if (cancelToken?.isCancelled ?? false) {
         throw const LlmStoppedException();
       }
-
-      if (attempt > 1) {
-        onReset?.call();
+      totalAttempts++;
+      if (totalAttempts > _maxTotalAttempts) {
+        throw LlmException(
+          'Stream failed repeatedly ($totalAttempts attempts)',
+          transport: true,
+        );
       }
 
       final client = _clientForCall();
       cancelToken?.register(client);
+
+      var progressThisAttempt = 0;
+      void recordFailure() {
+        if (progressThisAttempt > bestProgress) {
+          bestProgress = progressThisAttempt;
+          consecutiveFailures = 1;
+        } else {
+          consecutiveFailures++;
+        }
+      }
+
+      void noteRetry(String reason) {
+        onRetry?.call(totalAttempts + 1, reason);
+      }
 
       try {
         final request = http.Request('POST', _chatCompletionsUri())
@@ -349,8 +386,14 @@ class LlmClient {
             cleanErrorMessage(response.statusCode, body),
             transport: true,
           );
-          if (attempt >= _maxAttempts) throw err;
-          await _backoff(attempt, response.headers['retry-after'], cancelToken);
+          recordFailure();
+          if (consecutiveFailures >= _maxAttempts) throw err;
+          noteRetry(err.message);
+          await _backoff(
+            consecutiveFailures,
+            response.headers['retry-after'],
+            cancelToken,
+          );
           continue;
         }
 
@@ -363,47 +406,78 @@ class LlmClient {
           );
         }
 
+        // Deferred reset (cancel-safe): only clear partial UI once the next
+        // attempt actually established a stream. Clearing at attempt start
+        // would wipe kept partial text if this attempt is then cancelled.
+        if (hadPartialUiData) {
+          onReset?.call();
+          hadPartialUiData = false;
+        }
+
         return await _readStreamResponse(
           response: response,
-          onTextDelta: onTextDelta,
-          onReasoningDelta: onReasoningDelta,
+          onTextDelta: (delta) {
+            progressThisAttempt += delta.length;
+            hadPartialUiData = true;
+            onTextDelta(delta);
+          },
+          onReasoningDelta: onReasoningDelta == null
+              ? null
+              : () {
+                  hadPartialUiData = true;
+                  onReasoningDelta();
+                },
+          onProgress: (chars) => progressThisAttempt += chars,
           cancelToken: cancelToken,
         );
       } on LlmStoppedException {
         rethrow;
       } on TimeoutException {
         _rethrowIfCancelled(cancelToken);
-        if (attempt >= _maxAttempts) {
+        recordFailure();
+        if (consecutiveFailures >= _maxAttempts) {
           throw LlmException(
             'Request timed out after ${_streamTimeout.inSeconds}s',
             transport: true,
           );
         }
-        await _backoff(attempt, null, cancelToken);
+        noteRetry('Request timed out');
+        await _backoff(consecutiveFailures, null, cancelToken);
       } on SocketException catch (e) {
         _rethrowIfCancelled(cancelToken);
-        if (attempt >= _maxAttempts) {
+        recordFailure();
+        if (consecutiveFailures >= _maxAttempts) {
           throw LlmException('Connection lost: ${e.message}', transport: true);
         }
-        await _backoff(attempt, null, cancelToken);
+        noteRetry('Connection lost');
+        await _backoff(consecutiveFailures, null, cancelToken);
       } on HttpException catch (e) {
         _rethrowIfCancelled(cancelToken);
-        if (attempt >= _maxAttempts) {
+        recordFailure();
+        if (consecutiveFailures >= _maxAttempts) {
           throw LlmException('Connection lost: ${e.message}', transport: true);
         }
-        await _backoff(attempt, null, cancelToken);
+        noteRetry('Connection lost');
+        await _backoff(consecutiveFailures, null, cancelToken);
       } on http.ClientException catch (e) {
         _rethrowIfCancelled(cancelToken);
-        if (attempt >= _maxAttempts) {
+        recordFailure();
+        if (consecutiveFailures >= _maxAttempts) {
           throw LlmException('Connection lost: ${e.message}', transport: true);
         }
-        await _backoff(attempt, null, cancelToken);
+        noteRetry('Connection lost');
+        await _backoff(consecutiveFailures, null, cancelToken);
       } on LlmException catch (e) {
         _rethrowIfCancelled(cancelToken);
-        if (!e.transport || attempt >= _maxAttempts) {
+        if (!e.transport) {
           rethrow;
         }
-        await _backoff(attempt, null, cancelToken);
+        recordFailure();
+        if (consecutiveFailures >= _maxAttempts) {
+          rethrow;
+        }
+        noteRetry(e.message);
+        await _backoff(consecutiveFailures, null, cancelToken);
       } finally {
         cancelToken?.unregister(client);
         if (_ownsClient) client.close();
@@ -415,6 +489,7 @@ class LlmClient {
     required http.StreamedResponse response,
     required void Function(String delta) onTextDelta,
     void Function()? onReasoningDelta,
+    void Function(int chars)? onProgress,
     CancelToken? cancelToken,
   }) async {
     final contentType = response.headers[HttpHeaders.contentTypeHeader] ??
@@ -435,11 +510,14 @@ class LlmClient {
       if (decoded is Map<String, dynamic>) {
         final error = decoded['error'];
         if (error is Map && error['message'] != null) {
-          throw LlmException(error['message'].toString());
+          throw LlmException(
+            error['message'].toString(),
+            transport: true,
+          );
         } else if (error is String && error.isNotEmpty) {
-          throw LlmException(error);
+          throw LlmException(error, transport: true);
         } else if (decoded['detail'] != null) {
-          throw LlmException(decoded['detail'].toString());
+          throw LlmException(decoded['detail'].toString(), transport: true);
         }
 
         final choices = decoded['choices'];
@@ -552,6 +630,7 @@ class LlmClient {
       );
       if (reasoningDelta != null && reasoningDelta.isNotEmpty) {
         reasoning.write(reasoningDelta);
+        onProgress?.call(reasoningDelta.length);
       }
       if ((reasoningDelta != null && reasoningDelta.isNotEmpty) ||
           reasoningDetailDelta.isNotEmpty) {
@@ -585,7 +664,10 @@ class LlmClient {
         if (function == null) continue;
         accumulated.name ??= function['name'] as String?;
         final arguments = function['arguments'] as String?;
-        if (arguments != null) accumulated.arguments.write(arguments);
+        if (arguments != null) {
+          accumulated.arguments.write(arguments);
+          onProgress?.call(arguments.length);
+        }
       }
     }
 

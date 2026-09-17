@@ -98,7 +98,7 @@ ChatScreen keeps `List<String> _pendingAttachments` (`lib/main.dart`) as the **s
 `LlmClient` is a small `package:http` client for `/chat/completions` with two paths:
 
 - `chat()` — single JSON response, parses `choices[0].message.tool_calls` + `reasoning`/`reasoning_details`;
-- `chatStream()` — SSE (`Accept: text/event-stream`, `stream:true`), forwards `content` deltas via `onTextDelta`, reasoning deltas via `onReasoningDelta`, and accumulates fragmented `tool_calls[].function.arguments` until `[DONE]`.
+- `chatStream()` — SSE (`Accept: text/event-stream`, `stream:true`), forwards `content` deltas via `onTextDelta`, reasoning deltas via `onReasoningDelta`, and accumulates fragmented `tool_calls[].function.arguments` until `[DONE]`. Mid-stream transport failures retry (fresh POST per attempt): `onReset` clears the partial UI buffer once the next attempt establishes a stream, and `onRetry(attempt, reason)` fires before each redial so the UI can show a retry indicator.
 
 `LlmMessage { content, toolCalls, reasoning, reasoningDetails }` is the parsed response. `_sseDataEvents` handles UTF-8 chunk reassembly and comment keepalives. API key + baseUrl + model come from `LlmConfig`, built at runtime from `AppSettingsService` (SQLite-backed settings).
 

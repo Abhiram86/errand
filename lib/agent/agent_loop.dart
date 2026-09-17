@@ -11,6 +11,7 @@ import 'tool_registry.dart';
 typedef AgentObserver = void Function(AgentEvent event);
 typedef AgentTextObserver = void Function(String delta);
 typedef AgentReasoningObserver = void Function();
+typedef AgentRetryObserver = void Function(int attempt, String reason);
 
 sealed class AgentEvent {
   const AgentEvent();
@@ -85,6 +86,7 @@ class AgentLoop {
   final AgentTextObserver? onTextDelta;
   final AgentReasoningObserver? onReasoningDelta;
   final void Function()? onReset;
+  final AgentRetryObserver? onRetry;
   final void Function(String summary)? onCompacted;
 
   AgentLoop({
@@ -102,6 +104,7 @@ class AgentLoop {
     this.onTextDelta,
     this.onReasoningDelta,
     this.onReset,
+    this.onRetry,
     this.onCompacted,
   })  : budget = budget ??
             (modelContextSize != null
@@ -153,6 +156,7 @@ class AgentLoop {
               onTextDelta: textObserver,
               onReasoningDelta: onReasoningDelta,
               onReset: onReset,
+              onRetry: onRetry,
               cancelToken: cancelToken,
             );
       if (!message.hasToolCalls) {

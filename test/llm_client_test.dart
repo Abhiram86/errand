@@ -572,6 +572,247 @@ void main() {
     expect(resetCount, 2);
   });
 
+  test('chatStream resets budget when a retry gets further before failing',
+      () async {
+    var attempts = 0;
+    var resetCount = 0;
+    final accumulatedDeltas = <String>[];
+
+    Stream<List<int>> failingStream(String content) async* {
+      yield utf8.encode(_sseEvent({
+        'choices': [
+          {
+            'delta': {'content': content},
+          },
+        ],
+      }));
+      throw http.ClientException('Connection dropped');
+    }
+
+    Stream<List<int>> successStream() async* {
+      yield utf8.encode(_sseEvent({
+        'choices': [
+          {
+            'delta': {'content': 'Recovered'},
+          },
+        ],
+      }));
+      yield utf8.encode('data: [DONE]\n\n');
+    }
+
+    final client = LlmClient(
+      config: const LlmConfig(
+        baseUrl: 'https://example.test/v1',
+        apiKey: 'test-key',
+        model: 'test-model',
+      ),
+      backoffDuration: (_) => Duration.zero,
+      client: _StreamingClient((request) async {
+        attempts++;
+        // Each attempt gets strictly further before the cut.
+        if (attempts <= 3) {
+          return http.StreamedResponse(
+            failingStream('x' * (attempts * 5)),
+            200,
+            headers: const {'content-type': 'text/event-stream'},
+          );
+        }
+        return http.StreamedResponse(
+          successStream(),
+          200,
+          headers: const {'content-type': 'text/event-stream'},
+        );
+      }),
+    );
+
+    final result = await client.chatStream(
+      messages: const [
+        {'role': 'user', 'content': 'Hi'},
+      ],
+      onTextDelta: accumulatedDeltas.add,
+      onReset: () {
+        resetCount++;
+        accumulatedDeltas.clear();
+      },
+    );
+
+    // Old fixed budget would have thrown after 3; forward progress earns a
+    // 4th attempt which succeeds here.
+    expect(attempts, 4);
+    expect(resetCount, 3);
+    expect(accumulatedDeltas, ['Recovered']);
+    expect(result.content, 'Recovered');
+  });
+
+  test('chatStream skips onReset when the failed attempt had no partial data',      () async {
+    var attempts = 0;
+    var resetCount = 0;
+
+    final client = LlmClient(
+      config: const LlmConfig(
+        baseUrl: 'https://example.test/v1',
+        apiKey: 'test-key',
+        model: 'test-model',
+      ),
+      backoffDuration: (_) => Duration.zero,
+      client: _StreamingClient((request) async {
+        attempts++;
+        if (attempts == 1) {
+          return http.StreamedResponse(
+            Stream.value(utf8.encode('Too many requests')),
+            429,
+            headers: const {'retry-after': '0'},
+          );
+        }
+        return http.StreamedResponse(
+          Stream.fromIterable([
+            utf8.encode(_sseEvent({
+              'choices': [
+                {
+                  'delta': {'content': 'Success after retry'},
+                },
+              ],
+            })),
+            utf8.encode('data: [DONE]\n\n'),
+          ]),
+          200,
+          headers: const {'content-type': 'text/event-stream'},
+        );
+      }),
+    );
+
+    final result = await client.chatStream(
+      messages: const [
+        {'role': 'user', 'content': 'Hi'},
+      ],
+      onTextDelta: (_) {},
+      onReset: () => resetCount++,
+    );
+
+    expect(attempts, 2);
+    expect(resetCount, 0);
+    expect(result.content, 'Success after retry');
+  });
+
+  test('chatStream caps total attempts despite continuous forward progress',
+      () async {
+    var attempts = 0;
+
+    Stream<List<int>> failingStream(String content) async* {
+      yield utf8.encode(_sseEvent({
+        'choices': [
+          {
+            'delta': {'content': content},
+          },
+        ],
+      }));
+      throw http.ClientException('Connection dropped again');
+    }
+
+    final client = LlmClient(
+      config: const LlmConfig(
+        baseUrl: 'https://example.test/v1',
+        apiKey: 'test-key',
+        model: 'test-model',
+      ),
+      backoffDuration: (_) => Duration.zero,
+      client: _StreamingClient((request) async {
+        attempts++;
+        return http.StreamedResponse(
+          failingStream('x' * (attempts * 5)),
+          200,
+          headers: const {'content-type': 'text/event-stream'},
+        );
+      }),
+    );
+
+    await expectLater(
+      client.chatStream(
+        messages: const [
+          {'role': 'user', 'content': 'Hi'},
+        ],
+        onTextDelta: (_) {},
+      ),
+      throwsA(
+        isA<LlmException>()
+            .having((e) => e.transport, 'transport', isTrue)
+            .having(
+              (e) => e.message,
+              'message',
+              contains('Stream failed repeatedly'),
+            ),
+      ),
+    );
+
+    expect(attempts, 10);
+  });
+
+  test('chatStream reports each redial via onRetry with attempt and reason',
+      () async {
+    var attempts = 0;
+    final retries = <String>[];
+
+    Stream<List<int>> createFailingStream() async* {
+      yield utf8.encode(_sseEvent({
+        'choices': [
+          {
+            'delta': {'content': 'Partial chunk '},
+          },
+        ],
+      }));
+      throw http.ClientException('Connection closed mid-stream');
+    }
+
+    Stream<List<int>> createSuccessStream() async* {
+      yield utf8.encode(_sseEvent({
+        'choices': [
+          {
+            'delta': {'content': 'Recovered'},
+          },
+        ],
+      }));
+      yield utf8.encode('data: [DONE]\n\n');
+    }
+
+    final client = LlmClient(
+      config: const LlmConfig(
+        baseUrl: 'https://example.test/v1',
+        apiKey: 'test-key',
+        model: 'test-model',
+      ),
+      backoffDuration: (_) => Duration.zero,
+      client: _StreamingClient((request) async {
+        attempts++;
+        if (attempts == 1) {
+          return http.StreamedResponse(
+            createFailingStream(),
+            200,
+            headers: const {'content-type': 'text/event-stream'},
+          );
+        }
+        return http.StreamedResponse(
+          createSuccessStream(),
+          200,
+          headers: const {'content-type': 'text/event-stream'},
+        );
+      }),
+    );
+
+    final result = await client.chatStream(
+      messages: const [
+        {'role': 'user', 'content': 'Hi'},
+      ],
+      onTextDelta: (_) {},
+      onRetry: (attempt, reason) => retries.add('$attempt:$reason'),
+    );
+
+    expect(attempts, 2);
+    expect(retries, hasLength(1));
+    expect(retries.single.startsWith('2:'), isTrue);
+    expect(retries.single, contains('Connection lost'));
+    expect(result.content, 'Recovered');
+  });
+
   test('cleanErrorMessage formats JSON, HTML, and status codes cleanly', () {
     expect(
       cleanErrorMessage(

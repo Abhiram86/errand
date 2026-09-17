@@ -127,6 +127,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   bool _workingReasoning = false;
   bool _workingCompacting = false;
 
+  /// Set when a mid-stream retry redials (see [_handleStreamRetry]): the
+  /// working placeholder shows …retrying instead of …working until fresh
+  /// text renders or the turn ends. Null when not retrying.
+  int? _workingRetryAttempt;
+
   /// Debug override: set to a positive number (e.g. 8000) during testing to force early compaction.
   /// Set to 0 to use native model context budgets.
   static const int _debugCompactionThreshold = 0;
@@ -1646,6 +1651,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         onTextDelta: _handleTextDelta,
         onReasoningDelta: _handleReasoningDelta,
         onReset: _handleStreamReset,
+        onRetry: _handleStreamRetry,
       );
       try {
         final answer = await loop.run(conversation);
@@ -1694,6 +1700,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     final String label;
     if (_workingCompacting) {
       label = '…compacting context';
+    } else if (_workingRetryAttempt != null) {
+      label = '…retrying · attempt $_workingRetryAttempt';
     } else if (_workingReasoning) {
       label = '…thinking';
     } else {
@@ -1717,6 +1725,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _workingFlushTimer = null;
     _workingElapsedTimer?.cancel();
     _workingCompacting = false;
+    _workingRetryAttempt = null;
     unawaited(_intentService.stopWorkIndicator());
     if (_externalAppWorkDone || _externalIntentLaunched) {
       unawaited(_intentService.bringToFront());
@@ -1888,6 +1897,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       final nextWorkingId = 'working-${DateTime.now().microsecondsSinceEpoch}';
       _workingMessageId = nextWorkingId;
       _workingReasoning = false; // next step starts as …working again
+      _workingRetryAttempt = null;
       _messages.insert(
         nextWorkingIndex + 1,
         AssistantMessage(id: nextWorkingId, text: '…working'),
@@ -1921,6 +1931,18 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _schedulePersist(const Duration(milliseconds: 150));
   }
 
+  /// A stream attempt failed and the client is redialling: surface it in the
+  /// working bubble (…retrying · attempt N) and toast the reason. The bubble
+  /// keeps the stale partial until [_handleStreamReset] clears it once the
+  /// next attempt establishes a stream; the flag clears when fresh text
+  /// renders ([_flushWorkingText]) or the turn ends.
+  void _handleStreamRetry(int attempt, String reason) {
+    if (!mounted || _workingMessageId == null) return;
+    _workingRetryAttempt = attempt;
+    _updateWorkingPlaceholder();
+    _showToast('Interrupted ($reason) — retrying (attempt $attempt)…');
+  }
+
   void _handleReasoningDelta() {
     if (!mounted || _workingMessageId == null || _workingText.isNotEmpty) {
       return;
@@ -1935,6 +1957,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   void _flushWorkingText() {
     _workingFlushTimer = null;
+    // A successful render means the stream recovered — drop the retry label.
+    _workingRetryAttempt = null;
     // Whitespace-only deltas (some models open with "\n") must not blank
     // out the …working placeholder.
     if (!mounted ||
@@ -1965,6 +1989,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _workingFlushTimer = null;
     _workingElapsedTimer?.cancel();
     _workingCompacting = false;
+    _workingRetryAttempt = null;
     unawaited(_intentService.stopWorkIndicator());
     final trimmed = text.trim();
     if (_externalAppWorkDone || (_externalIntentLaunched && trimmed.isNotEmpty)) {
