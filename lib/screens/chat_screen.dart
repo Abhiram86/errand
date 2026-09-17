@@ -1636,6 +1636,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         onEvent: _handleEvent,
         onTextDelta: _handleTextDelta,
         onReasoningDelta: _handleReasoningDelta,
+        onReset: _handleStreamReset,
       );
       try {
         final answer = await loop.run(conversation);
@@ -1899,6 +1900,16 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       const Duration(milliseconds: 65),
       _flushWorkingText,
     );
+  }
+
+  void _handleStreamReset() {
+    if (!mounted || _workingMessageId == null) return;
+    _workingFlushTimer?.cancel();
+    _workingFlushTimer = null;
+    _workingText.clear();
+    _workingReasoning = false;
+    _updateWorkingPlaceholder();
+    _schedulePersist(const Duration(milliseconds: 150));
   }
 
   void _handleReasoningDelta() {

@@ -81,9 +81,10 @@ class AgentLoop {
   /// SSE events. Throws [LlmStoppedException] at the next safe boundary.
   final CancelToken? cancelToken;
   final bool Function(String modality)? supportsInput;
-  final AgentObserver? _onEvent;
+  final AgentObserver? onEvent;
   final AgentTextObserver? onTextDelta;
   final AgentReasoningObserver? onReasoningDelta;
+  final void Function()? onReset;
   final void Function(String summary)? onCompacted;
 
   AgentLoop({
@@ -97,12 +98,12 @@ class AgentLoop {
     this.systemPromptBuilder,
     this.cancelToken,
     this.supportsInput,
-    AgentObserver? onEvent,
+    this.onEvent,
     this.onTextDelta,
     this.onReasoningDelta,
+    this.onReset,
     this.onCompacted,
-  })  : _onEvent = onEvent,
-        budget = budget ??
+  })  : budget = budget ??
             (modelContextSize != null
                 ? ContextBudget(contextSize: modelContextSize)
                 : ContextBudget.defaultBudget),
@@ -151,6 +152,7 @@ class AgentLoop {
               tools: _registry.all,
               onTextDelta: textObserver,
               onReasoningDelta: onReasoningDelta,
+              onReset: onReset,
               cancelToken: cancelToken,
             );
       if (!message.hasToolCalls) {
@@ -203,7 +205,7 @@ class AgentLoop {
       for (var i = 0; i < message.toolCalls.length; i++) {
         final call = message.toolCalls[i];
         final result = results[i];
-        _onEvent?.call(
+        onEvent?.call(
           AgentToolCall(
             call,
             result,
@@ -404,7 +406,7 @@ class AgentLoop {
     // can still exceed small-window targets — trim contents, never blocks.
     tail = fitTailToTarget(tail, budget);
 
-    _onEvent?.call(const AgentCompacting());
+    onEvent?.call(const AgentCompacting());
 
     String summary;
     try {
@@ -436,7 +438,7 @@ class AgentLoop {
       ..addAll(compacted);
 
     onCompacted?.call(summary);
-    _onEvent?.call(AgentCompacted(summary, tailBlockCount: keepCount));
+    onEvent?.call(AgentCompacted(summary, tailBlockCount: keepCount));
   }
 
   List<Map<String, dynamic>> _toLlmHistory(List<Message> history) {

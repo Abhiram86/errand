@@ -115,6 +115,7 @@ class LlmConfig {
 class LlmClient {
   final LlmConfig config;
   final http.Client? _injectedClient;
+  final Duration Function(int attempt)? _backoffDuration;
 
   /// True when [LlmClient] created client connections itself (production).
   /// In that case each request gets a short-lived client so [CancelToken.cancel]
@@ -122,9 +123,13 @@ class LlmClient {
   /// shared usage) is reused as-is instead.
   final bool _ownsClient;
 
-  LlmClient({required this.config, http.Client? client})
-    : _injectedClient = client,
-      _ownsClient = client == null;
+  LlmClient({
+    required this.config,
+    http.Client? client,
+    Duration Function(int attempt)? backoffDuration,
+  }) : _injectedClient = client,
+       _ownsClient = client == null,
+       _backoffDuration = backoffDuration;
 
   /// Client for one call/attempt: fresh + abortable when we own the
   /// lifecycle, otherwise the injected instance.
@@ -133,6 +138,7 @@ class LlmClient {
 
   static const _timeout = Duration(seconds: 30);
   static const _streamTimeout = Duration(seconds: 60);
+  static const _streamInactivityTimeout = Duration(seconds: 30);
   static const _maxAttempts = 3;
 
   Uri _chatCompletionsUri() {
@@ -274,9 +280,10 @@ class LlmClient {
   ) async {
     if (cancelToken?.isCancelled ?? false) throw const LlmStoppedException();
     final seconds = int.tryParse(retryAfter ?? '');
-    final delay = seconds != null && seconds > 0
-        ? Duration(seconds: seconds)
-        : Duration(milliseconds: 800 * (1 << (attempt - 1)));
+    final delay = _backoffDuration?.call(attempt) ??
+        (seconds != null && seconds >= 0
+            ? Duration(seconds: seconds)
+            : Duration(milliseconds: 800 * (1 << (attempt - 1))));
     final stopwatch = Stopwatch()..start();
     while (stopwatch.elapsed < delay) {
       if (cancelToken?.isCancelled ?? false) throw const LlmStoppedException();
@@ -289,64 +296,20 @@ class LlmClient {
     if (cancelToken?.isCancelled ?? false) throw const LlmStoppedException();
   }
 
-  /// Stream send with retry — covers the phase until response headers
-  /// arrive (transient 429/5xx, timeouts, socket drops); mid-stream failures
-  /// cannot be transparently resumed.
-  /// [buildRequest] is invoked per attempt because an [http.Request] can only
-  /// be finalized once. All attempts share [client] so a cancel closes the
-  /// in-flight attempt instantly.
-  Future<http.StreamedResponse> _sendStreamWithRetry(
-    http.Client client,
-    http.Request Function() buildRequest,
-    CancelToken? cancelToken,
-  ) async {
-    for (var attempt = 1;; attempt++) {
-      if (cancelToken?.isCancelled ?? false) {
-        throw const LlmStoppedException();
-      }
-      try {
-        final response =
-            await client.send(buildRequest()).timeout(_streamTimeout);
-        final transient =
-            response.statusCode == 429 || response.statusCode >= 500;
-        if (!transient || attempt >= _maxAttempts) {
-          return response;
-        }
-        await response.stream.drain<void>().catchError((_) {});
-        await _backoff(attempt, response.headers['retry-after'], cancelToken);
-      } on LlmStoppedException {
-        rethrow;
-      } on TimeoutException {
-        _rethrowIfCancelled(cancelToken);
-        if (attempt >= _maxAttempts) rethrow;
-        await _backoff(attempt, null, cancelToken);
-      } on SocketException {
-        _rethrowIfCancelled(cancelToken);
-        if (attempt >= _maxAttempts) rethrow;
-        await _backoff(attempt, null, cancelToken);
-      } on HttpException {
-        _rethrowIfCancelled(cancelToken);
-        if (attempt >= _maxAttempts) rethrow;
-        await _backoff(attempt, null, cancelToken);
-      } on http.ClientException {
-        _rethrowIfCancelled(cancelToken);
-        if (attempt >= _maxAttempts) rethrow;
-        await _backoff(attempt, null, cancelToken);
-      }
-    }
-  }
-
-  /// Sends an OpenAI-compatible streaming chat request.
+  /// Sends an OpenAI-compatible streaming chat request with automatic retry
+  /// covering both initial request failures and mid-stream disconnections.
   ///
-  /// Text is forwarded as it arrives, while the returned [LlmMessage] still
-  /// contains the complete response required by the agent loop. Tool-call
-  /// arguments are accumulated until the stream is complete because they are
-  /// delivered as partial JSON fragments.
+  /// Text is forwarded as it arrives via [onTextDelta]. If an interruption
+  /// occurs mid-stream (socket drop, connection abort, inactivity timeout,
+  /// upstream 5xx), [onReset] is called before the next attempt so the caller
+  /// can reset any partial buffer. Retries up to [_maxAttempts] with exponential
+  /// backoff, throwing [LlmException] only when all 3 attempts have failed.
   Future<LlmMessage> chatStream({
     required List<Map<String, dynamic>> messages,
     List<Tool> tools = const [],
     required void Function(String delta) onTextDelta,
     void Function()? onReasoningDelta,
+    void Function()? onReset,
     CancelToken? cancelToken,
   }) async {
     if (cancelToken?.isCancelled ?? false) throw const LlmStoppedException();
@@ -355,53 +318,106 @@ class LlmClient {
       'stream': true,
     });
 
-    // One client backs the whole call (send + stream reads), registered so
-    // a cancel aborts it at ANY phase: time-to-first-token, header waits,
-    // and mid-stream. An injected client (tests) is reused as-is.
-    final client = _clientForCall();
-    cancelToken?.register(client);
-    try {
-      http.StreamedResponse response;
+    for (var attempt = 1;; attempt++) {
+      if (cancelToken?.isCancelled ?? false) {
+        throw const LlmStoppedException();
+      }
+
+      if (attempt > 1) {
+        onReset?.call();
+      }
+
+      final client = _clientForCall();
+      cancelToken?.register(client);
+
       try {
-        // A fresh http.Request must be built per attempt — package:http
-        // finalizes a Request on first send and re-sending throws
-        // "Bad state: Can't finalize a finalized Request".
-        response = await _sendStreamWithRetry(client, () {
-          return http.Request(
-            'POST',
-            _chatCompletionsUri(),
-          )
-            ..headers[HttpHeaders.contentTypeHeader] = 'application/json'
-            ..headers[HttpHeaders.authorizationHeader] =
-                'Bearer ${config.apiKey}'
-            ..headers[HttpHeaders.acceptHeader] = 'text/event-stream'
-            ..body = streamBody;
-        }, cancelToken);
+        final request = http.Request('POST', _chatCompletionsUri())
+          ..headers[HttpHeaders.contentTypeHeader] = 'application/json'
+          ..headers[HttpHeaders.authorizationHeader] =
+              'Bearer ${config.apiKey}'
+          ..headers[HttpHeaders.acceptHeader] = 'text/event-stream'
+          ..body = streamBody;
+
+        final response =
+            await client.send(request).timeout(_streamTimeout);
+
+        final isTransient =
+            response.statusCode == 429 || response.statusCode >= 500;
+        if (isTransient) {
+          final body =
+              await response.stream.bytesToString().catchError((_) => '');
+          final err = LlmException(
+            cleanErrorMessage(response.statusCode, body),
+            transport: true,
+          );
+          if (attempt >= _maxAttempts) throw err;
+          await _backoff(attempt, response.headers['retry-after'], cancelToken);
+          continue;
+        }
+
+        if (response.statusCode != 200) {
+          final body =
+              await response.stream.bytesToString().catchError((_) => '');
+          throw LlmException(
+            cleanErrorMessage(response.statusCode, body),
+            transport: false,
+          );
+        }
+
+        return await _readStreamResponse(
+          response: response,
+          onTextDelta: onTextDelta,
+          onReasoningDelta: onReasoningDelta,
+          cancelToken: cancelToken,
+        );
       } on LlmStoppedException {
         rethrow;
       } on TimeoutException {
-        throw LlmException(
-          'Request timed out after ${_streamTimeout.inSeconds}s',
-          transport: true,
-        );
+        _rethrowIfCancelled(cancelToken);
+        if (attempt >= _maxAttempts) {
+          throw LlmException(
+            'Request timed out after ${_streamTimeout.inSeconds}s',
+            transport: true,
+          );
+        }
+        await _backoff(attempt, null, cancelToken);
       } on SocketException catch (e) {
         _rethrowIfCancelled(cancelToken);
-        throw LlmException('Connection lost: ${e.message}', transport: true);
+        if (attempt >= _maxAttempts) {
+          throw LlmException('Connection lost: ${e.message}', transport: true);
+        }
+        await _backoff(attempt, null, cancelToken);
       } on HttpException catch (e) {
         _rethrowIfCancelled(cancelToken);
-        throw LlmException('Connection lost: ${e.message}', transport: true);
+        if (attempt >= _maxAttempts) {
+          throw LlmException('Connection lost: ${e.message}', transport: true);
+        }
+        await _backoff(attempt, null, cancelToken);
       } on http.ClientException catch (e) {
         _rethrowIfCancelled(cancelToken);
-        throw LlmException('Connection lost: ${e.message}', transport: true);
+        if (attempt >= _maxAttempts) {
+          throw LlmException('Connection lost: ${e.message}', transport: true);
+        }
+        await _backoff(attempt, null, cancelToken);
+      } on LlmException catch (e) {
+        _rethrowIfCancelled(cancelToken);
+        if (!e.transport || attempt >= _maxAttempts) {
+          rethrow;
+        }
+        await _backoff(attempt, null, cancelToken);
+      } finally {
+        cancelToken?.unregister(client);
+        if (_ownsClient) client.close();
       }
-    if (response.statusCode != 200) {
-      final body = await response.stream.bytesToString();
-      throw LlmException(
-        cleanErrorMessage(response.statusCode, body),
-        transport: response.statusCode == 429 || response.statusCode >= 500,
-      );
     }
+  }
 
+  Future<LlmMessage> _readStreamResponse({
+    required http.StreamedResponse response,
+    required void Function(String delta) onTextDelta,
+    void Function()? onReasoningDelta,
+    CancelToken? cancelToken,
+  }) async {
     final contentType = response.headers[HttpHeaders.contentTypeHeader] ??
         response.headers['content-type'] ??
         '';
@@ -466,113 +482,112 @@ class LlmClient {
     final streamedToolCalls = <int, _StreamToolCall>{};
     var lastToolCallIndex = 0;
 
-    try {
-      await for (final event in _sseDataEvents(response.stream)) {
-        if (cancelToken?.isCancelled ?? false) {
-          throw const LlmStoppedException();
-        }
-        if (event == '[DONE]') break;
-
-        final Map<String, dynamic> data;
-        try {
-          final decoded = jsonDecode(event);
-          if (decoded is! Map<String, dynamic>) continue;
-          data = decoded;
-        } on FormatException catch (e) {
-          throw LlmException('Malformed streaming event: $e', transport: true);
-        }
-
-        final error = data['error'];
-        if (error is String && error.isNotEmpty) {
-          throw LlmException(error);
-        } else if (error is Map<String, dynamic>) {
-          throw LlmException(error['message']?.toString() ?? 'Streaming error');
-        }
-
-        final detail = data['detail'];
-        if (detail is String && detail.isNotEmpty) {
-          throw LlmException(detail);
-        }
-
-        final messageField = data['message'];
-        if (messageField is String && messageField.isNotEmpty && data['choices'] == null) {
-          throw LlmException(messageField);
-        }
-
-        final choices = data['choices'] as List<dynamic>? ?? const [];
-        if (choices.isEmpty) continue;
-        final choice = choices.first as Map<String, dynamic>;
-
-        final choiceError = choice['error'];
-        if (choiceError is Map<String, dynamic>) {
-          throw LlmException(choiceError['message']?.toString() ?? 'Streaming error');
-        } else if (choiceError is String && choiceError.isNotEmpty) {
-          throw LlmException(choiceError);
-        }
-
-        final finishReason = choice['finish_reason'] as String?;
-        if (finishReason == 'error') {
-          throw LlmException('Model generation failed upstream (finish_reason: error)');
-        }
-        if (finishReason == 'content_filter') {
-          throw LlmException('Generation stopped by content filter');
-        }
-
-        final delta = choice['delta'] as Map<String, dynamic>? ?? const {};
-
-        final reasoningDelta = _readReasoning(delta);
-        final reasoningDetailDelta = _parseReasoningDetails(
-          delta['reasoning_details'],
-        );
-        if (reasoningDelta != null && reasoningDelta.isNotEmpty) {
-          reasoning.write(reasoningDelta);
-        }
-        if ((reasoningDelta != null && reasoningDelta.isNotEmpty) ||
-            reasoningDetailDelta.isNotEmpty) {
-          onReasoningDelta?.call();
-        }
-        _appendReasoningDetails(reasoningDetails, reasoningDetailDelta);
-
-        final text = delta['content'];
-        if (text is String && text.isNotEmpty) {
-          content.write(text);
-          onTextDelta(text);
-        }
-
-        final rawToolCalls = delta['tool_calls'] as List<dynamic>? ?? const [];
-        for (final raw in rawToolCalls) {
-          if (raw is! Map<String, dynamic>) continue;
-          final toolCall = raw;
-          final parsedIndex = (toolCall['index'] as num?)?.toInt();
-          final index = parsedIndex ??
-              (streamedToolCalls.isNotEmpty
-                  ? lastToolCallIndex
-                  : streamedToolCalls.length);
-          lastToolCallIndex = index;
-          final accumulated = streamedToolCalls.putIfAbsent(
-            index,
-            _StreamToolCall.new,
-          );
-          accumulated.id ??= toolCall['id'] as String?;
-
-          final function = toolCall['function'] as Map<String, dynamic>?;
-          if (function == null) continue;
-          accumulated.name ??= function['name'] as String?;
-          final arguments = function['arguments'] as String?;
-          if (arguments != null) accumulated.arguments.write(arguments);
-        }
+    await for (final event in _sseDataEvents(
+      response.stream,
+      inactivityTimeout: _streamInactivityTimeout,
+    )) {
+      if (cancelToken?.isCancelled ?? false) {
+        throw const LlmStoppedException();
       }
-    } on LlmStoppedException {
-      rethrow;
-    } on SocketException catch (e) {
-      _rethrowIfCancelled(cancelToken);
-      throw LlmException('Stream interrupted: ${e.message}', transport: true);
-    } on HttpException catch (e) {
-      _rethrowIfCancelled(cancelToken);
-      throw LlmException('Stream interrupted: ${e.message}', transport: true);
-    } on http.ClientException catch (e) {
-      _rethrowIfCancelled(cancelToken);
-      throw LlmException('Stream interrupted: ${e.message}', transport: true);
+      if (event == '[DONE]') break;
+
+      final Map<String, dynamic> data;
+      try {
+        final decoded = jsonDecode(event);
+        if (decoded is! Map<String, dynamic>) continue;
+        data = decoded;
+      } on FormatException catch (e) {
+        throw LlmException('Malformed streaming event: $e', transport: true);
+      }
+
+      final error = data['error'];
+      if (error is String && error.isNotEmpty) {
+        throw LlmException(error, transport: true);
+      } else if (error is Map<String, dynamic>) {
+        throw LlmException(
+          error['message']?.toString() ?? 'Streaming error',
+          transport: true,
+        );
+      }
+
+      final detail = data['detail'];
+      if (detail is String && detail.isNotEmpty) {
+        throw LlmException(detail, transport: true);
+      }
+
+      final messageField = data['message'];
+      if (messageField is String && messageField.isNotEmpty && data['choices'] == null) {
+        throw LlmException(messageField, transport: true);
+      }
+
+      final choices = data['choices'] as List<dynamic>? ?? const [];
+      if (choices.isEmpty) continue;
+      final choice = choices.first as Map<String, dynamic>;
+
+      final choiceError = choice['error'];
+      if (choiceError is Map<String, dynamic>) {
+        throw LlmException(
+          choiceError['message']?.toString() ?? 'Streaming error',
+          transport: true,
+        );
+      } else if (choiceError is String && choiceError.isNotEmpty) {
+        throw LlmException(choiceError, transport: true);
+      }
+
+      final finishReason = choice['finish_reason'] as String?;
+      if (finishReason == 'error') {
+        throw LlmException(
+          'Model generation failed upstream (finish_reason: error)',
+          transport: true,
+        );
+      }
+      if (finishReason == 'content_filter') {
+        throw LlmException('Generation stopped by content filter');
+      }
+
+      final delta = choice['delta'] as Map<String, dynamic>? ?? const {};
+
+      final reasoningDelta = _readReasoning(delta);
+      final reasoningDetailDelta = _parseReasoningDetails(
+        delta['reasoning_details'],
+      );
+      if (reasoningDelta != null && reasoningDelta.isNotEmpty) {
+        reasoning.write(reasoningDelta);
+      }
+      if ((reasoningDelta != null && reasoningDelta.isNotEmpty) ||
+          reasoningDetailDelta.isNotEmpty) {
+        onReasoningDelta?.call();
+      }
+      _appendReasoningDetails(reasoningDetails, reasoningDetailDelta);
+
+      final text = delta['content'];
+      if (text is String && text.isNotEmpty) {
+        content.write(text);
+        onTextDelta(text);
+      }
+
+      final rawToolCalls = delta['tool_calls'] as List<dynamic>? ?? const [];
+      for (final raw in rawToolCalls) {
+        if (raw is! Map<String, dynamic>) continue;
+        final toolCall = raw;
+        final parsedIndex = (toolCall['index'] as num?)?.toInt();
+        final index = parsedIndex ??
+            (streamedToolCalls.isNotEmpty
+                ? lastToolCallIndex
+                : streamedToolCalls.length);
+        lastToolCallIndex = index;
+        final accumulated = streamedToolCalls.putIfAbsent(
+          index,
+          _StreamToolCall.new,
+        );
+        accumulated.id ??= toolCall['id'] as String?;
+
+        final function = toolCall['function'] as Map<String, dynamic>?;
+        if (function == null) continue;
+        accumulated.name ??= function['name'] as String?;
+        final arguments = function['arguments'] as String?;
+        if (arguments != null) accumulated.arguments.write(arguments);
+      }
     }
 
     final toolCalls = <ToolCall>[];
@@ -591,13 +606,6 @@ class LlmClient {
       reasoningDetails: reasoningDetails,
       toolCalls: toolCalls,
     );
-    } finally {
-      cancelToken?.unregister(client);
-      // Safe in all exit paths: normal completion, mid-stream stop, or an
-      // exception propagating — the socket is either done or being aborted.
-      // Injected clients are owned elsewhere; leave them open.
-      if (_ownsClient) client.close();
-    }
   }
 
   Map<String, dynamic> _buildBody({
@@ -700,10 +708,28 @@ class LlmClient {
 ///
 /// The UTF-8 decoder is stateful, so multibyte characters split across HTTP
 /// chunks are reconstructed correctly. Comment events are keepalives and are
-/// intentionally ignored.
-Stream<String> _sseDataEvents(Stream<List<int>> bytes) async* {
+/// intentionally ignored. An optional [inactivityTimeout] raises a [TimeoutException]
+/// if no chunks arrive within the threshold (watchdog against hung connections).
+Stream<String> _sseDataEvents(
+  Stream<List<int>> bytes, {
+  Duration? inactivityTimeout,
+}) async* {
   final data = StringBuffer();
-  final lines = bytes.transform(utf8.decoder).transform(const LineSplitter());
+  final Stream<List<int>> chunkStream = inactivityTimeout != null
+      ? bytes.timeout(
+          inactivityTimeout,
+          onTimeout: (sink) {
+            sink.addError(
+              TimeoutException(
+                'Stream stalled: no data received for ${inactivityTimeout.inSeconds}s',
+              ),
+            );
+          },
+        )
+      : bytes;
+
+  final lines =
+      chunkStream.transform(utf8.decoder).transform(const LineSplitter());
 
   await for (final line in lines) {
     if (line.isEmpty) {
