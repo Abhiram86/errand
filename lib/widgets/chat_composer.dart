@@ -1,9 +1,11 @@
+import 'dart:math' as math;
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../theme/app_colors.dart';
 
-class ChatComposer extends StatelessWidget {
+class ChatComposer extends StatefulWidget {
   final TextEditingController controller;
   final FocusNode? focusNode;
   final bool busy;
@@ -33,6 +35,45 @@ class ChatComposer extends StatelessWidget {
   });
 
   @override
+  State<ChatComposer> createState() => _ChatComposerState();
+}
+
+class _ChatComposerState extends State<ChatComposer>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _glowController;
+
+  @override
+  void initState() {
+    super.initState();
+    _glowController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 3000),
+    );
+    if (widget.busy) {
+      _glowController.repeat();
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant ChatComposer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.busy != oldWidget.busy) {
+      if (widget.busy) {
+        _glowController.repeat();
+      } else {
+        _glowController.stop();
+        _glowController.reset();
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _glowController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
@@ -40,80 +81,131 @@ class ChatComposer extends StatelessWidget {
         color: kDarkBg,
         border: Border(top: BorderSide(color: kBorder, width: 0.5)),
       ),
-      child: Container(
-        padding: const EdgeInsets.only(left: 8, right: 6),
-        decoration: BoxDecoration(
-          color: kInputBg,
-          borderRadius: BorderRadius.circular(24),
-          border: Border.all(color: kBorder),
-        ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.center,
-          children: [
-            SizedBox(
-              width: 32,
-              height: 32,
-              child: Transform.translate(
-                offset: const Offset(0, -1),
-                child: IconButton(
-                  onPressed: busy ? null : onMoreActions,
-                  tooltip: 'More actions',
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints.tightFor(
-                    width: 32,
-                    height: 32,
-                  ),
-                  icon: Icon(Icons.add, color: busy ? kMuted : kText, size: 22),
-                ),
-              ),
-            ),
-            const SizedBox(width: 4),
-            Expanded(
-              child: TextField(
-                controller: controller,
-                focusNode: focusNode,
-                enabled: !busy,
-                keyboardType: TextInputType.multiline,
-                minLines: 1,
-                maxLines: 4,
-                // Enter inserts a newline — messages send only via the
-                // send button, never from the keyboard action.
-                textInputAction: TextInputAction.newline,
-                style: const TextStyle(color: kText, fontSize: 15),
-                decoration: const InputDecoration(
-                  hintText: 'Message Errand…',
-                  hintStyle: TextStyle(color: kMuted),
-                  border: InputBorder.none,
-                  isDense: true,
-                  contentPadding: EdgeInsets.symmetric(vertical: 12),
-                ),
-              ),
-            ),
-            const SizedBox(width: 4),
-            // Right button state machine:
-            // busy            → square stop (cancel the turn)
-            // empty composer  → mic (voice input; red while listening)
-            // has text        → send arrow
-            if (busy)
-              _SendButton(stop: true, canSend: true, onPressed: onStop)
-            else
-              ValueListenableBuilder<TextEditingValue>(
-                valueListenable: controller,
-                builder: (context, value, child) {
-                  final hasText = value.text.trim().isNotEmpty;
-                  return ValueListenableBuilder<bool>(
-                    valueListenable: isListening,
-                    builder: (context, listening, child) => _SendButton(
-                      canSend: true,
-                      onPressed: hasText ? onSend : onMic,
-                      mic: !hasText,
-                      listening: listening,
+      child: widget.busy
+          ? AnimatedBuilder(
+              animation: _glowController,
+              builder: (context, child) {
+                return Container(
+                  padding: const EdgeInsets.all(1.4),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(24),
+                    gradient: SweepGradient(
+                      transform: GradientRotation(
+                        _glowController.value * 2 * math.pi,
+                      ),
+                      colors: const [
+                        kBubbleUser,
+                        kMuted,
+                        kDarkBg,
+                        kMuted,
+                        kBubbleUser,
+                      ],
+                      stops: const [0.0, 0.35, 0.65, 0.85, 1.0],
                     ),
-                  );
-                },
+                    boxShadow: [
+                      BoxShadow(
+                        color: kBubbleUser.withValues(alpha: 0.35),
+                        blurRadius: 10,
+                        spreadRadius: 0.5,
+                      ),
+                      BoxShadow(
+                        color: kBubbleUser.withValues(alpha: 0.12),
+                        blurRadius: 18,
+                        spreadRadius: 1.5,
+                      ),
+                    ],
+                  ),
+                  child: child,
+                );
+              },
+              child: _buildInner(),
+            )
+          : Container(
+              padding: const EdgeInsets.all(1.2),
+              decoration: BoxDecoration(
+                color: kBorder,
+                borderRadius: BorderRadius.circular(24),
               ),
-          ],
-        ),
+              child: _buildInner(),
+            ),
+    );
+  }
+
+  Widget _buildInner() {
+    return Container(
+      padding: const EdgeInsets.only(left: 8, right: 6),
+      decoration: BoxDecoration(
+        color: kInputBg,
+        borderRadius: BorderRadius.circular(22.8),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          SizedBox(
+            width: 32,
+            height: 32,
+            child: Transform.translate(
+              offset: const Offset(0, -1),
+              child: IconButton(
+                onPressed: widget.busy ? null : widget.onMoreActions,
+                tooltip: 'More actions',
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints.tightFor(
+                  width: 32,
+                  height: 32,
+                ),
+                icon: Icon(
+                  Icons.add,
+                  color: widget.busy ? kMuted : kText,
+                  size: 22,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 4),
+          Expanded(
+            child: TextField(
+              controller: widget.controller,
+              focusNode: widget.focusNode,
+              enabled: !widget.busy,
+              keyboardType: TextInputType.multiline,
+              minLines: 1,
+              maxLines: 4,
+              textInputAction: TextInputAction.newline,
+              style: const TextStyle(color: kText, fontSize: 15),
+              decoration: const InputDecoration(
+                hintText: 'Message Errand…',
+                hintStyle: TextStyle(color: kMuted),
+                border: InputBorder.none,
+                isDense: true,
+                contentPadding: EdgeInsets.symmetric(vertical: 12),
+              ),
+            ),
+          ),
+          const SizedBox(width: 4),
+          if (widget.busy)
+            _SendButton(
+              stop: true,
+              canSend: true,
+              onPressed: widget.onStop,
+            )
+          else
+            ValueListenableBuilder<TextEditingValue>(
+              valueListenable: widget.controller,
+              builder: (context, value, child) {
+                final hasText = value.text.trim().isNotEmpty;
+                return ValueListenableBuilder<bool>(
+                  valueListenable: widget.isListening,
+                  builder: (context, listening, child) => _SendButton(
+                    canSend: true,
+                    onPressed: hasText ? widget.onSend : widget.onMic,
+                    mic: !hasText,
+                    listening: listening,
+                  ),
+                );
+              },
+            ),
+        ],
       ),
     );
   }
