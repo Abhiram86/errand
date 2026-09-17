@@ -280,6 +280,16 @@ class _ModelPickerDialogState extends State<_ModelPickerDialog> {
     _currentOptions = List<ModelOption>.from(baseOptions)
       ..sort(ModelOption.compareByReleaseDate);
 
+    final isStaleOrFallback = (provider != null) &&
+        (!_currentOptions.any((m) => m.id == _currentSelectedModel) ||
+            provider.defaultModels.any((m) => m.id == _currentSelectedModel) ||
+            (_currentProviderHasKey &&
+                (_currentSelectedModel == 'openrouter/free' ||
+                    _currentSelectedModel == kDefaultModelId)));
+    if (isStaleOrFallback && _currentOptions.isNotEmpty) {
+      _currentSelectedModel = _pickInitialModel(provider, _currentOptions);
+    }
+
     if (cached == null && _currentProviderHasKey) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _handleRefresh();
@@ -311,6 +321,31 @@ class _ModelPickerDialogState extends State<_ModelPickerDialog> {
     return false;
   }
 
+  String _pickInitialModel(LlmProvider provider, List<ModelOption> opts) {
+    if (opts.isEmpty) {
+      return provider.defaultModels.isNotEmpty
+          ? provider.defaultModels.first.id
+          : kDefaultModelId;
+    }
+    final hasKey = provider.hasKey ||
+        (provider.id == ProviderPresetType.openRouter.id &&
+            AppSettingsService.instance.hasOpenRouterKey);
+    final isUnconfiguredOpenRouter =
+        (provider.id == ProviderPresetType.openRouter.id ||
+            provider.baseUrl.contains('openrouter.ai')) &&
+        !hasKey;
+    if (isUnconfiguredOpenRouter) {
+      return opts.firstWhere(
+        (m) =>
+            m.id == 'openrouter/free' ||
+            m.id.toLowerCase().contains('openrouter/free') ||
+            m.name.toLowerCase().contains('free models router'),
+        orElse: () => opts.first,
+      ).id;
+    }
+    return opts.first.id;
+  }
+
   Future<void> _handleProviderSelected(LlmProvider provider) async {
     if (provider.id == _currentProvider?.id) return;
 
@@ -325,25 +360,7 @@ class _ModelPickerDialogState extends State<_ModelPickerDialog> {
         (provider.id == ProviderPresetType.openRouter.id &&
             AppSettingsService.instance.hasOpenRouterKey);
 
-    final isUnconfiguredOpenRouter =
-        (provider.id == ProviderPresetType.openRouter.id ||
-            provider.baseUrl.contains('openrouter.ai')) &&
-        !hasKey;
-
-    final firstModel = initialModels.isNotEmpty
-        ? (isUnconfiguredOpenRouter
-            ? (initialModels.firstWhere(
-                (m) =>
-                    m.id == 'openrouter/free' ||
-                    m.id.toLowerCase().contains('openrouter/free') ||
-                    m.name.toLowerCase().contains('free models router'),
-                orElse: () => initialModels.first,
-              ).id)
-            : initialModels.first.id)
-        : (provider.defaultModels.isNotEmpty
-            ? provider.defaultModels.first.id
-            : kDefaultModelId);
-
+    final firstModel = _pickInitialModel(provider, initialModels);
     final needsFetch = cached == null && hasKey;
 
     setState(() {
@@ -358,8 +375,15 @@ class _ModelPickerDialogState extends State<_ModelPickerDialog> {
       if (mounted && _currentProvider?.id == provider.id) {
         setState(() {
           if (updated.isNotEmpty) {
-            _currentOptions = List<ModelOption>.from(updated)
+            final sorted = List<ModelOption>.from(updated)
               ..sort(ModelOption.compareByReleaseDate);
+            _currentOptions = sorted;
+            final isStale = !_currentOptions.any((m) => m.id == _currentSelectedModel) ||
+                provider.defaultModels.any((m) => m.id == _currentSelectedModel) ||
+                (hasKey && (_currentSelectedModel == 'openrouter/free' || _currentSelectedModel == kDefaultModelId));
+            if (isStale) {
+              _currentSelectedModel = _pickInitialModel(provider, sorted);
+            }
           }
           _refreshing = false;
         });
@@ -378,8 +402,15 @@ class _ModelPickerDialogState extends State<_ModelPickerDialog> {
         );
         if (mounted && _currentProvider?.id == provider.id) {
           setState(() {
-            _currentOptions = List<ModelOption>.from(models)
+            final sorted = List<ModelOption>.from(models)
               ..sort(ModelOption.compareByReleaseDate);
+            _currentOptions = sorted;
+            final isStale = !_currentOptions.any((m) => m.id == _currentSelectedModel) ||
+                provider.defaultModels.any((m) => m.id == _currentSelectedModel) ||
+                (hasKey && (_currentSelectedModel == 'openrouter/free' || _currentSelectedModel == kDefaultModelId));
+            if (isStale) {
+              _currentSelectedModel = _pickInitialModel(provider, sorted);
+            }
             _refreshing = false;
           });
         }
@@ -443,9 +474,18 @@ class _ModelPickerDialogState extends State<_ModelPickerDialog> {
           } catch (_) {}
         }
         if (mounted && cached != null && cached.isNotEmpty) {
+          final sorted = List<ModelOption>.from(cached)
+            ..sort(ModelOption.compareByReleaseDate);
+          final isStale = !sorted.any((m) => m.id == _currentSelectedModel) ||
+              provider.defaultModels.any((m) => m.id == _currentSelectedModel) ||
+              (_currentProviderHasKey &&
+                  (_currentSelectedModel == 'openrouter/free' ||
+                      _currentSelectedModel == kDefaultModelId));
           setState(() {
-            _currentOptions = List<ModelOption>.from(cached!)
-              ..sort(ModelOption.compareByReleaseDate);
+            _currentOptions = sorted;
+            if (isStale) {
+              _currentSelectedModel = _pickInitialModel(provider, sorted);
+            }
           });
         }
       }

@@ -326,4 +326,74 @@ void main() {
     expect(secondText, 'Mid Model');
     expect(thirdText, 'Older Model');
   });
+
+  testWidgets('ModelPicker resets stale fallback model to first sorted model when new models load', (tester) async {
+    final now = DateTime.now();
+    final provider = LlmProvider(
+      id: 'openrouter',
+      name: 'OpenRouter',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      apiKey: 'sk-or-test-key',
+      createdAt: now,
+      updatedAt: now,
+    );
+
+    // Initial fallback model was 'openrouter/free' (unconfigured default)
+    final client = MockClient((request) async {
+      return http.Response(
+        jsonEncode({
+          'data': [
+            {
+              'id': 'anthropic/claude-3.5-sonnet',
+              'name': 'Claude 3.5 Sonnet',
+              'created': 1720000000,
+            },
+            {
+              'id': 'openai/gpt-4o',
+              'name': 'GPT-4o',
+              'created': 1715000000,
+            },
+          ],
+        }),
+        200,
+      );
+    });
+    final service = ModelCatalogService(client: client);
+
+    String? selectedResult;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ModelPicker(
+            selectedModel: 'openrouter/free',
+            models: provider.defaultModels,
+            activeProvider: provider,
+            providers: [provider],
+            onChanged: (m) => selectedResult = m,
+            onRefresh: () async {
+              await service.load(
+                baseUrl: provider.baseUrl,
+                apiKey: provider.apiKey ?? '',
+                defaultProvider: provider.name,
+                isOpenRouter: true,
+                forceRefresh: true,
+              );
+            },
+          ),
+        ),
+      ),
+    );
+
+    // Open dialog - auto-fetches with key and resets stale fallback to top model
+    await tester.tap(find.byType(ModelPicker));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Claude 3.5 Sonnet'), findsOneWidget);
+    // Tap the first model
+    await tester.tap(find.text('Claude 3.5 Sonnet'));
+    await tester.pumpAndSettle();
+
+    expect(selectedResult, 'anthropic/claude-3.5-sonnet');
+    service.close();
+  });
 }

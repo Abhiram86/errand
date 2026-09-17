@@ -382,49 +382,54 @@ class _BrowserWidgetState extends State<BrowserWidget> {
     );
   }
 
+  Widget _buildToolbarButton({
+    Key? key,
+    required Widget icon,
+    required VoidCallback? onPressed,
+    required String tooltip,
+    Color? color,
+  }) {
+    return IconButton(
+      key: key,
+      icon: icon,
+      onPressed: onPressed,
+      color: color ?? kText,
+      constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+      padding: EdgeInsets.zero,
+      visualDensity: VisualDensity.compact,
+      tooltip: tooltip,
+      style: IconButton.styleFrom(
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        minimumSize: const Size(28, 28),
+        padding: EdgeInsets.zero,
+      ),
+    );
+  }
+
   /// Top navigation toolbar with URL bar and display mode action buttons.
   Widget _buildToolbar(BuildContext context, {required bool isFullScreen}) {
     final toolbarContent = Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
       child: Row(
         children: [
-          IconButton(
-            icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 16),
+          _buildToolbarButton(
+            icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 15),
             onPressed: _service.canGoBack ? () => _service.goBack() : null,
             color: _service.canGoBack ? kText : kMuted.withValues(alpha: 0.35),
-            visualDensity: VisualDensity.compact,
             tooltip: 'Go back',
           ),
-          IconButton(
-            icon: const Icon(Icons.arrow_forward_ios_rounded, size: 16),
+          _buildToolbarButton(
+            icon: const Icon(Icons.arrow_forward_ios_rounded, size: 15),
             onPressed: _service.canGoForward ? () => _service.goForward() : null,
             color: _service.canGoForward ? kText : kMuted.withValues(alpha: 0.35),
-            visualDensity: VisualDensity.compact,
             tooltip: 'Go forward',
           ),
-          IconButton(
-            key: const ValueKey('browser_reload_button'),
-            icon: Icon(
-              _service.isLoading ? Icons.close_rounded : Icons.refresh_rounded,
-              size: 18,
-            ),
-            onPressed: () {
-              if (_service.isLoading) {
-                _service.stopLoading();
-              } else {
-                _service.reload();
-              }
-            },
-            color: kText,
-            visualDensity: VisualDensity.compact,
-            tooltip: _service.isLoading ? 'Stop' : 'Reload',
-          ),
           const SizedBox(width: 4),
-          // Address bar
+          // Address bar with integrated reload / stop button
           Expanded(
             child: Container(
-              height: 34,
-              padding: const EdgeInsets.symmetric(horizontal: 8),
+              height: 32,
+              padding: const EdgeInsets.only(left: 8, right: 4),
               decoration: BoxDecoration(
                 color: kInputBg,
                 borderRadius: BorderRadius.circular(8),
@@ -452,14 +457,38 @@ class _BrowserWidgetState extends State<BrowserWidget> {
                       ),
                     ),
                   ),
+                  IconButton(
+                    key: const ValueKey('browser_reload_button'),
+                    icon: Icon(
+                      _service.isLoading ? Icons.close_rounded : Icons.refresh_rounded,
+                      size: 16,
+                    ),
+                    onPressed: () {
+                      if (_service.isLoading) {
+                        _service.stopLoading();
+                      } else {
+                        _service.reload();
+                      }
+                    },
+                    color: _service.isLoading ? kBubbleUser : kMuted,
+                    constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
+                    padding: EdgeInsets.zero,
+                    visualDensity: VisualDensity.compact,
+                    tooltip: _service.isLoading ? 'Stop' : 'Reload',
+                    style: IconButton.styleFrom(
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      minimumSize: const Size(24, 24),
+                      padding: EdgeInsets.zero,
+                    ),
+                  ),
                 ],
               ),
             ),
           ),
           const SizedBox(width: 4),
-          IconButton(
+          _buildToolbarButton(
             key: const ValueKey('browser_open_external_button'),
-            icon: const Icon(Icons.open_in_browser_rounded, size: 18),
+            icon: const Icon(Icons.open_in_browser_rounded, size: 17),
             onPressed: () {
               final url = _service.currentUrl;
               if (url != null && url.isNotEmpty && url != 'about:blank') {
@@ -467,50 +496,44 @@ class _BrowserWidgetState extends State<BrowserWidget> {
               }
             },
             color: kMuted,
-            visualDensity: VisualDensity.compact,
             tooltip: 'Open in external browser',
           ),
           if (isFullScreen) ...[
-            IconButton(
+            _buildToolbarButton(
               key: const ValueKey('browser_restore_button'),
-              icon: const Icon(Icons.close_fullscreen_rounded, size: 18),
+              icon: const Icon(Icons.close_fullscreen_rounded, size: 17),
               onPressed: () => _service.setPreview(),
               color: kText,
-              visualDensity: VisualDensity.compact,
               tooltip: 'Exit full screen',
             ),
-            IconButton(
+            _buildToolbarButton(
               key: const ValueKey('browser_minimize_button'),
-              icon: const Icon(Icons.unfold_less_rounded, size: 18),
+              icon: const Icon(Icons.unfold_less_rounded, size: 17),
               onPressed: () => _service.setClosed(),
               color: kMuted,
-              visualDensity: VisualDensity.compact,
               tooltip: 'Minimize to dock',
             ),
           ] else ...[
-            IconButton(
+            _buildToolbarButton(
               key: const ValueKey('browser_fullscreen_button'),
-              icon: const Icon(Icons.open_in_full_rounded, size: 16),
+              icon: const Icon(Icons.open_in_full_rounded, size: 15),
               onPressed: () => _service.setFullScreen(),
               color: kText,
-              visualDensity: VisualDensity.compact,
               tooltip: 'Open full screen',
             ),
-            IconButton(
+            _buildToolbarButton(
               key: const ValueKey('browser_minimize_button'),
-              icon: const Icon(Icons.unfold_less_rounded, size: 18),
+              icon: const Icon(Icons.unfold_less_rounded, size: 17),
               onPressed: () => _service.setClosed(),
               color: kText,
-              visualDensity: VisualDensity.compact,
               tooltip: 'Minimize to dock',
             ),
           ],
-          IconButton(
+          _buildToolbarButton(
             key: const ValueKey('browser_close_button'),
-            icon: const Icon(Icons.close_rounded, size: 18),
+            icon: const Icon(Icons.close_rounded, size: 17),
             onPressed: () => _service.close(),
             color: kMuted,
-            visualDensity: VisualDensity.compact,
             tooltip: 'Close browser',
           ),
         ],

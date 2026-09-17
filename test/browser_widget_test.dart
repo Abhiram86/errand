@@ -424,5 +424,32 @@ void main() {
 
     expect(find.byType(OAuthPopupDialog), findsNothing);
   });
+
+  testWidgets('BrowserWidget toolbar renders on narrow 320px screen without overflow in preview and fullScreen', (tester) async {
+    tester.view.physicalSize = const Size(320, 640);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() => tester.view.resetPhysicalSize());
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: BrowserWidget(service: service),
+        ),
+      ),
+    );
+
+    await service.open('https://flutter.dev');
+    service.setPreview();
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(find.byKey(const ValueKey('browser_reload_button')), findsOneWidget);
+
+    service.setFullScreen();
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(find.byKey(const ValueKey('browser_reload_button')), findsOneWidget);
+  });
 }
 

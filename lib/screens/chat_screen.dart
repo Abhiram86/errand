@@ -425,6 +425,35 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     return availableModels.first.id;
   }
 
+  bool _isFallbackOrStaleModel(
+    String modelId,
+    LlmProvider provider,
+    List<ModelOption> liveModels,
+  ) {
+    if (liveModels.isEmpty) return false;
+
+    // 1. If the model does not exist in the available live models list, it's stale/invalid.
+    final existsInLive = liveModels.any((m) => m.id == modelId);
+    if (!existsInLive) return true;
+
+    final hasKey = provider.hasKey ||
+        (provider.id == ProviderPresetType.openRouter.id &&
+            AppSettingsService.instance.hasOpenRouterKey);
+
+    // 2. If provider has a key configured, but model is still the unconfigured free router
+    if (hasKey && (modelId == 'openrouter/free' || modelId == kDefaultModelId)) {
+      return true;
+    }
+
+    // 3. If the model is a hardcoded fallback from provider.defaultModels and does not match top sorted model
+    final isPresetFallback = provider.defaultModels.any((m) => m.id == modelId);
+    if (isPresetFallback && liveModels.first.id != modelId) {
+      return true;
+    }
+
+    return false;
+  }
+
   /// Loads runtime configuration (decrypted keys, last-selected model) from
   /// the settings store, then refreshes the model catalog. Replaces the old
   /// compile-time --dart-define env injection.
@@ -459,7 +488,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       ..sort(ModelOption.compareByReleaseDate);
 
     final String model;
-    if (hasCachedModel) {
+    if (hasCachedModel &&
+        !_isFallbackOrStaleModel(settings.selectedModel, provider, availableModels)) {
       model = settings.selectedModel;
     } else {
       // Select the first model from this sorted if no cached previous selected model
@@ -525,7 +555,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         ..sort(ModelOption.compareByReleaseDate);
 
       String modelToUse = _selectedModel;
-      if (providerChanged) {
+      if (providerChanged ||
+          _isFallbackOrStaleModel(_selectedModel, activeProvider, availableModels)) {
         modelToUse = _pickDefaultModelForProvider(activeProvider, availableModels);
         unawaited(AppSettingsService.instance.setSelectedModel(modelToUse));
       }
@@ -540,7 +571,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         _touchConversation();
       });
       _persistNow();
-      unawaited(_loadModelCatalog(forceRefresh: false));
+      unawaited(_loadModelCatalog(forceRefresh: true));
     }
     // The Tools tab can enable/disable screen access without flagging a
     // settings change — always re-read so the system-prompt cache can't go
@@ -766,8 +797,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       final sortedModels = List<ModelOption>.from(models)
         ..sort(ModelOption.compareByReleaseDate);
 
+      final bool shouldPickNewDefault = !settings.hasSelectedModel ||
+          _isFallbackOrStaleModel(_selectedModel, provider, sortedModels);
+
       final String modelToUse;
-      if (!settings.hasSelectedModel && sortedModels.isNotEmpty) {
+      if (shouldPickNewDefault && sortedModels.isNotEmpty) {
         modelToUse = _pickDefaultModelForProvider(provider, sortedModels);
         unawaited(settings.setSelectedModel(modelToUse));
       } else {
