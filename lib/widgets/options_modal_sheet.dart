@@ -11,7 +11,7 @@ class SheetOption {
   final String title;
   final IconData icon;
   final SheetOptionType type;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
   final Color? color;
   final Color? iconColor;
 
@@ -19,7 +19,7 @@ class SheetOption {
     required this.title,
     required this.icon,
     this.type = SheetOptionType.normal,
-    required this.onTap,
+    this.onTap,
     this.color,
     this.iconColor,
   });
@@ -29,87 +29,107 @@ class OptionsModalSheet extends StatelessWidget {
   final String? title;
   final String? subtitle;
   final List<SheetOption> options;
+  final double maxHeightFactor;
 
   const OptionsModalSheet({
     super.key,
     this.title,
     this.subtitle,
     required this.options,
+    this.maxHeightFactor = 0.75,
   });
 
   @override
   Widget build(BuildContext context) {
     final hasTitle = title != null && title!.trim().isNotEmpty;
     final hasSubtitle = subtitle != null && subtitle!.trim().isNotEmpty;
+    final maxHeight = MediaQuery.sizeOf(context).height * maxHeightFactor;
 
-    return SafeArea(
-      child: Padding(
-        padding: EdgeInsets.fromLTRB(20, hasTitle ? 18 : 14, 20, 12),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (hasTitle) ...[
-              Text(
-                title!,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: kText,
-                  fontSize: 14,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-              if (hasSubtitle) ...[
-                const SizedBox(height: 4),
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxHeight: maxHeight),
+      child: SafeArea(
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(20, hasTitle ? 18 : 14, 20, 12),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (hasTitle) ...[
                 Text(
-                  subtitle!,
+                  title!,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
-                    color: kMuted,
-                    fontSize: 13,
+                    color: kText,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
                   ),
                 ),
-              ],
-              const SizedBox(height: 8),
-            ],
-            ...options.map(
-              (option) {
-                final isDestructive = option.type == SheetOptionType.destructive;
-                final itemColor = isDestructive
-                    ? kDanger
-                    : (option.color ?? kMuted);
-                final itemIconColor = isDestructive
-                    ? kDanger
-                    : (option.iconColor ?? option.color ?? kMuted);
-
-                return ListTile(
-                  dense: true,
-                  visualDensity: const VisualDensity(vertical: -3),
-                  contentPadding: EdgeInsets.zero,
-                  minVerticalPadding: 0,
-                  leading: Icon(
-                    option.icon,
-                    color: itemIconColor,
-                    size: 18,
-                  ),
-                  title: Text(
-                    option.title,
-                    style: TextStyle(
-                      color: itemColor,
-                      fontSize: 14,
+                if (hasSubtitle) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    subtitle!,
+                    style: const TextStyle(
+                      color: kMuted,
+                      fontSize: 13,
                     ),
                   ),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(14),
+                ],
+                const SizedBox(height: 8),
+              ],
+              Flexible(
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: options.map(
+                      (option) {
+                        final isDestructive =
+                            option.type == SheetOptionType.destructive;
+                        final itemColor = isDestructive
+                            ? kDanger
+                            : (option.color ??
+                                (option.onTap == null ? kText : kMuted));
+                        final itemIconColor = isDestructive
+                            ? kDanger
+                            : (option.iconColor ??
+                                option.color ??
+                                (option.onTap == null ? kBubbleUser : kMuted));
+
+                        return ListTile(
+                          dense: true,
+                          visualDensity: const VisualDensity(vertical: -3),
+                          contentPadding: EdgeInsets.zero,
+                          minVerticalPadding: 0,
+                          leading: Icon(
+                            option.icon,
+                            color: itemIconColor,
+                            size: 18,
+                          ),
+                          title: Text(
+                            option.title,
+                            style: TextStyle(
+                              color: itemColor,
+                              fontSize: 14,
+                            ),
+                          ),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          onTap: option.onTap != null
+                              ? () {
+                                  Navigator.of(context).pop();
+                                  option.onTap!();
+                                }
+                              : null,
+                        );
+                      },
+                    ).toList(),
                   ),
-                  onTap: () {
-                    Navigator.of(context).pop();
-                    option.onTap();
-                  },
-                );
-              },
-            ),
-          ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -121,10 +141,17 @@ Future<T?> showOptionsModalSheet<T>(
   String? title,
   String? subtitle,
   required List<SheetOption> options,
+  bool isScrollControlled = false,
+  double maxHeightFactor = 0.75,
 }) {
+  final screenHeight = MediaQuery.sizeOf(context).height;
+  final maxHeight = screenHeight * maxHeightFactor;
+
   return showModalBottomSheet<T>(
     context: context,
     backgroundColor: kInputBg,
+    isScrollControlled: isScrollControlled,
+    constraints: BoxConstraints(maxHeight: maxHeight),
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(
         top: Radius.circular(24),
@@ -134,6 +161,7 @@ Future<T?> showOptionsModalSheet<T>(
       title: title,
       subtitle: subtitle,
       options: options,
+      maxHeightFactor: maxHeightFactor,
     ),
   );
 }

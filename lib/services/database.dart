@@ -371,6 +371,17 @@ final class ErrandDatabase extends _$ErrandDatabase {
     await (delete(appSettings)..where((s) => s.key.equals(key))).go();
   }
 
+  /// Checks if any user data (conversations or app settings) already exists in the database.
+  Future<bool> hasAnyUserData() async {
+    try {
+      final conv = await (select(conversations)..limit(1)).get();
+      if (conv.isNotEmpty) return true;
+      final settings = await (select(appSettings)..limit(1)).get();
+      if (settings.isNotEmpty) return true;
+    } catch (_) {}
+    return false;
+  }
+
   // -- Memory CRUD --------------------------------------------------------
 
   /// Loads all stored memories, ordered by recency (newest updated first).

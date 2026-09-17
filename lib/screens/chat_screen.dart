@@ -15,6 +15,7 @@ import '../models/app_update_info.dart';
 import '../models/llm_provider.dart';
 import '../models/model_option.dart';
 import '../services/a11y_service.dart';
+import '../services/app_info_service.dart';
 import '../services/app_settings.dart';
 import '../services/database.dart';
 import '../services/installed_apps_service.dart';
@@ -35,6 +36,7 @@ import '../widgets/chat_sidebar.dart';
 import '../widgets/context_footer.dart';
 import '../widgets/message_bubbles.dart';
 import '../widgets/model_picker.dart';
+import '../widgets/options_modal_sheet.dart';
 import '../widgets/paging.dart';
 import '../widgets/pending_attachments_banner.dart';
 import '../widgets/settings_sheet.dart';
@@ -237,9 +239,56 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       if (mounted) {
         await _refreshA11yState(triggerToast: true);
       }
+      if (mounted) {
+        unawaited(_checkReleaseNotes());
+      }
       unawaited(UpdateService.instance.initialize());
       unawaited(InstalledAppsService.instance.initAndRefresh());
     });
+  }
+
+  Future<void> _checkReleaseNotes({bool force = false}) async {
+    try {
+      List<String>? notes;
+      if (force) {
+        final cached = await UpdateService.instance.loadPersistedInfo();
+        String? body = cached?.releaseNotes;
+        if (body == null || body.trim().isEmpty) {
+          final platformInfo = await AppInfoService.instance.getAppInfo();
+          body = await UpdateService.instance.fetchReleaseNotes(
+            platformInfo.versionName,
+          );
+        }
+        if (body != null && body.trim().isNotEmpty) {
+          notes = UpdateService.parseReleaseNotes(body);
+        }
+        notes ??= const [
+          'feat(models, ui): sort models by release date in model picker',
+          'feat: dynamic provider default when no model is selected',
+          'feat: unified options modal sheet for chat options and user messages',
+          'feat: background OTA update system with progress bar',
+        ];
+      } else {
+        notes = await UpdateService.instance.checkFirstLaunchAfterUpdate();
+      }
+      if (!mounted || notes == null || notes.isEmpty) return;
+
+      await showOptionsModalSheet<void>(
+        context,
+        title: 'Release Notes',
+        isScrollControlled: true,
+        options: notes
+            .map(
+              (note) => SheetOption(
+                title: note,
+                icon: Icons.check_circle_outline_rounded,
+                iconColor: kBubbleUser,
+                onTap: null,
+              ),
+            )
+            .toList(),
+      );
+    } catch (_) {}
   }
 
   LlmClient _createLlmClient(String model) {
@@ -2044,6 +2093,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                   conversations: _sortedConversations,
                   activeConversationId: _activeConversation.id,
                   onClose: _closeSidebar,
+                  onShowReleaseNotes: () => _checkReleaseNotes(force: true),
                   onSelectConversation: _selectConversation,
                   onDeleteConversation: _deleteConversation,
                   hasMoreConversations: _conversationFetcher.hasMore,

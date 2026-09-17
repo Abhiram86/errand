@@ -15,6 +15,7 @@ class UpdateService {
   static const String latestReleaseUrl =
       'https://api.github.com/repos/Abhiram86/errand/releases/latest';
   static const String _dbKey = 'pref.app_update_info';
+  static const String _kLastSeenVersionKey = 'pref.last_seen_version';
   static const Duration checkInterval = Duration(hours: 2);
 
   static final UpdateService instance = UpdateService();
@@ -50,13 +51,191 @@ class UpdateService {
   Future<void> initialize() async {
     final cached = await loadPersistedInfo();
     if (cached != null) {
-      _cleanStaleApkIfNeeded(cached);
+      final platformInfo = await _appInfo.getAppInfo();
+      _cleanStaleApkIfNeeded(cached, platformInfo.versionName);
       if (cached.hasUpdate && !cached.isDismissed) {
         activeUpdate.value = cached;
       }
     }
     // Background check runs asynchronously without awaiting.
     unawaited(checkUpdate());
+  }
+
+  /// Parses markdown release notes body into clean, user-facing bullet points.
+  static List<String> parseReleaseNotes(String? body) {
+    if (body == null || body.trim().isEmpty) return [];
+
+    final lines = body.split('\n');
+    final items = <String>[];
+
+    for (var rawLine in lines) {
+      var line = rawLine.trim();
+      if (line.isEmpty) continue;
+
+      // Skip horizontal rules
+      if (RegExp(r'^[-*_]{3,}$').hasMatch(line)) continue;
+
+      // Skip markdown headings (# What's Changed, ### Highlights, etc.)
+      if (line.startsWith('#')) continue;
+
+      // Skip full changelog lines or comparison URLs
+      if (RegExp(r'^\*{0,2}Full Changelog', caseSensitive: false).hasMatch(line)) {
+        continue;
+      }
+      if (RegExp(r'^https?://github\.com/.+/compare/', caseSensitive: false).hasMatch(line)) {
+        continue;
+      }
+
+      // Skip APK download links/asset mentions
+      if (line.toLowerCase().contains('.apk') &&
+          (line.startsWith('[') || line.startsWith('http'))) {
+        continue;
+      }
+
+      // Strip leading bullet markers (*, -, +, •, or "1. ")
+      line = line.replaceFirst(RegExp(r'^([*\-+•]|\d+[.)])\s+'), '');
+
+      // Strip GitHub PR suffix: " by @user in https://github.com/..."
+      line = line.replaceFirst(
+        RegExp(r'\s+by\s+@\S+\s+in\s+https?://\S+.*$', caseSensitive: false),
+        '',
+      );
+
+      // Remove markdown links [text](url) -> text
+      line = line.replaceAllMapped(
+        RegExp(r'\[([^\]]+)\]\([^)]+\)'),
+        (m) => m[1] ?? '',
+      );
+
+      // Remove bold/italic/code markers: **bold**, *italic*, `code`
+      line = line.replaceAll(RegExp(r'[*_`]{1,2}'), '');
+
+      line = line.trim();
+      if (line.isNotEmpty) {
+        items.add(line);
+      }
+    }
+
+    return items;
+  }
+
+  /// Fetches release notes from GitHub API for a specific tag or falls back to latest release.
+  Future<String?> fetchReleaseNotes(String version) async {
+    try {
+      final cleanVersion = version.replaceFirst(RegExp(r'^[vV]'), '').trim();
+      final tagUri = Uri.parse(
+        'https://api.github.com/repos/Abhiram86/errand/releases/tags/v$cleanVersion',
+      );
+      var response = await _client.get(
+        tagUri,
+        headers: {
+          'Accept': 'application/vnd.github.v3+json',
+          'User-Agent': 'handy_flutter/1.0',
+        },
+      ).timeout(const Duration(seconds: 10));
+
+      if (response.statusCode != 200) {
+        response = await _client.get(
+          Uri.parse(latestReleaseUrl),
+          headers: {
+            'Accept': 'application/vnd.github.v3+json',
+            'User-Agent': 'handy_flutter/1.0',
+          },
+        ).timeout(const Duration(seconds: 10));
+      }
+
+      if (response.statusCode == 200) {
+        final dynamic data = jsonDecode(response.body);
+        if (data is Map<String, dynamic>) {
+          return data['body'] as String?;
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  /// Checks whether this is the first launch after an update (excluding fresh/first installs).
+  /// If it is an update launch, returns the parsed release notes and updates the last seen version.
+  /// If it is a fresh install or already-seen version, returns null.
+  Future<List<String>?> checkFirstLaunchAfterUpdate() async {
+    try {
+      final platformInfo = await _appInfo.getAppInfo();
+      final currentVersion = platformInfo.versionName.trim();
+      if (currentVersion.isEmpty || currentVersion == '0.0.0') {
+        return null;
+      }
+
+      final lastSeen = await _db.getSetting(_kLastSeenVersionKey);
+      final cached = await loadPersistedInfo();
+
+      if (lastSeen == null) {
+        // Distinguish fresh install vs existing user updating from before this pref existed
+        final hasUserData = await _db.hasAnyUserData();
+        final hadOlderCached = cached != null &&
+            (AppUpdateInfo.compareSemver(currentVersion, cached.currentVersion) > 0 ||
+                (AppUpdateInfo.compareSemver(currentVersion, cached.latestVersion) == 0 &&
+                    AppUpdateInfo.compareSemver(cached.latestVersion, cached.currentVersion) > 0));
+
+        final isUpdate = hadOlderCached || hasUserData;
+
+        // Persist current version so subsequent launches know it's already seen
+        await _db.setSetting(_kLastSeenVersionKey, currentVersion);
+
+        if (!isUpdate) {
+          // Fresh install / first install: do not show release notes
+          return null;
+        }
+
+        // Clean up any stale APK from previous version
+        if (cached?.apkLocation != null) {
+          try {
+            final f = File(cached!.apkLocation!);
+            if (f.existsSync()) f.deleteSync();
+          } catch (_) {}
+        }
+
+        String? notesBody = cached?.releaseNotes;
+        if (notesBody == null || notesBody.trim().isEmpty) {
+          notesBody = await fetchReleaseNotes(currentVersion);
+        }
+
+        final parsed = parseReleaseNotes(notesBody);
+        return parsed.isNotEmpty ? parsed : null;
+      }
+
+      // Existing last seen version is present:
+      final cmp = AppUpdateInfo.compareSemver(currentVersion, lastSeen);
+      if (cmp <= 0) {
+        // Not a newer version launch
+        return null;
+      }
+
+      // First launch after update!
+      await _db.setSetting(_kLastSeenVersionKey, currentVersion);
+
+      // Clean up any stale APK from cache
+      if (cached?.apkLocation != null) {
+        try {
+          final f = File(cached!.apkLocation!);
+          if (f.existsSync()) f.deleteSync();
+        } catch (_) {}
+      }
+
+      String? notesBody;
+      if (cached != null &&
+          AppUpdateInfo.compareSemver(cached.latestVersion, currentVersion) == 0 &&
+          cached.releaseNotes != null &&
+          cached.releaseNotes!.trim().isNotEmpty) {
+        notesBody = cached.releaseNotes;
+      } else {
+        notesBody = await fetchReleaseNotes(currentVersion);
+      }
+
+      final parsed = parseReleaseNotes(notesBody);
+      return parsed.isNotEmpty ? parsed : null;
+    } catch (_) {
+      return null;
+    }
   }
 
   /// Loads persisted update info from the SQLite settings table.
@@ -79,12 +258,16 @@ class UpdateService {
     } catch (_) {}
   }
 
-  void _cleanStaleApkIfNeeded(AppUpdateInfo info) {
-    if (info.apkLocation != null && !info.isCachedApkValid) {
-      try {
-        final f = File(info.apkLocation!);
-        if (f.existsSync()) f.deleteSync();
-      } catch (_) {}
+  void _cleanStaleApkIfNeeded(AppUpdateInfo info, [String? currentVersion]) {
+    if (info.apkLocation != null) {
+      final isStaleVersion = currentVersion != null &&
+          AppUpdateInfo.compareSemver(currentVersion, info.latestVersion) >= 0;
+      if (!info.isCachedApkValid || isStaleVersion) {
+        try {
+          final f = File(info.apkLocation!);
+          if (f.existsSync()) f.deleteSync();
+        } catch (_) {}
+      }
     }
   }
 

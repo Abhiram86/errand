@@ -17,6 +17,7 @@ void main() {
 
     bool renamed = false;
     bool deleted = false;
+    bool showedNotes = false;
 
     await tester.pumpWidget(
       MaterialApp(
@@ -29,6 +30,7 @@ void main() {
             isLoadingMoreConversations: false,
             onLoadMoreConversations: () {},
             onClose: () {},
+            onShowReleaseNotes: () => showedNotes = true,
             onSelectConversation: (_) {},
             onDeleteConversation: (_) {
               deleted = true;
@@ -74,5 +76,10 @@ void main() {
     await tester.tap(find.text('Delete'));
     await tester.pumpAndSettle();
     expect(deleted, isTrue);
+
+    // 3. Verify tapping release notes button triggers callback
+    await tester.tap(find.byIcon(Icons.new_releases_outlined));
+    await tester.pumpAndSettle();
+    expect(showedNotes, isTrue);
   });
 }

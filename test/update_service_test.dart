@@ -321,4 +321,151 @@ void main() {
       expect(service.activeUpdate.value, isNull);
     });
   });
+
+  group('UpdateService release notes & first launch detection', () {
+    test('parseReleaseNotes parses github changelog markdown into clean items', () {
+      const sample = '''
+## What's Changed
+* feat(models, ui): sort models by release date by @Abhiram86 in https://github.com/Abhiram86/errand/pull/15
+* Fix: **keyboard dismiss** on back press by @someone in https://github.com/Abhiram86/errand/pull/14
+- Another enhancement: `code` support
+1. First numbered item
+
+**Full Changelog**: https://github.com/Abhiram86/errand/compare/v0.6.0...v0.6.1
+[Errand-v0.6.1.apk](https://github.com/download/Errand.apk)
+---
+''';
+
+      final items = UpdateService.parseReleaseNotes(sample);
+      expect(items, [
+        'feat(models, ui): sort models by release date',
+        'Fix: keyboard dismiss on back press',
+        'Another enhancement: code support',
+        'First numbered item',
+      ]);
+    });
+
+    test('parseReleaseNotes returns empty list for null or empty body', () {
+      expect(UpdateService.parseReleaseNotes(null), isEmpty);
+      expect(UpdateService.parseReleaseNotes('   \n\n  '), isEmpty);
+    });
+
+    test('checkFirstLaunchAfterUpdate ignores fresh install and persists version', () async {
+      final appInfo = FakeAppInfoService(version: '0.6.1');
+      final service = UpdateService(
+        client: MockClient((_) async => http.Response('{}', 200)),
+        appInfo: appInfo,
+        database: db,
+        cacheDirProvider: () async => tempDir,
+      );
+
+      // On a fresh install, DB has no user data and no last seen version
+      final notes = await service.checkFirstLaunchAfterUpdate();
+      expect(notes, isNull);
+
+      // Now last seen version is stored
+      final lastSeen = await db.getSetting('pref.last_seen_version');
+      expect(lastSeen, '0.6.1');
+
+      // Subsequent launch of the same version also returns null
+      final secondLaunchNotes = await service.checkFirstLaunchAfterUpdate();
+      expect(secondLaunchNotes, isNull);
+    });
+
+    test('checkFirstLaunchAfterUpdate detects update when lastSeen is older version', () async {
+      // Setup existing last seen version (e.g. user was previously running 0.6.0)
+      await db.setSetting('pref.last_seen_version', '0.6.0');
+
+      // Cache release notes from when update was checked/downloaded in 0.6.0
+      await db.setSetting(
+        'pref.app_update_info',
+        jsonEncode({
+          'current_version': '0.6.0',
+          'latest_version': '0.6.1',
+          'last_ping': DateTime.now().millisecondsSinceEpoch,
+          'release_notes': '* Added sorting by date\n* Fixed UI bug',
+        }),
+      );
+
+      final appInfo = FakeAppInfoService(version: '0.6.1');
+      final service = UpdateService(
+        client: MockClient((_) async => http.Response('{}', 200)),
+        appInfo: appInfo,
+        database: db,
+        cacheDirProvider: () async => tempDir,
+      );
+
+      final notes = await service.checkFirstLaunchAfterUpdate();
+      expect(notes, isNotNull);
+      expect(notes, [
+        'Added sorting by date',
+        'Fixed UI bug',
+      ]);
+
+      // Last seen version is updated to 0.6.1
+      expect(await db.getSetting('pref.last_seen_version'), '0.6.1');
+
+      // Next launch on 0.6.1 returns null
+      final nextLaunch = await service.checkFirstLaunchAfterUpdate();
+      expect(nextLaunch, isNull);
+    });
+
+    test('checkFirstLaunchAfterUpdate falls back to GitHub API if cached notes missing', () async {
+      await db.setSetting('pref.last_seen_version', '0.6.0');
+
+      final fakeReleaseJson = jsonEncode({
+        'tag_name': 'v0.6.1',
+        'body': '## Release 0.6.1\n- Fetched from GitHub API\n- Another improvement',
+      });
+
+      final mockClient = MockClient((request) async {
+        return http.Response(fakeReleaseJson, 200);
+      });
+
+      final appInfo = FakeAppInfoService(version: '0.6.1');
+      final service = UpdateService(
+        client: mockClient,
+        appInfo: appInfo,
+        database: db,
+        cacheDirProvider: () async => tempDir,
+      );
+
+      final notes = await service.checkFirstLaunchAfterUpdate();
+      expect(notes, isNotNull);
+      expect(notes, [
+        'Fetched from GitHub API',
+        'Another improvement',
+      ]);
+    });
+
+    test('checkFirstLaunchAfterUpdate cleans up stale APK upon update launch', () async {
+      await db.setSetting('pref.last_seen_version', '0.6.0');
+
+      final staleApk = File('${tempDir.path}/stale.apk')..writeAsStringSync('apk content');
+      expect(staleApk.existsSync(), isTrue);
+
+      await db.setSetting(
+        'pref.app_update_info',
+        jsonEncode({
+          'current_version': '0.6.0',
+          'latest_version': '0.6.1',
+          'last_ping': DateTime.now().millisecondsSinceEpoch,
+          'apk_location': staleApk.path,
+          'release_notes': '* New release notes',
+        }),
+      );
+
+      final appInfo = FakeAppInfoService(version: '0.6.1');
+      final service = UpdateService(
+        client: MockClient((_) async => http.Response('{}', 200)),
+        appInfo: appInfo,
+        database: db,
+        cacheDirProvider: () async => tempDir,
+      );
+
+      final notes = await service.checkFirstLaunchAfterUpdate();
+      expect(notes, isNotNull);
+      expect(staleApk.existsSync(), isFalse);
+    });
+  });
 }
