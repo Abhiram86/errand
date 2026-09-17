@@ -353,5 +353,76 @@ void main() {
     expect(focusNotifier.value, isFalse);
     expect(tester.getSize(find.byType(BrowserDockSpacer)).height, greaterThan(200));
   });
+
+  testWidgets('BrowserWidget toolbar displays Open in external browser button', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Stack(
+            children: [
+              BrowserWidget(service: service),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    await service.open('https://flutter.dev');
+    service.setPreview();
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('browser_open_external_button')), findsOneWidget);
+    expect(find.byTooltip('Open in external browser'), findsOneWidget);
+
+    service.setFullScreen();
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('browser_open_external_button')), findsOneWidget);
+  });
+
+  testWidgets('OAuthPopupDialog renders and dismisses on close button tap', (tester) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: OAuthPopupDialog(
+            windowId: 42,
+          ),
+        ),
+      ),
+    );
+
+    expect(find.byType(OAuthPopupDialog), findsOneWidget);
+    expect(find.text('Authentication'), findsAtLeast(1));
+    expect(find.byIcon(Icons.security_rounded), findsAtLeast(1));
+    expect(find.byTooltip('Close'), findsOneWidget);
+    expect(find.byKey(const ValueKey('oauth_popup_test_placeholder')), findsOneWidget);
+
+    // Test dismiss inside a dialog
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => ElevatedButton(
+              onPressed: () => showDialog<void>(
+                context: context,
+                builder: (_) => const OAuthPopupDialog(windowId: 101),
+              ),
+              child: const Text('Open Dialog'),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Open Dialog'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(OAuthPopupDialog), findsOneWidget);
+
+    await tester.tap(find.byTooltip('Close'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(OAuthPopupDialog), findsNothing);
+  });
 }
 

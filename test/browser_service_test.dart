@@ -556,5 +556,36 @@ void main() {
       expect(() => service.act(action: 'click', ref: '1'), throwsStateError);
       expect(() => service.takeScreenshot(), throwsStateError);
     });
+
+    test('sanitizeUserAgent strips Android WebView markers for OAuth compatibility', () {
+      const androidWebViewUa =
+          'Mozilla/5.0 (Linux; U; Android 14; Pixel 8 Build/UP1A.231005.007; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.6723.107 Mobile Safari/537.36';
+      final sanitized = BrowserService.sanitizeUserAgent(androidWebViewUa);
+
+      expect(sanitized, isNot(contains('; wv')));
+      expect(sanitized, isNot(contains('Version/4.0')));
+      expect(sanitized, contains('Chrome/130.0.6723.107'));
+      expect(sanitized, contains('Mobile Safari/537.36'));
+      expect(sanitized, equals(
+        'Mozilla/5.0 (Linux; U; Android 14; Pixel 8 Build/UP1A.231005.007) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.6723.107 Mobile Safari/537.36',
+      ));
+    });
+
+    test('sanitizeUserAgent returns defaultCleanUserAgent on empty or whitespace string', () {
+      expect(BrowserService.sanitizeUserAgent(''), equals(BrowserService.defaultCleanUserAgent));
+      expect(BrowserService.sanitizeUserAgent('   '), equals(BrowserService.defaultCleanUserAgent));
+    });
+
+    test('sanitizeUserAgent preserves already clean Chrome Mobile User-Agent', () {
+      const cleanChrome =
+          'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36';
+      expect(BrowserService.sanitizeUserAgent(cleanChrome), equals(cleanChrome));
+    });
+
+    test('currentUserAgent updates and reflects active sanitized value', () {
+      expect(service.currentUserAgent, equals(BrowserService.defaultCleanUserAgent));
+      service.setCurrentUserAgent('Custom/1.0');
+      expect(service.currentUserAgent, equals('Custom/1.0'));
+    });
   });
 }

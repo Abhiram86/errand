@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 import '../services/browser_service.dart';
+import '../services/intent_service.dart';
 import '../theme/app_colors.dart';
 
 /// Spacer widget that reserves height in [ChatScreen]'s message column
@@ -84,6 +85,7 @@ class _BrowserWidgetState extends State<BrowserWidget> {
   bool get _canRenderNativeWebView {
     if (kIsWeb) return false;
     if (_service.controllerOverride != null) return false;
+    if (InAppWebViewPlatform.instance == null) return false;
     return defaultTargetPlatform == TargetPlatform.android ||
         defaultTargetPlatform == TargetPlatform.iOS;
   }
@@ -455,6 +457,19 @@ class _BrowserWidgetState extends State<BrowserWidget> {
             ),
           ),
           const SizedBox(width: 4),
+          IconButton(
+            key: const ValueKey('browser_open_external_button'),
+            icon: const Icon(Icons.open_in_browser_rounded, size: 18),
+            onPressed: () {
+              final url = _service.currentUrl;
+              if (url != null && url.isNotEmpty && url != 'about:blank') {
+                IntentService().launchAction('open_url', data: url);
+              }
+            },
+            color: kMuted,
+            visualDensity: VisualDensity.compact,
+            tooltip: 'Open in external browser',
+          ),
           if (isFullScreen) ...[
             IconButton(
               key: const ValueKey('browser_restore_button'),
@@ -563,9 +578,38 @@ class _BrowserWidgetState extends State<BrowserWidget> {
           allowFileAccess: false,
           cacheEnabled: true,
           safeBrowsingEnabled: true,
+          supportMultipleWindows: true,
+          javaScriptCanOpenWindowsAutomatically: true,
+          userAgent: _service.currentUserAgent,
         ),
-        onWebViewCreated: (controller) {
+        onWebViewCreated: (controller) async {
           _service.attachInAppController(controller);
+          try {
+            final defaultUa = await InAppWebViewController.getDefaultUserAgent();
+            if (defaultUa.isNotEmpty) {
+              final sanitized = BrowserService.sanitizeUserAgent(defaultUa);
+              _service.setCurrentUserAgent(sanitized);
+              if (sanitized != BrowserService.defaultCleanUserAgent) {
+                await controller.setSettings(
+                  settings: InAppWebViewSettings(userAgent: sanitized),
+                );
+              }
+            }
+          } catch (_) {}
+        },
+        onCreateWindow: (controller, createWindowAction) async {
+          final windowId = createWindowAction.windowId;
+          if (!mounted) return false;
+
+          await showDialog<void>(
+            context: context,
+            barrierDismissible: true,
+            builder: (dialogContext) => OAuthPopupDialog(
+              windowId: windowId,
+              initialUrlRequest: createWindowAction.request,
+            ),
+          );
+          return true;
         },
         onLoadStart: (controller, url) {
           _service.onLoadStart(url?.toString() ?? '');
@@ -648,6 +692,193 @@ class _BrowserWidgetState extends State<BrowserWidget> {
             ),
           ],
         ],
+      ),
+    );
+  }
+}
+
+/// In-app popup dialog hosted in a sleek modal card for OAuth authentication,
+/// Google/GitHub sign-in popups, and multi-window child pages (`window.open`).
+class OAuthPopupDialog extends StatefulWidget {
+  final int windowId;
+  final URLRequest? initialUrlRequest;
+
+  const OAuthPopupDialog({
+    super.key,
+    required this.windowId,
+    this.initialUrlRequest,
+  });
+
+  @override
+  State<OAuthPopupDialog> createState() => _OAuthPopupDialogState();
+}
+
+class _OAuthPopupDialogState extends State<OAuthPopupDialog> {
+  String _title = 'Authentication';
+  String? _currentUrl;
+  bool _isLoading = false;
+  int _progress = 0;
+
+  bool get _canRenderNativeWebView {
+    if (kIsWeb) return false;
+    if (InAppWebViewPlatform.instance == null) return false;
+    return defaultTargetPlatform == TargetPlatform.android ||
+        defaultTargetPlatform == TargetPlatform.iOS;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final mediaQuery = MediaQuery.sizeOf(context);
+    final dialogWidth = (mediaQuery.width * 0.94).clamp(320.0, 560.0);
+    final dialogHeight = (mediaQuery.height * 0.85).clamp(440.0, 750.0);
+
+    return Dialog(
+      backgroundColor: kDarkBg,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 20),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: const BorderSide(color: kBorder),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: SizedBox(
+        width: dialogWidth,
+        height: dialogHeight,
+        child: Column(
+          children: [
+            Container(
+              height: 48,
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              color: kInputBg,
+              child: Row(
+                children: [
+                  const Icon(Icons.security_rounded, size: 18, color: kBubbleUser),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      _title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: kText,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  if (_currentUrl != null &&
+                      _currentUrl!.isNotEmpty &&
+                      _currentUrl != 'about:blank')
+                    IconButton(
+                      icon: const Icon(Icons.open_in_browser_rounded, size: 18),
+                      color: kMuted,
+                      visualDensity: VisualDensity.compact,
+                      tooltip: 'Open in external browser',
+                      onPressed: () {
+                        IntentService().launchAction('open_url', data: _currentUrl);
+                      },
+                    ),
+                  IconButton(
+                    icon: const Icon(Icons.close_rounded, size: 18),
+                    color: kMuted,
+                    visualDensity: VisualDensity.compact,
+                    tooltip: 'Close',
+                    onPressed: () => Navigator.of(context).pop(),
+                  ),
+                ],
+              ),
+            ),
+            if (_isLoading && _progress > 0 && _progress < 100)
+              SizedBox(
+                height: 2,
+                child: LinearProgressIndicator(
+                  value: _progress / 100.0,
+                  backgroundColor: Colors.transparent,
+                  color: kBubbleUser,
+                ),
+              ),
+            Expanded(
+              child: ColoredBox(
+                color: Colors.white,
+                child: _canRenderNativeWebView
+                    ? InAppWebView(
+                        windowId: widget.windowId,
+                        initialUrlRequest: widget.initialUrlRequest,
+                        initialSettings: InAppWebViewSettings(
+                          isInspectable: kDebugMode,
+                          javaScriptEnabled: true,
+                          domStorageEnabled: true,
+                          databaseEnabled: true,
+                          supportMultipleWindows: true,
+                          javaScriptCanOpenWindowsAutomatically: true,
+                          useHybridComposition: true,
+                          userAgent: BrowserService.defaultCleanUserAgent,
+                          mixedContentMode:
+                              MixedContentMode.MIXED_CONTENT_NEVER_ALLOW,
+                          allowContentAccess: false,
+                          allowFileAccess: false,
+                          cacheEnabled: true,
+                          safeBrowsingEnabled: true,
+                        ),
+                        onCloseWindow: (controller) {
+                          if (mounted) {
+                            Navigator.of(context).pop();
+                          }
+                        },
+                        onTitleChanged: (controller, title) {
+                          if (mounted && title != null && title.isNotEmpty) {
+                            setState(() => _title = title);
+                          }
+                        },
+                        onLoadStart: (controller, url) {
+                          if (mounted) {
+                            setState(() {
+                              _isLoading = true;
+                              _currentUrl = url?.toString();
+                            });
+                          }
+                        },
+                        onLoadStop: (controller, url) {
+                          if (mounted) {
+                            setState(() {
+                              _isLoading = false;
+                              _currentUrl = url?.toString();
+                            });
+                          }
+                        },
+                        onProgressChanged: (controller, progress) {
+                          if (mounted) {
+                            setState(() => _progress = progress);
+                          }
+                        },
+                      )
+                    : Container(
+                        key: const ValueKey('oauth_popup_test_placeholder'),
+                        color: const Color(0xFF0D1016),
+                        alignment: Alignment.center,
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const Icon(
+                              Icons.security_rounded,
+                              size: 40,
+                              color: kBubbleUser,
+                            ),
+                            const SizedBox(height: 12),
+                            Text(
+                              _title,
+                              style: const TextStyle(
+                                color: kText,
+                                fontSize: 14,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

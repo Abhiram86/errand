@@ -13,25 +13,27 @@ Goal: Smooth out transitions, eliminate PlatformView reparenting, and decouple A
 
 ---
 
-### 🟡 P6c — Filesystem Hygiene, Interactive Safety & Browser OAuth (ACTIVE / CURRENT)
+### ✅ P6c — Filesystem Hygiene, Interactive Safety & Browser OAuth (COMPLETED)
 
 Goal: Protect user storage from clutter, safeguard system integrity with session-bound interactive confirmation, and enable seamless browser authentication.
 
-1. **Storage & Working Directory Hygiene:**
+1. **Storage & Working Directory Hygiene:** (SHIPPED in v0.6.2)
    - Default all agent-created files and text outputs to `/storage/emulated/0/Documents/Errand/` instead of cluttering storage root (`/storage/emulated/0/`).
    - Route ephemeral/scratch operations (temporary scripts, intermediary logs) to app-internal `scratch/` cache directory.
    - Refine system prompt guidelines and `WorkingDirectory` default initialization to enforce output hygiene across all file and shell tools.
 
-2. **Interactive Bash Safety & Trust Mechanism (`Accept` / `Deny` / `Trust`):**
+2. **Interactive Bash Safety & Trust Mechanism (`Accept` / `Deny` / `Trust`):** (SHIPPED in cef6a57)
    - Intercept destructive shell commands (`rm`, `rm -r`, `rm *`, bulk `mv`, `truncate`, `find -delete`, `sed -i` outside scratch) at tool execution.
    - Present a sleek, floating confirmation card directly above the composer with command details and 3 choices:
      - **Accept:** Executes the command once.
      - **Deny:** Cancels execution and informs agent via graceful tool failure (`User denied execution of command: $command`).
      - **Trust:** Session-scoped auto-acceptance for the active conversation. Persisted in RAM only (`Set<String> _trustedConversationIds`). Resets immediately on conversation switch or app close/restart.
 
-3. **In-App Browser OAuth & Multi-Window Support:**
-   - Sanitize embedded WebView user-agent to bypass Google/GitHub `403: disallowed_useragent` blocks.
-   - Enable `supportMultipleWindows: true` and handle `onCreateWindow` / `onCloseWindow` to support OAuth popup dialogues and redirects smoothly within the in-app browser.
+3. **In-App Browser OAuth & Multi-Window Support:** (SHIPPED)
+   - Sanitize embedded WebView user-agent by stripping `; wv` and `Version/4.0` to bypass Google/GitHub `403: disallowed_useragent` blocks.
+   - Enable `supportMultipleWindows: true` and `javaScriptCanOpenWindowsAutomatically: true`.
+   - Handle `onCreateWindow` with modal `OAuthPopupDialog` containing a dedicated child `InAppWebView(windowId: ...)` and `onCloseWindow` auto-dismissal to support Google/GitHub OAuth popup dialogues smoothly within the in-app browser.
+   - Provide direct "Open in external browser" toolbar button escape hatch to launch the active URL in external Chrome.
 
 ---
 

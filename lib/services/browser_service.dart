@@ -155,7 +155,32 @@ class BrowserService extends ChangeNotifier {
 
   static final BrowserService instance = BrowserService();
 
-  // -- Reactive Getters -----------------------------------------------------
+  /// Default clean mobile user agent mimicking standard Chrome on Android without
+  /// WebView identifiers (`Version/4.0` or `; wv`) that trigger Google/GitHub
+  /// `403: disallowed_useragent` blocks.
+  static const String defaultCleanUserAgent =
+      'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36';
+
+  /// Sanitizes an Android WebView user agent string by stripping `; wv` and
+  /// `Version/4.0` tokens so OAuth identity providers (Google, GitHub, Microsoft)
+  /// treat the connection as standard Chrome Mobile.
+  static String sanitizeUserAgent(String rawUa) {
+    final trimmed = rawUa.trim();
+    if (trimmed.isEmpty) return defaultCleanUserAgent;
+    return trimmed
+        .replaceAll(RegExp(r';\s*wv\b', caseSensitive: false), '')
+        .replaceAll(RegExp(r'Version\/\d+(\.\d+)+\s*', caseSensitive: false), '')
+        .replaceAll(RegExp(r'\s{2,}'), ' ')
+        .trim();
+  }
+
+  String _currentUserAgent = defaultCleanUserAgent;
+
+  String get currentUserAgent => _currentUserAgent;
+
+  void setCurrentUserAgent(String ua) {
+    _currentUserAgent = ua;
+  }
 
   bool get isOpen => _isOpen;
   BrowserDisplayMode get displayMode => _displayMode;
