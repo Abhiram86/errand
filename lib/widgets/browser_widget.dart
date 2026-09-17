@@ -811,7 +811,7 @@ class _OAuthPopupDialogState extends State<OAuthPopupDialog> {
                           supportMultipleWindows: true,
                           javaScriptCanOpenWindowsAutomatically: true,
                           useHybridComposition: true,
-                          userAgent: BrowserService.defaultCleanUserAgent,
+                          userAgent: BrowserService.instance.currentUserAgent,
                           mixedContentMode:
                               MixedContentMode.MIXED_CONTENT_NEVER_ALLOW,
                           allowContentAccess: false,
