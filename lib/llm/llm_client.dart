@@ -115,7 +115,7 @@ class LlmConfig {
 class LlmClient {
   final LlmConfig config;
   final http.Client? _injectedClient;
-  final Duration Function(int attempt)? _backoffDuration;
+  final Duration Function(int attempt)? backoffDuration;
 
   /// True when [LlmClient] created client connections itself (production).
   /// In that case each request gets a short-lived client so [CancelToken.cancel]
@@ -126,10 +126,9 @@ class LlmClient {
   LlmClient({
     required this.config,
     http.Client? client,
-    Duration Function(int attempt)? backoffDuration,
+    this.backoffDuration,
   }) : _injectedClient = client,
-       _ownsClient = client == null,
-       _backoffDuration = backoffDuration;
+       _ownsClient = client == null;
 
   /// Client for one call/attempt: fresh + abortable when we own the
   /// lifecycle, otherwise the injected instance.
@@ -280,7 +279,7 @@ class LlmClient {
   ) async {
     if (cancelToken?.isCancelled ?? false) throw const LlmStoppedException();
     final seconds = int.tryParse(retryAfter ?? '');
-    final delay = _backoffDuration?.call(attempt) ??
+    final delay = backoffDuration?.call(attempt) ??
         (seconds != null && seconds >= 0
             ? Duration(seconds: seconds)
             : Duration(milliseconds: 800 * (1 << (attempt - 1))));

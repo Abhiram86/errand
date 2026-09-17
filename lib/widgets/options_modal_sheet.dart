@@ -49,11 +49,22 @@ class OptionsModalSheet extends StatelessWidget {
       constraints: BoxConstraints(maxHeight: maxHeight),
       child: SafeArea(
         child: Padding(
-          padding: EdgeInsets.fromLTRB(20, hasTitle ? 18 : 14, 20, 12),
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              Center(
+                child: Container(
+                  width: 36,
+                  height: 4,
+                  margin: const EdgeInsets.only(bottom: 14),
+                  decoration: BoxDecoration(
+                    color: kBorder.withValues(alpha: 0.9),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
               if (hasTitle) ...[
                 Text(
                   title!,
@@ -61,7 +72,7 @@ class OptionsModalSheet extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                     color: kText,
-                    fontSize: 14,
+                    fontSize: 16,
                     fontWeight: FontWeight.w700,
                   ),
                 ),
@@ -75,62 +86,90 @@ class OptionsModalSheet extends StatelessWidget {
                     ),
                   ),
                 ],
-                const SizedBox(height: 8),
+                const SizedBox(height: 16),
               ],
               Flexible(
                 child: SingleChildScrollView(
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.start,
-                    children: options.map(
-                      (option) {
-                        final isDestructive =
-                            option.type == SheetOptionType.destructive;
-                        final itemColor = isDestructive
-                            ? kDanger
-                            : (option.color ??
-                                (option.onTap == null ? kText : kMuted));
-                        final itemIconColor = isDestructive
-                            ? kDanger
-                            : (option.iconColor ??
-                                option.color ??
-                                (option.onTap == null ? kBubbleUser : kMuted));
-
-                        return ListTile(
-                          dense: true,
-                          visualDensity: const VisualDensity(vertical: -3),
-                          contentPadding: EdgeInsets.zero,
-                          minVerticalPadding: 0,
-                          leading: Icon(
-                            option.icon,
-                            color: itemIconColor,
-                            size: 18,
+                    children: [
+                      for (var i = 0; i < options.length; i++) ...[
+                        if (i > 0)
+                          SizedBox(
+                            height: (options[i].onTap == null &&
+                                    options[i - 1].onTap == null)
+                                ? 12
+                                : 4,
                           ),
-                          title: Text(
-                            option.title,
-                            style: TextStyle(
-                              color: itemColor,
-                              fontSize: 14,
-                            ),
-                          ),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(14),
-                          ),
-                          onTap: option.onTap != null
-                              ? () {
-                                  Navigator.of(context).pop();
-                                  option.onTap!();
-                                }
-                              : null,
-                        );
-                      },
-                    ).toList(),
+                        _buildOptionItem(context, options[i]),
+                      ],
+                    ],
                   ),
                 ),
               ),
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildOptionItem(BuildContext context, SheetOption option) {
+    final isDestructive = option.type == SheetOptionType.destructive;
+    final itemColor = isDestructive
+        ? kDanger
+        : (option.color ?? (option.onTap == null ? kText : kMuted));
+    final itemIconColor = isDestructive
+        ? kDanger
+        : (option.iconColor ??
+            option.color ??
+            (option.onTap == null ? kBubbleUser : kMuted));
+
+    final content = Padding(
+      padding: EdgeInsets.symmetric(
+        vertical: option.onTap != null ? 8 : 4,
+        horizontal: option.onTap != null ? 8 : 2,
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(top: 2),
+            child: Icon(
+              option.icon,
+              color: itemIconColor,
+              size: 18,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              option.title,
+              style: TextStyle(
+                color: itemColor,
+                fontSize: 14,
+                height: 1.4,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (option.onTap == null) {
+      return content;
+    }
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () {
+          Navigator.of(context).pop();
+          option.onTap!();
+        },
+        child: content,
       ),
     );
   }

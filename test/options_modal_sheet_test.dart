@@ -174,4 +174,50 @@ void main() {
     final sheetSize = tester.getSize(sheetFinder);
     expect(sheetSize.height, lessThanOrEqualTo(screenHeight * 0.75 + 1.0));
   });
+
+  testWidgets('OptionsModalSheet aligns leading icon with top line of multi-line text', (tester) async {
+    tester.view.physicalSize = const Size(400, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() => tester.view.resetPhysicalSize());
+
+    const longNote =
+        'feat(models, ui): sort models by release date in model picker with extensive description across multiple lines to test vertical alignment';
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => ElevatedButton(
+              onPressed: () => showOptionsModalSheet<void>(
+                context,
+                title: 'Release Notes',
+                subtitle: 'Version 0.6.2',
+                isScrollControlled: true,
+                options: const [
+                  SheetOption(
+                    title: longNote,
+                    icon: Icons.check_circle_outline_rounded,
+                    onTap: null,
+                  ),
+                ],
+              ),
+              child: const Text('Open'),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Open'));
+    await tester.pumpAndSettle();
+
+    final iconTop = tester.getTopLeft(find.byIcon(Icons.check_circle_outline_rounded)).dy;
+    final textTop = tester.getTopLeft(find.text(longNote)).dy;
+    final textHeight = tester.getSize(find.text(longNote)).height;
+
+    // Text must span multiple lines (height > 20)
+    expect(textHeight, greaterThan(30));
+    // Icon top must be aligned with the first line (difference <= 4px), not in the middle (which would be textHeight/2)
+    expect((iconTop - textTop).abs(), lessThanOrEqualTo(4.0));
+  });
 }

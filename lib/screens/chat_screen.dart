@@ -320,11 +320,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   Future<void> _checkReleaseNotes({bool force = false}) async {
     try {
       List<String>? notes;
+      String? versionName;
       if (force) {
         final cached = await UpdateService.instance.loadPersistedInfo();
         String? body = cached?.releaseNotes;
+        final platformInfo = await AppInfoService.instance.getAppInfo();
+        versionName = platformInfo.versionName;
         if (body == null || body.trim().isEmpty) {
-          final platformInfo = await AppInfoService.instance.getAppInfo();
           body = await UpdateService.instance.fetchReleaseNotes(
             platformInfo.versionName,
           );
@@ -340,12 +342,19 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         ];
       } else {
         notes = await UpdateService.instance.checkFirstLaunchAfterUpdate();
+        if (notes != null && notes.isNotEmpty) {
+          final platformInfo = await AppInfoService.instance.getAppInfo();
+          versionName = platformInfo.versionName;
+        }
       }
       if (!mounted || notes == null || notes.isEmpty) return;
 
       await showOptionsModalSheet<void>(
         context,
         title: 'Release Notes',
+        subtitle: versionName != null && versionName.isNotEmpty
+            ? 'Version $versionName'
+            : null,
         isScrollControlled: true,
         options: notes
             .map(
