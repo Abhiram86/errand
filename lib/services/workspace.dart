@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/services.dart';
+import 'package:path/path.dart' as p;
 
 class StorageAccess {
   static const _channel = MethodChannel('storage_access');
@@ -41,7 +42,46 @@ class Workspace {
     return _access.requestPermission();
   }
 
+  /// System root for user-accessible storage (acts as the boundary for tool discovery and reading).
   Directory get root {
-    return Directory('/storage/emulated/0');
+    if (Platform.isAndroid) {
+      return Directory('/storage/emulated/0');
+    }
+    return Directory.current;
+  }
+
+  /// Default directory for user-visible files and exports created by Errand.
+  Directory get documentsDir {
+    if (Platform.isAndroid) {
+      return Directory('/storage/emulated/0/Documents/Errand');
+    }
+    return Directory(p.join(Directory.systemTemp.path, 'Errand', 'Documents'));
+  }
+
+  /// Ephemeral scratch directory for temporary scripts, intermediate logs, and test runs.
+  Directory get scratchDir {
+    if (Platform.isAndroid) {
+      return Directory('/storage/emulated/0/Documents/Errand/.scratch');
+    }
+    return Directory(p.join(Directory.systemTemp.path, 'Errand', 'scratch'));
+  }
+
+  /// Default working directory for new conversations and relative file operations.
+  Directory get defaultDir => documentsDir;
+
+  /// Ensures default directories exist on disk.
+  Future<void> ensureDefaultDirectories() async {
+    try {
+      final doc = documentsDir;
+      if (!await doc.exists()) {
+        await doc.create(recursive: true);
+      }
+      final scratch = scratchDir;
+      if (!await scratch.exists()) {
+        await scratch.create(recursive: true);
+      }
+    } catch (_) {
+      // Ignored if permissions are not granted yet.
+    }
   }
 }

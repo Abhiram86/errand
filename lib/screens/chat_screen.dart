@@ -169,6 +169,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   final WorkingDirectory _workingDirectory = WorkingDirectory(
     Workspace.instance.root,
+    current: Workspace.instance.defaultDir,
   );
 
   /// Loads sidebar pages past the live-watched first page. Cursor-anchored
@@ -213,6 +214,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _updateEstimatedTokens();
     ModelsDevService.preload();
     unawaited(_loadAppConfig());
+    unawaited(Workspace.instance.ensureDefaultDirectories());
     // One-time POST_NOTIFICATIONS grant so the foreground work indicator is
     // visible on API 33+ (the service itself runs regardless).
     unawaited(_intentService.requestNotificationPermission());
@@ -638,7 +640,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   Future<void> _checkStoragePermission({required bool promptIfMissing}) async {
     final permitted = await Workspace.instance.hasPermission();
     if (!mounted) return;
-    if (!permitted && promptIfMissing) {
+    if (permitted) {
+      unawaited(Workspace.instance.ensureDefaultDirectories());
+    } else if (promptIfMissing) {
       await _showStoragePermissionDialog();
     }
   }
@@ -988,7 +992,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _workingFlushTimer = null;
     _controller.clear();
     _pendingAttachments.clear();
-    _workingDirectory.current = _workingDirectory.root;
+    _workingDirectory.current = Workspace.instance.defaultDir;
     final welcome = _welcomeMessages();
     _animatedMessageIds.clear();
     _animatedMessageIds.addAll(welcome.map((m) => m.id));
@@ -1041,7 +1045,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
 
     _pendingAttachments.clear();
-    _workingDirectory.current = loaded.currentDir;
+    _workingDirectory.current =
+        (loaded.currentDir.path == _workingDirectory.root.path)
+            ? Workspace.instance.defaultDir
+            : loaded.currentDir;
     _animatedMessageIds.clear();
     _animatedMessageIds.addAll(loaded.messages.map((m) => m.id));
     setState(() {
@@ -1484,6 +1491,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         id: _activeConversation.id,
         localSystemPrompt: systemPromptFor(
           _workingDirectory.current,
+          scratchDir: Workspace.instance.scratchDir,
           screenAccess: _a11yAvailable,
           screenRestricted: _a11yRestricted,
           a11ySupported: _a11ySupported,
@@ -1529,6 +1537,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         budget: budget,
         systemPromptBuilder: () => systemPromptFor(
           _workingDirectory.current,
+          scratchDir: Workspace.instance.scratchDir,
           screenAccess: _a11yAvailable,
           screenRestricted: _a11yRestricted,
           a11ySupported: _a11ySupported,

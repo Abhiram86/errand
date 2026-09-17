@@ -1,10 +1,12 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:errand/agent/system_prompt.dart';
 import 'package:errand/agent/tool.dart';
 import 'package:errand/agent/tool_registry.dart';
 import 'package:errand/llm/llm_client.dart';
 import 'package:errand/services/shell_service.dart';
+import 'package:errand/services/workspace.dart';
 import 'package:errand/tools/bash_tool.dart';
 import 'package:errand/tools/file_tools.dart';
 
@@ -476,6 +478,59 @@ void main() {
         enableA11yTools: false,
       );
       expect(liteRegistry.all.map((t) => t.name), contains('bash'));
+    });
+
+    test('bashTool automatically creates missing execDir when executing', () async {
+      final nonExistentDir = Directory('${tempDir.path}/auto_created_dir');
+      expect(await nonExistentDir.exists(), isFalse);
+
+      final customWorkingDir = WorkingDirectory(tempDir, current: nonExistentDir);
+      final customTool = bashTool(workingDirectory: customWorkingDir);
+      addTearDown(() => customTool.dispose());
+
+      final res = await customTool.handler(
+        const ToolCall(
+          id: 'call-auto-create',
+          name: 'bash',
+          arguments: {'command': 'pwd'},
+        ),
+      );
+
+      expect(res.ok, isTrue);
+      expect(await nonExistentDir.exists(), isTrue);
+      expect(res.output, contains('auto_created_dir'));
+    });
+  });
+
+  group('Workspace & Directory Hygiene', () {
+    test('Workspace exposes root, documentsDir, scratchDir, and defaultDir', () {
+      final ws = Workspace.instance;
+      expect(ws.root.path, isNotEmpty);
+      expect(ws.documentsDir.path, contains('Documents'));
+      expect(ws.scratchDir.path, contains('scratch'));
+      expect(ws.defaultDir.path, equals(ws.documentsDir.path));
+    });
+
+    test('ensureDefaultDirectories creates directory structure', () async {
+      final ws = Workspace.instance;
+      await ws.ensureDefaultDirectories();
+      expect(await ws.documentsDir.exists(), isTrue);
+      expect(await ws.scratchDir.exists(), isTrue);
+    });
+
+    test('systemPromptFor includes working directory, scratch directory, and hygiene rules', () {
+      final workDir = Directory('/storage/emulated/0/Documents/Errand');
+      final scratch = Directory('/storage/emulated/0/Documents/Errand/.scratch');
+      final prompt = systemPromptFor(
+        workDir,
+        scratchDir: scratch,
+        a11ySupported: false,
+      );
+
+      expect(prompt, contains('Current working directory: ${workDir.path}'));
+      expect(prompt, contains('Scratch directory: ${scratch.path}'));
+      expect(prompt, contains('Filesystem & Output Hygiene:'));
+      expect(prompt, contains('NEVER write or dump files directly into storage root'));
     });
   });
 }

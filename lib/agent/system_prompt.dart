@@ -22,6 +22,9 @@ Tool Selection Guide:
   3. screen & screen_act (Full build only): Use ONLY for automating native Android phone apps on-device when intent cannot handle the task and the service is not accessible via web/browser (e.g. navigating third-party Android apps, adjusting app-specific settings). If a task can be performed on the web or in browser, ALWAYS prefer browser over screen automation (browser is faster, direct, and avoids OS UI flakiness). In the Lite build, screen/screen_act are disabled.
 - Device & System Workflows (Mix & Match):
   * bash: Direct on-device shell (/system/bin/sh) for command execution, file discovery (ls, find), directory navigation (cd, pwd), text filtering (grep, awk, sed), system stats (df, ps), and data processing. Dangerous commands (su, reboot, fork bombs) are strictly blocked. Destructive mutations (rm -rf, bulk deletes) require user confirmation (confirm_destructive: true).
+    - Storage & Output Hygiene: When generating, saving, or exporting files (text notes, scripts, documents, code), ALWAYS write them inside the current working directory (defaults to Errand's Documents directory: `/storage/emulated/0/Documents/Errand/`). NEVER write or dump files directly into storage root (`/storage/emulated/0/` or `/sdcard/`).
+    - Scratch Operations: For throwaway helper scripts, intermediate logs, or test runs, use the scratch directory (`.scratch/`) and clean them up after execution to keep storage clean.
+    - Existing Files: You can inspect and read user files anywhere in user storage (e.g. `Downloads`, `DCIM`, `Documents`) via relative or absolute paths, or `cd` into them if requested.
   * intent: Android bridge for opening native device apps (Spotify, Maps, Camera), passive URL hand-offs where the user just wants to view the link externally in Chrome without Errand performing actions on it (otherwise use browser), navigating settings, or dispatching custom intents (Android sandbox restricts shell-level `am start`, so use intent when launching activities or system actions). Before dispatching custom intents for known device topics (e.g. alarm, timer, calendar, location), first call intent with action:"docs" and "name" to retrieve exact Android actions, extra keys, types, and constraints. For custom intents, provide the exact Android action, data URI, MIME type, package, and typed extras required by the target app; Errand does not infer alarm, timer, calendar, or other app-specific fields. A successful dispatch only confirms that Android launched a handler, not that the target app completed the operation. Note: Calendar intent opens an editor pre-filled with details where the user must tap Save; it cannot insert silently.
   * Feel free to mix and match bash and intent (e.g. discover or inspect files with bash, open them with intent; check system info with bash, trigger alarms or settings with intent).
 - read: Read contents of a specific file (text, PDF, DOCX, media). Requires "path". Supports optional "grep" (regex) to pull only matching lines with line numbers. NEVER call read on a directory.
@@ -49,13 +52,21 @@ Tool Selection Guide:
 
 String systemPromptFor(
   Directory currentDir, {
+  Directory? scratchDir,
   bool screenAccess = false,
   bool screenRestricted = false,
   bool a11ySupported = true,
   bool? isDebug,
 }) {
   final debug = isDebug ?? kDebugMode;
-  var prompt = '$kSystemPrompt\nCurrent working directory: ${currentDir.path}';
+  var prompt = '$kSystemPrompt\n'
+      'Current working directory: ${currentDir.path}\n'
+      '${scratchDir != null ? 'Scratch directory: ${scratchDir.path}\n' : ''}'
+      'Filesystem & Output Hygiene:\n'
+      '- When creating or saving files (notes, documents, scripts, exports), write them in the active working directory (${currentDir.path}) or subdirectories within it.\n'
+      '- NEVER write or dump files directly into storage root (/storage/emulated/0/ or /sdcard/).\n'
+      '- For temporary helper scripts, intermediate logs, or test runs, use the scratch directory (${scratchDir?.path ?? ".scratch"}).';
+
   if (a11ySupported) {
     if (screenAccess) {
       prompt += '''

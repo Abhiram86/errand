@@ -90,6 +90,16 @@ Tool bashTool({
         }
         execDir = targetDir;
         workingDirectory.current = targetDir;
+      } else {
+        if (!await execDir.exists()) {
+          try {
+            await execDir.create(recursive: true);
+          } catch (_) {
+            if (await workingDirectory.root.exists()) {
+              execDir = workingDirectory.root;
+            }
+          }
+        }
       }
 
       final timeoutSecs = ((call.arguments['timeout_seconds'] as num?)?.toInt() ?? 30)
