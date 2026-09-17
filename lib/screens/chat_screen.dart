@@ -143,8 +143,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     );
     return ContextBudget(
       contextSize: modelContextSize,
-      overrideThreshold:
-          _debugCompactionThreshold > 0 ? _debugCompactionThreshold : null,
+      overrideThreshold: _debugCompactionThreshold > 0
+          ? _debugCompactionThreshold
+          : null,
     );
   }
 
@@ -226,14 +227,16 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   void _resolvePendingConfirmation(ConfirmationDecision decision) {
-    if (_pendingConfirmation != null && !_pendingConfirmation!.completer.isCompleted) {
+    if (_pendingConfirmation != null &&
+        !_pendingConfirmation!.completer.isCompleted) {
       _pendingConfirmation!.completer.complete(decision);
     }
   }
 
   void _updateEstimatedTokens() {
-    final lastCompactedIdx =
-        _messages.lastIndexWhere((m) => m is CompactedNoticeMessage);
+    final lastCompactedIdx = _messages.lastIndexWhere(
+      (m) => m is CompactedNoticeMessage,
+    );
     final activeMessages = lastCompactedIdx != -1
         ? _messages.sublist(lastCompactedIdx)
         : _messages;
@@ -294,15 +297,15 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     // Keep the sidebar in sync with everything that was persisted across
     // app restarts as well as any conversation we save while running.
-    _conversationsSub = database.watchConversationSummaries(
-      limit: _sidebarPageSize,
-    ).listen((summaries) {
-      if (!mounted) return;
-      setState(() {
-        _conversations = summaries;
-        _sortedConversationsDirty = true;
-      });
-    });
+    _conversationsSub = database
+        .watchConversationSummaries(limit: _sidebarPageSize)
+        .listen((summaries) {
+          if (!mounted) return;
+          setState(() {
+            _conversations = summaries;
+            _sortedConversationsDirty = true;
+          });
+        });
     _pinnedConversationsSub = database.watchPinnedConversations().listen((
       pinned,
     ) {
@@ -315,9 +318,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         await _refreshA11yState(triggerToast: true);
       }
       if (mounted) {
-        unawaited(_checkReleaseNotes());
+        await UpdateService.instance.initialize();
+        if (mounted) {
+          await _checkReleaseNotes();
+        }
       }
-      unawaited(UpdateService.instance.initialize());
       unawaited(InstalledAppsService.instance.initAndRefresh());
     });
   }
@@ -328,9 +333,17 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       String? versionName;
       if (force) {
         final cached = await UpdateService.instance.loadPersistedInfo();
-        String? body = cached?.releaseNotes;
         final platformInfo = await AppInfoService.instance.getAppInfo();
         versionName = platformInfo.versionName;
+        String? body;
+        if (cached != null &&
+            AppUpdateInfo.compareSemver(
+                  cached.latestVersion,
+                  platformInfo.versionName,
+                ) ==
+                0) {
+          body = cached.releaseNotes;
+        }
         if (body == null || body.trim().isEmpty) {
           body = await UpdateService.instance.fetchReleaseNotes(
             platformInfo.versionName,
@@ -340,10 +353,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           notes = UpdateService.parseReleaseNotes(body);
         }
         notes ??= const [
-          'feat(models, ui): sort models by release date in model picker',
-          'feat: dynamic provider default when no model is selected',
-          'feat: unified options modal sheet for chat options and user messages',
-          'feat: background OTA update system with progress bar',
+          'Fixed OTA state after installation so the old install prompt does not return',
+          'Update dismissal now lasts for the current app session',
+          'Added a manual check for the latest release in the sidebar',
+          'Added feedback for unavailable APKs and failed update attempts',
         ];
       } else {
         notes = await UpdateService.instance.checkFirstLaunchAfterUpdate();
@@ -400,7 +413,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       return provider.defaultModels.firstOrNull?.id ?? kDefaultModelId;
     }
 
-    final hasKey = provider.hasKey ||
+    final hasKey =
+        provider.hasKey ||
         (provider.id == ProviderPresetType.openRouter.id &&
             AppSettingsService.instance.hasOpenRouterKey);
 
@@ -436,12 +450,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     final existsInLive = liveModels.any((m) => m.id == modelId);
     if (!existsInLive) return true;
 
-    final hasKey = provider.hasKey ||
+    final hasKey =
+        provider.hasKey ||
         (provider.id == ProviderPresetType.openRouter.id &&
             AppSettingsService.instance.hasOpenRouterKey);
 
     // 2. If provider has a key configured, but model is still the unconfigured free router
-    if (hasKey && (modelId == 'openrouter/free' || modelId == kDefaultModelId)) {
+    if (hasKey &&
+        (modelId == 'openrouter/free' || modelId == kDefaultModelId)) {
       return true;
     }
 
@@ -489,7 +505,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
     final String model;
     if (hasCachedModel &&
-        !_isFallbackOrStaleModel(settings.selectedModel, provider, availableModels)) {
+        !_isFallbackOrStaleModel(
+          settings.selectedModel,
+          provider,
+          availableModels,
+        )) {
       model = settings.selectedModel;
     } else {
       // Select the first model from this sorted if no cached previous selected model
@@ -547,7 +567,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     if (changed && mounted) {
       final activeProvider = AppSettingsService.instance.activeProvider;
       final providerChanged = activeProvider.id != previousProviderId;
-      final cached = ModelCatalogService.getCachedModels(activeProvider.baseUrl);
+      final cached = ModelCatalogService.getCachedModels(
+        activeProvider.baseUrl,
+      );
       final rawAvailable = (cached != null && cached.isNotEmpty)
           ? cached
           : activeProvider.defaultModels;
@@ -556,8 +578,15 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
       String modelToUse = _selectedModel;
       if (providerChanged ||
-          _isFallbackOrStaleModel(_selectedModel, activeProvider, availableModels)) {
-        modelToUse = _pickDefaultModelForProvider(activeProvider, availableModels);
+          _isFallbackOrStaleModel(
+            _selectedModel,
+            activeProvider,
+            availableModels,
+          )) {
+        modelToUse = _pickDefaultModelForProvider(
+          activeProvider,
+          availableModels,
+        );
         unawaited(AppSettingsService.instance.setSelectedModel(modelToUse));
       }
 
@@ -595,7 +624,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       }
       _selectedModel = model;
       _activeConversation.model = model;
-      _activeConversation.provider = _providerForModel(model) ?? activeProvider.name;
+      _activeConversation.provider =
+          _providerForModel(model) ?? activeProvider.name;
       _touchConversation();
     });
     _persistNow();
@@ -662,12 +692,17 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _checkStoragePermission(promptIfMissing: true);
+      // Reconcile cached OTA state after returning from the package installer
+      // or another external app. The normal interval still limits network use.
+      unawaited(UpdateService.instance.checkUpdate());
       // Re-check after the user may have toggled the service in Settings
       // while we were backgrounded. Toast only on a true→false flip (freshly
       // disabled) — a steady-off resume stays silent instead of re-nagging.
-      unawaited(_refreshA11yState().then((flippedToOff) {
-        if (flippedToOff) _triggerA11yToast();
-      }));
+      unawaited(
+        _refreshA11yState().then((flippedToOff) {
+          if (flippedToOff) _triggerA11yToast();
+        }),
+      );
     } else if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.inactive ||
         state == AppLifecycleState.hidden) {
@@ -723,20 +758,27 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     if (!mounted || !_a11ySupported || _a11yAvailable || _showA11yToast) return;
     // Mirror of the old one-time dialog: an explicit dismissal persists, so
     // cold starts don't nag forever. Fail-open when settings are unavailable.
-    AppSettingsService.instance.a11yPromptDismissed().then((dismissed) {
-      if (dismissed) return;
-      if (!mounted || !_a11ySupported || _a11yAvailable || _showA11yToast) return;
-      setState(() => _showA11yToast = true);
-      _a11yToastTimer?.cancel();
-      _a11yToastTimer = Timer(const Duration(seconds: 8), () {
-        if (mounted && _showA11yToast) {
-          setState(() => _showA11yToast = false);
-        }
-      });
-    }).catchError((_) {
-      if (!mounted || !_a11ySupported || _a11yAvailable || _showA11yToast) return;
-      setState(() => _showA11yToast = true);
-    });
+    AppSettingsService.instance
+        .a11yPromptDismissed()
+        .then((dismissed) {
+          if (dismissed) return;
+          if (!mounted || !_a11ySupported || _a11yAvailable || _showA11yToast) {
+            return;
+          }
+          setState(() => _showA11yToast = true);
+          _a11yToastTimer?.cancel();
+          _a11yToastTimer = Timer(const Duration(seconds: 8), () {
+            if (mounted && _showA11yToast) {
+              setState(() => _showA11yToast = false);
+            }
+          });
+        })
+        .catchError((_) {
+          if (!mounted || !_a11ySupported || _a11yAvailable || _showA11yToast) {
+            return;
+          }
+          setState(() => _showA11yToast = true);
+        });
   }
 
   void _dismissA11yToast({bool persist = false}) {
@@ -788,7 +830,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             : provider.defaultBaseUrl,
         apiKey: apiKey,
         defaultProvider: provider.name,
-        isOpenRouter: provider.id == ProviderPresetType.openRouter.id ||
+        isOpenRouter:
+            provider.id == ProviderPresetType.openRouter.id ||
             provider.baseUrl.contains('openrouter.ai'),
         forceRefresh: forceRefresh,
       );
@@ -797,7 +840,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       final sortedModels = List<ModelOption>.from(models)
         ..sort(ModelOption.compareByReleaseDate);
 
-      final bool shouldPickNewDefault = !settings.hasSelectedModel ||
+      final bool shouldPickNewDefault =
+          !settings.hasSelectedModel ||
           _isFallbackOrStaleModel(_selectedModel, provider, sortedModels);
 
       final String modelToUse;
@@ -943,8 +987,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             ListTile(
               leading: const Icon(Icons.attach_file_rounded, color: kText),
               title: const Text('Attach file', style: TextStyle(color: kText)),
-              subtitle: const Text('Image, audio, video or document',
-                  style: TextStyle(color: kMuted, fontSize: 12)),
+              subtitle: const Text(
+                'Image, audio, video or document',
+                style: TextStyle(color: kMuted, fontSize: 12),
+              ),
               onTap: () {
                 Navigator.of(sheetContext).pop();
                 _attachFiles();
@@ -978,7 +1024,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     for (final option in _models) {
       if (option.id == model) return option.provider;
     }
-    final cached = ModelCatalogService.getCachedModels(AppSettingsService.instance.activeProvider.baseUrl);
+    final cached = ModelCatalogService.getCachedModels(
+      AppSettingsService.instance.activeProvider.baseUrl,
+    );
     if (cached != null) {
       for (final option in cached) {
         if (option.id == model) return option.provider;
@@ -1075,8 +1123,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     final seen = <String>{};
     final unique = <Conversation>[
       for (final conversation in [..._conversations, ..._olderConversations])
-        if (conversation.id != null && seen.add(conversation.id!))
-          conversation,
+        if (conversation.id != null && seen.add(conversation.id!)) conversation,
     ];
     unique.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
     _cachedSortedConversations = unique;
@@ -1108,7 +1155,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   void _startNewChat() {
     if (_busy) return;
-    if (_pendingConfirmation != null && !_pendingConfirmation!.completer.isCompleted) {
+    if (_pendingConfirmation != null &&
+        !_pendingConfirmation!.completer.isCompleted) {
       _pendingConfirmation!.completer.complete(ConfirmationDecision.deny);
       _pendingConfirmation = null;
     }
@@ -1146,7 +1194,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       return;
     }
 
-    if (_pendingConfirmation != null && !_pendingConfirmation!.completer.isCompleted) {
+    if (_pendingConfirmation != null &&
+        !_pendingConfirmation!.completer.isCompleted) {
       _pendingConfirmation!.completer.complete(ConfirmationDecision.deny);
       _pendingConfirmation = null;
     }
@@ -1176,14 +1225,15 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _pendingAttachments.clear();
     _workingDirectory.current =
         (loaded.currentDir.path == _workingDirectory.root.path)
-            ? Workspace.instance.defaultDir
-            : loaded.currentDir;
+        ? Workspace.instance.defaultDir
+        : loaded.currentDir;
     _animatedMessageIds.clear();
     _animatedMessageIds.addAll(loaded.messages.map((m) => m.id));
     setState(() {
       _activeConversation = loaded;
       _messages = loaded.messages;
-      _selectedModel = loaded.model ?? AppSettingsService.instance.selectedModel;
+      _selectedModel =
+          loaded.model ?? AppSettingsService.instance.selectedModel;
       _llm.close();
       _llm = _createLlmClient(_selectedModel);
       _workingMessageId = null;
@@ -1307,8 +1357,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           controller: controller,
           autofocus: true,
           maxLength: 100,
-          onSubmitted: (value) =>
-              Navigator.of(dialogContext).pop(value.trim()),
+          onSubmitted: (value) => Navigator.of(dialogContext).pop(value.trim()),
         ),
         actions: [
           TextButton(
@@ -1600,12 +1649,15 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _externalIntentLaunched = false;
     _cancelToken.reset();
     setState(() {
-      _messages.add(AssistantMessage(
-        id: workingId,
-        text: '…working',
-        model: _selectedModel,
-        provider: _activeConversation.provider ?? settings.activeProvider.name,
-      ));
+      _messages.add(
+        AssistantMessage(
+          id: workingId,
+          text: '…working',
+          model: _selectedModel,
+          provider:
+              _activeConversation.provider ?? settings.activeProvider.name,
+        ),
+      );
       _busy = true;
     });
     // Foreground service: keeps the process non-cached (and its sockets
@@ -1746,7 +1798,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         id: id,
         text: '$label · ${_workingElapsedSeconds}s',
         model: _selectedModel,
-        provider: _activeConversation.provider ??
+        provider:
+            _activeConversation.provider ??
             AppSettingsService.instance.activeProvider.name,
       );
     });
@@ -1786,11 +1839,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       ..hideCurrentSnackBar()
       ..showSnackBar(
         SnackBar(
-          content: Text(
-            message,
-            maxLines: 3,
-            overflow: TextOverflow.ellipsis,
-          ),
+          content: Text(message, maxLines: 3, overflow: TextOverflow.ellipsis),
           behavior: SnackBarBehavior.floating,
           duration: const Duration(seconds: 4),
         ),
@@ -2009,7 +2058,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         id: _workingMessageId!,
         text: _workingText.toString(),
         model: _selectedModel,
-        provider: _activeConversation.provider ??
+        provider:
+            _activeConversation.provider ??
             AppSettingsService.instance.activeProvider.name,
       );
       _touchConversation();
@@ -2026,7 +2076,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _workingRetryAttempt = null;
     unawaited(_intentService.stopWorkIndicator());
     final trimmed = text.trim();
-    if (_externalAppWorkDone || (_externalIntentLaunched && trimmed.isNotEmpty)) {
+    if (_externalAppWorkDone ||
+        (_externalIntentLaunched && trimmed.isNotEmpty)) {
       unawaited(_intentService.bringToFront());
     }
     final id = _workingMessageId;
@@ -2049,7 +2100,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           id: id ?? 'agent-${DateTime.now().millisecondsSinceEpoch}',
           text: trimmed,
           model: _selectedModel,
-          provider: _activeConversation.provider ??
+          provider:
+              _activeConversation.provider ??
               AppSettingsService.instance.activeProvider.name,
         );
         if (index == -1) {
@@ -2079,7 +2131,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   void _stopGeneration() {
     if (!_busy) return;
     _cancelToken.cancel();
-    if (_pendingConfirmation != null && !_pendingConfirmation!.completer.isCompleted) {
+    if (_pendingConfirmation != null &&
+        !_pendingConfirmation!.completer.isCompleted) {
       _pendingConfirmation!.completer.complete(ConfirmationDecision.deny);
     }
   }
@@ -2157,8 +2210,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         children: [
           for (final locale in locales)
             SimpleDialogOption(
-              onPressed: () =>
-                  Navigator.of(dialogContext).pop(locale.localeId),
+              onPressed: () => Navigator.of(dialogContext).pop(locale.localeId),
               child: Text(
                 locale.name,
                 style: const TextStyle(color: kText, fontSize: 14),
@@ -2175,11 +2227,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       ..hideCurrentSnackBar()
       ..showSnackBar(
         SnackBar(
-          content: Text(
-            message,
-            maxLines: 3,
-            overflow: TextOverflow.ellipsis,
-          ),
+          content: Text(message, maxLines: 3, overflow: TextOverflow.ellipsis),
           behavior: SnackBarBehavior.floating,
           duration: const Duration(seconds: 4),
         ),
@@ -2207,118 +2255,125 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       child: Scaffold(
         backgroundColor: kDarkBg,
         body: LayoutBuilder(
-        builder: (context, constraints) {
-          final sidebarWidth = _sidebarWidth(constraints.maxWidth);
+          builder: (context, constraints) {
+            final sidebarWidth = _sidebarWidth(constraints.maxWidth);
 
-          return Stack(
-            fit: StackFit.expand,
-            children: [
-              SafeArea(
-                child: Column(
-                  children: [
-                    _buildHeader(),
-                    _buildUpdateToast(),
-                    Expanded(child: _buildMessageList()),
-                    if (kDebugMode) _buildContextFooter(),
-                    if (_pendingAttachments.isNotEmpty) _buildPendingAttachments(),
-                    if (_editingMessageId != null) _buildEditingBanner(),
-                    BrowserDockSpacer(isComposerFocused: isComposerFocused),
-                    KeyedSubtree(
-                      key: _composerKey,
-                      child: _buildComposer(),
-                    ),
-                  ],
-                ),
-              ),
-              _buildA11yToastOverlay(),
-              BrowserWidget(
-                composerKey: _composerKey,
-                isComposerFocused: isComposerFocused,
-                onUnfocusComposer: () {
-                  if (_composerFocusNode.hasFocus) {
-                    _composerFocusNode.unfocus();
-                  }
-                },
-              ),
-              if (_pendingConfirmation != null)
-                Positioned.fill(
-                  child: CommandConfirmationModal(
-                    title: _pendingConfirmation!.title,
-                    command: _pendingConfirmation!.command,
-                    reason: _pendingConfirmation!.reason,
-                    onAccept: () => _resolvePendingConfirmation(ConfirmationDecision.accept),
-                    onDeny: () => _resolvePendingConfirmation(ConfirmationDecision.deny),
-                    onTrust: () => _resolvePendingConfirmation(ConfirmationDecision.trust),
+            return Stack(
+              fit: StackFit.expand,
+              children: [
+                SafeArea(
+                  child: Column(
+                    children: [
+                      _buildHeader(),
+                      _buildUpdateToast(),
+                      Expanded(child: _buildMessageList()),
+                      if (kDebugMode) _buildContextFooter(),
+                      if (_pendingAttachments.isNotEmpty)
+                        _buildPendingAttachments(),
+                      if (_editingMessageId != null) _buildEditingBanner(),
+                      BrowserDockSpacer(isComposerFocused: isComposerFocused),
+                      KeyedSubtree(key: _composerKey, child: _buildComposer()),
+                    ],
                   ),
                 ),
-              Positioned.fill(
-                child: IgnorePointer(
-                  ignoring: !_sidebarOpen,
-                  child: AnimatedOpacity(
-                    opacity: _sidebarOpen ? 1 : 0,
-                    duration: const Duration(milliseconds: 220),
-                    child: GestureDetector(
-                      onTap: _closeSidebar,
-                      child: ColoredBox(
-                        color: Colors.black.withValues(alpha: 0.52),
+                _buildA11yToastOverlay(),
+                BrowserWidget(
+                  composerKey: _composerKey,
+                  isComposerFocused: isComposerFocused,
+                  onUnfocusComposer: () {
+                    if (_composerFocusNode.hasFocus) {
+                      _composerFocusNode.unfocus();
+                    }
+                  },
+                ),
+                if (_pendingConfirmation != null)
+                  Positioned.fill(
+                    child: CommandConfirmationModal(
+                      title: _pendingConfirmation!.title,
+                      command: _pendingConfirmation!.command,
+                      reason: _pendingConfirmation!.reason,
+                      onAccept: () => _resolvePendingConfirmation(
+                        ConfirmationDecision.accept,
+                      ),
+                      onDeny: () => _resolvePendingConfirmation(
+                        ConfirmationDecision.deny,
+                      ),
+                      onTrust: () => _resolvePendingConfirmation(
+                        ConfirmationDecision.trust,
+                      ),
+                    ),
+                  ),
+                Positioned.fill(
+                  child: IgnorePointer(
+                    ignoring: !_sidebarOpen,
+                    child: AnimatedOpacity(
+                      opacity: _sidebarOpen ? 1 : 0,
+                      duration: const Duration(milliseconds: 220),
+                      child: GestureDetector(
+                        onTap: _closeSidebar,
+                        child: ColoredBox(
+                          color: Colors.black.withValues(alpha: 0.52),
+                        ),
                       ),
                     ),
                   ),
                 ),
-              ),
-              AnimatedPositioned(
-                duration: const Duration(milliseconds: 280),
-                curve: Curves.easeOutCubic,
-                top: 0,
-                bottom: 0,
-                left: _sidebarOpen ? 0 : -sidebarWidth,
-                width: sidebarWidth,
-                child: ChatSidebar(
-                  pinnedConversations: _pinnedConversations,
-                  conversations: _sortedConversations,
-                  activeConversationId: _activeConversation.id,
-                  onClose: _closeSidebar,
-                  onShowReleaseNotes: () => _checkReleaseNotes(force: true),
-                  onSelectConversation: _selectConversation,
-                  onDeleteConversation: _deleteConversation,
-                  hasMoreConversations: _conversationFetcher.hasMore,
-                  isLoadingMoreConversations: _loadingMoreConversations,
-                  onLoadMoreConversations: _loadMoreConversations,
-                  optionsBuilder: (conversation) => [
-                    ChatOption(
-                      title: 'Rename',
-                      icon: Icons.edit,
-                      onTap: () {
-                        _renameConversation(conversation);
-                      },
-                    ),
-                    ChatOption(
-                      title: conversation.isPinned ? 'Unpin Conversation' : 'Pin Conversation',
-                      icon: conversation.isPinned
-                          ? Icons.push_pin
-                          : Icons.push_pin_outlined,
-                      onTap: () {
-                        _pinConversation(conversation);
-                      },
-                    ),
-                    ChatOption(
-                      title: 'Delete conversation',
-                      icon: Icons.delete_outline_rounded,
-                      type: ChatOptionType.destructive,
-                      onTap: () {
-                        _deleteConversation(conversation);
-                      },
-                    ),
-                  ],
+                AnimatedPositioned(
+                  duration: const Duration(milliseconds: 280),
+                  curve: Curves.easeOutCubic,
+                  top: 0,
+                  bottom: 0,
+                  left: _sidebarOpen ? 0 : -sidebarWidth,
+                  width: sidebarWidth,
+                  child: ChatSidebar(
+                    pinnedConversations: _pinnedConversations,
+                    conversations: _sortedConversations,
+                    activeConversationId: _activeConversation.id,
+                    onClose: _closeSidebar,
+                    onShowReleaseNotes: () => _checkReleaseNotes(force: true),
+                    onCheckForUpdates: _checkForUpdates,
+                    onSelectConversation: _selectConversation,
+                    onDeleteConversation: _deleteConversation,
+                    hasMoreConversations: _conversationFetcher.hasMore,
+                    isLoadingMoreConversations: _loadingMoreConversations,
+                    onLoadMoreConversations: _loadMoreConversations,
+                    optionsBuilder: (conversation) => [
+                      ChatOption(
+                        title: 'Rename',
+                        icon: Icons.edit,
+                        onTap: () {
+                          _renameConversation(conversation);
+                        },
+                      ),
+                      ChatOption(
+                        title: conversation.isPinned
+                            ? 'Unpin Conversation'
+                            : 'Pin Conversation',
+                        icon: conversation.isPinned
+                            ? Icons.push_pin
+                            : Icons.push_pin_outlined,
+                        onTap: () {
+                          _pinConversation(conversation);
+                        },
+                      ),
+                      ChatOption(
+                        title: 'Delete conversation',
+                        icon: Icons.delete_outline_rounded,
+                        type: ChatOptionType.destructive,
+                        onTap: () {
+                          _deleteConversation(conversation);
+                        },
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-            ],
-          );
-        },
+              ],
+            );
+          },
+        ),
       ),
-    ),
-  );
-}
+    );
+  }
 
   double _sidebarWidth(double screenWidth) {
     if (screenWidth <= 0) return 0;
@@ -2374,26 +2429,26 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           ),
           const SizedBox(width: 4),
           if (_activeConversation.id != null)
-          TextButton(
-            onPressed: _busy ? null : _startNewChat,
-            style: TextButton.styleFrom(
-              foregroundColor: kText,
-              disabledForegroundColor: kMuted,
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 0),
-              alignment: Alignment.center,
-              backgroundColor: kBubbleAssistant,
-              minimumSize: const Size(60, 35),
-              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            TextButton(
+              onPressed: _busy ? null : _startNewChat,
+              style: TextButton.styleFrom(
+                foregroundColor: kText,
+                disabledForegroundColor: kMuted,
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 0),
+                alignment: Alignment.center,
+                backgroundColor: kBubbleAssistant,
+                minimumSize: const Size(60, 35),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.add_rounded, size: 14),
+                  const SizedBox(width: 2),
+                  const Text('New', style: TextStyle(fontSize: 12)),
+                ],
+              ),
             ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.add_rounded, size: 14),
-                const SizedBox(width: 2),
-                const Text('New', style: TextStyle(fontSize: 12)),
-              ],
-            ),
-          ),
         ],
       ),
     );
@@ -2412,7 +2467,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
               isBusy: _busy,
               downloadProgress: progress,
               onInstall: () {
-                unawaited(UpdateService.instance.installUpdate(updateInfo));
+                unawaited(_installUpdate(updateInfo));
               },
               onDismiss: () {
                 unawaited(UpdateService.instance.dismissUpdate());
@@ -2422,6 +2477,31 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         );
       },
     );
+  }
+
+  Future<void> _installUpdate(AppUpdateInfo updateInfo) async {
+    final installed = await UpdateService.instance.installUpdate(updateInfo);
+    if (!mounted || installed) return;
+    _showToast('Could not download or open the update package.');
+  }
+
+  Future<void> _checkForUpdates() async {
+    final result = await UpdateService.instance.checkUpdate(force: true);
+    if (!mounted) return;
+
+    if (result == null) {
+      _showToast('Could not check for updates.');
+    } else if (!result.hasUpdate) {
+      _showToast('You are already running the latest version.');
+    } else if (!result.hasCompatibleApk) {
+      _showToast(
+        'Update v${result.latestVersion} is available, but no compatible APK was found.',
+      );
+    } else {
+      _showToast(
+        'Update v${result.latestVersion} found. Use the update banner to download it.',
+      );
+    }
   }
 
   Widget _buildA11yToastOverlay() {
@@ -2437,9 +2517,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   Widget _buildMessageList() {
-      final displayItems = groupMessagesForDisplay(_messages);
-      return SelectionArea(
-        child: NotificationListener<ScrollNotification>(
+    final displayItems = groupMessagesForDisplay(_messages);
+    return SelectionArea(
+      child: NotificationListener<ScrollNotification>(
         onNotification: (notification) {
           if (notification.depth == 0 &&
               !_busy &&
@@ -2465,10 +2545,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
             final Widget bubbleWidget;
             if (item is ToolGroupDisplayItem) {
-              final isLatestActive =
-                  _isLatestActiveToolGroup(displayItems, index);
-              final isRunning =
-                  _busy && isLatestActive && _workingText.isEmpty;
+              final isLatestActive = _isLatestActiveToolGroup(
+                displayItems,
+                index,
+              );
+              final isRunning = _busy && isLatestActive && _workingText.isEmpty;
               bubbleWidget = ToolGroupBubble(
                 key: ValueKey(item.id),
                 tools: item.tools,
@@ -2492,12 +2573,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                 bubbleWidget = MessageBubble(
                   key: ValueKey(message.id),
                   message: message,
-                  onEdit:
-                      message is UserMessage ? () => _editUserMessage(message) : null,
-                  onRetry:
-                      message is UserMessage && !_busy
-                          ? () => _regenerate(message.id)
-                          : null,
+                  onEdit: message is UserMessage
+                      ? () => _editUserMessage(message)
+                      : null,
+                  onRetry: message is UserMessage && !_busy
+                      ? () => _regenerate(message.id)
+                      : null,
                   onRegenerate: regenerateUserId == null
                       ? null
                       : () => _regenerate(regenerateUserId),

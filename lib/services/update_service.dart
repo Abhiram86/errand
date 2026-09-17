@@ -30,9 +30,9 @@ class UpdateService {
     AppInfoService? appInfo,
     ErrandDatabase? database,
     this.cacheDirProvider,
-  })  : _client = client ?? http.Client(),
-        _appInfo = appInfo ?? AppInfoService.instance,
-        _db = database ?? ErrandDatabase.instance;
+  }) : _client = client ?? http.Client(),
+       _appInfo = appInfo ?? AppInfoService.instance,
+       _db = database ?? ErrandDatabase.instance;
 
   /// Holds the active update metadata if an update is available and not dismissed.
   final ValueNotifier<AppUpdateInfo?> activeUpdate =
@@ -43,22 +43,79 @@ class UpdateService {
 
   bool _isChecking = false;
   bool _isDownloading = false;
+  String? _dismissedVersionThisSession;
 
   bool get isDownloading => _isDownloading;
 
   /// Initializes the service from cached state and triggers a background check
   /// if the 2-hour window has elapsed.
   Future<void> initialize() async {
+    // Dismissal is intentionally session-scoped. A new app open must surface
+    // an update again while that release is still newer than the installed app.
+    _dismissedVersionThisSession = null;
     final cached = await loadPersistedInfo();
     if (cached != null) {
       final platformInfo = await _appInfo.getAppInfo();
-      _cleanStaleApkIfNeeded(cached, platformInfo.versionName);
-      if (cached.hasUpdate && !cached.isDismissed) {
-        activeUpdate.value = cached;
+      var current = cached;
+      final installedVersion = platformInfo.versionName.trim();
+      final hasInstalledVersion =
+          installedVersion.isNotEmpty && installedVersion != '0.0.0';
+      final versionChanged =
+          hasInstalledVersion && installedVersion != cached.currentVersion;
+      final installedAtOrPastLatest =
+          hasInstalledVersion &&
+          AppUpdateInfo.compareSemver(installedVersion, cached.latestVersion) >=
+              0;
+
+      if (installedAtOrPastLatest && cached.apkLocation != null) {
+        _deleteFile(cached.apkLocation);
+        current = cached.copyWith(
+          currentVersion: installedVersion,
+          clearCachedApk: true,
+          clearDismissedVersion: true,
+        );
+      } else if (versionChanged) {
+        current = cached.copyWith(currentVersion: installedVersion);
       }
+
+      if (current != cached) {
+        await _persistInfo(current);
+      }
+
+      _publishActiveUpdate(current);
+    } else {
+      activeUpdate.value = null;
     }
     // Background check runs asynchronously without awaiting.
     unawaited(checkUpdate());
+  }
+
+  bool _isDismissedThisSession(AppUpdateInfo info) {
+    return _dismissedVersionThisSession != null &&
+        AppUpdateInfo.compareSemver(
+              _dismissedVersionThisSession!,
+              info.latestVersion,
+            ) ==
+            0;
+  }
+
+  void _publishActiveUpdate(AppUpdateInfo? info) {
+    if (info != null &&
+        info.hasUpdate &&
+        info.hasCompatibleApk &&
+        !_isDismissedThisSession(info)) {
+      activeUpdate.value = info;
+    } else {
+      activeUpdate.value = null;
+    }
+  }
+
+  void _deleteFile(String? path) {
+    if (path == null || path.isEmpty) return;
+    try {
+      final file = File(path);
+      if (file.existsSync()) file.deleteSync();
+    } catch (_) {}
   }
 
   /// Parses markdown release notes body into clean, user-facing bullet points.
@@ -79,10 +136,16 @@ class UpdateService {
       if (line.startsWith('#')) continue;
 
       // Skip full changelog lines or comparison URLs
-      if (RegExp(r'^\*{0,2}Full Changelog', caseSensitive: false).hasMatch(line)) {
+      if (RegExp(
+        r'^\*{0,2}Full Changelog',
+        caseSensitive: false,
+      ).hasMatch(line)) {
         continue;
       }
-      if (RegExp(r'^https?://github\.com/.+/compare/', caseSensitive: false).hasMatch(line)) {
+      if (RegExp(
+        r'^https?://github\.com/.+/compare/',
+        caseSensitive: false,
+      ).hasMatch(line)) {
         continue;
       }
 
@@ -126,28 +189,36 @@ class UpdateService {
       final tagUri = Uri.parse(
         'https://api.github.com/repos/Abhiram86/errand/releases/tags/v$cleanVersion',
       );
-      var response = await _client.get(
-        tagUri,
-        headers: {
-          'Accept': 'application/vnd.github.v3+json',
-          'User-Agent': 'handy_flutter/1.0',
-        },
-      ).timeout(const Duration(seconds: 10));
+      var response = await _client
+          .get(
+            tagUri,
+            headers: {
+              'Accept': 'application/vnd.github.v3+json',
+              'User-Agent': 'handy_flutter/1.0',
+            },
+          )
+          .timeout(const Duration(seconds: 10));
 
       if (response.statusCode != 200) {
-        response = await _client.get(
-          Uri.parse(latestReleaseUrl),
-          headers: {
-            'Accept': 'application/vnd.github.v3+json',
-            'User-Agent': 'handy_flutter/1.0',
-          },
-        ).timeout(const Duration(seconds: 10));
+        response = await _client
+            .get(
+              Uri.parse(latestReleaseUrl),
+              headers: {
+                'Accept': 'application/vnd.github.v3+json',
+                'User-Agent': 'handy_flutter/1.0',
+              },
+            )
+            .timeout(const Duration(seconds: 10));
       }
 
       if (response.statusCode == 200) {
         final dynamic data = jsonDecode(response.body);
         if (data is Map<String, dynamic>) {
-          return data['body'] as String?;
+          final tag = data['tag_name'] as String?;
+          if (tag == null ||
+              AppUpdateInfo.compareSemver(tag, cleanVersion) == 0) {
+            return data['body'] as String?;
+          }
         }
       }
     } catch (_) {}
@@ -171,10 +242,23 @@ class UpdateService {
       if (lastSeen == null) {
         // Distinguish fresh install vs existing user updating from before this pref existed
         final hasUserData = await _db.hasAnyUserData();
-        final hadOlderCached = cached != null &&
-            (AppUpdateInfo.compareSemver(currentVersion, cached.currentVersion) > 0 ||
-                (AppUpdateInfo.compareSemver(currentVersion, cached.latestVersion) == 0 &&
-                    AppUpdateInfo.compareSemver(cached.latestVersion, cached.currentVersion) > 0));
+        final hadOlderCached =
+            cached != null &&
+            (AppUpdateInfo.compareSemver(
+                      currentVersion,
+                      cached.currentVersion,
+                    ) >
+                    0 ||
+                (AppUpdateInfo.compareSemver(
+                          currentVersion,
+                          cached.latestVersion,
+                        ) ==
+                        0 &&
+                    AppUpdateInfo.compareSemver(
+                          cached.latestVersion,
+                          cached.currentVersion,
+                        ) >
+                        0));
 
         final isUpdate = hadOlderCached || hasUserData;
 
@@ -223,7 +307,8 @@ class UpdateService {
 
       String? notesBody;
       if (cached != null &&
-          AppUpdateInfo.compareSemver(cached.latestVersion, currentVersion) == 0 &&
+          AppUpdateInfo.compareSemver(cached.latestVersion, currentVersion) ==
+              0 &&
           cached.releaseNotes != null &&
           cached.releaseNotes!.trim().isNotEmpty) {
         notesBody = cached.releaseNotes;
@@ -260,13 +345,11 @@ class UpdateService {
 
   void _cleanStaleApkIfNeeded(AppUpdateInfo info, [String? currentVersion]) {
     if (info.apkLocation != null) {
-      final isStaleVersion = currentVersion != null &&
+      final isStaleVersion =
+          currentVersion != null &&
           AppUpdateInfo.compareSemver(currentVersion, info.latestVersion) >= 0;
       if (!info.isCachedApkValid || isStaleVersion) {
-        try {
-          final f = File(info.apkLocation!);
-          if (f.existsSync()) f.deleteSync();
-        } catch (_) {}
+        _deleteFile(info.apkLocation);
       }
     }
   }
@@ -274,39 +357,79 @@ class UpdateService {
   /// Checks GitHub releases API for an update if [force] is true or the 2-hour interval elapsed.
   Future<AppUpdateInfo?> checkUpdate({bool force = false}) async {
     if (_isChecking) return activeUpdate.value;
+    if (force) {
+      // An explicit user check should be able to surface a banner that was
+      // dismissed earlier in this session.
+      _dismissedVersionThisSession = null;
+    }
     _isChecking = true;
+    AppUpdateInfo? cachedForError;
 
     try {
       final existing = await loadPersistedInfo();
       final now = DateTime.now();
+      final platformInfo = await _appInfo.getAppInfo();
+      final currentVersion = platformInfo.versionName.trim();
 
-      if (!force && existing != null) {
-        final elapsed = now.difference(existing.lastPing);
+      // Cached records were written using the version that was installed when
+      // the check ran. Refresh it before applying the interval shortcut so an
+      // update install is recognized immediately on the next launch.
+      var cached = existing;
+      cachedForError = cached;
+      if (cached != null &&
+          currentVersion.isNotEmpty &&
+          currentVersion != '0.0.0' &&
+          currentVersion != cached.currentVersion) {
+        final installedAtOrPastLatest =
+            AppUpdateInfo.compareSemver(currentVersion, cached.latestVersion) >=
+            0;
+        if (installedAtOrPastLatest && cached.apkLocation != null) {
+          _deleteFile(cached.apkLocation);
+          cached = cached.copyWith(
+            currentVersion: currentVersion,
+            clearCachedApk: true,
+            clearDismissedVersion: true,
+          );
+        } else {
+          cached = cached.copyWith(currentVersion: currentVersion);
+        }
+        await _persistInfo(cached);
+      }
+
+      if (!force && cached != null) {
+        final elapsed = now.difference(cached.lastPing);
         if (elapsed < checkInterval) {
-          if (existing.hasUpdate && !existing.isDismissed) {
-            activeUpdate.value = existing;
+          if (cached.hasUpdate &&
+              cached.hasCompatibleApk &&
+              !_isDismissedThisSession(cached)) {
+            activeUpdate.value = cached;
+          } else {
+            activeUpdate.value = null;
           }
-          return existing;
+          return cached;
         }
       }
 
-      final platformInfo = await _appInfo.getAppInfo();
-      final currentVersion = platformInfo.versionName;
-
-      final response = await _client.get(
-        Uri.parse(latestReleaseUrl),
-        headers: {
-          'Accept': 'application/vnd.github.v3+json',
-          'User-Agent': 'handy_flutter/1.0',
-        },
-      ).timeout(const Duration(seconds: 15));
+      final response = await _client
+          .get(
+            Uri.parse(latestReleaseUrl),
+            headers: {
+              'Accept': 'application/vnd.github.v3+json',
+              'User-Agent': 'handy_flutter/1.0',
+            },
+          )
+          .timeout(const Duration(seconds: 15));
 
       if (response.statusCode != 200) {
-        return existing;
+        _publishActiveUpdate(cached);
+        return cached;
       }
 
       final dynamic data = jsonDecode(response.body);
-      if (data is! Map<String, dynamic>) return existing;
+      if (data is! Map<String, dynamic>) {
+        _publishActiveUpdate(cached);
+        return cached;
+      }
 
       final tagName = data['tag_name'] as String? ?? '';
       final latestVersion = tagName.replaceFirst(RegExp(r'^[vV]'), '').trim();
@@ -353,10 +476,10 @@ class UpdateService {
       }
 
       // Preserve existing cached APK if it belongs to the same version and is valid
-      String? apkLocation = existing?.apkLocation;
-      DateTime? apkDownloadedAt = existing?.apkDownloadedAt;
-      if (existing != null && existing.latestVersion != latestVersion) {
-        _cleanStaleApkIfNeeded(existing);
+      String? apkLocation = cached?.apkLocation;
+      DateTime? apkDownloadedAt = cached?.apkDownloadedAt;
+      if (cached != null && cached.latestVersion != latestVersion) {
+        _cleanStaleApkIfNeeded(cached);
         apkLocation = null;
         apkDownloadedAt = null;
       }
@@ -371,21 +494,17 @@ class UpdateService {
         apkLocation: apkLocation,
         apkDownloadedAt: apkDownloadedAt,
         apkSize: matchedSize,
-        dismissedVersion: existing?.dismissedVersion,
       );
 
       await _persistInfo(updated);
 
-      if (updated.hasUpdate && !updated.isDismissed) {
-        activeUpdate.value = updated;
-      } else {
-        activeUpdate.value = null;
-      }
+      _publishActiveUpdate(updated);
 
       return updated;
     } catch (_) {
       // Non-fatal: offline or API errors silently return cached
-      return activeUpdate.value;
+      _publishActiveUpdate(cachedForError);
+      return cachedForError ?? activeUpdate.value;
     } finally {
       _isChecking = false;
     }
@@ -486,17 +605,20 @@ class UpdateService {
     if (apkPath == null || !File(apkPath).existsSync()) {
       return false;
     }
-    return await _appInfo.installApk(apkPath);
+    final installed = await _appInfo.installApk(apkPath);
+    if (installed) {
+      // The package installer takes over from here. Hide this session's toast;
+      // initialize/checkUpdate will reconcile the persisted state on relaunch.
+      activeUpdate.value = null;
+    }
+    return installed;
   }
 
-  /// Marks the current update as dismissed so the toast doesn't reappear until the next release.
+  /// Dismisses the current update for this app session only.
   Future<void> dismissUpdate() async {
     final current = activeUpdate.value;
     if (current == null) return;
-    final updated = current.copyWith(
-      dismissedVersion: current.latestVersion,
-    );
-    await _persistInfo(updated);
+    _dismissedVersionThisSession = current.latestVersion;
     activeUpdate.value = null;
   }
 }

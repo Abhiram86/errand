@@ -26,11 +26,8 @@ class FakeAppInfoService extends AppInfoService {
   Future<String?> getVersion() async => version;
 
   @override
-  Future<AppPlatformInfo> getAppInfo() async => AppPlatformInfo(
-        versionName: version,
-        packageName: pkg,
-        abi: abiType,
-      );
+  Future<AppPlatformInfo> getAppInfo() async =>
+      AppPlatformInfo(versionName: version, packageName: pkg, abi: abiType);
 
   @override
   Future<bool> installApk(String filePath) async {
@@ -68,7 +65,8 @@ void main() {
     });
 
     test('isCachedApkValid enforces 2-day TTL and file presence', () {
-      final validFile = File('${tempDir.path}/test.apk')..writeAsBytesSync([1, 2, 3]);
+      final validFile = File('${tempDir.path}/test.apk')
+        ..writeAsBytesSync([1, 2, 3]);
 
       final infoValid = AppUpdateInfo(
         currentVersion: '0.6.0',
@@ -147,7 +145,7 @@ void main() {
             'size': 24000000,
             'browser_download_url': 'https://github.com/Abhiram86/errand/releases/download/v0.6.1/Errand-v0.6.1-lite-arm64-v8a.apk',
           },
-        ]
+        ],
       });
 
       final mockClient = MockClient((request) async {
@@ -193,7 +191,7 @@ void main() {
             'size': 24000000,
             'browser_download_url': 'https://github.com/download/lite-v7a.apk',
           },
-        ]
+        ],
       });
 
       final mockClient = MockClient((request) async {
@@ -219,112 +217,223 @@ void main() {
       expect(result.apkUrl, 'https://github.com/download/lite-v7a.apk');
     });
 
-    test('skips network check if elapsed time is under 2 hours unless force=true', () async {
-      var requestCount = 0;
-      final mockClient = MockClient((request) async {
-        requestCount++;
-        return http.Response(jsonEncode({
-          'tag_name': 'v0.6.1',
-          'assets': [],
-        }), 200);
-      });
-
-      final appInfo = FakeAppInfoService();
-      final service = UpdateService(
-        client: mockClient,
-        appInfo: appInfo,
-        database: db,
-        cacheDirProvider: () async => tempDir,
-      );
-
-      // First check: hits network
-      await service.checkUpdate();
-      expect(requestCount, 1);
-
-      // Immediate second check: uses cached state, does not hit network
-      await service.checkUpdate();
-      expect(requestCount, 1);
-
-      // Force check: hits network again
-      await service.checkUpdate(force: true);
-      expect(requestCount, 2);
-    });
-
-    test('downloads APK to .tmp and renames to final destination atomically', () async {
-      final apkBytes = List<int>.generate(1024, (i) => i % 256);
-
-      final mockClient = MockClient((request) async {
-        if (request.url.toString() == 'https://github.com/download/update.apk') {
-          return http.Response.bytes(
-            apkBytes,
+    test(
+      'skips network check if elapsed time is under 2 hours unless force=true',
+      () async {
+        var requestCount = 0;
+        final mockClient = MockClient((request) async {
+          requestCount++;
+          return http.Response(
+            jsonEncode({'tag_name': 'v0.6.1', 'assets': []}),
             200,
-            headers: {'content-length': '${apkBytes.length}'},
           );
-        }
-        return http.Response('Not found', 404);
-      });
+        });
 
-      final appInfo = FakeAppInfoService();
-      final service = UpdateService(
-        client: mockClient,
-        appInfo: appInfo,
-        database: db,
-        cacheDirProvider: () async => tempDir,
-      );
+        final appInfo = FakeAppInfoService();
+        final service = UpdateService(
+          client: mockClient,
+          appInfo: appInfo,
+          database: db,
+          cacheDirProvider: () async => tempDir,
+        );
 
-      final updateInfo = AppUpdateInfo(
-        currentVersion: '0.6.0',
-        latestVersion: '0.6.1',
-        lastPing: DateTime.now(),
-        apkUrl: 'https://github.com/download/update.apk',
-        apkName: 'Errand-v0.6.1-full-arm64-v8a.apk',
-        apkSize: apkBytes.length,
-      );
+        // First check: hits network
+        await service.checkUpdate();
+        expect(requestCount, 1);
 
-      final downloadedPath = await service.downloadApk(updateInfo);
-      expect(downloadedPath, isNotNull);
+        // Immediate second check: uses cached state, does not hit network
+        await service.checkUpdate();
+        expect(requestCount, 1);
 
-      final finalFile = File(downloadedPath!);
-      expect(finalFile.existsSync(), isTrue);
-      expect(finalFile.lengthSync(), apkBytes.length);
+        // Force check: hits network again
+        await service.checkUpdate(force: true);
+        expect(requestCount, 2);
+      },
+    );
 
-      // .tmp file should no longer exist after atomic rename
-      expect(File('$downloadedPath.tmp').existsSync(), isFalse);
+    test(
+      'downloads APK to .tmp and renames to final destination atomically',
+      () async {
+        final apkBytes = List<int>.generate(1024, (i) => i % 256);
 
-      // Now installing should directly use the cached APK without re-downloading
-      final installSuccess = await service.installUpdate(service.activeUpdate.value!);
-      expect(installSuccess, isTrue);
-      expect(appInfo.installedPath, finalFile.path);
-    });
+        final mockClient = MockClient((request) async {
+          if (request.url.toString() ==
+              'https://github.com/download/update.apk') {
+            return http.Response.bytes(
+              apkBytes,
+              200,
+              headers: {'content-length': '${apkBytes.length}'},
+            );
+          }
+          return http.Response('Not found', 404);
+        });
 
-    test('dismissing an update clears activeUpdate and persists dismissal', () async {
-      final fakeGitHubJson = jsonEncode({
-        'tag_name': 'v0.6.1',
-        'assets': [],
-      });
+        final appInfo = FakeAppInfoService();
+        final service = UpdateService(
+          client: mockClient,
+          appInfo: appInfo,
+          database: db,
+          cacheDirProvider: () async => tempDir,
+        );
 
-      final service = UpdateService(
-        client: MockClient((_) async => http.Response(fakeGitHubJson, 200)),
-        appInfo: FakeAppInfoService(),
-        database: db,
-        cacheDirProvider: () async => tempDir,
-      );
+        final updateInfo = AppUpdateInfo(
+          currentVersion: '0.6.0',
+          latestVersion: '0.6.1',
+          lastPing: DateTime.now(),
+          apkUrl: 'https://github.com/download/update.apk',
+          apkName: 'Errand-v0.6.1-full-arm64-v8a.apk',
+          apkSize: apkBytes.length,
+        );
 
-      await service.checkUpdate();
-      expect(service.activeUpdate.value, isNotNull);
+        final downloadedPath = await service.downloadApk(updateInfo);
+        expect(downloadedPath, isNotNull);
 
-      await service.dismissUpdate();
-      expect(service.activeUpdate.value, isNull);
+        final finalFile = File(downloadedPath!);
+        expect(finalFile.existsSync(), isTrue);
+        expect(finalFile.lengthSync(), apkBytes.length);
 
-      // Re-checking does not surface the dismissed update
-      await service.checkUpdate(force: true);
-      expect(service.activeUpdate.value, isNull);
-    });
+        // .tmp file should no longer exist after atomic rename
+        expect(File('$downloadedPath.tmp').existsSync(), isFalse);
+
+        // Now installing should directly use the cached APK without re-downloading
+        final installSuccess = await service.installUpdate(
+          service.activeUpdate.value!,
+        );
+        expect(installSuccess, isTrue);
+        expect(appInfo.installedPath, finalFile.path);
+        expect(service.activeUpdate.value, isNull);
+      },
+    );
+
+    test(
+      'dismissing an update clears activeUpdate for the current session',
+      () async {
+        final fakeGitHubJson = jsonEncode({'tag_name': 'v0.6.1', 'assets': []});
+
+        final service = UpdateService(
+          client: MockClient((_) async => http.Response(fakeGitHubJson, 200)),
+          appInfo: FakeAppInfoService(),
+          database: db,
+          cacheDirProvider: () async => tempDir,
+        );
+
+        await service.checkUpdate();
+        // A release without a device-compatible APK is not actionable.
+        expect(service.activeUpdate.value, isNull);
+
+        final actionableRelease = jsonEncode({
+          'tag_name': 'v0.6.1',
+          'assets': [
+            {
+              'name': 'Errand-v0.6.1-full-arm64-v8a.apk',
+              'size': 10,
+              'browser_download_url': 'https://example.com/update.apk',
+            },
+          ],
+        });
+        final actionableService = UpdateService(
+          client: MockClient(
+            (_) async => http.Response(actionableRelease, 200),
+          ),
+          appInfo: FakeAppInfoService(),
+          database: db,
+          cacheDirProvider: () async => tempDir,
+        );
+
+        await actionableService.checkUpdate(force: true);
+        expect(actionableService.activeUpdate.value, isNotNull);
+
+        await actionableService.dismissUpdate();
+        expect(actionableService.activeUpdate.value, isNull);
+
+        // An explicit check can surface the dismissed release again.
+        await actionableService.checkUpdate(force: true);
+        expect(actionableService.activeUpdate.value, isNotNull);
+      },
+    );
+
+    test(
+      'initialize re-surfaces a dismissed release on a new app open',
+      () async {
+        final release = jsonEncode({
+          'tag_name': 'v0.6.1',
+          'assets': [
+            {
+              'name': 'Errand-v0.6.1-full-arm64-v8a.apk',
+              'size': 10,
+              'browser_download_url': 'https://example.com/update.apk',
+            },
+          ],
+        });
+        final client = MockClient((_) async => http.Response(release, 200));
+
+        final firstService = UpdateService(
+          client: client,
+          appInfo: FakeAppInfoService(),
+          database: db,
+          cacheDirProvider: () async => tempDir,
+        );
+        await firstService.checkUpdate(force: true);
+        await firstService.dismissUpdate();
+        expect(firstService.activeUpdate.value, isNull);
+
+        final reopenedService = UpdateService(
+          client: client,
+          appInfo: FakeAppInfoService(),
+          database: db,
+          cacheDirProvider: () async => tempDir,
+        );
+        await reopenedService.initialize();
+        expect(reopenedService.activeUpdate.value, isNotNull);
+      },
+    );
+
+    test(
+      'initialize clears cached APK state after the app has updated',
+      () async {
+        final staleApk = File('${tempDir.path}/stale.apk')
+          ..writeAsBytesSync(List<int>.filled(10, 1));
+        await db.setSetting(
+          'pref.app_update_info',
+          jsonEncode({
+            'current_version': '0.6.0',
+            'latest_version': '0.6.1',
+            'last_ping': DateTime.now().millisecondsSinceEpoch,
+            'apk_url': 'https://example.com/update.apk',
+            'apk_location': staleApk.path,
+            'apk_downloaded_at': DateTime.now().millisecondsSinceEpoch,
+            'apk_size': 10,
+          }),
+        );
+
+        final service = UpdateService(
+          client: MockClient(
+            (_) async => http.Response(
+              jsonEncode({'tag_name': 'v0.6.1', 'assets': []}),
+              200,
+            ),
+          ),
+          appInfo: FakeAppInfoService(version: '0.6.1'),
+          database: db,
+          cacheDirProvider: () async => tempDir,
+        );
+
+        await service.initialize();
+        final persisted = await service.loadPersistedInfo();
+        expect(service.activeUpdate.value, isNull);
+        expect(staleApk.existsSync(), isFalse);
+        expect(persisted!.currentVersion, '0.6.1');
+        expect(persisted.apkLocation, isNull);
+        expect(persisted.apkDownloadedAt, isNull);
+      },
+    );
   });
 
   group('UpdateService release notes & first launch detection', () {
-    test('parseReleaseNotes parses github changelog markdown into clean items', () {
-      const sample = '''
+    test(
+      'parseReleaseNotes parses github changelog markdown into clean items',
+      () {
+        const sample = '''
 ## What's Changed
 * feat(models, ui): sort models by release date by @Abhiram86 in https://github.com/Abhiram86/errand/pull/15
 * Fix: **keyboard dismiss** on back press by @someone in https://github.com/Abhiram86/errand/pull/14
@@ -336,41 +445,68 @@ void main() {
 ---
 ''';
 
-      final items = UpdateService.parseReleaseNotes(sample);
-      expect(items, [
-        'feat(models, ui): sort models by release date',
-        'Fix: keyboard dismiss on back press',
-        'Another enhancement: code support',
-        'First numbered item',
-      ]);
-    });
+        final items = UpdateService.parseReleaseNotes(sample);
+        expect(items, [
+          'feat(models, ui): sort models by release date',
+          'Fix: keyboard dismiss on back press',
+          'Another enhancement: code support',
+          'First numbered item',
+        ]);
+      },
+    );
 
     test('parseReleaseNotes returns empty list for null or empty body', () {
       expect(UpdateService.parseReleaseNotes(null), isEmpty);
       expect(UpdateService.parseReleaseNotes('   \n\n  '), isEmpty);
     });
 
-    test('checkFirstLaunchAfterUpdate ignores fresh install and persists version', () async {
-      final appInfo = FakeAppInfoService(version: '0.6.1');
-      final service = UpdateService(
-        client: MockClient((_) async => http.Response('{}', 200)),
-        appInfo: appInfo,
-        database: db,
-        cacheDirProvider: () async => tempDir,
-      );
+    test(
+      'fetchReleaseNotes does not label a different release as requested',
+      () async {
+        final client = MockClient((request) async {
+          if (request.url.path.contains('/releases/tags/')) {
+            return http.Response('Not found', 404);
+          }
+          return http.Response(
+            jsonEncode({'tag_name': 'v0.6.2', 'body': 'Older notes'}),
+            200,
+          );
+        });
+        final service = UpdateService(
+          client: client,
+          appInfo: FakeAppInfoService(),
+          database: db,
+          cacheDirProvider: () async => tempDir,
+        );
 
-      // On a fresh install, DB has no user data and no last seen version
-      final notes = await service.checkFirstLaunchAfterUpdate();
-      expect(notes, isNull);
+        expect(await service.fetchReleaseNotes('0.6.4'), isNull);
+      },
+    );
 
-      // Now last seen version is stored
-      final lastSeen = await db.getSetting('pref.last_seen_version');
-      expect(lastSeen, '0.6.1');
+    test(
+      'checkFirstLaunchAfterUpdate ignores fresh install and persists version',
+      () async {
+        final appInfo = FakeAppInfoService(version: '0.6.1');
+        final service = UpdateService(
+          client: MockClient((_) async => http.Response('{}', 200)),
+          appInfo: appInfo,
+          database: db,
+          cacheDirProvider: () async => tempDir,
+        );
 
-      // Subsequent launch of the same version also returns null
-      final secondLaunchNotes = await service.checkFirstLaunchAfterUpdate();
-      expect(secondLaunchNotes, isNull);
-    });
+        // On a fresh install, DB has no user data and no last seen version
+        final notes = await service.checkFirstLaunchAfterUpdate();
+        expect(notes, isNull);
+
+        // Now last seen version is stored
+        final lastSeen = await db.getSetting('pref.last_seen_version');
+        expect(lastSeen, '0.6.1');
+
+        // Subsequent launch of the same version also returns null
+        final secondLaunchNotes = await service.checkFirstLaunchAfterUpdate();
+        expect(secondLaunchNotes, isNull);
+      },
+    );
 
     test('checkFirstLaunchAfterUpdate detects update when lastSeen is older version', () async {
       // Setup existing last seen version (e.g. user was previously running 0.6.0)
@@ -397,10 +533,7 @@ void main() {
 
       final notes = await service.checkFirstLaunchAfterUpdate();
       expect(notes, isNotNull);
-      expect(notes, [
-        'Added sorting by date',
-        'Fixed UI bug',
-      ]);
+      expect(notes, ['Added sorting by date', 'Fixed UI bug']);
 
       // Last seen version is updated to 0.6.1
       expect(await db.getSetting('pref.last_seen_version'), '0.6.1');
@@ -432,40 +565,41 @@ void main() {
 
       final notes = await service.checkFirstLaunchAfterUpdate();
       expect(notes, isNotNull);
-      expect(notes, [
-        'Fetched from GitHub API',
-        'Another improvement',
-      ]);
+      expect(notes, ['Fetched from GitHub API', 'Another improvement']);
     });
 
-    test('checkFirstLaunchAfterUpdate cleans up stale APK upon update launch', () async {
-      await db.setSetting('pref.last_seen_version', '0.6.0');
+    test(
+      'checkFirstLaunchAfterUpdate cleans up stale APK upon update launch',
+      () async {
+        await db.setSetting('pref.last_seen_version', '0.6.0');
 
-      final staleApk = File('${tempDir.path}/stale.apk')..writeAsStringSync('apk content');
-      expect(staleApk.existsSync(), isTrue);
+        final staleApk = File('${tempDir.path}/stale.apk')
+          ..writeAsStringSync('apk content');
+        expect(staleApk.existsSync(), isTrue);
 
-      await db.setSetting(
-        'pref.app_update_info',
-        jsonEncode({
-          'current_version': '0.6.0',
-          'latest_version': '0.6.1',
-          'last_ping': DateTime.now().millisecondsSinceEpoch,
-          'apk_location': staleApk.path,
-          'release_notes': '* New release notes',
-        }),
-      );
+        await db.setSetting(
+          'pref.app_update_info',
+          jsonEncode({
+            'current_version': '0.6.0',
+            'latest_version': '0.6.1',
+            'last_ping': DateTime.now().millisecondsSinceEpoch,
+            'apk_location': staleApk.path,
+            'release_notes': '* New release notes',
+          }),
+        );
 
-      final appInfo = FakeAppInfoService(version: '0.6.1');
-      final service = UpdateService(
-        client: MockClient((_) async => http.Response('{}', 200)),
-        appInfo: appInfo,
-        database: db,
-        cacheDirProvider: () async => tempDir,
-      );
+        final appInfo = FakeAppInfoService(version: '0.6.1');
+        final service = UpdateService(
+          client: MockClient((_) async => http.Response('{}', 200)),
+          appInfo: appInfo,
+          database: db,
+          cacheDirProvider: () async => tempDir,
+        );
 
-      final notes = await service.checkFirstLaunchAfterUpdate();
-      expect(notes, isNotNull);
-      expect(staleApk.existsSync(), isFalse);
-    });
+        final notes = await service.checkFirstLaunchAfterUpdate();
+        expect(notes, isNotNull);
+        expect(staleApk.existsSync(), isFalse);
+      },
+    );
   });
 }

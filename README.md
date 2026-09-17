@@ -76,7 +76,7 @@ conversations are stored locally (Drift/SQLite) with no cloud sync.
   active keys automatically take priority in the model picker while preserving
   stable relative order. Settings → Tools tab shows screen-access state,
   Enable/Disable buttons, Tavily key, and Memory Management.
-- **Background OTA updates & release notes** — periodic background checks against GitHub releases (`GET /repos/Abhiram86/errand/releases/latest`) on a 2-hour cadence. Matches device ABI (`arm64-v8a`, `armeabi-v7a`, `x86_64`) and flavor (`full` vs `lite`), streams APKs with atomic `.tmp` download and size verification, caches with 2-day TTL in SQLite (`pref.app_update_info`), and presents a floating pill under the model picker for 1-tap package installation. Automatically detects the first launch after an update to show parsed release notes (suppressed on fresh installs), with a manual release notes button in the sidebar header and auto-cleanup of stale downloaded APKs.
+- **Background OTA updates & release notes** — periodic background checks against GitHub releases (`GET /repos/Abhiram86/errand/releases/latest`) on a 2-hour cadence, plus a manual check action in the sidebar. Matches device ABI (`arm64-v8a`, `armeabi-v7a`, `x86_64`) and flavor (`full` vs `lite`), streams APKs with atomic `.tmp` download and size verification, caches with 2-day TTL in SQLite (`pref.app_update_info`), and presents a floating pill under the model picker for 1-tap package installation. Automatically detects the first launch after an update to show parsed release notes (suppressed on fresh installs), with a manual release notes button in the sidebar header and auto-cleanup of stale downloaded APKs.
 
 ## Flavors (Full vs. Lite)
 

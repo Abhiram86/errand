@@ -32,6 +32,9 @@ class AppUpdateInfo {
   /// Whether a newer version is available compared to the currently running version.
   bool get hasUpdate => compareSemver(latestVersion, currentVersion) > 0;
 
+  /// Whether this release includes an APK that can be downloaded on this device.
+  bool get hasCompatibleApk => apkUrl != null && apkUrl!.trim().isNotEmpty;
+
   /// Whether the user has dismissed the notice for this specific latest version.
   bool get isDismissed =>
       dismissedVersion != null &&
@@ -61,18 +64,24 @@ class AppUpdateInfo {
     DateTime? apkDownloadedAt,
     int? apkSize,
     String? dismissedVersion,
+    bool clearCachedApk = false,
+    bool clearDismissedVersion = false,
   }) {
     return AppUpdateInfo(
       currentVersion: currentVersion ?? this.currentVersion,
       latestVersion: latestVersion ?? this.latestVersion,
       lastPing: lastPing ?? this.lastPing,
       releaseNotes: releaseNotes ?? this.releaseNotes,
-      apkUrl: apkUrl ?? this.apkUrl,
-      apkName: apkName ?? this.apkName,
-      apkLocation: apkLocation ?? this.apkLocation,
-      apkDownloadedAt: apkDownloadedAt ?? this.apkDownloadedAt,
-      apkSize: apkSize ?? this.apkSize,
-      dismissedVersion: dismissedVersion ?? this.dismissedVersion,
+      apkUrl: clearCachedApk ? null : apkUrl ?? this.apkUrl,
+      apkName: clearCachedApk ? null : apkName ?? this.apkName,
+      apkLocation: clearCachedApk ? null : apkLocation ?? this.apkLocation,
+      apkDownloadedAt: clearCachedApk
+          ? null
+          : apkDownloadedAt ?? this.apkDownloadedAt,
+      apkSize: clearCachedApk ? null : apkSize ?? this.apkSize,
+      dismissedVersion: clearDismissedVersion
+          ? null
+          : dismissedVersion ?? this.dismissedVersion,
     );
   }
 
@@ -102,7 +111,9 @@ class AppUpdateInfo {
       apkName: json['apk_name'] as String?,
       apkLocation: json['apk_location'] as String?,
       apkDownloadedAt: json['apk_downloaded_at'] != null
-          ? DateTime.fromMillisecondsSinceEpoch(json['apk_downloaded_at'] as int)
+          ? DateTime.fromMillisecondsSinceEpoch(
+              json['apk_downloaded_at'] as int,
+            )
           : null,
       apkSize: json['apk_size'] as int?,
       dismissedVersion: json['dismissed_version'] as String?,

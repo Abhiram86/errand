@@ -13,6 +13,7 @@ typedef ChatOption = SheetOption;
 class ChatSidebar extends StatelessWidget {
   final VoidCallback onClose;
   final VoidCallback? onShowReleaseNotes;
+  final VoidCallback? onCheckForUpdates;
   final ValueChanged<Conversation> onSelectConversation;
   final ValueChanged<Conversation> onDeleteConversation;
   final List<Conversation> pinnedConversations;
@@ -29,6 +30,7 @@ class ChatSidebar extends StatelessWidget {
     super.key,
     required this.onClose,
     this.onShowReleaseNotes,
+    this.onCheckForUpdates,
     required this.onSelectConversation,
     required this.onDeleteConversation,
     required this.pinnedConversations,
@@ -68,6 +70,16 @@ class ChatSidebar extends StatelessWidget {
                       onPressed: onShowReleaseNotes,
                       tooltip: 'Release notes',
                       icon: const Icon(Icons.new_releases_outlined, size: 18),
+                      color: kMuted,
+                    ),
+                  if (onCheckForUpdates != null)
+                    IconButton(
+                      onPressed: onCheckForUpdates,
+                      tooltip: 'Check for updates',
+                      icon: const Icon(
+                        Icons.system_update_alt_rounded,
+                        size: 18,
+                      ),
                       color: kMuted,
                     ),
                   IconButton(
@@ -129,8 +141,7 @@ class ChatSidebar extends StatelessWidget {
                           onDelete: () => onDeleteConversation(chat),
                           options: optionsBuilder(chat),
                         ),
-                    if (isLoadingMoreConversations)
-                      const LoadMoreIndicator(),
+                    if (isLoadingMoreConversations) const LoadMoreIndicator(),
                   ],
                 ),
               ),
