@@ -1,6 +1,6 @@
 # Next Plan — Status & Roadmap
 
-> **Updated Sep 2026.** P0 through P5a (v0.5.5), v0.5.6, P5b (memory subsystem, schema v5), P6a (embedded browser agent tools, v0.6.0), and v0.6.1 (background OTA updates, post-update release notes, model sorting by release date, dynamic provider defaults, unified options modal sheet, animated composer glow) are all **SHIPPED**.
+> **Updated Sep 2026.** P0 through P5a (v0.5.5), v0.5.6, P5b (memory subsystem, schema v5), P6a (embedded browser agent tools, v0.6.0), v0.6.1 (background OTA updates, post-update release notes, model sorting by release date, dynamic provider defaults, unified options modal sheet, animated composer glow), and v0.6.2 (default working directory to Documents/Errand, filesystem hygiene, scratch directory auto-creation) are all **SHIPPED**.
 > **Active Milestone:** **P6b — Browser Rough Edges & Android PlatformView Optimizations**.
 
 ---

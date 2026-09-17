@@ -381,6 +381,7 @@ Errand is structured into two Gradle product flavors (`android/app/build.gradle.
 - ✅ Done Sep 2026 (v0.6.1): Dynamic provider defaulting and model sorting by release date via `models.dev` catalog.
 - ✅ Done Sep 2026 (v0.6.1): Unified `OptionsModalSheet` with 75% max height limit and scrollable content across sidebar and message bubble menus.
 - ✅ Done Sep 2026 (v0.6.1): Animated multi-color sweep-gradient glowing border around `ChatComposer` while the assistant is processing turns.
+- ✅ Done Sep 2026 (v0.6.2): Default working directory to `/storage/emulated/0/Documents/Errand/`, filesystem output hygiene in system prompt, and automatic `.scratch/` directory creation.
 - Safe-edit tool (`write`/`edit_file` with diff preview + undo) — needs the write-policy decision originally blocking it.
 - Local retrieval (embeddings/FTS) over recent docs for context budgeting.
 - Evaluate SAF as an alternative to `MANAGE_EXTERNAL_STORAGE` for Play distribution.
