@@ -22,8 +22,9 @@ void main() {
         'mkdir -p test_dir/sub',
         'touch file.txt',
         'cp a.txt b.txt',
-        'mv a.txt b.txt',
-        'rm single_file.txt',
+        'mv .scratch/a.txt .scratch/b.txt',
+        'rm .scratch/single_file.txt',
+        'rm -rf .scratch',
         'df -h',
         'ps -ef',
         'tar -czf archive.tar.gz file.txt',
@@ -133,6 +134,10 @@ void main() {
         'rm --recursive cache',
         'rm *.tmp',
         'rm -f /storage/emulated/0/*.bak',
+        'rm single_file.txt',
+        'rmdir empty_dir',
+        'mv a.txt b.txt',
+        'sed -i "s/foo/bar/g" config.txt',
         'find . -name "*.log" -delete',
         'find . -type f -exec rm {} +',
         'xargs rm < files.txt',
@@ -445,6 +450,91 @@ void main() {
         ),
       );
 
+      expect(result.ok, isTrue);
+      expect(await testFile.exists(), isFalse);
+    });
+
+    test('bashTool prompts via onConfirmCommand and executes when accepted', () async {
+      final testFile = File('${tempDir.path}/prompt_accept.txt');
+      await testFile.writeAsString('to be deleted');
+
+      var promptCalled = false;
+      final customTool = bashTool(
+        workingDirectory: workingDir,
+        onConfirmCommand: ({required command, required title, reason}) async {
+          promptCalled = true;
+          expect(command, contains('prompt_accept.txt'));
+          return ConfirmationDecision.accept;
+        },
+      );
+      addTearDown(() => customTool.dispose());
+
+      final result = await customTool.handler(
+        ToolCall(
+          id: 'call-accept',
+          name: 'bash',
+          arguments: {'command': 'rm "${testFile.path}"'},
+        ),
+      );
+
+      expect(promptCalled, isTrue);
+      expect(result.ok, isTrue);
+      expect(await testFile.exists(), isFalse);
+    });
+
+    test('bashTool refuses execution when onConfirmCommand returns deny', () async {
+      final testFile = File('${tempDir.path}/prompt_deny.txt');
+      await testFile.writeAsString('keep me');
+
+      var promptCalled = false;
+      final customTool = bashTool(
+        workingDirectory: workingDir,
+        onConfirmCommand: ({required command, required title, reason}) async {
+          promptCalled = true;
+          return ConfirmationDecision.deny;
+        },
+      );
+      addTearDown(() => customTool.dispose());
+
+      final result = await customTool.handler(
+        ToolCall(
+          id: 'call-deny',
+          name: 'bash',
+          arguments: {'command': 'rm "${testFile.path}"'},
+        ),
+      );
+
+      expect(promptCalled, isTrue);
+      expect(result.ok, isFalse);
+      expect(result.errorMessage, contains('User denied execution of command'));
+      expect(result.error?.type, 'user_denied');
+      expect(await testFile.exists(), isTrue);
+    });
+
+    test('bashTool bypasses confirmation when isSessionTrusted returns true', () async {
+      final testFile = File('${tempDir.path}/trusted_delete.txt');
+      await testFile.writeAsString('trusted');
+
+      var promptCalled = false;
+      final customTool = bashTool(
+        workingDirectory: workingDir,
+        isSessionTrusted: () => true,
+        onConfirmCommand: ({required command, required title, reason}) async {
+          promptCalled = true;
+          return ConfirmationDecision.accept;
+        },
+      );
+      addTearDown(() => customTool.dispose());
+
+      final result = await customTool.handler(
+        ToolCall(
+          id: 'call-trusted',
+          name: 'bash',
+          arguments: {'command': 'rm "${testFile.path}"'},
+        ),
+      );
+
+      expect(promptCalled, isFalse);
       expect(result.ok, isTrue);
       expect(await testFile.exists(), isFalse);
     });

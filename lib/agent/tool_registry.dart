@@ -40,6 +40,12 @@ class ToolRegistry {
     MemoryService? memoryService,
     String? currentConversationId,
     BrowserService? browserService,
+    Future<ConfirmationDecision> Function({
+      required String title,
+      required String command,
+      String? reason,
+    })? onConfirmCommand,
+    bool Function()? isSessionTrusted,
   }) {
     final directory = workingDirectory ?? WorkingDirectory(currentDir);
     return ToolRegistry([
@@ -52,6 +58,8 @@ class ToolRegistry {
         workingDirectory: directory,
         shellService: shellService,
         getCancelToken: getCancelToken,
+        onConfirmCommand: onConfirmCommand,
+        isSessionTrusted: isSessionTrusted,
       ),
       webSearchTavilyTool(),
       webFetchTool(),

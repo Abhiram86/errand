@@ -32,7 +32,9 @@ import '../types/message.dart';
 import '../widgets/a11y_toast_overlay.dart';
 import '../widgets/browser_widget.dart';
 import '../widgets/chat_composer.dart';
+import '../services/shell_service.dart';
 import '../widgets/chat_sidebar.dart';
+import '../widgets/command_confirmation_banner.dart';
 import '../widgets/context_footer.dart';
 import '../widgets/message_bubbles.dart';
 import '../widgets/model_picker.dart';
@@ -43,6 +45,20 @@ import '../widgets/settings_sheet.dart';
 import '../widgets/update_toast.dart';
 
 final database = ErrandDatabase.instance;
+
+class PendingConfirmation {
+  final String title;
+  final String command;
+  final String? reason;
+  final Completer<ConfirmationDecision> completer;
+
+  PendingConfirmation({
+    required this.title,
+    required this.command,
+    this.reason,
+    required this.completer,
+  });
+}
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -157,6 +173,58 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   bool _sortedConversationsDirty = true;
   final Set<String> _animatedMessageIds = <String>{};
   final GlobalKey _composerKey = GlobalKey();
+
+  /// In-memory store of conversation IDs trusted for destructive operations.
+  /// Kept strictly in RAM for the current session; never persisted to SQLite.
+  final Set<String> _sessionTrustedConversations = {};
+  PendingConfirmation? _pendingConfirmation;
+
+  bool _isCurrentSessionTrusted() {
+    final activeId = _activeConversation.id;
+    if (activeId == null) return false;
+    return _sessionTrustedConversations.contains(activeId);
+  }
+
+  Future<ConfirmationDecision> _handleConfirmCommand({
+    required String title,
+    required String command,
+    String? reason,
+  }) async {
+    final activeId = _activeConversation.id;
+    if (activeId != null && _sessionTrustedConversations.contains(activeId)) {
+      return ConfirmationDecision.trust;
+    }
+
+    final completer = Completer<ConfirmationDecision>();
+    setState(() {
+      _pendingConfirmation = PendingConfirmation(
+        title: title,
+        command: command,
+        reason: reason,
+        completer: completer,
+      );
+    });
+
+    try {
+      final decision = await completer.future;
+      if (decision == ConfirmationDecision.trust && activeId != null) {
+        _sessionTrustedConversations.add(activeId);
+      }
+      return decision;
+    } finally {
+      if (mounted) {
+        setState(() {
+          _pendingConfirmation = null;
+        });
+      }
+    }
+  }
+
+  void _resolvePendingConfirmation(ConfirmationDecision decision) {
+    if (_pendingConfirmation != null && !_pendingConfirmation!.completer.isCompleted) {
+      _pendingConfirmation!.completer.complete(decision);
+    }
+  }
 
   void _updateEstimatedTokens() {
     final lastCompactedIdx =
@@ -932,11 +1000,15 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       return;
     }
 
+    final newId = _uuid.v4();
     _activeConversation
-      ..id = _uuid.v4()
+      ..id = newId
       ..title = _conversationTitle(firstMessage)
       ..model = _selectedModel
       ..provider = _providerForModel(_selectedModel);
+    if (_sessionTrustedConversations.remove('__active_draft__')) {
+      _sessionTrustedConversations.add(newId);
+    }
     _touchConversation();
   }
 
@@ -988,6 +1060,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   void _startNewChat() {
     if (_busy) return;
+    if (_pendingConfirmation != null && !_pendingConfirmation!.completer.isCompleted) {
+      _pendingConfirmation!.completer.complete(ConfirmationDecision.deny);
+      _pendingConfirmation = null;
+    }
     _workingFlushTimer?.cancel();
     _workingFlushTimer = null;
     _controller.clear();
@@ -1020,6 +1096,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     if (_busy || id == null || id == _activeConversation.id) {
       _closeSidebar();
       return;
+    }
+
+    if (_pendingConfirmation != null && !_pendingConfirmation!.completer.isCompleted) {
+      _pendingConfirmation!.completer.complete(ConfirmationDecision.deny);
+      _pendingConfirmation = null;
     }
 
     // Sidebar rows are summaries; fetch the full conversation with messages
@@ -1527,6 +1608,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         enableA11yTools: _a11ySupported,
         getCancelToken: () => _cancelToken,
         currentConversationId: _activeConversation.id,
+        onConfirmCommand: _handleConfirmCommand,
+        isSessionTrusted: _isCurrentSessionTrusted,
       );
 
       final budget = _getActiveBudget();
@@ -1917,6 +2000,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   void _stopGeneration() {
     if (!_busy) return;
     _cancelToken.cancel();
+    if (_pendingConfirmation != null && !_pendingConfirmation!.completer.isCompleted) {
+      _pendingConfirmation!.completer.complete(ConfirmationDecision.deny);
+    }
   }
 
   // -- Voice input ---------------------------------------------------------
@@ -2075,6 +2161,17 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                   }
                 },
               ),
+              if (_pendingConfirmation != null)
+                Positioned.fill(
+                  child: CommandConfirmationModal(
+                    title: _pendingConfirmation!.title,
+                    command: _pendingConfirmation!.command,
+                    reason: _pendingConfirmation!.reason,
+                    onAccept: () => _resolvePendingConfirmation(ConfirmationDecision.accept),
+                    onDeny: () => _resolvePendingConfirmation(ConfirmationDecision.deny),
+                    onTrust: () => _resolvePendingConfirmation(ConfirmationDecision.trust),
+                  ),
+                ),
               Positioned.fill(
                 child: IgnorePointer(
                   ignoring: !_sidebarOpen,

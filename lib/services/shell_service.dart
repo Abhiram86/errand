@@ -9,11 +9,11 @@ enum ShellSafetyLevel {
   /// Command is safe to execute without special confirmation.
   safe,
 
-  /// Command performs destructive mutations (e.g. bulk deletes, rm -rf)
+  /// Command performs destructive mutations (e.g. bulk deletes, rm -rf, mv)
   /// and requires explicit confirmation under the Draft model.
   needsConfirmation,
 
-  /// Command is strictly prohibited (e.g. fork bombs, su/root, reboot).
+  /// Command is strictly prohibited (e.g. fork bombs, su/root, reboot, disk wipes).
   blocked,
 }
 
@@ -23,9 +23,14 @@ class ShellSafetyCheck {
   final String? reason;
   final String? matchedPattern;
 
-  const ShellSafetyCheck.safe()
+  const ShellSafetyCheck(
+    this.level,
+    this.reason, [
+    this.matchedPattern,
+  ]);
+
+  const ShellSafetyCheck.safe([this.reason = 'Command appears safe'])
       : level = ShellSafetyLevel.safe,
-        reason = null,
         matchedPattern = null;
 
   const ShellSafetyCheck.needsConfirmation({
@@ -39,191 +44,612 @@ class ShellSafetyCheck {
   }) : level = ShellSafetyLevel.blocked;
 
   bool get isSafe => level == ShellSafetyLevel.safe;
-  bool get isBlocked => level == ShellSafetyLevel.blocked;
   bool get needsConfirmation => level == ShellSafetyLevel.needsConfirmation;
+  bool get isBlocked => level == ShellSafetyLevel.blocked;
 
   /// Analyzes a command line for dangerous operations and destructive mutations.
   static ShellSafetyCheck analyze(String command) {
     final cmd = command.trim();
-    if (cmd.isEmpty) {
-      return const ShellSafetyCheck.safe();
-    }
 
-    // 1. Blocked: Fork bombs
-    // Classic :(){ :|:& };: or variations with arbitrary whitespace/function names
-    final classicForkBomb = RegExp(r':\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', caseSensitive: false);
-    if (classicForkBomb.hasMatch(cmd)) {
-      return const ShellSafetyCheck.blocked(
-        reason: 'Fork bombs are strictly prohibited.',
-        matchedPattern: ':(){ :|:& };:',
+    if (cmd.isEmpty) {
+      return const ShellSafetyCheck(
+        ShellSafetyLevel.safe,
+        'Empty command',
       );
     }
 
+    // Things we cannot safely reason about or that hide arbitrary code execution.
+    if (_hasDangerousShellConstruct(cmd)) {
+      return const ShellSafetyCheck(
+        ShellSafetyLevel.blocked,
+        'Command contains shell constructs that cannot be safely analyzed',
+      );
+    }
+
+    // Inspect command substitutions $(...) and `...`
+    final subcmdMatches = RegExp(r'\$\(([^)]+)\)|`([^`]+)`').allMatches(cmd);
+    for (final m in subcmdMatches) {
+      final inner = (m.group(1) ?? m.group(2) ?? '').trim();
+      if (inner.isNotEmpty) {
+        final innerResult = analyze(inner);
+        if (innerResult.isBlocked) return innerResult;
+        if (innerResult.needsConfirmation) return innerResult;
+      }
+    }
+
+    for (final segment in _splitCommands(cmd)) {
+      final result = _analyzeCommand(segment);
+
+      if (result.isBlocked) return result;
+      if (result.needsConfirmation) return result;
+    }
+
+    return const ShellSafetyCheck(
+      ShellSafetyLevel.safe,
+      'Command appears safe',
+    );
+  }
+
+  static bool _hasDangerousShellConstruct(String cmd) {
+    // eval/source/exec/. can hide arbitrary commands when invoked in command position.
+    if (RegExp(
+      r'(?:^|[;&|\n])\s*(?:eval|source|exec|\.)(?:\s+|$)',
+      caseSensitive: false,
+    ).hasMatch(cmd)) {
+      return true;
+    }
+
+    // Classic fork bombs :(){ :|:& };:
+    if (RegExp(
+      r':\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:',
+      caseSensitive: false,
+    ).hasMatch(cmd)) {
+      return true;
+    }
+
+    // Recursive function self-piping fork patterns: bomb() { bomb | bomb & }; bomb
     final recursiveFunctionFork = RegExp(
       r'([a-zA-Z_0-9]+)\s*\(\s*\)\s*\{\s*.*\b\1\s*\|\s*\1\b.*\}',
       caseSensitive: false,
     );
     if (recursiveFunctionFork.hasMatch(cmd)) {
-      return const ShellSafetyCheck.blocked(
-        reason: 'Recursive self-piping fork patterns are strictly prohibited.',
-        matchedPattern: 'function self-pipe',
-      );
+      return true;
     }
 
-    // 2. Blocked: Privilege escalation & root invocation
-    final suPattern = RegExp(
-      r'(?:^|[;&|`\s])(?:sudo|doas|su)(?:$|[;&|`\s])',
-      caseSensitive: false,
-    );
-    if (suPattern.hasMatch(cmd)) {
-      return const ShellSafetyCheck.blocked(
-        reason: 'Privilege escalation and superuser (su/sudo) commands are strictly prohibited.',
-        matchedPattern: 'su/sudo',
-      );
-    }
-
-    final suPathPattern = RegExp(
-      r'(?:^|[;&|`\s])(?:\/[a-zA-Z0-9_.\-]+)*\/(?:su|sudo|doas)(?:$|[;&|`\s])',
-      caseSensitive: false,
-    );
-    if (suPathPattern.hasMatch(cmd)) {
-      return const ShellSafetyCheck.blocked(
-        reason: 'Direct invocation of su/sudo binaries is strictly prohibited.',
-        matchedPattern: 'path/to/su',
-      );
-    }
-
-    // 3. Blocked: Reboot, shutdown, power off, init changes
-    final rebootPattern = RegExp(
-      r'(?:^|[;&|`\s])(?:reboot|shutdown|poweroff|halt)(?:$|[;&|`\s])',
-      caseSensitive: false,
-    );
-    if (rebootPattern.hasMatch(cmd)) {
-      return const ShellSafetyCheck.blocked(
-        reason: 'Reboot and system shutdown commands are strictly prohibited.',
-        matchedPattern: 'reboot/shutdown',
-      );
-    }
-
-    final initPattern = RegExp(r'(?:^|[;&|`\s])init\s+[06](?:$|[;&|`\s])', caseSensitive: false);
-    if (initPattern.hasMatch(cmd)) {
-      return const ShellSafetyCheck.blocked(
-        reason: 'System state change via init is strictly prohibited.',
-        matchedPattern: 'init 0/6',
-      );
-    }
-
-    final sysPowerCtlPattern = RegExp(r'setprop\s+sys\.powerctl', caseSensitive: false);
-    if (sysPowerCtlPattern.hasMatch(cmd)) {
-      return const ShellSafetyCheck.blocked(
-        reason: 'Direct Android powerctl manipulation is strictly prohibited.',
-        matchedPattern: 'setprop sys.powerctl',
-      );
-    }
-
-    // 4. Blocked: Raw disk/partition formatting or device node wiping
-    final mkfsPattern = RegExp(r'(?:^|[;&|`\s])mkfs(?:\.[a-zA-Z0-9_\-]+)?(?:$|[;&|`\s])', caseSensitive: false);
-    if (mkfsPattern.hasMatch(cmd)) {
-      return const ShellSafetyCheck.blocked(
-        reason: 'Filesystem formatting (mkfs) is strictly prohibited.',
-        matchedPattern: 'mkfs',
-      );
-    }
-
-    final ddDevPattern = RegExp(r'\bdd\b.*(?:of\s*=\s*\/dev\/)', caseSensitive: false);
-    if (ddDevPattern.hasMatch(cmd)) {
-      return const ShellSafetyCheck.blocked(
-        reason: 'Direct writes to raw block devices are strictly prohibited.',
-        matchedPattern: 'dd of=/dev/...',
-      );
-    }
-
-    final rawBlockRedirect = RegExp(r'(?:>|>>)\s*\/dev\/(?:block|mtd|sda|sdb|mmcblk)', caseSensitive: false);
-    if (rawBlockRedirect.hasMatch(cmd)) {
-      return const ShellSafetyCheck.blocked(
-        reason: 'Redirection to raw storage block devices is strictly prohibited.',
-        matchedPattern: '> /dev/block',
-      );
-    }
-
-    // 5. Blocked: System/root directory destruction
-    final systemWipePattern = RegExp(
-      r'\brm\s+.*(?:^|\s)(?:\/|\/\*|\/system|\/data|\/vendor|\/apex|\/boot|\/recovery)(?:\s|$|\/\*)',
-      caseSensitive: false,
-    );
-    if (systemWipePattern.hasMatch(cmd)) {
-      return const ShellSafetyCheck.blocked(
-        reason: 'Destruction of root or system directories is strictly prohibited.',
-        matchedPattern: 'rm on root/system path',
-      );
-    }
-
-    // 6. Destructive mutations (Draft model confirmation required):
-    // Recursive deletions: rm -r, rm -rf, rm --recursive
-    final recursiveRm = RegExp(
-      r'\brm\b.*(?:\s-[a-zA-Z]*[rR][a-zA-Z]*|\s--recursive)\b',
-      caseSensitive: false,
-    );
-    if (recursiveRm.hasMatch(cmd)) {
-      return const ShellSafetyCheck.needsConfirmation(
-        reason: 'Recursive deletion of files or directories ("rm -r")',
-        matchedPattern: 'rm -r',
-      );
-    }
-
-    // Bulk deletion with wildcards: rm ... * or ?
-    final wildcardRm = RegExp(r'\brm\b.*[\*\?]', caseSensitive: false);
-    if (wildcardRm.hasMatch(cmd)) {
-      return const ShellSafetyCheck.needsConfirmation(
-        reason: 'Bulk deletion with wildcards ("rm *")',
-        matchedPattern: 'rm with wildcard',
-      );
-    }
-
-    // Utilities performing bulk deletions: find ... -delete or find ... -exec rm
-    final findDelete = RegExp(r'\bfind\b.*-delete\b', caseSensitive: false);
-    if (findDelete.hasMatch(cmd)) {
-      return const ShellSafetyCheck.needsConfirmation(
-        reason: 'Automated bulk file deletion ("find -delete")',
-        matchedPattern: 'find -delete',
-      );
-    }
-
-    final findExecRm = RegExp(r'\bfind\b.*-exec\s+rm\b', caseSensitive: false);
-    if (findExecRm.hasMatch(cmd)) {
-      return const ShellSafetyCheck.needsConfirmation(
-        reason: 'Automated bulk deletion via find ("find -exec rm")',
-        matchedPattern: 'find -exec rm',
-      );
-    }
-
-    final xargsRm = RegExp(r'\bxargs\s+(?:.*)?\brm\b', caseSensitive: false);
-    if (xargsRm.hasMatch(cmd)) {
-      return const ShellSafetyCheck.needsConfirmation(
-        reason: 'Automated bulk deletion via xargs ("xargs rm")',
-        matchedPattern: 'xargs rm',
-      );
-    }
-
-    // Bulk file truncation or shredding
-    final shredPattern = RegExp(r'\bshred\b', caseSensitive: false);
-    if (shredPattern.hasMatch(cmd)) {
-      return const ShellSafetyCheck.needsConfirmation(
-        reason: 'Permanent data shredding ("shred")',
-        matchedPattern: 'shred',
-      );
-    }
-
-    final truncateZeroPattern = RegExp(r'\btruncate\b.*-s\s*0\b', caseSensitive: false);
-    if (truncateZeroPattern.hasMatch(cmd)) {
-      return const ShellSafetyCheck.needsConfirmation(
-        reason: 'Truncating files to zero bytes ("truncate -s 0")',
-        matchedPattern: 'truncate -s 0',
-      );
-    }
-
-    return const ShellSafetyCheck.safe();
+    return false;
   }
+
+  static List<String> _splitCommands(String command) {
+    final result = <String>[];
+    var start = 0;
+    var quote = '';
+
+    for (var i = 0; i < command.length; i++) {
+      final c = command[i];
+
+      if (c == '\\') {
+        i++;
+        continue;
+      }
+
+      if (quote.isNotEmpty) {
+        if (c == quote) quote = '';
+        continue;
+      }
+
+      if (c == "'" || c == '"') {
+        quote = c;
+        continue;
+      }
+
+      final isSeparator = c == ';' ||
+          c == '\n' ||
+          c == '|' ||
+          c == '&';
+
+      if (isSeparator) {
+        final part = command.substring(start, i).trim();
+
+        if (part.isNotEmpty) {
+          result.add(part);
+        }
+
+        // Skip && / ||.
+        if ((c == '&' || c == '|') &&
+            i + 1 < command.length &&
+            command[i + 1] == c) {
+          i++;
+        }
+
+        start = i + 1;
+      }
+    }
+
+    final last = command.substring(start).trim();
+    if (last.isNotEmpty) result.add(last);
+
+    return result;
+  }
+
+  static ShellSafetyCheck _analyzeCommand(String command) {
+    var words = _tokenize(command);
+
+    if (words.isEmpty) {
+      return const ShellSafetyCheck(
+        ShellSafetyLevel.safe,
+        'Empty command',
+      );
+    }
+
+    // Strip environment assignments (e.g. VAR=1 cmd).
+    while (words.length > 1 && _isAssignment(words.first)) {
+      words = words.sublist(1);
+    }
+
+    if (words.isEmpty) {
+      return const ShellSafetyCheck(
+        ShellSafetyLevel.safe,
+        'Environment assignment only',
+      );
+    }
+
+    // Common command wrappers.
+    const wrappers = {
+      'sudo',
+      'doas',
+      'su',
+      'nohup',
+      'nice',
+      'ionice',
+      'timeout',
+      'setsid',
+      'stdbuf',
+      'time',
+    };
+
+    final executable = _basename(words.first);
+
+    // Block privilege escalation binaries even when prefixed by path.
+    if (executable == 'sudo' ||
+        executable == 'doas' ||
+        executable == 'su' ||
+        words.first.endsWith('/su') ||
+        words.first.endsWith('/sudo') ||
+        words.first.endsWith('/doas')) {
+      return const ShellSafetyCheck(
+        ShellSafetyLevel.blocked,
+        'Privilege escalation is not allowed',
+        'su/sudo',
+      );
+    }
+
+    if (wrappers.contains(executable)) {
+      // Find the first obvious command after wrapper arguments.
+      for (var i = 1; i < words.length; i++) {
+        if (!words[i].startsWith('-') &&
+            !_looksLikeWrapperValue(words[i])) {
+          return _analyzeCommand(words.sublist(i).join(' '));
+        }
+      }
+
+      return const ShellSafetyCheck(
+        ShellSafetyLevel.needsConfirmation,
+        'Unable to safely determine wrapped command',
+      );
+    }
+
+    // sh -c "...", bash -c "...", etc.
+    if ({
+      'sh',
+      'bash',
+      'zsh',
+      'dash',
+      'ash',
+      'ksh',
+    }.contains(executable)) {
+      final cIndex = words.indexOf('-c');
+
+      if (cIndex >= 0 && cIndex + 1 < words.length) {
+        final nested = words[cIndex + 1];
+
+        for (final part in _splitCommands(nested)) {
+          final result = _analyzeCommand(part);
+
+          if (result.isBlocked) return result;
+          if (result.needsConfirmation) return result;
+        }
+
+        return const ShellSafetyCheck(
+          ShellSafetyLevel.safe,
+          'Nested shell command appears safe',
+        );
+      }
+
+      return const ShellSafetyCheck(
+        ShellSafetyLevel.needsConfirmation,
+        'Shell invocation requires confirmation',
+      );
+    }
+
+    // busybox rm ...
+    if (executable == 'busybox' || executable == 'toybox') {
+      if (words.length > 1) {
+        return _analyzeCommand(words.sublist(1).join(' '));
+      }
+    }
+
+    // command rm ...
+    if (executable == 'command' && words.length > 1) {
+      return _analyzeCommand(words.sublist(1).join(' '));
+    }
+
+    // xargs can turn a harmless-looking command into bulk deletion.
+    if (executable == 'xargs') {
+      final rm = words.any((w) {
+        final base = _basename(w);
+        return base == 'rm' || base == 'rmdir';
+      });
+
+      if (rm) {
+        return const ShellSafetyCheck(
+          ShellSafetyLevel.needsConfirmation,
+          'Automated bulk deletion via xargs ("xargs rm")',
+          'xargs rm',
+        );
+      }
+
+      return const ShellSafetyCheck(
+        ShellSafetyLevel.needsConfirmation,
+        'xargs executes commands dynamically',
+      );
+    }
+
+    return _analyzeDirectCommand(words);
+  }
+
+  static ShellSafetyCheck _analyzeDirectCommand(
+    List<String> words,
+  ) {
+    final command = _basename(words.first);
+    final args = words.sublist(1);
+
+    // Commands that can obviously destroy/control the system.
+    if ({
+      'reboot',
+      'shutdown',
+      'poweroff',
+      'halt',
+      'mkfs',
+      'wipefs',
+      'blkdiscard',
+      'fdisk',
+      'parted',
+      'sgdisk',
+      'sfdisk',
+      'mkswap',
+    }.contains(command) || command.startsWith('mkfs.')) {
+      return ShellSafetyCheck(
+        ShellSafetyLevel.blocked,
+        '$command is not allowed',
+        command,
+      );
+    }
+
+    // Android/system property power control.
+    if (command == 'setprop' && args.contains('sys.powerctl')) {
+      return const ShellSafetyCheck(
+        ShellSafetyLevel.blocked,
+        'System power control is not allowed',
+        'setprop sys.powerctl',
+      );
+    }
+
+    // System state change via init 0 or init 6.
+    if (command == 'init' && (args.contains('0') || args.contains('6'))) {
+      return const ShellSafetyCheck(
+        ShellSafetyLevel.blocked,
+        'System state change via init is not allowed',
+        'init',
+      );
+    }
+
+    // dd to a block device.
+    if (command == 'dd') {
+      for (final arg in args) {
+        if (arg.startsWith('of=')) {
+          final target = arg.substring(3);
+
+          if (_isBlockDevice(target)) {
+            return const ShellSafetyCheck(
+              ShellSafetyLevel.blocked,
+              'dd writes directly to a block device',
+              'dd',
+            );
+          }
+        }
+      }
+
+      return const ShellSafetyCheck(
+        ShellSafetyLevel.needsConfirmation,
+        'dd can overwrite large amounts of data',
+        'dd',
+      );
+    }
+
+    if (command == 'rm' || command == 'rmdir') {
+      final targets = args
+          .where((x) => !x.startsWith('-'))
+          .toList();
+
+      if (targets.any(_isSystemPath)) {
+        return const ShellSafetyCheck(
+          ShellSafetyLevel.blocked,
+          'Deleting system paths is not allowed',
+          'rm on root/system path',
+        );
+      }
+
+      if (_isScratchOnlyList(targets)) {
+        return const ShellSafetyCheck(
+          ShellSafetyLevel.safe,
+          'Scratch directory deletion',
+        );
+      }
+
+      final recursive = args.any(
+        (x) => x == '--recursive' || x.contains('r') || x.contains('R'),
+      );
+
+      final wildcard = targets.any(
+        (x) => x.contains('*') || x.contains('?'),
+      );
+
+      if (recursive || wildcard) {
+        return ShellSafetyCheck(
+          ShellSafetyLevel.needsConfirmation,
+          recursive
+              ? 'Recursive deletion of files or directories ("rm -r")'
+              : 'Bulk deletion with wildcards ("rm *")',
+          command,
+        );
+      }
+
+      return ShellSafetyCheck(
+        ShellSafetyLevel.needsConfirmation,
+        'Deletion of files or directories ("$command")',
+        command,
+      );
+    }
+
+    if (command == 'mv' ||
+        command == 'shred' ||
+        command == 'truncate') {
+      final targets = args.where((x) => !x.startsWith('-')).toList();
+      if (_isScratchOnlyList(targets)) {
+        return const ShellSafetyCheck(
+          ShellSafetyLevel.safe,
+          'Scratch directory operation',
+        );
+      }
+      return ShellSafetyCheck(
+        ShellSafetyLevel.needsConfirmation,
+        '$command can destroy or replace files',
+        command,
+      );
+    }
+
+    if (command == 'sed' && args.contains('-i')) {
+      final targets = args.where((x) => !x.startsWith('-') && !x.startsWith('s/')).toList();
+      if (targets.isNotEmpty && _isScratchOnlyList(targets)) {
+        return const ShellSafetyCheck(
+          ShellSafetyLevel.safe,
+          'Scratch directory in-place editing',
+        );
+      }
+      return const ShellSafetyCheck(
+        ShellSafetyLevel.needsConfirmation,
+        'In-place file editing ("sed -i")',
+        'sed -i',
+      );
+    }
+
+    // find -delete / find -exec rm
+    if (command == 'find') {
+      if (args.contains('-delete')) {
+        return const ShellSafetyCheck(
+          ShellSafetyLevel.needsConfirmation,
+          'Automated bulk file deletion ("find -delete")',
+          'find -delete',
+        );
+      }
+      if (args.contains('-exec') ||
+          args.contains('-execdir') ||
+          args.contains('-ok') ||
+          args.contains('-okdir')) {
+        return const ShellSafetyCheck(
+          ShellSafetyLevel.needsConfirmation,
+          'find can modify or delete many files',
+          'find',
+        );
+      }
+    }
+
+    // Redirecting into a system path or block device.
+    for (final target in _redirectTargets(words)) {
+      if (_isBlockDevice(target)) {
+        return const ShellSafetyCheck(
+          ShellSafetyLevel.blocked,
+          'Redirect writes directly to a block device',
+          '> /dev/block',
+        );
+      }
+
+      if (_isSystemPath(target)) {
+        return const ShellSafetyCheck(
+          ShellSafetyLevel.blocked,
+          'Writing to a system path is not allowed',
+          'system path write',
+        );
+      }
+    }
+
+    return const ShellSafetyCheck(
+      ShellSafetyLevel.safe,
+      'Command appears safe',
+    );
+  }
+
+  static List<String> _tokenize(String command) {
+    final matches = RegExp(r'''(?:[^\s"']+|"[^"]*"|'[^']*')+''')
+        .allMatches(command);
+
+    return matches
+        .map((m) => m.group(0)!)
+        .map(_stripQuotes)
+        .toList();
+  }
+
+  static List<String> _redirectTargets(List<String> words) {
+    final result = <String>[];
+
+    for (var i = 0; i < words.length; i++) {
+      final word = words[i];
+
+      if (word == '>' ||
+          word == '>>' ||
+          word == '<' ||
+          word == '<<' ||
+          word == '&>') {
+        if (i + 1 < words.length) {
+          result.add(words[i + 1]);
+        }
+        continue;
+      }
+
+      if (RegExp(r'^\d*(>>|>|<|<<)').hasMatch(word)) {
+        final match = RegExp(r'^\d*(?:>>|>|<|<<)(.+)$')
+            .firstMatch(word);
+
+        if (match != null) {
+          result.add(match.group(1)!);
+        }
+      }
+    }
+
+    return result;
+  }
+
+  static bool _isSystemPath(String path) {
+    final p = _normalizePath(path);
+
+    if (p == '/') return true;
+
+    const roots = {
+      '/system',
+      '/system_ext',
+      '/vendor',
+      '/product',
+      '/odm',
+      '/apex',
+      '/data',
+      '/etc',
+      '/bin',
+      '/sbin',
+      '/usr',
+      '/lib',
+      '/lib64',
+      '/boot',
+      '/recovery',
+      '/root',
+      '/var',
+      '/opt',
+    };
+
+    return roots.any(
+      (root) => p == root || p.startsWith('$root/'),
+    );
+  }
+
+  static bool _isBlockDevice(String path) {
+    final p = _normalizePath(path);
+
+    if (!p.startsWith('/dev/')) return false;
+
+    return RegExp(
+      r'^/dev/(block|mtd|sda|sdb|sdc|sdd|nvme\d+n\d+|mmcblk\d+|'
+      r'vda|vdb|vdc|loop\d+|dm-\d+|hd[a-z]|sr\d+|ram\d+)',
+    ).hasMatch(p);
+  }
+
+  static String _normalizePath(String path) {
+    var p = _stripQuotes(path.trim());
+
+    // Remove obvious glob suffix.
+    p = p.replaceFirst(RegExp(r'[\*\?]+$'), '');
+
+    if (!p.startsWith('/')) {
+      p = '/__cwd__/$p';
+    }
+
+    final parts = <String>[];
+
+    for (final part in p.split('/')) {
+      if (part.isEmpty || part == '.') continue;
+
+      if (part == '..') {
+        if (parts.isNotEmpty) parts.removeLast();
+      } else {
+        parts.add(part);
+      }
+    }
+
+    return '/${parts.join('/')}';
+  }
+
+  static String _basename(String path) {
+    return path.split('/').last;
+  }
+
+  static String _stripQuotes(String value) {
+    if (value.length >= 2) {
+      if ((value.startsWith('"') && value.endsWith('"')) ||
+          (value.startsWith("'") && value.endsWith("'"))) {
+        return value.substring(1, value.length - 1);
+      }
+    }
+
+    return value;
+  }
+
+  static bool _isAssignment(String value) {
+    return RegExp(r'^[A-Za-z_][A-Za-z0-9_]*=').hasMatch(value);
+  }
+
+  static bool _looksLikeWrapperValue(String value) {
+    return RegExp(r'^\d+(?:\.\d+)?(?:ms|s|m|h)?$').hasMatch(value);
+  }
+
+  static bool _isScratchOnlyList(List<String> targets) {
+    if (targets.isEmpty) return false;
+    return targets.every((token) {
+      final clean = _stripQuotes(token.trim());
+      return clean.contains('.scratch') ||
+          clean.contains('/.scratch/') ||
+          clean.contains('/scratch/');
+    });
+  }
+}
+
+/// Decision made for a destructive tool call that requires confirmation.
+enum ConfirmationDecision {
+  /// Execute this single command.
+  accept,
+
+  /// Deny execution of this command.
+  deny,
+
+  /// Auto-accept this and subsequent destructive commands for the active session.
+  trust,
 }
 
 /// Exception thrown when a command violates security boundaries.

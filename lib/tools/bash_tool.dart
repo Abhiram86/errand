@@ -22,6 +22,12 @@ Tool bashTool({
   required WorkingDirectory workingDirectory,
   ShellService? shellService,
   CancelToken Function()? getCancelToken,
+  Future<ConfirmationDecision> Function({
+    required String title,
+    required String command,
+    String? reason,
+  })? onConfirmCommand,
+  bool Function()? isSessionTrusted,
 }) {
   final svc = shellService ?? ShellService();
 
@@ -104,7 +110,29 @@ Tool bashTool({
 
       final timeoutSecs = ((call.arguments['timeout_seconds'] as num?)?.toInt() ?? 30)
           .clamp(1, 120);
-      final confirmDestructive = call.arguments['confirm_destructive'] == true;
+      final explicitConfirm = call.arguments['confirm_destructive'] == true;
+      final sessionTrusted = isSessionTrusted?.call() == true;
+      final safetyCheck = ShellSafetyCheck.analyze(command);
+
+      var effectiveConfirm = explicitConfirm || sessionTrusted;
+
+      if (safetyCheck.needsConfirmation && !effectiveConfirm) {
+        if (onConfirmCommand != null) {
+          final decision = await onConfirmCommand(
+            title: 'Destructive Command',
+            command: command,
+            reason: safetyCheck.reason,
+          );
+          if (decision == ConfirmationDecision.deny) {
+            return ToolCallResult.failure(
+              call.id,
+              'User denied execution of command: $command',
+              type: 'user_denied',
+            );
+          }
+          effectiveConfirm = true;
+        }
+      }
 
       try {
         final result = await svc.execute(
@@ -112,7 +140,7 @@ Tool bashTool({
           workingDirectory: execDir,
           timeout: Duration(seconds: timeoutSecs),
           cancelToken: getCancelToken?.call(),
-          confirmDestructive: confirmDestructive,
+          confirmDestructive: effectiveConfirm,
         );
 
         if (result.cancelled) {
