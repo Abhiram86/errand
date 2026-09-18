@@ -13,11 +13,11 @@ Goal: Smooth out transitions, eliminate PlatformView reparenting, and decouple A
 
 ---
 
-### 🟡 P7 — Android Home Screen Voice Widget (ACTIVE)
+### ✅ P7 — Android Home Screen Voice Widget & Audio-Reactive Composer (SHIPPED)
 
 Goal: Provide 1-tap instant voice prompt access from the phone home screen.
 
-1. **Native Android Home Screen AppWidget (`VoiceWidgetProvider`):** (NEXT)
+1. **Native Android Home Screen AppWidget (`VoiceWidgetProvider`):** (SHIPPED)
    - Standard Android `AppWidgetProvider` using `RemoteViews` with zero added third-party Flutter dependencies.
    - Dark/glassmorphism pill layout with Errand logo and Mic button.
    - PendingIntent targeting `MainActivity` with action `com.errand.ACTION_VOICE_PROMPT`.

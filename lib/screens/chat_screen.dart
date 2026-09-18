@@ -25,6 +25,7 @@ import '../services/model_catalog.dart';
 import '../services/models_dev_service.dart';
 import '../services/speech_service.dart';
 import '../services/update_service.dart';
+import '../services/widget_service.dart';
 import '../services/workspace.dart';
 import '../theme/app_colors.dart';
 import '../tools/file_tools.dart';
@@ -174,6 +175,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   bool _externalIntentLaunched = false;
   StreamSubscription<List<Conversation>>? _conversationsSub;
   StreamSubscription<List<Conversation>>? _pinnedConversationsSub;
+  StreamSubscription<void>? _widgetVoiceSub;
   Timer? _persistTimer;
   int _estimatedActiveTokens = 0;
   List<Conversation> _cachedSortedConversations = [];
@@ -318,6 +320,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       if (!mounted) return;
       setState(() => _pinnedConversations = pinned);
     });
+
+    WidgetService.instance.initialize();
+    _widgetVoiceSub = WidgetService.instance.onVoicePrompt.listen((_) {
+      if (!mounted) return;
+      _startVoicePrompt();
+    });
+
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       await _checkStoragePermission(promptIfMissing: true);
       if (mounted) {
@@ -327,6 +336,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         await UpdateService.instance.initialize();
         if (mounted) {
           await _checkReleaseNotes();
+        }
+      }
+      if (mounted) {
+        final triggerVoice =
+            await WidgetService.instance.consumeInitialVoicePrompt();
+        if (triggerVoice && mounted) {
+          _startVoicePrompt();
         }
       }
       unawaited(InstalledAppsService.instance.initAndRefresh());
@@ -687,6 +703,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _persistTimer?.cancel();
     _conversationsSub?.cancel();
     _pinnedConversationsSub?.cancel();
+    _widgetVoiceSub?.cancel();
     _modelCatalog.close();
     _llm.close();
     _controller.dispose();
@@ -2184,6 +2201,17 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   // -- Voice input ---------------------------------------------------------
+
+  /// Triggered via Android Home Screen Widget or direct voice shortcuts.
+  Future<void> _startVoicePrompt() async {
+    final speech = SpeechService.instance;
+    if (speech.listening.value) return; // already active
+    if (_busy) {
+      _showToast('Agent is currently busy.');
+      return;
+    }
+    await _toggleVoiceInput();
+  }
 
   /// Mic button: start/stop a speech-recognition session. Recognized text
   /// lands in the composer (live partials); the user reviews and sends.

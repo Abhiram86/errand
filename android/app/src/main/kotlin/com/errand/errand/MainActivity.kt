@@ -38,6 +38,30 @@ class MainActivity : FlutterActivity() {
     private val A11Y_CHANNEL = "a11y"
     private val APP_INFO_CHANNEL = "app_info"
     private val LOCATION_CHANNEL = "location"
+    private val WIDGET_CHANNEL = "widget"
+
+    private var widgetChannel: MethodChannel? = null
+    private var pendingVoicePrompt: Boolean = false
+
+    private fun checkVoicePromptIntent(incomingIntent: Intent?) {
+        if (incomingIntent == null) return
+        val isVoiceAction = incomingIntent.action == VoiceWidgetProvider.ACTION_VOICE_PROMPT ||
+                incomingIntent.getBooleanExtra(VoiceWidgetProvider.EXTRA_AUTO_VOICE, false)
+        if (isVoiceAction) {
+            val channel = widgetChannel
+            if (channel != null) {
+                channel.invokeMethod("onVoicePrompt", null)
+            } else {
+                pendingVoicePrompt = true
+            }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        checkVoicePromptIntent(intent)
+    }
 
     private val MIC_PERMISSION_CODE = 9001
     private var micPermissionResult: MethodChannel.Result? = null
@@ -158,6 +182,8 @@ class MainActivity : FlutterActivity() {
                 ErrandAccessibilityService.instance?.disableSelf()
             } catch (_: Exception) {}
         }
+        widgetChannel?.setMethodCallHandler(null)
+        widgetChannel = null
         super.onDestroy()
     }
 
@@ -891,6 +917,26 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+
+        // ---- Widget channel (P7) ----
+        widgetChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            WIDGET_CHANNEL
+        ).apply {
+            setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "consumeInitialVoicePrompt" -> {
+                        val shouldTrigger = pendingVoicePrompt
+                        pendingVoicePrompt = false
+                        result.success(shouldTrigger)
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+        }
+
+        // Check if cold-started with widget voice intent
+        checkVoicePromptIntent(intent)
     }
 
     private fun reverseGeocode(location: Location): Map<String, Any?> {
