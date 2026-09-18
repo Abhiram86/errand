@@ -25,13 +25,23 @@ class SpeechService {
   /// Drives the composer mic button: true while a listen session is active.
   final ValueNotifier<bool> listening = ValueNotifier(false);
 
+  /// Sound level normalized to 0.0 – 1.0 during active speech recognition.
+  final ValueNotifier<double> soundLevel = ValueNotifier(0.0);
+
   bool get isInitialized => _initialized;
 
   Future<bool> initialize() async {
     if (_initialized) return true;
     _initialized = await _speech.initialize(
-      onStatus: (status) => listening.value = status == 'listening',
-      onError: (_) => listening.value = false,
+      onStatus: (status) {
+        final isList = status == 'listening';
+        listening.value = isList;
+        if (!isList) soundLevel.value = 0.0;
+      },
+      onError: (_) {
+        listening.value = false;
+        soundLevel.value = 0.0;
+      },
     );
     return _initialized;
   }
@@ -51,8 +61,22 @@ class SpeechService {
     Duration pauseFor = const Duration(seconds: 5),
     Duration listenFor = const Duration(minutes: 2),
   }) {
+    soundLevel.value = 0.0;
     return _speech.listen(
       onResult: (result) => onResult(result.recognizedWords, result.finalResult),
+      onSoundLevelChange: (level) {
+        // Android speech_to_text reports RMS dB (typically 0..10+ or -2..10).
+        // Map to 0.0 - 1.0.
+        double normalized;
+        if (level <= 0) {
+          normalized = 0.0;
+        } else if (level >= 10) {
+          normalized = 1.0;
+        } else {
+          normalized = level / 10.0;
+        }
+        soundLevel.value = normalized;
+      },
       listenOptions: SpeechListenOptions(
         partialResults: true,
         cancelOnError: true,
@@ -63,7 +87,10 @@ class SpeechService {
     );
   }
 
-  Future<void> stop() => _speech.stop();
+  Future<void> stop() async {
+    soundLevel.value = 0.0;
+    await _speech.stop();
+  }
 
   // -- Persisted language choice (app-settings table; one string key) ------
 

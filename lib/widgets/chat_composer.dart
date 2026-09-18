@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../services/speech_service.dart';
 import '../theme/app_colors.dart';
 
 class ChatComposer extends StatefulWidget {
@@ -22,6 +23,10 @@ class ChatComposer extends StatefulWidget {
   /// True while a speech-recognition session is active (mic turns red).
   final ValueListenable<bool> isListening;
 
+  /// Real-time audio decibel/RMS level (normalized 0.0 – 1.0) during speech.
+  /// Defaults to [SpeechService.instance.soundLevel] when null.
+  final ValueListenable<double>? soundLevel;
+
   const ChatComposer({
     super.key,
     required this.controller,
@@ -32,6 +37,7 @@ class ChatComposer extends StatefulWidget {
     required this.onStop,
     required this.onMic,
     required this.isListening,
+    this.soundLevel,
   });
 
   @override
@@ -42,6 +48,9 @@ class _ChatComposerState extends State<ChatComposer>
     with SingleTickerProviderStateMixin {
   late final AnimationController _glowController;
 
+  ValueListenable<double> get _effectiveSoundLevel =>
+      widget.soundLevel ?? SpeechService.instance.soundLevel;
+
   @override
   void initState() {
     super.initState();
@@ -49,17 +58,36 @@ class _ChatComposerState extends State<ChatComposer>
       vsync: this,
       duration: const Duration(milliseconds: 3000),
     );
-    if (widget.busy) {
+    widget.isListening.addListener(_onListeningChanged);
+    if (widget.busy || widget.isListening.value) {
       _glowController.repeat();
     }
+  }
+
+  void _onListeningChanged() {
+    if (widget.isListening.value) {
+      if (!_glowController.isAnimating) {
+        _glowController.repeat();
+      }
+    } else if (!widget.busy) {
+      _glowController.stop();
+      _glowController.reset();
+    }
+    if (mounted) setState(() {});
   }
 
   @override
   void didUpdateWidget(covariant ChatComposer oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.busy != oldWidget.busy) {
-      if (widget.busy) {
-        _glowController.repeat();
+    if (oldWidget.isListening != widget.isListening) {
+      oldWidget.isListening.removeListener(_onListeningChanged);
+      widget.isListening.addListener(_onListeningChanged);
+    }
+    final active = widget.busy || widget.isListening.value;
+    final wasActive = oldWidget.busy || oldWidget.isListening.value;
+    if (active != wasActive) {
+      if (active) {
+        if (!_glowController.isAnimating) _glowController.repeat();
       } else {
         _glowController.stop();
         _glowController.reset();
@@ -69,6 +97,7 @@ class _ChatComposerState extends State<ChatComposer>
 
   @override
   void dispose() {
+    widget.isListening.removeListener(_onListeningChanged);
     _glowController.dispose();
     super.dispose();
   }
@@ -81,8 +110,18 @@ class _ChatComposerState extends State<ChatComposer>
         color: kDarkBg,
         border: Border(top: BorderSide(color: kBorder, width: 0.5)),
       ),
-      child: widget.busy
-          ? AnimatedBuilder(
+      child: ValueListenableBuilder<bool>(
+        valueListenable: widget.isListening,
+        builder: (context, isListening, _) {
+          if (isListening) {
+            return _AudioReactiveBorder(
+              rotationAnimation: _glowController,
+              soundLevel: _effectiveSoundLevel,
+              child: _buildInner(),
+            );
+          }
+          if (widget.busy) {
+            return AnimatedBuilder(
               animation: _glowController,
               builder: (context, child) {
                 return Container(
@@ -119,15 +158,18 @@ class _ChatComposerState extends State<ChatComposer>
                 );
               },
               child: _buildInner(),
-            )
-          : Container(
-              padding: const EdgeInsets.all(1.2),
-              decoration: BoxDecoration(
-                color: kBorder,
-                borderRadius: BorderRadius.circular(24),
-              ),
-              child: _buildInner(),
+            );
+          }
+          return Container(
+            padding: const EdgeInsets.all(1.2),
+            decoration: BoxDecoration(
+              color: kBorder,
+              borderRadius: BorderRadius.circular(24),
             ),
+            child: _buildInner(),
+          );
+        },
+      ),
     );
   }
 
@@ -267,3 +309,85 @@ class _SendButton extends StatelessWidget {
     );
   }
 }
+
+/// Sound-reactive glowing border that smoothly expands, pulses, and rotates
+/// based on real-time incoming voice amplitude while speech recognition is active.
+class _AudioReactiveBorder extends StatelessWidget {
+  final Widget child;
+  final Animation<double> rotationAnimation;
+  final ValueListenable<double> soundLevel;
+
+  const _AudioReactiveBorder({
+    required this.child,
+    required this.rotationAnimation,
+    required this.soundLevel,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return RepaintBoundary(
+      child: AnimatedBuilder(
+        animation: rotationAnimation,
+        builder: (context, _) {
+          return ValueListenableBuilder<double>(
+            valueListenable: soundLevel,
+            builder: (context, rawLevel, _) {
+              return TweenAnimationBuilder<double>(
+                tween: Tween<double>(begin: 0.0, end: rawLevel.clamp(0.0, 1.0)),
+                duration: const Duration(milliseconds: 120),
+                curve: Curves.easeOutQuad,
+                builder: (context, level, innerChild) {
+                  final blur1 = 8.0 + (level * 16.0);
+                  final blur2 = 14.0 + (level * 20.0);
+                  final spread = 0.5 + (level * 2.0);
+                  final glowAlpha1 = (0.35 + (level * 0.45)).clamp(0.0, 1.0);
+                  final glowAlpha2 = (0.15 + (level * 0.35)).clamp(0.0, 1.0);
+
+                  const voiceCyan = Color(0xFF00E5FF);
+                  const voicePurple = Color(0xFFA855F7);
+                  const voiceBlue = Color(0xFF3B82F6);
+                  const voicePink = Color(0xFFEC4899);
+
+                  return Container(
+                    padding: EdgeInsets.all(1.4 + (level * 0.8)),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(24),
+                      gradient: SweepGradient(
+                        transform: GradientRotation(
+                          rotationAnimation.value * 2 * math.pi,
+                        ),
+                        colors: const [
+                          voiceCyan,
+                          voicePurple,
+                          voiceBlue,
+                          voicePink,
+                          voiceCyan,
+                        ],
+                        stops: const [0.0, 0.28, 0.52, 0.78, 1.0],
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: voiceCyan.withValues(alpha: glowAlpha1),
+                          blurRadius: blur1,
+                          spreadRadius: spread,
+                        ),
+                        BoxShadow(
+                          color: voicePurple.withValues(alpha: glowAlpha2),
+                          blurRadius: blur2,
+                          spreadRadius: spread * 1.4,
+                        ),
+                      ],
+                    ),
+                    child: innerChild,
+                  );
+                },
+                child: child,
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+}
+

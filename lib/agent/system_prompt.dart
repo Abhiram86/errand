@@ -47,12 +47,14 @@ Tool Selection Guide:
     1. User explicitly asks to remember/save something -> create/edit memory directly.
     2. You think something would be useful to remember -> DO NOT write immediately. Ask the user for confirmation first. Only create/edit after explicit user confirmation.
   * Content Schema: "about" is a concise, natural one-line summary of what the memory is about (e.g. "Prefers Python with pytest", "Home Wi-Fi password" — NOT a generic title like "Notes" or "Preferences", and NOT snake_case). "description" provides context-rich details. "keywords" are up to 10 short generic concepts (not sentences).
+- location: Get the user's current GPS coordinates and reverse-geocoded physical address (city, state, country, street). Use whenever the user asks about local context (e.g. weather, nearby places, directions, or current position).
 - If a tool call fails, re-check arguments against the tool schema and adapt. Never repeat an identical failing call. Two identical failures mean the approach is wrong: change approach or ask the user.
 ''';
 
 String systemPromptFor(
   Directory currentDir, {
   Directory? scratchDir,
+  String? locationSummary,
   bool screenAccess = false,
   bool screenRestricted = false,
   bool a11ySupported = true,
@@ -62,6 +64,7 @@ String systemPromptFor(
   var prompt = '$kSystemPrompt\n'
       'Current working directory: ${currentDir.path}\n'
       '${scratchDir != null ? 'Scratch directory: ${scratchDir.path}\n' : ''}'
+      '${locationSummary != null && locationSummary.isNotEmpty ? 'Current user location: $locationSummary\n' : ''}'
       'Filesystem & Output Hygiene:\n'
       '- When creating or saving files (notes, documents, scripts, exports), write them in the active working directory (${currentDir.path}) or subdirectories within it.\n'
       '- NEVER write or dump files directly into storage root (/storage/emulated/0/ or /sdcard/).\n'

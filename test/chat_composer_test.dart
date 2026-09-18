@@ -71,4 +71,48 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byIcon(Icons.stop_rounded), findsNothing);
   });
+
+  testWidgets('ChatComposer activates audio-reactive border when listening is true', (tester) async {
+    final controller = TextEditingController();
+    final isListening = ValueNotifier<bool>(false);
+    final soundLevel = ValueNotifier<double>(0.0);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ChatComposer(
+            controller: controller,
+            busy: false,
+            onMoreActions: () {},
+            onSend: () {},
+            onStop: () {},
+            onMic: () {},
+            isListening: isListening,
+            soundLevel: soundLevel,
+          ),
+        ),
+      ),
+    );
+
+    // Initial state: not listening
+    expect(isListening.value, isFalse);
+    expect(find.byIcon(Icons.mic_rounded), findsOneWidget);
+
+    // Activate listening
+    isListening.value = true;
+    soundLevel.value = 0.75;
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    // Mic button is present and active
+    expect(find.byIcon(Icons.mic_rounded), findsOneWidget);
+
+    // Stop listening
+    isListening.value = false;
+    soundLevel.value = 0.0;
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(isListening.value, isFalse);
+  });
 }
+

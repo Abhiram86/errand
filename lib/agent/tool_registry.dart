@@ -11,6 +11,7 @@ import '../tools/bash_tool.dart';
 import '../tools/browser_tool.dart';
 import '../tools/file_tools.dart';
 import '../tools/intent_tool.dart';
+import '../tools/location_tool.dart';
 import '../tools/memory_tool.dart';
 import '../tools/screen_tool.dart';
 import '../tools/web_tools.dart';
@@ -64,6 +65,7 @@ class ToolRegistry {
       webSearchTavilyTool(),
       webFetchTool(),
       intentTool(),
+      locationTool(),
       memoryTool(
         memoryService: memoryService,
         currentConversationId: currentConversationId,

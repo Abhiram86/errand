@@ -154,7 +154,7 @@ Tool bashTool({
         if (result.timedOut) {
           return ToolCallResult.failure(
             call.id,
-            'Command timed out after $timeoutSecs seconds.\n${result.toFormattedOutput(command: command, workingDirectory: execDir)}',
+            'Command timed out after $timeoutSecs seconds.\n${result.toFormattedOutput(command: command)}',
             type: 'timeout',
           );
         }
@@ -188,7 +188,6 @@ Tool bashTool({
           ok: true,
           output: result.toFormattedOutput(
             command: command,
-            workingDirectory: execDir,
           ),
         );
       } on ShellSecurityException catch (e) {

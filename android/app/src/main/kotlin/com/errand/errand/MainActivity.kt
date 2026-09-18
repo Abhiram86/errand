@@ -17,6 +17,14 @@ import android.util.Log
 import android.webkit.MimeTypeMap
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import android.location.Address
+import android.location.Geocoder
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
+import android.os.Handler
+import android.os.Looper
+import java.util.Locale
 import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -29,9 +37,13 @@ class MainActivity : FlutterActivity() {
     private val INTENT_CHANNEL = "intent"
     private val A11Y_CHANNEL = "a11y"
     private val APP_INFO_CHANNEL = "app_info"
+    private val LOCATION_CHANNEL = "location"
 
     private val MIC_PERMISSION_CODE = 9001
     private var micPermissionResult: MethodChannel.Result? = null
+
+    private val LOCATION_PERMISSION_CODE = 9002
+    private var locationPermissionResult: MethodChannel.Result? = null
 
     private fun putExtraValue(intent: Intent, key: String, value: Any?) {
         when (value) {
@@ -133,6 +145,10 @@ class MainActivity : FlutterActivity() {
                 grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
             )
             micPermissionResult = null
+        } else if (requestCode == LOCATION_PERMISSION_CODE) {
+            val granted = grantResults.isNotEmpty() && grantResults.any { it == PackageManager.PERMISSION_GRANTED }
+            locationPermissionResult?.success(granted)
+            locationPermissionResult = null
         }
     }
 
@@ -827,6 +843,191 @@ class MainActivity : FlutterActivity() {
                     }
                 }
                 else -> result.notImplemented()
+            }
+        }
+
+        // ---- Location channel ----
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            LOCATION_CHANNEL
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "hasPermission" -> {
+                    val fine = ContextCompat.checkSelfPermission(
+                        this, Manifest.permission.ACCESS_FINE_LOCATION
+                    ) == PackageManager.PERMISSION_GRANTED
+                    val coarse = ContextCompat.checkSelfPermission(
+                        this, Manifest.permission.ACCESS_COARSE_LOCATION
+                    ) == PackageManager.PERMISSION_GRANTED
+                    result.success(fine || coarse)
+                }
+
+                "requestPermission" -> {
+                    val fine = ContextCompat.checkSelfPermission(
+                        this, Manifest.permission.ACCESS_FINE_LOCATION
+                    ) == PackageManager.PERMISSION_GRANTED
+                    val coarse = ContextCompat.checkSelfPermission(
+                        this, Manifest.permission.ACCESS_COARSE_LOCATION
+                    ) == PackageManager.PERMISSION_GRANTED
+                    if (fine || coarse) {
+                        result.success(true)
+                        return@setMethodCallHandler
+                    }
+                    locationPermissionResult = result
+                    ActivityCompat.requestPermissions(
+                        this,
+                        arrayOf(
+                            Manifest.permission.ACCESS_FINE_LOCATION,
+                            Manifest.permission.ACCESS_COARSE_LOCATION
+                        ),
+                        LOCATION_PERMISSION_CODE
+                    )
+                }
+
+                "getLocation" -> {
+                    fetchLocation(result)
+                }
+
+                else -> result.notImplemented()
+            }
+        }
+    }
+
+    private fun reverseGeocode(location: Location): Map<String, Any?> {
+        val geocoder = Geocoder(this, Locale.getDefault())
+        return try {
+            @Suppress("DEPRECATION")
+            val addresses = geocoder.getFromLocation(location.latitude, location.longitude, 1)
+            if (!addresses.isNullOrEmpty()) {
+                val addr = addresses[0]
+                mapOf(
+                    "city" to (addr.locality ?: addr.subAdminArea ?: ""),
+                    "state" to (addr.adminArea ?: ""),
+                    "country" to (addr.countryName ?: ""),
+                    "countryCode" to (addr.countryCode ?: ""),
+                    "postalCode" to (addr.postalCode ?: ""),
+                    "street" to (addr.thoroughfare ?: ""),
+                    "formatted" to (if (addr.maxAddressLineIndex >= 0) addr.getAddressLine(0) else "")
+                )
+            } else {
+                emptyMap()
+            }
+        } catch (e: Exception) {
+            mapOf("error" to (e.message ?: "Geocoding failed"))
+        }
+    }
+
+    private fun dispatchLocationResult(location: Location, result: MethodChannel.Result) {
+        Thread {
+            val addressMap = reverseGeocode(location)
+            val data = mapOf(
+                "latitude" to location.latitude,
+                "longitude" to location.longitude,
+                "accuracy" to location.accuracy.toDouble(),
+                "altitude" to location.altitude,
+                "speed" to location.speed.toDouble(),
+                "bearing" to location.bearing.toDouble(),
+                "timestamp" to location.time,
+                "provider" to (location.provider ?: "unknown"),
+                "address" to addressMap
+            )
+            runOnUiThread {
+                result.success(data)
+            }
+        }.start()
+    }
+
+    private fun fetchLocation(result: MethodChannel.Result) {
+        val fineGranted = ContextCompat.checkSelfPermission(
+            this, Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        val coarseGranted = ContextCompat.checkSelfPermission(
+            this, Manifest.permission.ACCESS_COARSE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+
+        if (!fineGranted && !coarseGranted) {
+            result.error("PERMISSION_DENIED", "Location permission is not granted.", null)
+            return
+        }
+
+        val lm = getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+        if (lm == null) {
+            result.error("LOCATION_UNAVAILABLE", "LocationManager service is unavailable", null)
+            return
+        }
+
+        val gpsEnabled = try { lm.isProviderEnabled(LocationManager.GPS_PROVIDER) } catch (_: Exception) { false }
+        val networkEnabled = try { lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER) } catch (_: Exception) { false }
+
+        if (!gpsEnabled && !networkEnabled) {
+            result.error("LOCATION_DISABLED", "Location services (GPS and Network) are turned off on the device.", null)
+            return
+        }
+
+        var bestLocation: Location? = null
+        if (gpsEnabled) {
+            try {
+                val loc = lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+                if (loc != null) bestLocation = loc
+            } catch (_: SecurityException) {}
+        }
+        if (networkEnabled) {
+            try {
+                val loc = lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+                if (loc != null) {
+                    if (bestLocation == null || loc.time > bestLocation.time || (loc.hasAccuracy() && bestLocation.hasAccuracy() && loc.accuracy < bestLocation.accuracy)) {
+                        bestLocation = loc
+                    }
+                }
+            } catch (_: SecurityException) {}
+        }
+
+        // If we have a cached fix younger than 5 minutes, use it directly
+        if (bestLocation != null && (System.currentTimeMillis() - bestLocation.time) < 5 * 60 * 1000) {
+            dispatchLocationResult(bestLocation, result)
+            return
+        }
+
+        val provider = if (gpsEnabled && fineGranted) LocationManager.GPS_PROVIDER else LocationManager.NETWORK_PROVIDER
+        var dispatched = false
+        val handler = Handler(Looper.getMainLooper())
+
+        val listener = object : LocationListener {
+            override fun onLocationChanged(loc: Location) {
+                if (dispatched) return
+                dispatched = true
+                handler.removeCallbacksAndMessages(null)
+                try { lm.removeUpdates(this) } catch (_: Exception) {}
+                dispatchLocationResult(loc, result)
+            }
+            override fun onProviderDisabled(p: String) {}
+            override fun onProviderEnabled(p: String) {}
+            @Deprecated("Deprecated in Java")
+            override fun onStatusChanged(p: String?, s: Int, e: android.os.Bundle?) {}
+        }
+
+        handler.postDelayed({
+            if (dispatched) return@postDelayed
+            dispatched = true
+            try { lm.removeUpdates(listener) } catch (_: Exception) {}
+            if (bestLocation != null) {
+                dispatchLocationResult(bestLocation, result)
+            } else {
+                result.error("LOCATION_TIMEOUT", "Timed out waiting for GPS/Network location fix.", null)
+            }
+        }, 8000)
+
+        try {
+            lm.requestLocationUpdates(provider, 0L, 0f, listener, Looper.getMainLooper())
+        } catch (e: Exception) {
+            if (!dispatched) {
+                dispatched = true
+                handler.removeCallbacksAndMessages(null)
+                if (bestLocation != null) {
+                    dispatchLocationResult(bestLocation, result)
+                } else {
+                    result.error("LOCATION_ERR", e.message, null)
+                }
             }
         }
     }

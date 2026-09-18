@@ -20,6 +20,7 @@ import '../services/app_settings.dart';
 import '../services/database.dart';
 import '../services/installed_apps_service.dart';
 import '../services/intent_service.dart';
+import '../services/location_service.dart';
 import '../services/model_catalog.dart';
 import '../services/models_dev_service.dart';
 import '../services/speech_service.dart';
@@ -291,6 +292,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     ModelsDevService.preload();
     unawaited(_loadAppConfig());
     unawaited(Workspace.instance.ensureDefaultDirectories());
+    unawaited(LocationService.instance.hasPermission().then((permitted) {
+      if (permitted) {
+        LocationService.instance.getLocation(requestIfMissing: false);
+      }
+    }));
     // One-time POST_NOTIFICATIONS grant so the foreground work indicator is
     // visible on API 33+ (the service itself runs regardless).
     unawaited(_intentService.requestNotificationPermission());
@@ -1673,6 +1679,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         localSystemPrompt: systemPromptFor(
           _workingDirectory.current,
           scratchDir: Workspace.instance.scratchDir,
+          locationSummary: LocationService.instance.lastKnown?.toSummary(),
           screenAccess: _a11yAvailable,
           screenRestricted: _a11yRestricted,
           a11ySupported: _a11ySupported,
@@ -1721,6 +1728,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         systemPromptBuilder: () => systemPromptFor(
           _workingDirectory.current,
           scratchDir: Workspace.instance.scratchDir,
+          locationSummary: LocationService.instance.lastKnown?.toSummary(),
           screenAccess: _a11yAvailable,
           screenRestricted: _a11yRestricted,
           a11ySupported: _a11ySupported,

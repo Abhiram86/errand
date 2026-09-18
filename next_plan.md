@@ -7,9 +7,75 @@
 
 ## 🧭 Active & Upcoming Roadmap
 
-### 🟡 P6b — Browser Rough Edges & Android PlatformView Optimizations (ACTIVE / NEXT)
+### 🟡 P6b — Browser Rough Edges & Android PlatformView Optimizations (ACTIVE)
 
 Goal: Smooth out transitions, eliminate PlatformView reparenting, and decouple Android window insets from embedded web rendering.
+
+---
+
+### 🟢 P7 — Android Home Screen Voice Widget & Audio-Reactive Composer (UPCOMING)
+
+Goal: Provide 1-tap instant voice prompt access from the phone home screen and upgrade voice input UX with a tasteful, sound-reactive glowing composer border.
+
+1. **Native Android Home Screen AppWidget (`VoiceWidgetProvider`):**
+   - Standard Android `AppWidgetProvider` using `RemoteViews` with zero added third-party Flutter dependencies.
+   - Dark/glassmorphism pill layout with Errand logo and Mic button.
+   - PendingIntent targeting `MainActivity` with action `com.errand.ACTION_VOICE_PROMPT`.
+   - On app launch/resume with the voice action flag, auto-initializes `SpeechService` and activates listening without requiring extra user taps. Fully functional across Full and Lite flavors.
+
+2. **Audio-Reactive Composer Glow:**
+   - Expose live sound level stream in `SpeechService` via `SpeechListenOptions(onSoundLevelChange: ...)`.
+   - Modulate `ChatComposer` border glow spread (4px–22px), opacity, and sweep gradient in real time according to vocal RMS amplitude.
+   - Lightweight linear interpolation (`lerpDouble`) to eliminate jitter and prevent battery drain by constraining rebuilds only during active voice sessions.
+
+---
+
+### 🟢 P8 — Device Location Access & Context Awareness (UPCOMING)
+
+Goal: Give the agent access to user coordinates and reverse-geocoded address via native Android APIs, solving the bash permission boundary.
+
+1. **Permissions & Native Channel:**
+   - Declare `ACCESS_FINE_LOCATION` and `ACCESS_COARSE_LOCATION` in `AndroidManifest.xml`.
+   - Native MethodChannel in `MainActivity.kt` using Android's `LocationManager` and `Geocoder.getFromLocation()` for reverse geocoding (city, country, address).
+2. **Tool Strategy & Context Digest:**
+   - Dedicated `location` tool (`get_coordinates`, `get_address`) for explicit on-demand location queries.
+   - Passive system prompt digest (coarse locality: City, Country) injected on turn start so local questions (weather, local queries) resolve without extra tool roundtrips.
+
+---
+
+### 🟢 P9 — Autonomous Scheduler Tool Group & Background Engine (UPCOMING)
+
+Goal: Enable the model to schedule one-off and recurring tasks that execute autonomously or issue timely reminders, with full parity across Full and Lite flavors.
+
+1. **Dual Android Scheduling Backend:**
+   - `AlarmManager` (`setExactAndAllowWhileIdle`): For exact-time alerts and one-off execution.
+   - `WorkManager`: For persistent recurring jobs surviving reboots and honoring battery constraints.
+   - 100% compatible with both Full and Lite flavors (requires zero accessibility permissions).
+
+2. **Persistence & Lifecycle Policy (Drift Schema v7):**
+   - New `ScheduledTasks` table: task ID, title, prompt, schedule type (`once`, `daily`, `interval`), next trigger time, autonomous flag, network requirement, and execution status/history.
+   - **TTL Retention Policy:** Completed or expired one-off reminders and autonomous task runs do not persist indefinitely in the database. A configurable retention TTL (e.g., auto-pruning completed/cancelled one-offs older than 3 to 7 days) keeps storage lean and prevents DB bloat.
+
+3. **Task Manager UI & Management:**
+   - Add a dedicated "Tasks / Schedule" management tab/sheet in Settings (or tool inspector) where users can view active/upcoming alarms and periodic workers, manually edit trigger times, run tasks on demand, or cancel/delete them.
+
+4. **Execution Flow & Real-World Handling:**
+   - **Case 1: Simple One-Off Reminder:**
+     - User requests a reminder (e.g. *"Remind me in 45m to submit report"*). Model calls `scheduler(action: "schedule_task", time: "+45m", autonomous: false)`.
+     - At target time, native `AlarmManager` fires a BroadcastReceiver that posts a local Android system notification with sound/vibration and a direct chat link. Pruned after TTL.
+   - **Case 2: Autonomous Agent Task (Executing Background Work):**
+     - User requests background work (e.g. *"At 7:00 AM, fetch morning tech news and save to Documents/Errand/news.md"*).
+     - At 7:00 AM, `AlarmManager` wakes Errand, starts `AgentForegroundService` (preventing OS from freezing sockets), executes a headless `AgentLoop` with tools (`websearch`, `bash`, etc.), saves results to disk/DB, posts a completion notification, and shuts down the service. Pruned after TTL.
+   - **Case 3: Recurring Periodic Job:**
+     - User schedules regular work (e.g. *"Clean .scratch directory daily at midnight"*).
+     - Registered with Android's `WorkManager`. Automatically survives reboots, respects Doze mode, and runs when constraints (idle/charging) are satisfied.
+   - **Case 4: Reboots & App Closure:**
+     - On device restart, Android's `BOOT_COMPLETED` receiver re-registers all pending alarms and jobs directly from the SQLite database. Even if Errand is swiped away, the OS wakes the service on schedule.
+   - **Case 5: Network Constraints:**
+     - If an autonomous task requires network and the phone is offline, `WorkManager` holds execution until connectivity is restored.
+
+5. **Agent Tool Surface (`scheduler`):**
+   - Actions: `schedule_task`, `list_tasks`, `cancel_task`, `get_task_status`, `update_task`.
 
 ---
 
