@@ -2005,6 +2005,44 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   void _handleTextDelta(String delta) {
     if (!mounted || _workingMessageId == null) return;
     _workingText.write(delta);
+
+    final current = _workingText.toString();
+    // Don't treat pipelines inside code blocks as markdown tables
+    final isInCodeBlock = current.split('```').length % 2 == 0;
+
+    if (!isInCodeBlock) {
+      final lastNewline = current.lastIndexOf('\n');
+      final activeLine = lastNewline == -1
+          ? current
+          : current.substring(lastNewline + 1);
+      final isTableRow = activeLine.trimLeft().startsWith('|');
+
+      if (isTableRow) {
+        // We are currently in an incomplete table row. Hold off flushing so the
+        // UI does not jitter between raw text and table cells. Set a fallback
+        // timer in case the model stalls or omits a trailing newline.
+        _workingFlushTimer?.cancel();
+        _workingFlushTimer = Timer(
+          const Duration(milliseconds: 250),
+          _flushWorkingText,
+        );
+        return;
+      }
+
+      // If a row just completed with a newline, flush immediately
+      if (delta.contains('\n') && lastNewline != -1) {
+        final prevNewline = current.lastIndexOf('\n', lastNewline - 1);
+        final completedLine = prevNewline == -1
+            ? current.substring(0, lastNewline)
+            : current.substring(prevNewline + 1, lastNewline);
+        if (completedLine.trimLeft().startsWith('|')) {
+          _workingFlushTimer?.cancel();
+          _flushWorkingText();
+          return;
+        }
+      }
+    }
+
     if (_workingFlushTimer?.isActive ?? false) return;
     _workingFlushTimer = Timer(
       const Duration(milliseconds: 65),

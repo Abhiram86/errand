@@ -1122,44 +1122,37 @@ class MessageBubble extends StatelessWidget {
             ? constraints.maxWidth
             : (MediaQuery.of(context).size.width - 32);
 
-        final bubble = Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          constraints: BoxConstraints(
-            maxWidth: isUser ? availableWidth * 0.78 : availableWidth * 0.90,
-          ),
-          decoration: BoxDecoration(
-            color: isUser ? kBubbleUser : kBubbleAssistant,
-            borderRadius: BorderRadius.only(
-              topLeft: const Radius.circular(18),
-              topRight: const Radius.circular(18),
-              bottomLeft: Radius.circular(isUser ? 18 : 4),
-              bottomRight: Radius.circular(isUser ? 4 : 18),
-            ),
-          ),
-          child: AnimatedSize(
-            duration: const Duration(milliseconds: 140),
-            curve: Curves.easeOutCubic,
-            alignment: isUser ? Alignment.topRight : Alignment.topLeft,
-            clipBehavior: Clip.none,
-            child: isUser
-                ? Text(
-                    text,
-                    style: const TextStyle(
-                      color: kText,
-                      fontSize: 15,
-                      height: 20 / 15,
-                    ),
-                  )
-                // Assistant turns render as markdown (bold, tables, code,
-                // LaTeX). Text selection comes from the SelectionArea that
-                // wraps the message list.
-                : _StreamingAssistantText(text: text),
-          ),
-        );
-
-        // User bubbles support tap and long-press to open options (Edit, Copy message).
-        // SelectionContainer.disabled ensures gestures are not swallowed by parent SelectionArea.
         if (isUser) {
+          final bubble = Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            constraints: BoxConstraints(
+              maxWidth: availableWidth * 0.78,
+            ),
+            decoration: const BoxDecoration(
+              color: kBubbleUser,
+              borderRadius: BorderRadius.only(
+                topLeft: Radius.circular(18),
+                topRight: Radius.circular(18),
+                bottomLeft: Radius.circular(18),
+                bottomRight: Radius.circular(4),
+              ),
+            ),
+            child: AnimatedSize(
+              duration: const Duration(milliseconds: 140),
+              curve: Curves.easeOutCubic,
+              alignment: Alignment.topRight,
+              clipBehavior: Clip.none,
+              child: Text(
+                text,
+                style: const TextStyle(
+                  color: kText,
+                  fontSize: 15,
+                  height: 20 / 15,
+                ),
+              ),
+            ),
+          );
+
           final attached = (message is UserMessage)
               ? (message as UserMessage).attachedUris
               : const <String>[];
@@ -1225,7 +1218,7 @@ class MessageBubble extends StatelessWidget {
             ),
           );
           return Padding(
-            padding: const EdgeInsets.symmetric(vertical: 4),
+            padding: const EdgeInsets.symmetric(vertical: 6),
             child: Align(
               alignment: Alignment.centerRight,
               child: attached.isEmpty
@@ -1239,24 +1232,35 @@ class MessageBubble extends StatelessWidget {
           );
         }
 
+        // Assistant turns (ChatGPT style): full width, transparent container, direct text layout
+        final assistantTextWidget = SizedBox(
+          width: availableWidth,
+          child: AnimatedSize(
+            duration: const Duration(milliseconds: 140),
+            curve: Curves.easeOutCubic,
+            alignment: Alignment.topLeft,
+            clipBehavior: Clip.none,
+            child: _StreamingAssistantText(text: text),
+          ),
+        );
+
         return Padding(
-          padding: const EdgeInsets.symmetric(vertical: 4),
+          padding: const EdgeInsets.only(top: 6, bottom: 14),
           child: Align(
             alignment: Alignment.centerLeft,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                bubble,
+                assistantTextWidget,
                 if (!isPlaceholder)
                   Padding(
-                    padding: const EdgeInsets.only(top: 2, left: 2),
+                    padding: const EdgeInsets.only(top: 8),
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       crossAxisAlignment: CrossAxisAlignment.center,
                       children: [
                         _CopyButton(text: text),
-
                         if (onRegenerate != null) ...[
                           const SizedBox(width: 8),
                           IconButton(
@@ -1276,7 +1280,6 @@ class MessageBubble extends StatelessWidget {
                             icon: const Icon(Icons.refresh_rounded),
                           ),
                         ],
-
                         if (message is AssistantMessage &&
                             (message as AssistantMessage).model != null) ...[
                           const SizedBox(width: 8),
@@ -1327,20 +1330,172 @@ class _StreamingAssistantText extends StatelessWidget {
         text.startsWith('…compacting');
 
     if (isPlaceholder) {
-      return Text(
-        text,
-        style: TextStyle(
-          color: kMuted.withValues(alpha: 0.85),
-          fontSize: 14,
-          fontStyle: FontStyle.italic,
-          height: 1.3,
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Text(
+          text,
+          style: TextStyle(
+            color: kMuted.withValues(alpha: 0.85),
+            fontSize: 14,
+            fontStyle: FontStyle.italic,
+            height: 1.3,
+          ),
         ),
       );
     }
 
     return GptMarkdown(
       text,
-      style: const TextStyle(color: kText, fontSize: 15),
+      style: const TextStyle(
+        color: kText,
+        fontSize: 15,
+        height: 1.45,
+      ),
+      tableBuilder: _buildClampedTable,
+    );
+  }
+}
+
+Widget _buildClampedTable(
+  BuildContext context,
+  List<CustomTableRow> tableRows,
+  TextStyle textStyle,
+  GptMarkdownConfig config,
+) {
+  return _ClampedTableView(
+    tableRows: tableRows,
+    textStyle: textStyle,
+    config: config,
+  );
+}
+
+class _ClampedTableView extends StatefulWidget {
+  final List<CustomTableRow> tableRows;
+  final TextStyle textStyle;
+  final GptMarkdownConfig config;
+
+  const _ClampedTableView({
+    required this.tableRows,
+    required this.textStyle,
+    required this.config,
+  });
+
+  @override
+  State<_ClampedTableView> createState() => _ClampedTableViewState();
+}
+
+class _ClampedTableViewState extends State<_ClampedTableView> {
+  late final ScrollController _scrollController;
+
+  @override
+  void initState() {
+    super.initState();
+    _scrollController = ScrollController();
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.tableRows.isEmpty) return const SizedBox.shrink();
+
+    final maxCols = widget.tableRows.fold<int>(
+      0,
+      (max, row) => row.fields.length > max ? row.fields.length : max,
+    );
+    if (maxCols == 0) return const SizedBox.shrink();
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Scrollbar(
+        controller: _scrollController,
+        child: SingleChildScrollView(
+          controller: _scrollController,
+          scrollDirection: Axis.horizontal,
+          child: Container(
+            decoration: BoxDecoration(
+              border: Border.all(color: kBorder, width: 0.8),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: Table(
+              defaultColumnWidth: const IntrinsicColumnWidth(),
+              defaultVerticalAlignment: TableCellVerticalAlignment.middle,
+              border: TableBorder(
+                horizontalInside: BorderSide(
+                  color: kBorder.withValues(alpha: 0.5),
+                  width: 0.5,
+                ),
+                verticalInside: BorderSide(
+                  color: kBorder.withValues(alpha: 0.5),
+                  width: 0.5,
+                ),
+              ),
+              children: widget.tableRows.map((row) {
+                return TableRow(
+                  decoration: row.isHeader
+                      ? const BoxDecoration(color: kInputBg)
+                      : null,
+                  children: List.generate(maxCols, (colIdx) {
+                    final field =
+                        colIdx < row.fields.length ? row.fields[colIdx] : null;
+                    final text = field?.data.trim() ?? '';
+                    final align = field?.alignment ?? TextAlign.left;
+
+                    final cellStyle = widget.textStyle.copyWith(
+                      fontWeight:
+                          row.isHeader ? FontWeight.w600 : FontWeight.normal,
+                      fontSize: 13,
+                      height: 1.35,
+                      color: row.isHeader
+                          ? kText
+                          : kText.withValues(alpha: 0.9),
+                    );
+
+                    Widget cellContent;
+                    if (text.isEmpty) {
+                      cellContent = const SizedBox(height: 20);
+                    } else {
+                      cellContent = GptMarkdown(
+                        text,
+                        maxLines: 4,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: align,
+                        style: cellStyle,
+                      );
+                    }
+
+                    final cellWidget = Container(
+                      constraints: const BoxConstraints(
+                        minWidth: 64,
+                        maxWidth: 220,
+                      ),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 8,
+                      ),
+                      child: cellContent,
+                    );
+
+                    if (text.isNotEmpty) {
+                      return Tooltip(
+                        message: text,
+                        waitDuration: const Duration(milliseconds: 600),
+                        child: cellWidget,
+                      );
+                    }
+                    return cellWidget;
+                  }),
+                );
+              }).toList(),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -1429,6 +1584,7 @@ class _CompactedDividerBubbleState extends State<CompactedDividerBubble> {
               child: GptMarkdown(
                 summary,
                 style: const TextStyle(color: kText, fontSize: 13),
+                tableBuilder: _buildClampedTable,
               ),
             ),
         ],
