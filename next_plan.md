@@ -13,31 +13,36 @@ Goal: Smooth out transitions, eliminate PlatformView reparenting, and decouple A
 
 ---
 
-### 🟢 P7 — Android Home Screen Voice Widget & Audio-Reactive Composer (UPCOMING)
+### 🟡 P7 — Android Home Screen Voice Widget (ACTIVE)
 
-Goal: Provide 1-tap instant voice prompt access from the phone home screen and upgrade voice input UX with a tasteful, sound-reactive glowing composer border.
+Goal: Provide 1-tap instant voice prompt access from the phone home screen.
 
-1. **Native Android Home Screen AppWidget (`VoiceWidgetProvider`):**
+1. **Native Android Home Screen AppWidget (`VoiceWidgetProvider`):** (NEXT)
    - Standard Android `AppWidgetProvider` using `RemoteViews` with zero added third-party Flutter dependencies.
    - Dark/glassmorphism pill layout with Errand logo and Mic button.
    - PendingIntent targeting `MainActivity` with action `com.errand.ACTION_VOICE_PROMPT`.
    - On app launch/resume with the voice action flag, auto-initializes `SpeechService` and activates listening without requiring extra user taps. Fully functional across Full and Lite flavors.
 
-2. **Audio-Reactive Composer Glow:**
-   - Expose live sound level stream in `SpeechService` via `SpeechListenOptions(onSoundLevelChange: ...)`.
-   - Modulate `ChatComposer` border glow spread (4px–22px), opacity, and sweep gradient in real time according to vocal RMS amplitude.
+2. **Audio-Reactive Composer Glow:** (SHIPPED in ab6d990)
+   - Live sound level stream in `SpeechService` via `SpeechListenOptions(onSoundLevelChange: ...)`.
+   - Dynamic `ChatComposer` border glow spread, opacity, and sweep gradient in real time according to vocal RMS amplitude.
    - Lightweight linear interpolation (`lerpDouble`) to eliminate jitter and prevent battery drain by constraining rebuilds only during active voice sessions.
+
+3. **ChatGPT Full-Width Layout & Clamped Markdown Tables:** (SHIPPED in 0f2cd4f)
+   - Transparent, full-width assistant message layout for clean reading of code blocks and tables.
+   - `_buildClampedTable` custom `tableBuilder` enforcing cell `maxWidth: 220`, `maxLines: 4`, ellipsis overflow, tooltip preview, and horizontal scrolling with `Scrollbar`.
+   - Row-by-row streaming buffer in `_handleTextDelta` that suppresses partial unclosed table row re-renders and flushes on `\n` to prevent table UI jitter.
 
 ---
 
-### 🟢 P8 — Device Location Access & Context Awareness (UPCOMING)
+### ✅ P8 — Device Location Access & Context Awareness (SHIPPED in ab6d990)
 
 Goal: Give the agent access to user coordinates and reverse-geocoded address via native Android APIs, solving the bash permission boundary.
 
-1. **Permissions & Native Channel:**
-   - Declare `ACCESS_FINE_LOCATION` and `ACCESS_COARSE_LOCATION` in `AndroidManifest.xml`.
+1. **Permissions & Native Channel:** (SHIPPED)
+   - Declared `ACCESS_FINE_LOCATION` and `ACCESS_COARSE_LOCATION` in `AndroidManifest.xml`.
    - Native MethodChannel in `MainActivity.kt` using Android's `LocationManager` and `Geocoder.getFromLocation()` for reverse geocoding (city, country, address).
-2. **Tool Strategy & Context Digest:**
+2. **Tool Strategy & Context Digest:** (SHIPPED)
    - Dedicated `location` tool (`get_coordinates`, `get_address`) for explicit on-demand location queries.
    - Passive system prompt digest (coarse locality: City, Country) injected on turn start so local questions (weather, local queries) resolve without extra tool roundtrips.
 
