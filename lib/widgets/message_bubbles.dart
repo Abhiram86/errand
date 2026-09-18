@@ -1252,6 +1252,28 @@ class MessageBubble extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Container(
+                    width: 20,
+                    height: 20,
+                    decoration: BoxDecoration(
+                      color: kInputBg,
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: kBorder.withValues(alpha: 0.8),
+                        width: 0.8,
+                      ),
+                    ),
+                    child: const Center(
+                      child: Icon(
+                        Icons.bolt_rounded,
+                        size: 13,
+                        color: kText,
+                      ),
+                    ),
+                  ),
+                ),
                 assistantTextWidget,
                 if (!isPlaceholder)
                   Padding(

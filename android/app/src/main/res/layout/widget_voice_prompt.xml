@@ -1,49 +1,40 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/widget_voice_container"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@drawable/widget_pill_background"
-    android:gravity="center_vertical"
-    android:orientation="horizontal"
-    android:paddingStart="14dp"
-    android:paddingTop="6dp"
-    android:paddingEnd="8dp"
-    android:paddingBottom="6dp">
-
-    <ImageView
-        android:id="@+id/widget_app_icon"
-        android:layout_width="26dp"
-        android:layout_height="26dp"
-        android:src="@mipmap/ic_launcher"
-        android:contentDescription="Errand" />
-
-    <TextView
-        android:id="@+id/widget_label"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_weight="1"
-        android:layout_marginStart="10dp"
-        android:layout_marginEnd="8dp"
-        android:text="Ask Errand..."
-        android:textColor="#9CA3AF"
-        android:textSize="14sp"
-        android:fontFamily="sans-serif-medium"
-        android:singleLine="true"
-        android:ellipsize="end" />
+    android:padding="2dp">
 
     <FrameLayout
         android:id="@+id/widget_mic_button"
-        android:layout_width="40dp"
-        android:layout_height="40dp"
-        android:background="@drawable/widget_mic_button_bg"
-        android:contentDescription="Voice Prompt">
+        android:layout_width="56dp"
+        android:layout_height="56dp"
+        android:layout_gravity="center"
+        android:background="@drawable/widget_icon_background"
+        android:contentDescription="Errand Voice">
+
+        <FrameLayout
+            android:layout_width="38dp"
+            android:layout_height="38dp"
+            android:layout_gravity="center"
+            android:background="@drawable/widget_mic_button_bg">
+
+            <ImageView
+                android:layout_width="20dp"
+                android:layout_height="20dp"
+                android:layout_gravity="center"
+                android:src="@drawable/ic_widget_mic"
+                android:contentDescription="Microphone" />
+        </FrameLayout>
 
         <ImageView
-            android:layout_width="20dp"
-            android:layout_height="20dp"
-            android:layout_gravity="center"
-            android:src="@drawable/ic_widget_mic"
-            android:contentDescription="Microphone" />
+            android:id="@+id/widget_app_icon"
+            android:layout_width="14dp"
+            android:layout_height="14dp"
+            android:layout_gravity="top|start"
+            android:layout_marginStart="6dp"
+            android:layout_marginTop="6dp"
+            android:src="@mipmap/ic_launcher"
+            android:contentDescription="Errand" />
     </FrameLayout>
-</LinearLayout>
+</FrameLayout>

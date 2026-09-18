@@ -2,12 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'screens/chat_screen.dart';
+import 'services/app_settings.dart';
 import 'theme/app_colors.dart';
 
 export 'agent/system_prompt.dart' show systemPromptFor, kSystemPrompt;
 export 'screens/chat_screen.dart' show ChatScreen;
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
@@ -15,6 +16,7 @@ void main() {
       statusBarIconBrightness: Brightness.light,
     ),
   );
+  await AppSettingsService.instance.ensureLoaded();
   runApp(const ErrandApp());
 }
 

@@ -40,5 +40,8 @@ void main() {
 
     // Verify horizontal Scrollbar is present
     expect(find.byType(Scrollbar), findsOneWidget);
+
+    // Verify thunder icon badge is rendered at the start of assistant message
+    expect(find.byIcon(Icons.bolt_rounded), findsOneWidget);
   });
 }

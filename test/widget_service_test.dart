@@ -41,7 +41,7 @@ void main() {
     // Simulate incoming method call from native Android
     final messenger =
         TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-    final ByteData? data = const StandardMethodCodec()
+    final ByteData data = const StandardMethodCodec()
         .encodeMethodCall(const MethodCall('onVoicePrompt'));
 
     await messenger.handlePlatformMessage(

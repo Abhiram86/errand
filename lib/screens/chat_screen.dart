@@ -458,6 +458,17 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       if (freeRouter != null) return freeRouter.id;
     }
 
+    // Prefer curated defaultModels for this provider if available
+    for (final defaultModel in provider.defaultModels) {
+      if (availableModels.any((m) => m.id == defaultModel.id)) {
+        return defaultModel.id;
+      }
+    }
+
+    if (provider.defaultModels.isNotEmpty) {
+      return provider.defaultModels.first.id;
+    }
+
     return availableModels.first.id;
   }
 
@@ -466,26 +477,17 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     LlmProvider provider,
     List<ModelOption> liveModels,
   ) {
-    if (liveModels.isEmpty) return false;
-
-    // 1. If the model does not exist in the available live models list, it's stale/invalid.
-    final existsInLive = liveModels.any((m) => m.id == modelId);
-    if (!existsInLive) return true;
-
     final hasKey =
         provider.hasKey ||
         (provider.id == ProviderPresetType.openRouter.id &&
             AppSettingsService.instance.hasOpenRouterKey);
 
-    // 2. If provider has a key configured, but model is still the unconfigured free router
+    // Only consider stale if the provider has an active key, but the active
+    // model is still the unconfigured free router fallback.
     if (hasKey &&
-        (modelId == 'openrouter/free' || modelId == kDefaultModelId)) {
-      return true;
-    }
-
-    // 3. If the model is a hardcoded fallback from provider.defaultModels and does not match top sorted model
-    final isPresetFallback = provider.defaultModels.any((m) => m.id == modelId);
-    if (isPresetFallback && liveModels.first.id != modelId) {
+        (modelId == 'openrouter/free' ||
+            modelId == 'openrouter/auto' ||
+            modelId == kDefaultModelId)) {
       return true;
     }
 
