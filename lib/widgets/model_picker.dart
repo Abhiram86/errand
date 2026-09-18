@@ -282,12 +282,12 @@ class _ModelPickerDialogState extends State<_ModelPickerDialog> {
 
     final isStaleOrFallback = (provider != null) &&
         (!_currentOptions.any((m) => m.id == _currentSelectedModel) ||
-            provider.defaultModels.any((m) => m.id == _currentSelectedModel) ||
             (_currentProviderHasKey &&
                 (_currentSelectedModel == 'openrouter/free' ||
+                    _currentSelectedModel == 'openrouter/auto' ||
                     _currentSelectedModel == kDefaultModelId)));
     if (isStaleOrFallback && _currentOptions.isNotEmpty) {
-      _currentSelectedModel = _pickInitialModel(provider, _currentOptions);
+      _currentSelectedModel = _resolveDisplayModel(provider, _currentOptions);
     }
 
     if (cached == null && _currentProviderHasKey) {
@@ -322,6 +322,8 @@ class _ModelPickerDialogState extends State<_ModelPickerDialog> {
   }
 
   String _pickInitialModel(LlmProvider provider, List<ModelOption> opts) {
+    // Fresh default priority (no stored pick): first model in the sorted
+    // list > hardcoded preset fallback.
     if (opts.isEmpty) {
       return provider.defaultModels.isNotEmpty
           ? provider.defaultModels.first.id
@@ -343,7 +345,36 @@ class _ModelPickerDialogState extends State<_ModelPickerDialog> {
         orElse: () => opts.first,
       ).id;
     }
+    for (final m in opts) {
+      if (hasKey &&
+          (m.id == 'openrouter/free' ||
+              m.id == 'openrouter/auto' ||
+              m.id == kDefaultModelId)) {
+        continue;
+      }
+      return m.id;
+    }
     return opts.first.id;
+  }
+
+  /// Full per-provider priority for display: that provider's last pick
+  /// (when still in the list and not a stale free fallback) > list head
+  /// > hardcoded preset.
+  String _resolveDisplayModel(LlmProvider provider, List<ModelOption> opts) {
+    final stored = AppSettingsService.instance.selectedModelFor(provider.id);
+    if (AppSettingsService.instance.hasSelectedModelFor(provider.id) &&
+        opts.any((m) => m.id == stored)) {
+      final hasKey = provider.hasKey ||
+          (provider.id == ProviderPresetType.openRouter.id &&
+              AppSettingsService.instance.hasOpenRouterKey);
+      if (!hasKey ||
+          (stored != 'openrouter/free' &&
+              stored != 'openrouter/auto' &&
+              stored != kDefaultModelId)) {
+        return stored;
+      }
+    }
+    return _pickInitialModel(provider, opts);
   }
 
   Future<void> _handleProviderSelected(LlmProvider provider) async {
@@ -360,7 +391,7 @@ class _ModelPickerDialogState extends State<_ModelPickerDialog> {
         (provider.id == ProviderPresetType.openRouter.id &&
             AppSettingsService.instance.hasOpenRouterKey);
 
-    final firstModel = _pickInitialModel(provider, initialModels);
+    final firstModel = _resolveDisplayModel(provider, initialModels);
     final needsFetch = cached == null && hasKey;
 
     setState(() {
@@ -379,8 +410,10 @@ class _ModelPickerDialogState extends State<_ModelPickerDialog> {
               ..sort(ModelOption.compareByReleaseDate);
             _currentOptions = sorted;
             final isStale = !_currentOptions.any((m) => m.id == _currentSelectedModel) ||
-                provider.defaultModels.any((m) => m.id == _currentSelectedModel) ||
-                (hasKey && (_currentSelectedModel == 'openrouter/free' || _currentSelectedModel == kDefaultModelId));
+                (hasKey &&
+                    (_currentSelectedModel == 'openrouter/free' ||
+                        _currentSelectedModel == 'openrouter/auto' ||
+                        _currentSelectedModel == kDefaultModelId));
             if (isStale) {
               _currentSelectedModel = _pickInitialModel(provider, sorted);
             }
@@ -406,8 +439,10 @@ class _ModelPickerDialogState extends State<_ModelPickerDialog> {
               ..sort(ModelOption.compareByReleaseDate);
             _currentOptions = sorted;
             final isStale = !_currentOptions.any((m) => m.id == _currentSelectedModel) ||
-                provider.defaultModels.any((m) => m.id == _currentSelectedModel) ||
-                (hasKey && (_currentSelectedModel == 'openrouter/free' || _currentSelectedModel == kDefaultModelId));
+                (hasKey &&
+                    (_currentSelectedModel == 'openrouter/free' ||
+                        _currentSelectedModel == 'openrouter/auto' ||
+                        _currentSelectedModel == kDefaultModelId));
             if (isStale) {
               _currentSelectedModel = _pickInitialModel(provider, sorted);
             }
@@ -477,9 +512,9 @@ class _ModelPickerDialogState extends State<_ModelPickerDialog> {
           final sorted = List<ModelOption>.from(cached)
             ..sort(ModelOption.compareByReleaseDate);
           final isStale = !sorted.any((m) => m.id == _currentSelectedModel) ||
-              provider.defaultModels.any((m) => m.id == _currentSelectedModel) ||
               (_currentProviderHasKey &&
                   (_currentSelectedModel == 'openrouter/free' ||
+                      _currentSelectedModel == 'openrouter/auto' ||
                       _currentSelectedModel == kDefaultModelId));
           setState(() {
             _currentOptions = sorted;

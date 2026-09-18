@@ -48,12 +48,13 @@ class MainActivity : FlutterActivity() {
         val isVoiceAction = incomingIntent.action == VoiceWidgetProvider.ACTION_VOICE_PROMPT ||
                 incomingIntent.getBooleanExtra(VoiceWidgetProvider.EXTRA_AUTO_VOICE, false)
         if (isVoiceAction) {
-            val channel = widgetChannel
-            if (channel != null) {
-                channel.invokeMethod("onVoicePrompt", null)
-            } else {
-                pendingVoicePrompt = true
-            }
+            // Always latch the pending flag so a tap is never lost when the
+            // Dart listener isn't attached yet; the live stream (below) is
+            // deduped Dart-side by the listening/busy guard.
+            pendingVoicePrompt = true
+            try {
+                widgetChannel?.invokeMethod("onVoicePrompt", null)
+            } catch (_: Exception) {}
         }
     }
 
@@ -978,7 +979,11 @@ class MainActivity : FlutterActivity() {
                 "address" to addressMap
             )
             runOnUiThread {
-                result.success(data)
+                try {
+                    result.success(data)
+                } catch (_: Exception) {
+                    // Second reply after a timeout race — already answered.
+                }
             }
         }.start()
     }
@@ -1037,12 +1042,15 @@ class MainActivity : FlutterActivity() {
         val provider = if (gpsEnabled && fineGranted) LocationManager.GPS_PROVIDER else LocationManager.NETWORK_PROVIDER
         var dispatched = false
         val handler = Handler(Looper.getMainLooper())
+        lateinit var timeoutRunnable: Runnable
 
         val listener = object : LocationListener {
             override fun onLocationChanged(loc: Location) {
-                if (dispatched) return
-                dispatched = true
-                handler.removeCallbacksAndMessages(null)
+                synchronized(this@MainActivity) {
+                    if (dispatched) return
+                    dispatched = true
+                }
+                handler.removeCallbacks(timeoutRunnable)
                 try { lm.removeUpdates(this) } catch (_: Exception) {}
                 dispatchLocationResult(loc, result)
             }
@@ -1052,27 +1060,38 @@ class MainActivity : FlutterActivity() {
             override fun onStatusChanged(p: String?, s: Int, e: android.os.Bundle?) {}
         }
 
-        handler.postDelayed({
-            if (dispatched) return@postDelayed
-            dispatched = true
+        timeoutRunnable = Runnable {
+            synchronized(this@MainActivity) {
+                if (dispatched) return@Runnable
+                dispatched = true
+            }
             try { lm.removeUpdates(listener) } catch (_: Exception) {}
             if (bestLocation != null) {
                 dispatchLocationResult(bestLocation, result)
             } else {
-                result.error("LOCATION_TIMEOUT", "Timed out waiting for GPS/Network location fix.", null)
+                try {
+                    result.error("LOCATION_TIMEOUT", "Timed out waiting for GPS/Network location fix.", null)
+                } catch (_: Exception) {}
             }
-        }, 8000)
+        }
+        handler.postDelayed(timeoutRunnable, 8000)
 
         try {
             lm.requestLocationUpdates(provider, 0L, 0f, listener, Looper.getMainLooper())
         } catch (e: Exception) {
-            if (!dispatched) {
+            val shouldReply: Boolean
+            synchronized(this@MainActivity) {
+                shouldReply = !dispatched
                 dispatched = true
-                handler.removeCallbacksAndMessages(null)
+            }
+            if (shouldReply) {
+                handler.removeCallbacks(timeoutRunnable)
                 if (bestLocation != null) {
                     dispatchLocationResult(bestLocation, result)
                 } else {
-                    result.error("LOCATION_ERR", e.message, null)
+                    try {
+                        result.error("LOCATION_ERR", e.message, null)
+                    } catch (_: Exception) {}
                 }
             }
         }

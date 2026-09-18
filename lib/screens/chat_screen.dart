@@ -117,6 +117,17 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   final _workingText = StringBuffer();
   Timer? _workingFlushTimer;
 
+  /// Incremental streaming-table state (avoids O(n²) `toString`/`split`
+  /// scans on every delta): fence parity + text after the last newline.
+  int _workingFenceCount = 0;
+  String _workingTail = '';
+
+  void _resetWorkingStreamState() {
+    _workingText.clear();
+    _workingFenceCount = 0;
+    _workingTail = '';
+  }
+
   /// Elapsed-seconds ticker for the …working placeholder (see
   /// [_startWorkingElapsedTimer]).
   Timer? _workingElapsedTimer;
@@ -286,7 +297,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     _composerFocusNode.addListener(_onComposerFocusChange);
-    _selectedModel = AppSettingsService.instance.selectedModel;
+    final bootSettings = AppSettingsService.instance;
+    _selectedModel = bootSettings.selectedModelFor(
+      bootSettings.activeProviderId,
+    );
     _activeConversation = _newDraftConversation();
     _llm = _createLlmClient(_selectedModel);
     _animatedMessageIds.addAll(_messages.map((m) => m.id));
@@ -427,10 +441,21 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     );
   }
 
+  static bool _isFreeRouterId(String id) {
+    final lower = id.toLowerCase();
+    return id == 'openrouter/free' ||
+        id == 'openrouter/auto' ||
+        id == kDefaultModelId ||
+        lower.contains('openrouter/free');
+  }
+
   String _pickDefaultModelForProvider(
     LlmProvider provider,
     List<ModelOption> availableModels,
   ) {
+    // Fresh default priority (no stored pick): first model in the sorted
+    // live list > hardcoded preset fallback. The free-router special case
+    // below only applies to unconfigured OpenRouter endpoints.
     if (availableModels.isEmpty) {
       return provider.defaultModels.firstOrNull?.id ?? kDefaultModelId;
     }
@@ -458,18 +483,41 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       if (freeRouter != null) return freeRouter.id;
     }
 
-    // Prefer curated defaultModels for this provider if available
-    for (final defaultModel in provider.defaultModels) {
-      if (availableModels.any((m) => m.id == defaultModel.id)) {
-        return defaultModel.id;
-      }
+    // Live catalog, newest first — skip free router entries when keyed.
+    for (final m in availableModels) {
+      if (hasKey && _isFreeRouterId(m.id)) continue;
+      return m.id;
     }
 
     if (provider.defaultModels.isNotEmpty) {
-      return provider.defaultModels.first.id;
+      final firstNonFree = provider.defaultModels
+          .cast<ModelOption?>()
+          .firstWhere(
+            (m) => m != null && !(hasKey && _isFreeRouterId(m.id)),
+            orElse: () => null,
+          );
+      if (firstNonFree != null) return firstNonFree.id;
     }
 
     return availableModels.first.id;
+  }
+
+  /// Full per-provider resolution priority:
+  /// last selected model (for this provider) > first model in the sorted
+  /// list > hardcoded preset model.
+  String _resolveModelForProvider(
+    LlmProvider provider,
+    List<ModelOption> availableModels,
+  ) {
+    final stored = AppSettingsService.instance.selectedModelFor(provider.id);
+    final hasStored =
+        AppSettingsService.instance.hasSelectedModelFor(provider.id);
+    if (hasStored &&
+        availableModels.any((m) => m.id == stored) &&
+        !_isFallbackOrStaleModel(stored, provider, availableModels)) {
+      return stored;
+    }
+    return _pickDefaultModelForProvider(provider, availableModels);
   }
 
   bool _isFallbackOrStaleModel(
@@ -482,12 +530,15 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         (provider.id == ProviderPresetType.openRouter.id &&
             AppSettingsService.instance.hasOpenRouterKey);
 
-    // Only consider stale if the provider has an active key, but the active
-    // model is still the unconfigured free router fallback.
-    if (hasKey &&
-        (modelId == 'openrouter/free' ||
-            modelId == 'openrouter/auto' ||
-            modelId == kDefaultModelId)) {
+    // Stuck on the unconfigured free router despite having a key.
+    if (hasKey && _isFreeRouterId(modelId)) {
+      return true;
+    }
+
+    // Model vanished from the live catalog (deprecated/renamed):
+    // self-heal by re-picking instead of 404ing forever.
+    if (liveModels.isNotEmpty &&
+        !liveModels.any((m) => m.id == modelId)) {
       return true;
     }
 
@@ -502,20 +553,25 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     if (!mounted) return;
     final settings = AppSettingsService.instance;
 
+    // Let models.dev settle briefly so release-date sorting (and therefore
+    // the auto-pick) is stable across restarts instead of falling back to
+    // alphabetical order on cold starts.
+    try {
+      await ModelsDevService().load().timeout(
+        const Duration(seconds: 2),
+      );
+    } catch (_) {}
+
     // 3. ofcourse all this only if any model is not selected until now
     // if selected then we will use that like currently how we are doing
     final hasCachedModel = settings.hasSelectedModel;
 
-    final LlmProvider provider;
-    if (!hasCachedModel) {
-      // 1. if no provider configured then openrouter
-      // 2. if any provider configured then that provider is the most defaulted
-      provider = settings.defaultStartupProvider;
-      if (provider.id != settings.activeProvider.id) {
-        await settings.setActiveProvider(provider.id);
-      }
-    } else {
-      provider = settings.activeProvider;
+    // Provider priority: last selected (when configured) > any configured
+    // > any provider. Per-provider model priority is handled below in
+    // _resolveModelForProvider.
+    final LlmProvider provider = settings.resolveStartupProvider();
+    if (provider.id != settings.activeProvider.id) {
+      await settings.setActiveProvider(provider.id);
     }
 
     final cached = ModelCatalogService.getCachedModels(provider.baseUrl);
@@ -530,15 +586,17 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     final String model;
     if (hasCachedModel &&
         !_isFallbackOrStaleModel(
-          settings.selectedModel,
+          settings.selectedModelFor(provider.id),
           provider,
           availableModels,
-        )) {
-      model = settings.selectedModel;
+        ) &&
+        availableModels
+            .any((m) => m.id == settings.selectedModelFor(provider.id))) {
+      model = settings.selectedModelFor(provider.id);
     } else {
-      // Select the first model from this sorted if no cached previous selected model
-      model = _pickDefaultModelForProvider(provider, availableModels);
-      unawaited(settings.setSelectedModel(model));
+      // last selected model > first in sorted list > hardcoded preset.
+      model = _resolveModelForProvider(provider, availableModels);
+      unawaited(settings.setSelectedModelFor(provider.id, model));
     }
 
     setState(() {
@@ -601,17 +659,34 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         ..sort(ModelOption.compareByReleaseDate);
 
       String modelToUse = _selectedModel;
-      if (providerChanged ||
-          _isFallbackOrStaleModel(
-            _selectedModel,
-            activeProvider,
-            availableModels,
-          )) {
-        modelToUse = _pickDefaultModelForProvider(
+      if (providerChanged) {
+        // Switching providers restores that provider's last pick, else its
+        // list head, else its hardcoded fallback.
+        modelToUse = _resolveModelForProvider(
           activeProvider,
           availableModels,
         );
-        unawaited(AppSettingsService.instance.setSelectedModel(modelToUse));
+        unawaited(
+          AppSettingsService.instance.setSelectedModelFor(
+            activeProvider.id,
+            modelToUse,
+          ),
+        );
+      } else if (_isFallbackOrStaleModel(
+        _selectedModel,
+        activeProvider,
+        availableModels,
+      )) {
+        modelToUse = _resolveModelForProvider(
+          activeProvider,
+          availableModels,
+        );
+        unawaited(
+          AppSettingsService.instance.setSelectedModelFor(
+            activeProvider.id,
+            modelToUse,
+          ),
+        );
       }
 
       setState(() {
@@ -639,8 +714,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     if (_busy || model == _selectedModel) return;
     _llm.close();
     _llm = _createLlmClient(model);
-    unawaited(AppSettingsService.instance.setSelectedModel(model));
     final activeProvider = AppSettingsService.instance.activeProvider;
+    unawaited(
+      AppSettingsService.instance.setSelectedModelFor(
+        activeProvider.id,
+        model,
+      ),
+    );
     final cached = ModelCatalogService.getCachedModels(activeProvider.baseUrl);
     setState(() {
       if (cached != null && cached.isNotEmpty && _models != cached) {
@@ -663,11 +743,18 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         : provider.defaultModels;
     final availableModels = List<ModelOption>.from(rawAvailable)
       ..sort(ModelOption.compareByReleaseDate);
-    final modelToUse = _pickDefaultModelForProvider(provider, availableModels);
+    // Per-provider priority: that provider's last pick (when still valid)
+    // > first in its sorted list > hardcoded preset.
+    final modelToUse = _resolveModelForProvider(provider, availableModels);
 
     _llm.close();
     _llm = _createLlmClient(modelToUse);
-    unawaited(AppSettingsService.instance.setSelectedModel(modelToUse));
+    unawaited(
+      AppSettingsService.instance.setSelectedModelFor(
+        provider.id,
+        modelToUse,
+      ),
+    );
 
     setState(() {
       _selectedModel = modelToUse;
@@ -683,7 +770,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         : provider.hasKey;
 
     if (hasKey) {
-      await _loadModelCatalog(forceRefresh: false);
+      // Force refresh: the cached list may be the unauthenticated fallback.
+      await _loadModelCatalog(forceRefresh: true);
     }
     return _models;
   }
@@ -865,14 +953,16 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       final sortedModels = List<ModelOption>.from(models)
         ..sort(ModelOption.compareByReleaseDate);
 
+      final storedForProvider = settings.selectedModelFor(provider.id);
       final bool shouldPickNewDefault =
-          !settings.hasSelectedModel ||
-          _isFallbackOrStaleModel(_selectedModel, provider, sortedModels);
+          !settings.hasSelectedModelFor(provider.id) ||
+          _isFallbackOrStaleModel(_selectedModel, provider, sortedModels) ||
+          _isFallbackOrStaleModel(storedForProvider, provider, sortedModels);
 
       final String modelToUse;
       if (shouldPickNewDefault && sortedModels.isNotEmpty) {
-        modelToUse = _pickDefaultModelForProvider(provider, sortedModels);
-        unawaited(settings.setSelectedModel(modelToUse));
+        modelToUse = _resolveModelForProvider(provider, sortedModels);
+        unawaited(settings.setSelectedModelFor(provider.id, modelToUse));
       } else {
         modelToUse = _selectedModel;
       }
@@ -1194,16 +1284,40 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _animatedMessageIds.clear();
     _animatedMessageIds.addAll(welcome.map((m) => m.id));
 
-    final defaultModel = AppSettingsService.instance.selectedModel;
-    _selectedModel = defaultModel;
-    _llm.close();
-    _llm = _createLlmClient(_selectedModel);
+    final activeProvider = AppSettingsService.instance.activeProvider;
+    final defaultModel =
+        AppSettingsService.instance.selectedModelFor(activeProvider.id);
+    // Guard against a persisted id that no longer exists for this provider
+    // (e.g. deprecated upstream) — validate before adopting it.
+    final knownIds = <String>{
+      for (final m in _models) m.id,
+      for (final m in activeProvider.defaultModels) m.id,
+    };
+    if (knownIds.isNotEmpty && !knownIds.contains(defaultModel)) {
+      final fallback = _resolveModelForProvider(
+        activeProvider,
+        _models.isNotEmpty ? _models : activeProvider.defaultModels,
+      );
+      _selectedModel = fallback;
+      unawaited(
+        AppSettingsService.instance.setSelectedModelFor(
+          activeProvider.id,
+          fallback,
+        ),
+      );
+      _llm.close();
+      _llm = _createLlmClient(fallback);
+    } else {
+      _selectedModel = defaultModel;
+      _llm.close();
+      _llm = _createLlmClient(_selectedModel);
+    }
 
     setState(() {
       _messages = welcome;
       _activeConversation = _newDraftConversation();
       _workingMessageId = null;
-      _workingText.clear();
+      _resetWorkingStreamState();
       _editingMessageId = null;
       _hasOlderMessages = false;
       _updateEstimatedTokens();
@@ -1257,12 +1371,33 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     setState(() {
       _activeConversation = loaded;
       _messages = loaded.messages;
+      final providerForCheck = AppSettingsService.instance.activeProvider;
+      final storedModel = loaded.model ??
+          AppSettingsService.instance.selectedModelFor(
+            providerForCheck.id,
+          );
+      final validIds = <String>{
+        for (final m in _models) m.id,
+        for (final m in providerForCheck.defaultModels) m.id,
+        ...?ModelCatalogService.getCachedModels(providerForCheck.baseUrl)
+            ?.map((m) => m.id),
+      };
+      // Old conversations may reference a model that was since removed
+      // upstream or belongs to a different provider — fall back instead of
+      // sending a foreign/dead id to the active endpoint.
       _selectedModel =
-          loaded.model ?? AppSettingsService.instance.selectedModel;
+          (validIds.isEmpty || validIds.contains(storedModel))
+              ? storedModel
+              : _resolveModelForProvider(
+                  providerForCheck,
+                  _models.isNotEmpty
+                      ? _models
+                      : providerForCheck.defaultModels,
+                );
       _llm.close();
       _llm = _createLlmClient(_selectedModel);
       _workingMessageId = null;
-      _workingText.clear();
+      _resetWorkingStreamState();
       _editingMessageId = null;
       // A short page means the whole history fit in the first window.
       _hasOlderMessages = loaded.messages.length == _messagePageSize;
@@ -1668,7 +1803,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
     final workingId = 'working-${DateTime.now().microsecondsSinceEpoch}';
     _workingMessageId = workingId;
-    _workingText.clear();
+    _resetWorkingStreamState();
     _workingReasoning = false;
     _externalAppWorkDone = false;
     _externalIntentLaunched = false;
@@ -1698,7 +1833,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         localSystemPrompt: systemPromptFor(
           _workingDirectory.current,
           scratchDir: Workspace.instance.scratchDir,
-          locationSummary: LocationService.instance.lastKnown?.toSummary(),
+          locationSummary: LocationService.instance.lastKnown?.toCoarseSummary(),
           screenAccess: _a11yAvailable,
           screenRestricted: _a11yRestricted,
           a11ySupported: _a11ySupported,
@@ -1747,7 +1882,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         systemPromptBuilder: () => systemPromptFor(
           _workingDirectory.current,
           scratchDir: Workspace.instance.scratchDir,
-          locationSummary: LocationService.instance.lastKnown?.toSummary(),
+          locationSummary: LocationService.instance.lastKnown?.toCoarseSummary(),
           screenAccess: _a11yAvailable,
           screenRestricted: _a11yRestricted,
           a11ySupported: _a11ySupported,
@@ -1845,7 +1980,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       unawaited(_intentService.bringToFront());
     }
     final id = _workingMessageId;
-    _workingText.clear();
+    _resetWorkingStreamState();
     if (!mounted) return;
     setState(() {
       final index = id == null
@@ -1985,7 +2120,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           : _messages.indexWhere((current) => current.id == workingId);
 
       final currentText = _workingText.toString();
-      _workingText.clear();
+      _resetWorkingStreamState();
 
       if (workingIndex == -1) {
         _messages.add(message);
@@ -2023,18 +2158,58 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   void _handleTextDelta(String delta) {
     if (!mounted || _workingMessageId == null) return;
+    if (delta.isEmpty) return;
     _workingText.write(delta);
 
-    final current = _workingText.toString();
-    // Don't treat pipelines inside code blocks as markdown tables
-    final isInCodeBlock = current.split('```').length % 2 == 0;
+    // Incremental code-fence tracking: count ``` occurrences in this delta
+    // only (O(delta), not O(buffer)).
+    var fenceHits = 0;
+    var idx = 0;
+    while (true) {
+      final found = delta.indexOf('```', idx);
+      if (found == -1) break;
+      fenceHits++;
+      idx = found + 3;
+    }
+    _workingFenceCount += fenceHits;
+    final isInCodeBlock = _workingFenceCount % 2 == 1;
+
+    String? completedTableLine;
+    if (delta.contains('\n')) {
+      // Maintain the tail (text after last newline) without scanning the
+      // whole buffer; capture the last completed line for table flush.
+      final combined = _workingTail + delta;
+      final lastNl = combined.lastIndexOf('\n');
+      final prevNl = combined.lastIndexOf('\n', lastNl - 1);
+      final completed = prevNl == -1
+          ? combined.substring(0, lastNl)
+          : combined.substring(prevNl + 1, lastNl);
+      if (completed.trimLeft().startsWith('|') &&
+          !completed.trimLeft().startsWith('|-') &&
+          completed.trim().length > 1) {
+        completedTableLine = completed;
+      }
+      _workingTail = combined.substring(lastNl + 1);
+      // Cap the tail so a single huge line can't grow unbounded.
+      if (_workingTail.length > 4096) {
+        _workingTail = _workingTail.substring(
+          _workingTail.length - 4096,
+        );
+      }
+    } else {
+      _workingTail += delta;
+      if (_workingTail.length > 4096) {
+        _workingTail = _workingTail.substring(
+          _workingTail.length - 4096,
+        );
+      }
+    }
 
     if (!isInCodeBlock) {
-      final lastNewline = current.lastIndexOf('\n');
-      final activeLine = lastNewline == -1
-          ? current
-          : current.substring(lastNewline + 1);
-      final isTableRow = activeLine.trimLeft().startsWith('|');
+      final tailTrim = _workingTail.trimLeft();
+      final isTableRow = tailTrim.startsWith('|') &&
+          !tailTrim.startsWith('|-') &&
+          _workingTail.trim().length > 1;
 
       if (isTableRow) {
         // We are currently in an incomplete table row. Hold off flushing so the
@@ -2049,16 +2224,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       }
 
       // If a row just completed with a newline, flush immediately
-      if (delta.contains('\n') && lastNewline != -1) {
-        final prevNewline = current.lastIndexOf('\n', lastNewline - 1);
-        final completedLine = prevNewline == -1
-            ? current.substring(0, lastNewline)
-            : current.substring(prevNewline + 1, lastNewline);
-        if (completedLine.trimLeft().startsWith('|')) {
-          _workingFlushTimer?.cancel();
-          _flushWorkingText();
-          return;
-        }
+      if (completedTableLine != null) {
+        _workingFlushTimer?.cancel();
+        _flushWorkingText();
+        return;
       }
     }
 
@@ -2073,7 +2242,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     if (!mounted || _workingMessageId == null) return;
     _workingFlushTimer?.cancel();
     _workingFlushTimer = null;
-    _workingText.clear();
+    _resetWorkingStreamState();
     _workingReasoning = false;
     _updateWorkingPlaceholder();
     _schedulePersist(const Duration(milliseconds: 150));
@@ -2146,7 +2315,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       unawaited(_intentService.bringToFront());
     }
     final id = _workingMessageId;
-    _workingText.clear();
+    _resetWorkingStreamState();
     if (!mounted) return;
     // Some models return an empty/whitespace final answer (content-only
     // tool turns, stray "\n"). Trim it; if nothing is left, drop the
@@ -2204,8 +2373,19 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   // -- Voice input ---------------------------------------------------------
 
+  DateTime? _lastVoicePromptAt;
+
   /// Triggered via Android Home Screen Widget or direct voice shortcuts.
   Future<void> _startVoicePrompt() async {
+    // Native now latches pending + emits the stream, so cold-start resume
+    // can deliver both back-to-back — debounce to a single session start.
+    final now = DateTime.now();
+    if (_lastVoicePromptAt != null &&
+        now.difference(_lastVoicePromptAt!) <
+            const Duration(milliseconds: 1500)) {
+      return;
+    }
+    _lastVoicePromptAt = now;
     final speech = SpeechService.instance;
     if (speech.listening.value) return; // already active
     if (_busy) {

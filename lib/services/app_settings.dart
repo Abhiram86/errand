@@ -35,6 +35,7 @@ final class AppSettingsService {
   static const _kTavilyKey = 'secret.tavily_api_key';
   static const _kBaseUrlOverride = 'secret.base_url_override';
   static const _kSelectedModel = 'pref.selected_model';
+  static const _kSelectedModelPrefix = 'pref.selected_model.';
   static const _kVoiceLocale = 'pref.voice_input_locale';
   static const _kA11yPromptDismissed = 'pref.a11y_prompt_dismissed';
 
@@ -46,6 +47,7 @@ final class AppSettingsService {
   String? _tavilyKey;
   String? _baseUrlOverride;
   String? _selectedModel;
+  final Map<String, String> _selectedModelsByProvider = {};
   bool _cacheLoaded = false;
 
   List<LlmProvider> _providers = [];
@@ -62,6 +64,20 @@ final class AppSettingsService {
     _selectedModel = await _db.getSetting(_kSelectedModel);
 
     await _loadProviders();
+    // Per-provider last-selected models (lazy-migrated from the legacy
+    // global key so existing installs keep their choice per provider).
+    for (final p in _providers) {
+      final stored = await _db.getSetting('$_kSelectedModelPrefix${p.id}');
+      if (stored != null && stored.trim().isNotEmpty) {
+        _selectedModelsByProvider[p.id] = stored;
+      }
+    }
+    if (_selectedModel != null &&
+        _selectedModel!.trim().isNotEmpty &&
+        _activeProviderId != null &&
+        !_selectedModelsByProvider.containsKey(_activeProviderId)) {
+      _selectedModelsByProvider[_activeProviderId!] = _selectedModel!;
+    }
     _cacheLoaded = true;
   }
 
@@ -89,15 +105,34 @@ final class AppSettingsService {
 
   bool get hasAnyConfiguredProvider => providers.any(_providerHasKey);
 
-  /// Default provider resolution:
-  /// 1. If any provider is configured (has API key), that provider is defaulted.
-  /// 2. If no provider is configured, OpenRouter is defaulted.
-  LlmProvider get defaultStartupProvider {
-    for (final p in providers) {
-      if (_providerHasKey(p)) {
-        return p;
+  /// Provider resolution priority:
+  /// 1. last selected provider, when it is still configured (has a key);
+  /// 2. any configured provider (first in keyed-first order);
+  /// 3. last selected provider as-is, else any provider (free-tier / offline).
+  LlmProvider get defaultStartupProvider => resolveStartupProvider();
+
+  LlmProvider resolveStartupProvider() {
+    LlmProvider? byId(String? id) {
+      if (id == null) return null;
+      for (final p in _providers) {
+        if (p.id == id) {
+          if (p.id == ProviderPresetType.openRouter.id &&
+              !p.hasKey &&
+              hasOpenRouterKey) {
+            return p.copyWith(apiKey: openRouterKey);
+          }
+          return p;
+        }
       }
+      return null;
     }
+
+    final last = byId(_activeProviderId);
+    if (last != null && _providerHasKey(last)) return last;
+    for (final p in providers) {
+      if (_providerHasKey(p)) return p;
+    }
+    if (last != null) return last;
     for (final p in _providers) {
       if (p.id == ProviderPresetType.openRouter.id) {
         if (hasOpenRouterKey) {
@@ -376,7 +411,7 @@ final class AppSettingsService {
 
   // -- Preferences ----------------------------------------------------------
 
-  /// Last model picked by the user.
+  /// Last model picked by the user (global most-recent, kept for compat).
   String get selectedModel => _selectedModel ?? kDefaultModelId;
 
   /// Whether the user has an explicitly cached / selected model.
@@ -386,7 +421,39 @@ final class AppSettingsService {
   /// The raw persisted model string, or null if no model has been selected yet.
   String? get rawSelectedModel => _selectedModel;
 
+  /// Last model picked for [providerId], falling back to the global
+  /// most-recent pick. This is priority #1 in per-provider resolution.
+  String selectedModelFor(String providerId) {
+    final perProvider = _selectedModelsByProvider[providerId];
+    if (perProvider != null && perProvider.trim().isNotEmpty) {
+      return perProvider;
+    }
+    return selectedModel;
+  }
+
+  /// Whether a per-provider (or global) pick exists for [providerId].
+  bool hasSelectedModelFor(String providerId) {
+    final perProvider = _selectedModelsByProvider[providerId];
+    if (perProvider != null && perProvider.trim().isNotEmpty) return true;
+    return hasSelectedModel;
+  }
+
   Future<void> setSelectedModel(String value) async {
+    _selectedModel = value;
+    await _db.setSetting(_kSelectedModel, value);
+    // Keep the per-provider slot in sync so switching providers round-trips.
+    final activeId = _activeProviderId;
+    if (activeId != null && activeId.isNotEmpty) {
+      _selectedModelsByProvider[activeId] = value;
+      await _db.setSetting('$_kSelectedModelPrefix$activeId', value);
+    }
+  }
+
+  /// Persists [value] as the last-selected model for [providerId] (and as
+  /// the global most-recent pick for back-compat).
+  Future<void> setSelectedModelFor(String providerId, String value) async {
+    _selectedModelsByProvider[providerId] = value;
+    await _db.setSetting('$_kSelectedModelPrefix$providerId', value);
     _selectedModel = value;
     await _db.setSetting(_kSelectedModel, value);
   }
@@ -394,6 +461,15 @@ final class AppSettingsService {
   Future<String?> loadSelectedModel() async {
     _selectedModel = await _db.getSetting(_kSelectedModel);
     return _selectedModel;
+  }
+
+  /// Loads the persisted per-provider pick into memory (null when never set).
+  Future<String?> loadSelectedModelFor(String providerId) async {
+    final stored = await _db.getSetting('$_kSelectedModelPrefix$providerId');
+    if (stored != null && stored.trim().isNotEmpty) {
+      _selectedModelsByProvider[providerId] = stored;
+    }
+    return _selectedModelsByProvider[providerId];
   }
 
   /// Speech-recognition locale id persisted across sessions.
@@ -424,6 +500,8 @@ final class AppSettingsService {
     _openRouterKey = null;
     _tavilyKey = null;
     _baseUrlOverride = null;
+    _selectedModel = null;
+    _selectedModelsByProvider.clear();
     _providers = [];
     _activeProviderId = null;
     _cacheLoaded = false;

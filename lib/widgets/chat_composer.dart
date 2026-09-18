@@ -332,60 +332,51 @@ class _AudioReactiveBorder extends StatelessWidget {
           return ValueListenableBuilder<double>(
             valueListenable: soundLevel,
             builder: (context, rawLevel, _) {
-              return TweenAnimationBuilder<double>(
-                tween: Tween<double>(begin: 0.0, end: rawLevel.clamp(0.0, 1.0)),
-                duration: const Duration(milliseconds: 120),
-                curve: Curves.easeOutQuad,
-                builder: (context, level, innerChild) {
-                  final blur1 = 8.0 + (level * 16.0);
-                  final blur2 = 14.0 + (level * 20.0);
-                  final spread = 0.5 + (level * 2.0);
-                  final glowAlpha1 = (0.35 + (level * 0.45)).clamp(0.0, 1.0);
-                  final glowAlpha2 = (0.15 + (level * 0.35)).clamp(0.0, 1.0);
+              // SoundService already smooths + throttles updates; render the
+              // level directly instead of restarting a Tween on every dB
+              // callback (the old triple-nested animation never settled).
+              final level = rawLevel.clamp(0.0, 1.0);
+              final blur = 8.0 + (level * 10.0);
+              final spread = 0.5 + (level * 1.2);
+              final glowAlpha = (0.35 + (level * 0.4)).clamp(0.0, 1.0);
 
-                  const voiceCyan = Color(0xFF00E5FF);
-                  const voicePurple = Color(0xFFA855F7);
-                  const voiceBlue = Color(0xFF3B82F6);
-                  const voicePink = Color(0xFFEC4899);
+              const voiceCyan = Color(0xFF00E5FF);
+              const voicePurple = Color(0xFFA855F7);
+              const voiceBlue = Color(0xFF3B82F6);
+              const voicePink = Color(0xFFEC4899);
 
-                  return Container(
-                    padding: EdgeInsets.all(1.4 + (level * 0.8)),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(24),
-                      gradient: SweepGradient(
-                        transform: GradientRotation(
-                          rotationAnimation.value * 2 * math.pi,
-                        ),
-                        colors: const [
-                          voiceCyan,
-                          voicePurple,
-                          voiceBlue,
-                          voicePink,
-                          voiceCyan,
-                        ],
-                        stops: const [0.0, 0.28, 0.52, 0.78, 1.0],
-                      ),
-                      boxShadow: [
-                        BoxShadow(
-                          color: voiceCyan.withValues(alpha: glowAlpha1),
-                          blurRadius: blur1,
-                          spreadRadius: spread,
-                        ),
-                        BoxShadow(
-                          color: voicePurple.withValues(alpha: glowAlpha2),
-                          blurRadius: blur2,
-                          spreadRadius: spread * 1.4,
-                        ),
-                      ],
+              return Container(
+                padding: EdgeInsets.all(1.4 + (level * 0.6)),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(24),
+                  gradient: SweepGradient(
+                    transform: GradientRotation(
+                      rotationAnimation.value * 2 * math.pi,
                     ),
-                    child: innerChild,
-                  );
-                },
+                    colors: const [
+                      voiceCyan,
+                      voicePurple,
+                      voiceBlue,
+                      voicePink,
+                      voiceCyan,
+                    ],
+                    stops: const [0.0, 0.28, 0.52, 0.78, 1.0],
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: voiceCyan.withValues(alpha: glowAlpha),
+                      blurRadius: blur,
+                      spreadRadius: spread,
+                    ),
+                  ],
+                ),
                 child: child,
               );
             },
+            child: child,
           );
         },
+        child: child,
       ),
     );
   }

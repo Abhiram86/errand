@@ -692,15 +692,12 @@ class ShellResult {
 
   /// Formats the result as structured text. Reserves the leading metadata
   /// header block (ending with an empty line) so [ToolOutputFileService]
-  /// keeps Command, Working directory, and Exit code in previews.
+  /// keeps Command and Exit code in previews.
   String toFormattedOutput({String? command}) {
     final buffer = StringBuffer();
     if (command != null) {
       buffer.writeln('Command: $command');
     }
-    // if (workingDirectory != null) {
-    //   buffer.writeln('Working directory: ${workingDirectory.path}');
-    // }
     buffer.writeln('Exit code: $exitCode');
     if (timedOut) {
       buffer.writeln('Status: TIMED OUT');

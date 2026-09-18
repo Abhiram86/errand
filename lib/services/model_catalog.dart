@@ -32,6 +32,8 @@ class ModelCatalogService {
     : _client = client ?? http.Client();
 
   /// Loads models for the given endpoint and caches the result.
+  /// The cache is split by auth state (key vs no-key) so adding a key
+  /// never serves the stale unauthenticated list, and vice versa.
   Future<List<ModelOption>> load({
     required String baseUrl,
     required String apiKey,
@@ -39,7 +41,7 @@ class ModelCatalogService {
     bool? isOpenRouter,
     bool forceRefresh = false,
   }) {
-    final cacheKey = _normalizeBaseUrl(baseUrl);
+    final cacheKey = _cacheKey(baseUrl, apiKey);
     if (!forceRefresh) {
       final cached = _cache[cacheKey];
       if (cached != null) return Future.value(cached);
@@ -49,7 +51,7 @@ class ModelCatalogService {
     if (pending != null && !forceRefresh) return pending;
 
     final request = _fetch(
-      baseUrl: cacheKey,
+      baseUrl: _normalizeBaseUrl(baseUrl),
       apiKey: apiKey,
       defaultProvider: defaultProvider,
       isOpenRouter: isOpenRouter,
@@ -59,27 +61,43 @@ class ModelCatalogService {
   }
 
   /// Clears in-memory catalog cache (for all or a specific base URL).
-  static void clearCache({String? baseUrl}) {
+  /// Without [apiKey] both auth and anon entries for the URL are dropped.
+  static void clearCache({String? baseUrl, String? apiKey}) {
     if (baseUrl != null) {
-      _cache.remove(_normalizeBaseUrl(baseUrl));
+      if (apiKey != null) {
+        _cache.remove(_cacheKey(baseUrl, apiKey));
+      } else {
+        final prefix = '${_normalizeBaseUrl(baseUrl)}|';
+        _cache.removeWhere((k, _) => k == _normalizeBaseUrl(baseUrl) || k.startsWith(prefix));
+        _inFlight.removeWhere((k, _) => k == _normalizeBaseUrl(baseUrl) || k.startsWith(prefix));
+      }
     } else {
       _cache.clear();
     }
   }
 
   /// Returns cached models for the given base URL if present in session memory.
-  static List<ModelOption>? getCachedModels(String baseUrl) {
-    return _cache[_normalizeBaseUrl(baseUrl)];
+  /// Without [apiKey] prefers the authenticated entry when both exist.
+  static List<ModelOption>? getCachedModels(String baseUrl, {String? apiKey}) {
+    if (apiKey != null) return _cache[_cacheKey(baseUrl, apiKey)];
+    final normalized = _normalizeBaseUrl(baseUrl);
+    return _cache['$normalized|auth'] ??
+        _cache['$normalized|anon'] ??
+        _cache[normalized];
   }
 
   /// Whether models are currently cached for the given base URL.
-  static bool hasCachedModels(String baseUrl) {
-    return _cache.containsKey(_normalizeBaseUrl(baseUrl));
+  static bool hasCachedModels(String baseUrl, {String? apiKey}) {
+    return getCachedModels(baseUrl, apiKey: apiKey) != null;
   }
 
   /// Whether a catalog request is currently in flight for the given base URL.
-  static bool isInFlight(String baseUrl) {
-    return _inFlight.containsKey(_normalizeBaseUrl(baseUrl));
+  static bool isInFlight(String baseUrl, {String? apiKey}) {
+    if (apiKey != null) return _inFlight.containsKey(_cacheKey(baseUrl, apiKey));
+    final normalized = _normalizeBaseUrl(baseUrl);
+    return _inFlight.keys.any(
+      (k) => k == normalized || k.startsWith('$normalized|'),
+    );
   }
 
   /// Tests connectivity and authentication to an OpenAI-compatible endpoint.
@@ -366,6 +384,10 @@ class ModelCatalogService {
       models.sort(ModelOption.compareByReleaseDate);
 
       final result = List<ModelOption>.unmodifiable(models);
+      // Store under the auth-scoped key; keep a legacy base-URL alias so
+      // callers without a key still resolve the newest fetch.
+      final scoped = _cacheKey(baseUrl, apiKey);
+      _cache[scoped] = result;
       _cache[_normalizeBaseUrl(baseUrl)] = result;
       return result;
     } catch (e) {
@@ -403,6 +425,11 @@ class ModelCatalogService {
       normalized = normalized.substring(0, normalized.length - 1);
     }
     return normalized;
+  }
+
+  static String _cacheKey(String baseUrl, String apiKey) {
+    final normalized = _normalizeBaseUrl(baseUrl);
+    return '$normalized|${apiKey.trim().isEmpty ? 'anon' : 'auth'}';
   }
 
   /// Extracts input modalities.

@@ -65,17 +65,19 @@ class SpeechService {
     return _speech.listen(
       onResult: (result) => onResult(result.recognizedWords, result.finalResult),
       onSoundLevelChange: (level) {
-        // Android speech_to_text reports RMS dB (typically 0..10+ or -2..10).
-        // Map to 0.0 - 1.0.
-        double normalized;
-        if (level <= 0) {
-          normalized = 0.0;
-        } else if (level >= 10) {
-          normalized = 1.0;
-        } else {
-          normalized = level / 10.0;
-        }
-        soundLevel.value = normalized;
+        // Android speech_to_text reports RMS dB (typically -2..10+).
+        // Map to 0.0-1.0 with exponential smoothing to avoid UI jitter:
+        // clamp floor at ~0.5dB so silence stays 0, scale 0.5..9, then
+        // low-pass filter (70% old + 30% new).
+        final clamped = level <= 0.5
+            ? 0.0
+            : level >= 9.0
+                ? 1.0
+                : (level - 0.5) / 8.5;
+        final smoothed = soundLevel.value * 0.7 + clamped * 0.3;
+        // Skip tiny updates to avoid rebuilding the composer at 20Hz.
+        if ((smoothed - soundLevel.value).abs() < 0.02) return;
+        soundLevel.value = smoothed.clamp(0.0, 1.0);
       },
       listenOptions: SpeechListenOptions(
         partialResults: true,

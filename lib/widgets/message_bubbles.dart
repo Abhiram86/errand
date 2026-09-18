@@ -1252,28 +1252,6 @@ class MessageBubble extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 6),
-                  child: Container(
-                    width: 20,
-                    height: 20,
-                    decoration: BoxDecoration(
-                      color: kInputBg,
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: kBorder.withValues(alpha: 0.8),
-                        width: 0.8,
-                      ),
-                    ),
-                    child: const Center(
-                      child: Icon(
-                        Icons.bolt_rounded,
-                        size: 13,
-                        color: kText,
-                      ),
-                    ),
-                  ),
-                ),
                 assistantTextWidget,
                 if (!isPlaceholder)
                   Padding(
@@ -1391,6 +1369,24 @@ Widget _buildClampedTable(
   );
 }
 
+/// Cheap heuristic: only cells containing likely inline markup pay for a
+/// nested GptMarkdown parse; everything else renders as plain Text.
+bool _looksLikeMarkdown(String text) {
+  if (text.contains('**') ||
+      text.contains('__') ||
+      text.contains('`') ||
+      text.contains('~~') ||
+      text.contains('[') ||
+      text.contains('](')) {
+    return true;
+  }
+  // Single-emphasis markers are easy to false-positive on (e.g. "a*b"),
+  // so require a plausible open/close pair.
+  final singleStar = RegExp(r'\*[^*\n]+\*');
+  final singleUnderscore = RegExp(r'_[^_\n]+_');
+  return singleStar.hasMatch(text) || singleUnderscore.hasMatch(text);
+}
+
 class _ClampedTableView extends StatefulWidget {
   final List<CustomTableRow> tableRows;
   final TextStyle textStyle;
@@ -1435,6 +1431,7 @@ class _ClampedTableViewState extends State<_ClampedTableView> {
       padding: const EdgeInsets.symmetric(vertical: 8),
       child: Scrollbar(
         controller: _scrollController,
+        thumbVisibility: true,
         child: SingleChildScrollView(
           controller: _scrollController,
           scrollDirection: Axis.horizontal,
@@ -1481,8 +1478,19 @@ class _ClampedTableViewState extends State<_ClampedTableView> {
                     Widget cellContent;
                     if (text.isEmpty) {
                       cellContent = const SizedBox(height: 20);
-                    } else {
+                    } else if (_looksLikeMarkdown(text)) {
+                      // Inline markdown (bold, italic, code, links) renders
+                      // via a nested GptMarkdown only when the cell actually
+                      // contains markup; plain cells stay cheap Text.
                       cellContent = GptMarkdown(
+                        text,
+                        maxLines: 4,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: align,
+                        style: cellStyle,
+                      );
+                    } else {
+                      cellContent = Text(
                         text,
                         maxLines: 4,
                         overflow: TextOverflow.ellipsis,
@@ -1505,7 +1513,9 @@ class _ClampedTableViewState extends State<_ClampedTableView> {
 
                     if (text.isNotEmpty) {
                       return Tooltip(
-                        message: text,
+                        message: text.length > 300
+                            ? '${text.substring(0, 300)}…'
+                            : text,
                         waitDuration: const Duration(milliseconds: 600),
                         child: cellWidget,
                       );
