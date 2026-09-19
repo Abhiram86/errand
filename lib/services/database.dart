@@ -124,6 +124,51 @@ class Memories extends Table {
   Set<Column<Object>> get primaryKey => {id};
 }
 
+/// Defines scheduled tasks (both one-off and recurring).
+@DataClassName('SchedulerTaskRow')
+class SchedulerTasks extends Table {
+  @override
+  String get tableName => 'scheduler_task';
+
+  IntColumn get id => integer().autoIncrement()();
+  TextColumn get title => text()();
+  TextColumn get type => text()(); // 'one_off' or 'recurring'
+  TextColumn get status => text()(); // 'scheduled', 'paused', 'running', 'completed', 'failed', 'cancelled'
+  TextColumn get payloadJson => text()();
+  IntColumn get startsAt => integer()(); // epoch millis
+  IntColumn get nextRunAt => integer().nullable()(); // epoch millis
+  IntColumn get repeatAfter => integer().nullable()(); // interval in millis for recurring
+  TextColumn get timezone => text()(); // IANA timezone name
+  IntColumn get lastRunAt => integer().nullable()();
+  IntColumn get totalRuns => integer().withDefault(const Constant(0))();
+  IntColumn get failures => integer().withDefault(const Constant(0))();
+  IntColumn get retriesPerTurn => integer().withDefault(const Constant(3))();
+  IntColumn get createdAt => integer()();
+  IntColumn get updatedAt => integer()();
+}
+
+/// Execution history log for scheduled task runs.
+@DataClassName('SchedulerTaskLogRow')
+class SchedulerTaskLogs extends Table {
+  @override
+  String get tableName => 'scheduler_task_log';
+
+  IntColumn get id => integer().autoIncrement()();
+  IntColumn get schedulerTaskId => integer().references(SchedulerTasks, #id, onDelete: KeyAction.cascade)();
+  IntColumn get scheduledFor => integer()(); // epoch millis
+  IntColumn get startedAt => integer().nullable()();
+  IntColumn get finishedAt => integer().nullable()();
+  TextColumn get status => text()(); // 'pending', 'running', 'success', 'failed', 'cancelled', 'skipped', 'timeout'
+  IntColumn get noAttempts => integer().withDefault(const Constant(0))();
+  TextColumn get errorMessage => text().nullable()();
+  TextColumn get outputFilePath => text().nullable()();
+  TextColumn get summary => text().nullable()();
+  IntColumn get notificationSent => integer().withDefault(const Constant(0))();
+  IntColumn get notificationSeen => integer().withDefault(const Constant(0))();
+  IntColumn get createdAt => integer()();
+  IntColumn get updatedAt => integer()();
+}
+
 @DriftDatabase(
   tables: [
     Conversations,
@@ -131,6 +176,8 @@ class Memories extends Table {
     ConversationAttachments,
     AppSettings,
     Memories,
+    SchedulerTasks,
+    SchedulerTaskLogs,
   ],
 )
 final class ErrandDatabase extends _$ErrandDatabase {
@@ -145,14 +192,18 @@ final class ErrandDatabase extends _$ErrandDatabase {
       ErrandDatabase._(NativeDatabase.memory());
 
   @override
-  int get schemaVersion => 6;
+  int get schemaVersion => 7;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
+    beforeOpen: (details) async {
+      await customStatement('PRAGMA foreign_keys = ON;');
+    },
     onCreate: (m) async {
       await m.createAll();
       await _createMessageIndexes(m);
       await _createMemoryIndexes(m);
+      await _createSchedulerIndexes(m);
     },
     onUpgrade: (m, from, to) async {
       if (from < 2) {
@@ -183,6 +234,11 @@ final class ErrandDatabase extends _$ErrandDatabase {
         await m.createTable(memories);
         await _createMemoryIndexes(m);
       }
+      if (from < 7) {
+        await m.createTable(schedulerTasks);
+        await m.createTable(schedulerTaskLogs);
+        await _createSchedulerIndexes(m);
+      }
     },
   );
 
@@ -208,6 +264,22 @@ final class ErrandDatabase extends _$ErrandDatabase {
     await customStatement(
       'CREATE INDEX IF NOT EXISTS idx_memories_updated_at '
       'ON memories (updated_at DESC)',
+    );
+  }
+
+  /// Indexes backing scheduler task queries and execution lookups.
+  Future<void> _createSchedulerIndexes(Migrator m) async {
+    await customStatement(
+      'CREATE INDEX IF NOT EXISTS idx_scheduler_task_next_run '
+      'ON scheduler_task (status, next_run_at)',
+    );
+    await customStatement(
+      'CREATE INDEX IF NOT EXISTS idx_scheduler_task_log_task '
+      'ON scheduler_task_log (scheduler_task_id, scheduled_for DESC)',
+    );
+    await customStatement(
+      'CREATE INDEX IF NOT EXISTS idx_scheduler_task_log_unseen '
+      'ON scheduler_task_log (notification_seen)',
     );
   }
 

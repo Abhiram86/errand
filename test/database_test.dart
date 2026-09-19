@@ -495,7 +495,7 @@ void main() {
 
   group('Memories table (schema v6)', () {
     test('inserts, reads, updates, and deletes MemoryRow', () async {
-      expect(db.schemaVersion, 6);
+      expect(db.schemaVersion, greaterThanOrEqualTo(6));
 
       final now = DateTime.fromMillisecondsSinceEpoch(
         (DateTime.now().millisecondsSinceEpoch ~/ 1000) * 1000,

@@ -2398,6 +2398,1678 @@ class MemoriesCompanion extends UpdateCompanion<MemoryRow> {
   }
 }
 
+class $SchedulerTasksTable extends SchedulerTasks
+    with TableInfo<$SchedulerTasksTable, SchedulerTaskRow> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $SchedulerTasksTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _idMeta = const VerificationMeta('id');
+  @override
+  late final GeneratedColumn<int> id = GeneratedColumn<int>(
+    'id',
+    aliasedName,
+    false,
+    hasAutoIncrement: true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'PRIMARY KEY AUTOINCREMENT',
+    ),
+  );
+  static const VerificationMeta _titleMeta = const VerificationMeta('title');
+  @override
+  late final GeneratedColumn<String> title = GeneratedColumn<String>(
+    'title',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _typeMeta = const VerificationMeta('type');
+  @override
+  late final GeneratedColumn<String> type = GeneratedColumn<String>(
+    'type',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _statusMeta = const VerificationMeta('status');
+  @override
+  late final GeneratedColumn<String> status = GeneratedColumn<String>(
+    'status',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _payloadJsonMeta = const VerificationMeta(
+    'payloadJson',
+  );
+  @override
+  late final GeneratedColumn<String> payloadJson = GeneratedColumn<String>(
+    'payload_json',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _startsAtMeta = const VerificationMeta(
+    'startsAt',
+  );
+  @override
+  late final GeneratedColumn<int> startsAt = GeneratedColumn<int>(
+    'starts_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _nextRunAtMeta = const VerificationMeta(
+    'nextRunAt',
+  );
+  @override
+  late final GeneratedColumn<int> nextRunAt = GeneratedColumn<int>(
+    'next_run_at',
+    aliasedName,
+    true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _repeatAfterMeta = const VerificationMeta(
+    'repeatAfter',
+  );
+  @override
+  late final GeneratedColumn<int> repeatAfter = GeneratedColumn<int>(
+    'repeat_after',
+    aliasedName,
+    true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _timezoneMeta = const VerificationMeta(
+    'timezone',
+  );
+  @override
+  late final GeneratedColumn<String> timezone = GeneratedColumn<String>(
+    'timezone',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _lastRunAtMeta = const VerificationMeta(
+    'lastRunAt',
+  );
+  @override
+  late final GeneratedColumn<int> lastRunAt = GeneratedColumn<int>(
+    'last_run_at',
+    aliasedName,
+    true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _totalRunsMeta = const VerificationMeta(
+    'totalRuns',
+  );
+  @override
+  late final GeneratedColumn<int> totalRuns = GeneratedColumn<int>(
+    'total_runs',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(0),
+  );
+  static const VerificationMeta _failuresMeta = const VerificationMeta(
+    'failures',
+  );
+  @override
+  late final GeneratedColumn<int> failures = GeneratedColumn<int>(
+    'failures',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(0),
+  );
+  static const VerificationMeta _retriesPerTurnMeta = const VerificationMeta(
+    'retriesPerTurn',
+  );
+  @override
+  late final GeneratedColumn<int> retriesPerTurn = GeneratedColumn<int>(
+    'retries_per_turn',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(3),
+  );
+  static const VerificationMeta _createdAtMeta = const VerificationMeta(
+    'createdAt',
+  );
+  @override
+  late final GeneratedColumn<int> createdAt = GeneratedColumn<int>(
+    'created_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _updatedAtMeta = const VerificationMeta(
+    'updatedAt',
+  );
+  @override
+  late final GeneratedColumn<int> updatedAt = GeneratedColumn<int>(
+    'updated_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: true,
+  );
+  @override
+  List<GeneratedColumn> get $columns => [
+    id,
+    title,
+    type,
+    status,
+    payloadJson,
+    startsAt,
+    nextRunAt,
+    repeatAfter,
+    timezone,
+    lastRunAt,
+    totalRuns,
+    failures,
+    retriesPerTurn,
+    createdAt,
+    updatedAt,
+  ];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'scheduler_task';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<SchedulerTaskRow> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('id')) {
+      context.handle(_idMeta, id.isAcceptableOrUnknown(data['id']!, _idMeta));
+    }
+    if (data.containsKey('title')) {
+      context.handle(
+        _titleMeta,
+        title.isAcceptableOrUnknown(data['title']!, _titleMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_titleMeta);
+    }
+    if (data.containsKey('type')) {
+      context.handle(
+        _typeMeta,
+        type.isAcceptableOrUnknown(data['type']!, _typeMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_typeMeta);
+    }
+    if (data.containsKey('status')) {
+      context.handle(
+        _statusMeta,
+        status.isAcceptableOrUnknown(data['status']!, _statusMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_statusMeta);
+    }
+    if (data.containsKey('payload_json')) {
+      context.handle(
+        _payloadJsonMeta,
+        payloadJson.isAcceptableOrUnknown(
+          data['payload_json']!,
+          _payloadJsonMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_payloadJsonMeta);
+    }
+    if (data.containsKey('starts_at')) {
+      context.handle(
+        _startsAtMeta,
+        startsAt.isAcceptableOrUnknown(data['starts_at']!, _startsAtMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_startsAtMeta);
+    }
+    if (data.containsKey('next_run_at')) {
+      context.handle(
+        _nextRunAtMeta,
+        nextRunAt.isAcceptableOrUnknown(data['next_run_at']!, _nextRunAtMeta),
+      );
+    }
+    if (data.containsKey('repeat_after')) {
+      context.handle(
+        _repeatAfterMeta,
+        repeatAfter.isAcceptableOrUnknown(
+          data['repeat_after']!,
+          _repeatAfterMeta,
+        ),
+      );
+    }
+    if (data.containsKey('timezone')) {
+      context.handle(
+        _timezoneMeta,
+        timezone.isAcceptableOrUnknown(data['timezone']!, _timezoneMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_timezoneMeta);
+    }
+    if (data.containsKey('last_run_at')) {
+      context.handle(
+        _lastRunAtMeta,
+        lastRunAt.isAcceptableOrUnknown(data['last_run_at']!, _lastRunAtMeta),
+      );
+    }
+    if (data.containsKey('total_runs')) {
+      context.handle(
+        _totalRunsMeta,
+        totalRuns.isAcceptableOrUnknown(data['total_runs']!, _totalRunsMeta),
+      );
+    }
+    if (data.containsKey('failures')) {
+      context.handle(
+        _failuresMeta,
+        failures.isAcceptableOrUnknown(data['failures']!, _failuresMeta),
+      );
+    }
+    if (data.containsKey('retries_per_turn')) {
+      context.handle(
+        _retriesPerTurnMeta,
+        retriesPerTurn.isAcceptableOrUnknown(
+          data['retries_per_turn']!,
+          _retriesPerTurnMeta,
+        ),
+      );
+    }
+    if (data.containsKey('created_at')) {
+      context.handle(
+        _createdAtMeta,
+        createdAt.isAcceptableOrUnknown(data['created_at']!, _createdAtMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_createdAtMeta);
+    }
+    if (data.containsKey('updated_at')) {
+      context.handle(
+        _updatedAtMeta,
+        updatedAt.isAcceptableOrUnknown(data['updated_at']!, _updatedAtMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_updatedAtMeta);
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {id};
+  @override
+  SchedulerTaskRow map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return SchedulerTaskRow(
+      id: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}id'],
+      )!,
+      title: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}title'],
+      )!,
+      type: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}type'],
+      )!,
+      status: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}status'],
+      )!,
+      payloadJson: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}payload_json'],
+      )!,
+      startsAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}starts_at'],
+      )!,
+      nextRunAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}next_run_at'],
+      ),
+      repeatAfter: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}repeat_after'],
+      ),
+      timezone: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}timezone'],
+      )!,
+      lastRunAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}last_run_at'],
+      ),
+      totalRuns: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}total_runs'],
+      )!,
+      failures: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}failures'],
+      )!,
+      retriesPerTurn: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}retries_per_turn'],
+      )!,
+      createdAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}created_at'],
+      )!,
+      updatedAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}updated_at'],
+      )!,
+    );
+  }
+
+  @override
+  $SchedulerTasksTable createAlias(String alias) {
+    return $SchedulerTasksTable(attachedDatabase, alias);
+  }
+}
+
+class SchedulerTaskRow extends DataClass
+    implements Insertable<SchedulerTaskRow> {
+  final int id;
+  final String title;
+  final String type;
+  final String status;
+  final String payloadJson;
+  final int startsAt;
+  final int? nextRunAt;
+  final int? repeatAfter;
+  final String timezone;
+  final int? lastRunAt;
+  final int totalRuns;
+  final int failures;
+  final int retriesPerTurn;
+  final int createdAt;
+  final int updatedAt;
+  const SchedulerTaskRow({
+    required this.id,
+    required this.title,
+    required this.type,
+    required this.status,
+    required this.payloadJson,
+    required this.startsAt,
+    this.nextRunAt,
+    this.repeatAfter,
+    required this.timezone,
+    this.lastRunAt,
+    required this.totalRuns,
+    required this.failures,
+    required this.retriesPerTurn,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['id'] = Variable<int>(id);
+    map['title'] = Variable<String>(title);
+    map['type'] = Variable<String>(type);
+    map['status'] = Variable<String>(status);
+    map['payload_json'] = Variable<String>(payloadJson);
+    map['starts_at'] = Variable<int>(startsAt);
+    if (!nullToAbsent || nextRunAt != null) {
+      map['next_run_at'] = Variable<int>(nextRunAt);
+    }
+    if (!nullToAbsent || repeatAfter != null) {
+      map['repeat_after'] = Variable<int>(repeatAfter);
+    }
+    map['timezone'] = Variable<String>(timezone);
+    if (!nullToAbsent || lastRunAt != null) {
+      map['last_run_at'] = Variable<int>(lastRunAt);
+    }
+    map['total_runs'] = Variable<int>(totalRuns);
+    map['failures'] = Variable<int>(failures);
+    map['retries_per_turn'] = Variable<int>(retriesPerTurn);
+    map['created_at'] = Variable<int>(createdAt);
+    map['updated_at'] = Variable<int>(updatedAt);
+    return map;
+  }
+
+  SchedulerTasksCompanion toCompanion(bool nullToAbsent) {
+    return SchedulerTasksCompanion(
+      id: Value(id),
+      title: Value(title),
+      type: Value(type),
+      status: Value(status),
+      payloadJson: Value(payloadJson),
+      startsAt: Value(startsAt),
+      nextRunAt: nextRunAt == null && nullToAbsent
+          ? const Value.absent()
+          : Value(nextRunAt),
+      repeatAfter: repeatAfter == null && nullToAbsent
+          ? const Value.absent()
+          : Value(repeatAfter),
+      timezone: Value(timezone),
+      lastRunAt: lastRunAt == null && nullToAbsent
+          ? const Value.absent()
+          : Value(lastRunAt),
+      totalRuns: Value(totalRuns),
+      failures: Value(failures),
+      retriesPerTurn: Value(retriesPerTurn),
+      createdAt: Value(createdAt),
+      updatedAt: Value(updatedAt),
+    );
+  }
+
+  factory SchedulerTaskRow.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return SchedulerTaskRow(
+      id: serializer.fromJson<int>(json['id']),
+      title: serializer.fromJson<String>(json['title']),
+      type: serializer.fromJson<String>(json['type']),
+      status: serializer.fromJson<String>(json['status']),
+      payloadJson: serializer.fromJson<String>(json['payloadJson']),
+      startsAt: serializer.fromJson<int>(json['startsAt']),
+      nextRunAt: serializer.fromJson<int?>(json['nextRunAt']),
+      repeatAfter: serializer.fromJson<int?>(json['repeatAfter']),
+      timezone: serializer.fromJson<String>(json['timezone']),
+      lastRunAt: serializer.fromJson<int?>(json['lastRunAt']),
+      totalRuns: serializer.fromJson<int>(json['totalRuns']),
+      failures: serializer.fromJson<int>(json['failures']),
+      retriesPerTurn: serializer.fromJson<int>(json['retriesPerTurn']),
+      createdAt: serializer.fromJson<int>(json['createdAt']),
+      updatedAt: serializer.fromJson<int>(json['updatedAt']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'id': serializer.toJson<int>(id),
+      'title': serializer.toJson<String>(title),
+      'type': serializer.toJson<String>(type),
+      'status': serializer.toJson<String>(status),
+      'payloadJson': serializer.toJson<String>(payloadJson),
+      'startsAt': serializer.toJson<int>(startsAt),
+      'nextRunAt': serializer.toJson<int?>(nextRunAt),
+      'repeatAfter': serializer.toJson<int?>(repeatAfter),
+      'timezone': serializer.toJson<String>(timezone),
+      'lastRunAt': serializer.toJson<int?>(lastRunAt),
+      'totalRuns': serializer.toJson<int>(totalRuns),
+      'failures': serializer.toJson<int>(failures),
+      'retriesPerTurn': serializer.toJson<int>(retriesPerTurn),
+      'createdAt': serializer.toJson<int>(createdAt),
+      'updatedAt': serializer.toJson<int>(updatedAt),
+    };
+  }
+
+  SchedulerTaskRow copyWith({
+    int? id,
+    String? title,
+    String? type,
+    String? status,
+    String? payloadJson,
+    int? startsAt,
+    Value<int?> nextRunAt = const Value.absent(),
+    Value<int?> repeatAfter = const Value.absent(),
+    String? timezone,
+    Value<int?> lastRunAt = const Value.absent(),
+    int? totalRuns,
+    int? failures,
+    int? retriesPerTurn,
+    int? createdAt,
+    int? updatedAt,
+  }) => SchedulerTaskRow(
+    id: id ?? this.id,
+    title: title ?? this.title,
+    type: type ?? this.type,
+    status: status ?? this.status,
+    payloadJson: payloadJson ?? this.payloadJson,
+    startsAt: startsAt ?? this.startsAt,
+    nextRunAt: nextRunAt.present ? nextRunAt.value : this.nextRunAt,
+    repeatAfter: repeatAfter.present ? repeatAfter.value : this.repeatAfter,
+    timezone: timezone ?? this.timezone,
+    lastRunAt: lastRunAt.present ? lastRunAt.value : this.lastRunAt,
+    totalRuns: totalRuns ?? this.totalRuns,
+    failures: failures ?? this.failures,
+    retriesPerTurn: retriesPerTurn ?? this.retriesPerTurn,
+    createdAt: createdAt ?? this.createdAt,
+    updatedAt: updatedAt ?? this.updatedAt,
+  );
+  SchedulerTaskRow copyWithCompanion(SchedulerTasksCompanion data) {
+    return SchedulerTaskRow(
+      id: data.id.present ? data.id.value : this.id,
+      title: data.title.present ? data.title.value : this.title,
+      type: data.type.present ? data.type.value : this.type,
+      status: data.status.present ? data.status.value : this.status,
+      payloadJson: data.payloadJson.present
+          ? data.payloadJson.value
+          : this.payloadJson,
+      startsAt: data.startsAt.present ? data.startsAt.value : this.startsAt,
+      nextRunAt: data.nextRunAt.present ? data.nextRunAt.value : this.nextRunAt,
+      repeatAfter: data.repeatAfter.present
+          ? data.repeatAfter.value
+          : this.repeatAfter,
+      timezone: data.timezone.present ? data.timezone.value : this.timezone,
+      lastRunAt: data.lastRunAt.present ? data.lastRunAt.value : this.lastRunAt,
+      totalRuns: data.totalRuns.present ? data.totalRuns.value : this.totalRuns,
+      failures: data.failures.present ? data.failures.value : this.failures,
+      retriesPerTurn: data.retriesPerTurn.present
+          ? data.retriesPerTurn.value
+          : this.retriesPerTurn,
+      createdAt: data.createdAt.present ? data.createdAt.value : this.createdAt,
+      updatedAt: data.updatedAt.present ? data.updatedAt.value : this.updatedAt,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('SchedulerTaskRow(')
+          ..write('id: $id, ')
+          ..write('title: $title, ')
+          ..write('type: $type, ')
+          ..write('status: $status, ')
+          ..write('payloadJson: $payloadJson, ')
+          ..write('startsAt: $startsAt, ')
+          ..write('nextRunAt: $nextRunAt, ')
+          ..write('repeatAfter: $repeatAfter, ')
+          ..write('timezone: $timezone, ')
+          ..write('lastRunAt: $lastRunAt, ')
+          ..write('totalRuns: $totalRuns, ')
+          ..write('failures: $failures, ')
+          ..write('retriesPerTurn: $retriesPerTurn, ')
+          ..write('createdAt: $createdAt, ')
+          ..write('updatedAt: $updatedAt')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    id,
+    title,
+    type,
+    status,
+    payloadJson,
+    startsAt,
+    nextRunAt,
+    repeatAfter,
+    timezone,
+    lastRunAt,
+    totalRuns,
+    failures,
+    retriesPerTurn,
+    createdAt,
+    updatedAt,
+  );
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is SchedulerTaskRow &&
+          other.id == this.id &&
+          other.title == this.title &&
+          other.type == this.type &&
+          other.status == this.status &&
+          other.payloadJson == this.payloadJson &&
+          other.startsAt == this.startsAt &&
+          other.nextRunAt == this.nextRunAt &&
+          other.repeatAfter == this.repeatAfter &&
+          other.timezone == this.timezone &&
+          other.lastRunAt == this.lastRunAt &&
+          other.totalRuns == this.totalRuns &&
+          other.failures == this.failures &&
+          other.retriesPerTurn == this.retriesPerTurn &&
+          other.createdAt == this.createdAt &&
+          other.updatedAt == this.updatedAt);
+}
+
+class SchedulerTasksCompanion extends UpdateCompanion<SchedulerTaskRow> {
+  final Value<int> id;
+  final Value<String> title;
+  final Value<String> type;
+  final Value<String> status;
+  final Value<String> payloadJson;
+  final Value<int> startsAt;
+  final Value<int?> nextRunAt;
+  final Value<int?> repeatAfter;
+  final Value<String> timezone;
+  final Value<int?> lastRunAt;
+  final Value<int> totalRuns;
+  final Value<int> failures;
+  final Value<int> retriesPerTurn;
+  final Value<int> createdAt;
+  final Value<int> updatedAt;
+  const SchedulerTasksCompanion({
+    this.id = const Value.absent(),
+    this.title = const Value.absent(),
+    this.type = const Value.absent(),
+    this.status = const Value.absent(),
+    this.payloadJson = const Value.absent(),
+    this.startsAt = const Value.absent(),
+    this.nextRunAt = const Value.absent(),
+    this.repeatAfter = const Value.absent(),
+    this.timezone = const Value.absent(),
+    this.lastRunAt = const Value.absent(),
+    this.totalRuns = const Value.absent(),
+    this.failures = const Value.absent(),
+    this.retriesPerTurn = const Value.absent(),
+    this.createdAt = const Value.absent(),
+    this.updatedAt = const Value.absent(),
+  });
+  SchedulerTasksCompanion.insert({
+    this.id = const Value.absent(),
+    required String title,
+    required String type,
+    required String status,
+    required String payloadJson,
+    required int startsAt,
+    this.nextRunAt = const Value.absent(),
+    this.repeatAfter = const Value.absent(),
+    required String timezone,
+    this.lastRunAt = const Value.absent(),
+    this.totalRuns = const Value.absent(),
+    this.failures = const Value.absent(),
+    this.retriesPerTurn = const Value.absent(),
+    required int createdAt,
+    required int updatedAt,
+  }) : title = Value(title),
+       type = Value(type),
+       status = Value(status),
+       payloadJson = Value(payloadJson),
+       startsAt = Value(startsAt),
+       timezone = Value(timezone),
+       createdAt = Value(createdAt),
+       updatedAt = Value(updatedAt);
+  static Insertable<SchedulerTaskRow> custom({
+    Expression<int>? id,
+    Expression<String>? title,
+    Expression<String>? type,
+    Expression<String>? status,
+    Expression<String>? payloadJson,
+    Expression<int>? startsAt,
+    Expression<int>? nextRunAt,
+    Expression<int>? repeatAfter,
+    Expression<String>? timezone,
+    Expression<int>? lastRunAt,
+    Expression<int>? totalRuns,
+    Expression<int>? failures,
+    Expression<int>? retriesPerTurn,
+    Expression<int>? createdAt,
+    Expression<int>? updatedAt,
+  }) {
+    return RawValuesInsertable({
+      if (id != null) 'id': id,
+      if (title != null) 'title': title,
+      if (type != null) 'type': type,
+      if (status != null) 'status': status,
+      if (payloadJson != null) 'payload_json': payloadJson,
+      if (startsAt != null) 'starts_at': startsAt,
+      if (nextRunAt != null) 'next_run_at': nextRunAt,
+      if (repeatAfter != null) 'repeat_after': repeatAfter,
+      if (timezone != null) 'timezone': timezone,
+      if (lastRunAt != null) 'last_run_at': lastRunAt,
+      if (totalRuns != null) 'total_runs': totalRuns,
+      if (failures != null) 'failures': failures,
+      if (retriesPerTurn != null) 'retries_per_turn': retriesPerTurn,
+      if (createdAt != null) 'created_at': createdAt,
+      if (updatedAt != null) 'updated_at': updatedAt,
+    });
+  }
+
+  SchedulerTasksCompanion copyWith({
+    Value<int>? id,
+    Value<String>? title,
+    Value<String>? type,
+    Value<String>? status,
+    Value<String>? payloadJson,
+    Value<int>? startsAt,
+    Value<int?>? nextRunAt,
+    Value<int?>? repeatAfter,
+    Value<String>? timezone,
+    Value<int?>? lastRunAt,
+    Value<int>? totalRuns,
+    Value<int>? failures,
+    Value<int>? retriesPerTurn,
+    Value<int>? createdAt,
+    Value<int>? updatedAt,
+  }) {
+    return SchedulerTasksCompanion(
+      id: id ?? this.id,
+      title: title ?? this.title,
+      type: type ?? this.type,
+      status: status ?? this.status,
+      payloadJson: payloadJson ?? this.payloadJson,
+      startsAt: startsAt ?? this.startsAt,
+      nextRunAt: nextRunAt ?? this.nextRunAt,
+      repeatAfter: repeatAfter ?? this.repeatAfter,
+      timezone: timezone ?? this.timezone,
+      lastRunAt: lastRunAt ?? this.lastRunAt,
+      totalRuns: totalRuns ?? this.totalRuns,
+      failures: failures ?? this.failures,
+      retriesPerTurn: retriesPerTurn ?? this.retriesPerTurn,
+      createdAt: createdAt ?? this.createdAt,
+      updatedAt: updatedAt ?? this.updatedAt,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (id.present) {
+      map['id'] = Variable<int>(id.value);
+    }
+    if (title.present) {
+      map['title'] = Variable<String>(title.value);
+    }
+    if (type.present) {
+      map['type'] = Variable<String>(type.value);
+    }
+    if (status.present) {
+      map['status'] = Variable<String>(status.value);
+    }
+    if (payloadJson.present) {
+      map['payload_json'] = Variable<String>(payloadJson.value);
+    }
+    if (startsAt.present) {
+      map['starts_at'] = Variable<int>(startsAt.value);
+    }
+    if (nextRunAt.present) {
+      map['next_run_at'] = Variable<int>(nextRunAt.value);
+    }
+    if (repeatAfter.present) {
+      map['repeat_after'] = Variable<int>(repeatAfter.value);
+    }
+    if (timezone.present) {
+      map['timezone'] = Variable<String>(timezone.value);
+    }
+    if (lastRunAt.present) {
+      map['last_run_at'] = Variable<int>(lastRunAt.value);
+    }
+    if (totalRuns.present) {
+      map['total_runs'] = Variable<int>(totalRuns.value);
+    }
+    if (failures.present) {
+      map['failures'] = Variable<int>(failures.value);
+    }
+    if (retriesPerTurn.present) {
+      map['retries_per_turn'] = Variable<int>(retriesPerTurn.value);
+    }
+    if (createdAt.present) {
+      map['created_at'] = Variable<int>(createdAt.value);
+    }
+    if (updatedAt.present) {
+      map['updated_at'] = Variable<int>(updatedAt.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('SchedulerTasksCompanion(')
+          ..write('id: $id, ')
+          ..write('title: $title, ')
+          ..write('type: $type, ')
+          ..write('status: $status, ')
+          ..write('payloadJson: $payloadJson, ')
+          ..write('startsAt: $startsAt, ')
+          ..write('nextRunAt: $nextRunAt, ')
+          ..write('repeatAfter: $repeatAfter, ')
+          ..write('timezone: $timezone, ')
+          ..write('lastRunAt: $lastRunAt, ')
+          ..write('totalRuns: $totalRuns, ')
+          ..write('failures: $failures, ')
+          ..write('retriesPerTurn: $retriesPerTurn, ')
+          ..write('createdAt: $createdAt, ')
+          ..write('updatedAt: $updatedAt')
+          ..write(')'))
+        .toString();
+  }
+}
+
+class $SchedulerTaskLogsTable extends SchedulerTaskLogs
+    with TableInfo<$SchedulerTaskLogsTable, SchedulerTaskLogRow> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $SchedulerTaskLogsTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _idMeta = const VerificationMeta('id');
+  @override
+  late final GeneratedColumn<int> id = GeneratedColumn<int>(
+    'id',
+    aliasedName,
+    false,
+    hasAutoIncrement: true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'PRIMARY KEY AUTOINCREMENT',
+    ),
+  );
+  static const VerificationMeta _schedulerTaskIdMeta = const VerificationMeta(
+    'schedulerTaskId',
+  );
+  @override
+  late final GeneratedColumn<int> schedulerTaskId = GeneratedColumn<int>(
+    'scheduler_task_id',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: true,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'REFERENCES scheduler_task (id) ON DELETE CASCADE',
+    ),
+  );
+  static const VerificationMeta _scheduledForMeta = const VerificationMeta(
+    'scheduledFor',
+  );
+  @override
+  late final GeneratedColumn<int> scheduledFor = GeneratedColumn<int>(
+    'scheduled_for',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _startedAtMeta = const VerificationMeta(
+    'startedAt',
+  );
+  @override
+  late final GeneratedColumn<int> startedAt = GeneratedColumn<int>(
+    'started_at',
+    aliasedName,
+    true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _finishedAtMeta = const VerificationMeta(
+    'finishedAt',
+  );
+  @override
+  late final GeneratedColumn<int> finishedAt = GeneratedColumn<int>(
+    'finished_at',
+    aliasedName,
+    true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _statusMeta = const VerificationMeta('status');
+  @override
+  late final GeneratedColumn<String> status = GeneratedColumn<String>(
+    'status',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _noAttemptsMeta = const VerificationMeta(
+    'noAttempts',
+  );
+  @override
+  late final GeneratedColumn<int> noAttempts = GeneratedColumn<int>(
+    'no_attempts',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(0),
+  );
+  static const VerificationMeta _errorMessageMeta = const VerificationMeta(
+    'errorMessage',
+  );
+  @override
+  late final GeneratedColumn<String> errorMessage = GeneratedColumn<String>(
+    'error_message',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _outputFilePathMeta = const VerificationMeta(
+    'outputFilePath',
+  );
+  @override
+  late final GeneratedColumn<String> outputFilePath = GeneratedColumn<String>(
+    'output_file_path',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _summaryMeta = const VerificationMeta(
+    'summary',
+  );
+  @override
+  late final GeneratedColumn<String> summary = GeneratedColumn<String>(
+    'summary',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _notificationSentMeta = const VerificationMeta(
+    'notificationSent',
+  );
+  @override
+  late final GeneratedColumn<int> notificationSent = GeneratedColumn<int>(
+    'notification_sent',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(0),
+  );
+  static const VerificationMeta _notificationSeenMeta = const VerificationMeta(
+    'notificationSeen',
+  );
+  @override
+  late final GeneratedColumn<int> notificationSeen = GeneratedColumn<int>(
+    'notification_seen',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(0),
+  );
+  static const VerificationMeta _createdAtMeta = const VerificationMeta(
+    'createdAt',
+  );
+  @override
+  late final GeneratedColumn<int> createdAt = GeneratedColumn<int>(
+    'created_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _updatedAtMeta = const VerificationMeta(
+    'updatedAt',
+  );
+  @override
+  late final GeneratedColumn<int> updatedAt = GeneratedColumn<int>(
+    'updated_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: true,
+  );
+  @override
+  List<GeneratedColumn> get $columns => [
+    id,
+    schedulerTaskId,
+    scheduledFor,
+    startedAt,
+    finishedAt,
+    status,
+    noAttempts,
+    errorMessage,
+    outputFilePath,
+    summary,
+    notificationSent,
+    notificationSeen,
+    createdAt,
+    updatedAt,
+  ];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'scheduler_task_log';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<SchedulerTaskLogRow> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('id')) {
+      context.handle(_idMeta, id.isAcceptableOrUnknown(data['id']!, _idMeta));
+    }
+    if (data.containsKey('scheduler_task_id')) {
+      context.handle(
+        _schedulerTaskIdMeta,
+        schedulerTaskId.isAcceptableOrUnknown(
+          data['scheduler_task_id']!,
+          _schedulerTaskIdMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_schedulerTaskIdMeta);
+    }
+    if (data.containsKey('scheduled_for')) {
+      context.handle(
+        _scheduledForMeta,
+        scheduledFor.isAcceptableOrUnknown(
+          data['scheduled_for']!,
+          _scheduledForMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_scheduledForMeta);
+    }
+    if (data.containsKey('started_at')) {
+      context.handle(
+        _startedAtMeta,
+        startedAt.isAcceptableOrUnknown(data['started_at']!, _startedAtMeta),
+      );
+    }
+    if (data.containsKey('finished_at')) {
+      context.handle(
+        _finishedAtMeta,
+        finishedAt.isAcceptableOrUnknown(data['finished_at']!, _finishedAtMeta),
+      );
+    }
+    if (data.containsKey('status')) {
+      context.handle(
+        _statusMeta,
+        status.isAcceptableOrUnknown(data['status']!, _statusMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_statusMeta);
+    }
+    if (data.containsKey('no_attempts')) {
+      context.handle(
+        _noAttemptsMeta,
+        noAttempts.isAcceptableOrUnknown(data['no_attempts']!, _noAttemptsMeta),
+      );
+    }
+    if (data.containsKey('error_message')) {
+      context.handle(
+        _errorMessageMeta,
+        errorMessage.isAcceptableOrUnknown(
+          data['error_message']!,
+          _errorMessageMeta,
+        ),
+      );
+    }
+    if (data.containsKey('output_file_path')) {
+      context.handle(
+        _outputFilePathMeta,
+        outputFilePath.isAcceptableOrUnknown(
+          data['output_file_path']!,
+          _outputFilePathMeta,
+        ),
+      );
+    }
+    if (data.containsKey('summary')) {
+      context.handle(
+        _summaryMeta,
+        summary.isAcceptableOrUnknown(data['summary']!, _summaryMeta),
+      );
+    }
+    if (data.containsKey('notification_sent')) {
+      context.handle(
+        _notificationSentMeta,
+        notificationSent.isAcceptableOrUnknown(
+          data['notification_sent']!,
+          _notificationSentMeta,
+        ),
+      );
+    }
+    if (data.containsKey('notification_seen')) {
+      context.handle(
+        _notificationSeenMeta,
+        notificationSeen.isAcceptableOrUnknown(
+          data['notification_seen']!,
+          _notificationSeenMeta,
+        ),
+      );
+    }
+    if (data.containsKey('created_at')) {
+      context.handle(
+        _createdAtMeta,
+        createdAt.isAcceptableOrUnknown(data['created_at']!, _createdAtMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_createdAtMeta);
+    }
+    if (data.containsKey('updated_at')) {
+      context.handle(
+        _updatedAtMeta,
+        updatedAt.isAcceptableOrUnknown(data['updated_at']!, _updatedAtMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_updatedAtMeta);
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {id};
+  @override
+  SchedulerTaskLogRow map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return SchedulerTaskLogRow(
+      id: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}id'],
+      )!,
+      schedulerTaskId: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}scheduler_task_id'],
+      )!,
+      scheduledFor: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}scheduled_for'],
+      )!,
+      startedAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}started_at'],
+      ),
+      finishedAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}finished_at'],
+      ),
+      status: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}status'],
+      )!,
+      noAttempts: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}no_attempts'],
+      )!,
+      errorMessage: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}error_message'],
+      ),
+      outputFilePath: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}output_file_path'],
+      ),
+      summary: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}summary'],
+      ),
+      notificationSent: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}notification_sent'],
+      )!,
+      notificationSeen: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}notification_seen'],
+      )!,
+      createdAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}created_at'],
+      )!,
+      updatedAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}updated_at'],
+      )!,
+    );
+  }
+
+  @override
+  $SchedulerTaskLogsTable createAlias(String alias) {
+    return $SchedulerTaskLogsTable(attachedDatabase, alias);
+  }
+}
+
+class SchedulerTaskLogRow extends DataClass
+    implements Insertable<SchedulerTaskLogRow> {
+  final int id;
+  final int schedulerTaskId;
+  final int scheduledFor;
+  final int? startedAt;
+  final int? finishedAt;
+  final String status;
+  final int noAttempts;
+  final String? errorMessage;
+  final String? outputFilePath;
+  final String? summary;
+  final int notificationSent;
+  final int notificationSeen;
+  final int createdAt;
+  final int updatedAt;
+  const SchedulerTaskLogRow({
+    required this.id,
+    required this.schedulerTaskId,
+    required this.scheduledFor,
+    this.startedAt,
+    this.finishedAt,
+    required this.status,
+    required this.noAttempts,
+    this.errorMessage,
+    this.outputFilePath,
+    this.summary,
+    required this.notificationSent,
+    required this.notificationSeen,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['id'] = Variable<int>(id);
+    map['scheduler_task_id'] = Variable<int>(schedulerTaskId);
+    map['scheduled_for'] = Variable<int>(scheduledFor);
+    if (!nullToAbsent || startedAt != null) {
+      map['started_at'] = Variable<int>(startedAt);
+    }
+    if (!nullToAbsent || finishedAt != null) {
+      map['finished_at'] = Variable<int>(finishedAt);
+    }
+    map['status'] = Variable<String>(status);
+    map['no_attempts'] = Variable<int>(noAttempts);
+    if (!nullToAbsent || errorMessage != null) {
+      map['error_message'] = Variable<String>(errorMessage);
+    }
+    if (!nullToAbsent || outputFilePath != null) {
+      map['output_file_path'] = Variable<String>(outputFilePath);
+    }
+    if (!nullToAbsent || summary != null) {
+      map['summary'] = Variable<String>(summary);
+    }
+    map['notification_sent'] = Variable<int>(notificationSent);
+    map['notification_seen'] = Variable<int>(notificationSeen);
+    map['created_at'] = Variable<int>(createdAt);
+    map['updated_at'] = Variable<int>(updatedAt);
+    return map;
+  }
+
+  SchedulerTaskLogsCompanion toCompanion(bool nullToAbsent) {
+    return SchedulerTaskLogsCompanion(
+      id: Value(id),
+      schedulerTaskId: Value(schedulerTaskId),
+      scheduledFor: Value(scheduledFor),
+      startedAt: startedAt == null && nullToAbsent
+          ? const Value.absent()
+          : Value(startedAt),
+      finishedAt: finishedAt == null && nullToAbsent
+          ? const Value.absent()
+          : Value(finishedAt),
+      status: Value(status),
+      noAttempts: Value(noAttempts),
+      errorMessage: errorMessage == null && nullToAbsent
+          ? const Value.absent()
+          : Value(errorMessage),
+      outputFilePath: outputFilePath == null && nullToAbsent
+          ? const Value.absent()
+          : Value(outputFilePath),
+      summary: summary == null && nullToAbsent
+          ? const Value.absent()
+          : Value(summary),
+      notificationSent: Value(notificationSent),
+      notificationSeen: Value(notificationSeen),
+      createdAt: Value(createdAt),
+      updatedAt: Value(updatedAt),
+    );
+  }
+
+  factory SchedulerTaskLogRow.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return SchedulerTaskLogRow(
+      id: serializer.fromJson<int>(json['id']),
+      schedulerTaskId: serializer.fromJson<int>(json['schedulerTaskId']),
+      scheduledFor: serializer.fromJson<int>(json['scheduledFor']),
+      startedAt: serializer.fromJson<int?>(json['startedAt']),
+      finishedAt: serializer.fromJson<int?>(json['finishedAt']),
+      status: serializer.fromJson<String>(json['status']),
+      noAttempts: serializer.fromJson<int>(json['noAttempts']),
+      errorMessage: serializer.fromJson<String?>(json['errorMessage']),
+      outputFilePath: serializer.fromJson<String?>(json['outputFilePath']),
+      summary: serializer.fromJson<String?>(json['summary']),
+      notificationSent: serializer.fromJson<int>(json['notificationSent']),
+      notificationSeen: serializer.fromJson<int>(json['notificationSeen']),
+      createdAt: serializer.fromJson<int>(json['createdAt']),
+      updatedAt: serializer.fromJson<int>(json['updatedAt']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'id': serializer.toJson<int>(id),
+      'schedulerTaskId': serializer.toJson<int>(schedulerTaskId),
+      'scheduledFor': serializer.toJson<int>(scheduledFor),
+      'startedAt': serializer.toJson<int?>(startedAt),
+      'finishedAt': serializer.toJson<int?>(finishedAt),
+      'status': serializer.toJson<String>(status),
+      'noAttempts': serializer.toJson<int>(noAttempts),
+      'errorMessage': serializer.toJson<String?>(errorMessage),
+      'outputFilePath': serializer.toJson<String?>(outputFilePath),
+      'summary': serializer.toJson<String?>(summary),
+      'notificationSent': serializer.toJson<int>(notificationSent),
+      'notificationSeen': serializer.toJson<int>(notificationSeen),
+      'createdAt': serializer.toJson<int>(createdAt),
+      'updatedAt': serializer.toJson<int>(updatedAt),
+    };
+  }
+
+  SchedulerTaskLogRow copyWith({
+    int? id,
+    int? schedulerTaskId,
+    int? scheduledFor,
+    Value<int?> startedAt = const Value.absent(),
+    Value<int?> finishedAt = const Value.absent(),
+    String? status,
+    int? noAttempts,
+    Value<String?> errorMessage = const Value.absent(),
+    Value<String?> outputFilePath = const Value.absent(),
+    Value<String?> summary = const Value.absent(),
+    int? notificationSent,
+    int? notificationSeen,
+    int? createdAt,
+    int? updatedAt,
+  }) => SchedulerTaskLogRow(
+    id: id ?? this.id,
+    schedulerTaskId: schedulerTaskId ?? this.schedulerTaskId,
+    scheduledFor: scheduledFor ?? this.scheduledFor,
+    startedAt: startedAt.present ? startedAt.value : this.startedAt,
+    finishedAt: finishedAt.present ? finishedAt.value : this.finishedAt,
+    status: status ?? this.status,
+    noAttempts: noAttempts ?? this.noAttempts,
+    errorMessage: errorMessage.present ? errorMessage.value : this.errorMessage,
+    outputFilePath: outputFilePath.present
+        ? outputFilePath.value
+        : this.outputFilePath,
+    summary: summary.present ? summary.value : this.summary,
+    notificationSent: notificationSent ?? this.notificationSent,
+    notificationSeen: notificationSeen ?? this.notificationSeen,
+    createdAt: createdAt ?? this.createdAt,
+    updatedAt: updatedAt ?? this.updatedAt,
+  );
+  SchedulerTaskLogRow copyWithCompanion(SchedulerTaskLogsCompanion data) {
+    return SchedulerTaskLogRow(
+      id: data.id.present ? data.id.value : this.id,
+      schedulerTaskId: data.schedulerTaskId.present
+          ? data.schedulerTaskId.value
+          : this.schedulerTaskId,
+      scheduledFor: data.scheduledFor.present
+          ? data.scheduledFor.value
+          : this.scheduledFor,
+      startedAt: data.startedAt.present ? data.startedAt.value : this.startedAt,
+      finishedAt: data.finishedAt.present
+          ? data.finishedAt.value
+          : this.finishedAt,
+      status: data.status.present ? data.status.value : this.status,
+      noAttempts: data.noAttempts.present
+          ? data.noAttempts.value
+          : this.noAttempts,
+      errorMessage: data.errorMessage.present
+          ? data.errorMessage.value
+          : this.errorMessage,
+      outputFilePath: data.outputFilePath.present
+          ? data.outputFilePath.value
+          : this.outputFilePath,
+      summary: data.summary.present ? data.summary.value : this.summary,
+      notificationSent: data.notificationSent.present
+          ? data.notificationSent.value
+          : this.notificationSent,
+      notificationSeen: data.notificationSeen.present
+          ? data.notificationSeen.value
+          : this.notificationSeen,
+      createdAt: data.createdAt.present ? data.createdAt.value : this.createdAt,
+      updatedAt: data.updatedAt.present ? data.updatedAt.value : this.updatedAt,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('SchedulerTaskLogRow(')
+          ..write('id: $id, ')
+          ..write('schedulerTaskId: $schedulerTaskId, ')
+          ..write('scheduledFor: $scheduledFor, ')
+          ..write('startedAt: $startedAt, ')
+          ..write('finishedAt: $finishedAt, ')
+          ..write('status: $status, ')
+          ..write('noAttempts: $noAttempts, ')
+          ..write('errorMessage: $errorMessage, ')
+          ..write('outputFilePath: $outputFilePath, ')
+          ..write('summary: $summary, ')
+          ..write('notificationSent: $notificationSent, ')
+          ..write('notificationSeen: $notificationSeen, ')
+          ..write('createdAt: $createdAt, ')
+          ..write('updatedAt: $updatedAt')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    id,
+    schedulerTaskId,
+    scheduledFor,
+    startedAt,
+    finishedAt,
+    status,
+    noAttempts,
+    errorMessage,
+    outputFilePath,
+    summary,
+    notificationSent,
+    notificationSeen,
+    createdAt,
+    updatedAt,
+  );
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is SchedulerTaskLogRow &&
+          other.id == this.id &&
+          other.schedulerTaskId == this.schedulerTaskId &&
+          other.scheduledFor == this.scheduledFor &&
+          other.startedAt == this.startedAt &&
+          other.finishedAt == this.finishedAt &&
+          other.status == this.status &&
+          other.noAttempts == this.noAttempts &&
+          other.errorMessage == this.errorMessage &&
+          other.outputFilePath == this.outputFilePath &&
+          other.summary == this.summary &&
+          other.notificationSent == this.notificationSent &&
+          other.notificationSeen == this.notificationSeen &&
+          other.createdAt == this.createdAt &&
+          other.updatedAt == this.updatedAt);
+}
+
+class SchedulerTaskLogsCompanion extends UpdateCompanion<SchedulerTaskLogRow> {
+  final Value<int> id;
+  final Value<int> schedulerTaskId;
+  final Value<int> scheduledFor;
+  final Value<int?> startedAt;
+  final Value<int?> finishedAt;
+  final Value<String> status;
+  final Value<int> noAttempts;
+  final Value<String?> errorMessage;
+  final Value<String?> outputFilePath;
+  final Value<String?> summary;
+  final Value<int> notificationSent;
+  final Value<int> notificationSeen;
+  final Value<int> createdAt;
+  final Value<int> updatedAt;
+  const SchedulerTaskLogsCompanion({
+    this.id = const Value.absent(),
+    this.schedulerTaskId = const Value.absent(),
+    this.scheduledFor = const Value.absent(),
+    this.startedAt = const Value.absent(),
+    this.finishedAt = const Value.absent(),
+    this.status = const Value.absent(),
+    this.noAttempts = const Value.absent(),
+    this.errorMessage = const Value.absent(),
+    this.outputFilePath = const Value.absent(),
+    this.summary = const Value.absent(),
+    this.notificationSent = const Value.absent(),
+    this.notificationSeen = const Value.absent(),
+    this.createdAt = const Value.absent(),
+    this.updatedAt = const Value.absent(),
+  });
+  SchedulerTaskLogsCompanion.insert({
+    this.id = const Value.absent(),
+    required int schedulerTaskId,
+    required int scheduledFor,
+    this.startedAt = const Value.absent(),
+    this.finishedAt = const Value.absent(),
+    required String status,
+    this.noAttempts = const Value.absent(),
+    this.errorMessage = const Value.absent(),
+    this.outputFilePath = const Value.absent(),
+    this.summary = const Value.absent(),
+    this.notificationSent = const Value.absent(),
+    this.notificationSeen = const Value.absent(),
+    required int createdAt,
+    required int updatedAt,
+  }) : schedulerTaskId = Value(schedulerTaskId),
+       scheduledFor = Value(scheduledFor),
+       status = Value(status),
+       createdAt = Value(createdAt),
+       updatedAt = Value(updatedAt);
+  static Insertable<SchedulerTaskLogRow> custom({
+    Expression<int>? id,
+    Expression<int>? schedulerTaskId,
+    Expression<int>? scheduledFor,
+    Expression<int>? startedAt,
+    Expression<int>? finishedAt,
+    Expression<String>? status,
+    Expression<int>? noAttempts,
+    Expression<String>? errorMessage,
+    Expression<String>? outputFilePath,
+    Expression<String>? summary,
+    Expression<int>? notificationSent,
+    Expression<int>? notificationSeen,
+    Expression<int>? createdAt,
+    Expression<int>? updatedAt,
+  }) {
+    return RawValuesInsertable({
+      if (id != null) 'id': id,
+      if (schedulerTaskId != null) 'scheduler_task_id': schedulerTaskId,
+      if (scheduledFor != null) 'scheduled_for': scheduledFor,
+      if (startedAt != null) 'started_at': startedAt,
+      if (finishedAt != null) 'finished_at': finishedAt,
+      if (status != null) 'status': status,
+      if (noAttempts != null) 'no_attempts': noAttempts,
+      if (errorMessage != null) 'error_message': errorMessage,
+      if (outputFilePath != null) 'output_file_path': outputFilePath,
+      if (summary != null) 'summary': summary,
+      if (notificationSent != null) 'notification_sent': notificationSent,
+      if (notificationSeen != null) 'notification_seen': notificationSeen,
+      if (createdAt != null) 'created_at': createdAt,
+      if (updatedAt != null) 'updated_at': updatedAt,
+    });
+  }
+
+  SchedulerTaskLogsCompanion copyWith({
+    Value<int>? id,
+    Value<int>? schedulerTaskId,
+    Value<int>? scheduledFor,
+    Value<int?>? startedAt,
+    Value<int?>? finishedAt,
+    Value<String>? status,
+    Value<int>? noAttempts,
+    Value<String?>? errorMessage,
+    Value<String?>? outputFilePath,
+    Value<String?>? summary,
+    Value<int>? notificationSent,
+    Value<int>? notificationSeen,
+    Value<int>? createdAt,
+    Value<int>? updatedAt,
+  }) {
+    return SchedulerTaskLogsCompanion(
+      id: id ?? this.id,
+      schedulerTaskId: schedulerTaskId ?? this.schedulerTaskId,
+      scheduledFor: scheduledFor ?? this.scheduledFor,
+      startedAt: startedAt ?? this.startedAt,
+      finishedAt: finishedAt ?? this.finishedAt,
+      status: status ?? this.status,
+      noAttempts: noAttempts ?? this.noAttempts,
+      errorMessage: errorMessage ?? this.errorMessage,
+      outputFilePath: outputFilePath ?? this.outputFilePath,
+      summary: summary ?? this.summary,
+      notificationSent: notificationSent ?? this.notificationSent,
+      notificationSeen: notificationSeen ?? this.notificationSeen,
+      createdAt: createdAt ?? this.createdAt,
+      updatedAt: updatedAt ?? this.updatedAt,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (id.present) {
+      map['id'] = Variable<int>(id.value);
+    }
+    if (schedulerTaskId.present) {
+      map['scheduler_task_id'] = Variable<int>(schedulerTaskId.value);
+    }
+    if (scheduledFor.present) {
+      map['scheduled_for'] = Variable<int>(scheduledFor.value);
+    }
+    if (startedAt.present) {
+      map['started_at'] = Variable<int>(startedAt.value);
+    }
+    if (finishedAt.present) {
+      map['finished_at'] = Variable<int>(finishedAt.value);
+    }
+    if (status.present) {
+      map['status'] = Variable<String>(status.value);
+    }
+    if (noAttempts.present) {
+      map['no_attempts'] = Variable<int>(noAttempts.value);
+    }
+    if (errorMessage.present) {
+      map['error_message'] = Variable<String>(errorMessage.value);
+    }
+    if (outputFilePath.present) {
+      map['output_file_path'] = Variable<String>(outputFilePath.value);
+    }
+    if (summary.present) {
+      map['summary'] = Variable<String>(summary.value);
+    }
+    if (notificationSent.present) {
+      map['notification_sent'] = Variable<int>(notificationSent.value);
+    }
+    if (notificationSeen.present) {
+      map['notification_seen'] = Variable<int>(notificationSeen.value);
+    }
+    if (createdAt.present) {
+      map['created_at'] = Variable<int>(createdAt.value);
+    }
+    if (updatedAt.present) {
+      map['updated_at'] = Variable<int>(updatedAt.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('SchedulerTaskLogsCompanion(')
+          ..write('id: $id, ')
+          ..write('schedulerTaskId: $schedulerTaskId, ')
+          ..write('scheduledFor: $scheduledFor, ')
+          ..write('startedAt: $startedAt, ')
+          ..write('finishedAt: $finishedAt, ')
+          ..write('status: $status, ')
+          ..write('noAttempts: $noAttempts, ')
+          ..write('errorMessage: $errorMessage, ')
+          ..write('outputFilePath: $outputFilePath, ')
+          ..write('summary: $summary, ')
+          ..write('notificationSent: $notificationSent, ')
+          ..write('notificationSeen: $notificationSeen, ')
+          ..write('createdAt: $createdAt, ')
+          ..write('updatedAt: $updatedAt')
+          ..write(')'))
+        .toString();
+  }
+}
+
 abstract class _$ErrandDatabase extends GeneratedDatabase {
   _$ErrandDatabase(QueryExecutor e) : super(e);
   $ErrandDatabaseManager get managers => $ErrandDatabaseManager(this);
@@ -2408,6 +4080,9 @@ abstract class _$ErrandDatabase extends GeneratedDatabase {
       $ConversationAttachmentsTable(this);
   late final $AppSettingsTable appSettings = $AppSettingsTable(this);
   late final $MemoriesTable memories = $MemoriesTable(this);
+  late final $SchedulerTasksTable schedulerTasks = $SchedulerTasksTable(this);
+  late final $SchedulerTaskLogsTable schedulerTaskLogs =
+      $SchedulerTaskLogsTable(this);
   @override
   Iterable<TableInfo<Table, Object?>> get allTables =>
       allSchemaEntities.whereType<TableInfo<Table, Object?>>();
@@ -2418,7 +4093,19 @@ abstract class _$ErrandDatabase extends GeneratedDatabase {
     conversationAttachments,
     appSettings,
     memories,
+    schedulerTasks,
+    schedulerTaskLogs,
   ];
+  @override
+  StreamQueryUpdateRules get streamUpdateRules => const StreamQueryUpdateRules([
+    WritePropagation(
+      on: TableUpdateQuery.onTableName(
+        'scheduler_task',
+        limitUpdateKind: UpdateKind.delete,
+      ),
+      result: [TableUpdate('scheduler_task_log', kind: UpdateKind.delete)],
+    ),
+  ]);
 }
 
 typedef $$ConversationsTableCreateCompanionBuilder =
@@ -4116,6 +5803,1025 @@ typedef $$MemoriesTableProcessedTableManager =
       MemoryRow,
       PrefetchHooks Function()
     >;
+typedef $$SchedulerTasksTableCreateCompanionBuilder =
+    SchedulerTasksCompanion Function({
+      Value<int> id,
+      required String title,
+      required String type,
+      required String status,
+      required String payloadJson,
+      required int startsAt,
+      Value<int?> nextRunAt,
+      Value<int?> repeatAfter,
+      required String timezone,
+      Value<int?> lastRunAt,
+      Value<int> totalRuns,
+      Value<int> failures,
+      Value<int> retriesPerTurn,
+      required int createdAt,
+      required int updatedAt,
+    });
+typedef $$SchedulerTasksTableUpdateCompanionBuilder =
+    SchedulerTasksCompanion Function({
+      Value<int> id,
+      Value<String> title,
+      Value<String> type,
+      Value<String> status,
+      Value<String> payloadJson,
+      Value<int> startsAt,
+      Value<int?> nextRunAt,
+      Value<int?> repeatAfter,
+      Value<String> timezone,
+      Value<int?> lastRunAt,
+      Value<int> totalRuns,
+      Value<int> failures,
+      Value<int> retriesPerTurn,
+      Value<int> createdAt,
+      Value<int> updatedAt,
+    });
+
+final class $$SchedulerTasksTableReferences
+    extends
+        BaseReferences<
+          _$ErrandDatabase,
+          $SchedulerTasksTable,
+          SchedulerTaskRow
+        > {
+  $$SchedulerTasksTableReferences(
+    super.$_db,
+    super.$_table,
+    super.$_typedResult,
+  );
+
+  static MultiTypedResultKey<$SchedulerTaskLogsTable, List<SchedulerTaskLogRow>>
+  _schedulerTaskLogsRefsTable(_$ErrandDatabase db) =>
+      MultiTypedResultKey.fromTable(
+        db.schedulerTaskLogs,
+        aliasName: 'scheduler_task__id__scheduler_task_log__scheduler_task_id',
+      );
+
+  $$SchedulerTaskLogsTableProcessedTableManager get schedulerTaskLogsRefs {
+    final manager = $$SchedulerTaskLogsTableTableManager(
+      $_db,
+      $_db.schedulerTaskLogs,
+    ).filter((f) => f.schedulerTaskId.id.sqlEquals($_itemColumn<int>('id')!));
+
+    final cache = $_typedResult.readTableOrNull(
+      _schedulerTaskLogsRefsTable($_db),
+    );
+    return ProcessedTableManager(
+      manager.$state.copyWith(prefetchedData: cache),
+    );
+  }
+}
+
+class $$SchedulerTasksTableFilterComposer
+    extends Composer<_$ErrandDatabase, $SchedulerTasksTable> {
+  $$SchedulerTasksTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<int> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get title => $composableBuilder(
+    column: $table.title,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get type => $composableBuilder(
+    column: $table.type,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get status => $composableBuilder(
+    column: $table.status,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get payloadJson => $composableBuilder(
+    column: $table.payloadJson,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get startsAt => $composableBuilder(
+    column: $table.startsAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get nextRunAt => $composableBuilder(
+    column: $table.nextRunAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get repeatAfter => $composableBuilder(
+    column: $table.repeatAfter,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get timezone => $composableBuilder(
+    column: $table.timezone,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get lastRunAt => $composableBuilder(
+    column: $table.lastRunAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get totalRuns => $composableBuilder(
+    column: $table.totalRuns,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get failures => $composableBuilder(
+    column: $table.failures,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get retriesPerTurn => $composableBuilder(
+    column: $table.retriesPerTurn,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get updatedAt => $composableBuilder(
+    column: $table.updatedAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  Expression<bool> schedulerTaskLogsRefs(
+    Expression<bool> Function($$SchedulerTaskLogsTableFilterComposer f) f,
+  ) {
+    final $$SchedulerTaskLogsTableFilterComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.id,
+      referencedTable: $db.schedulerTaskLogs,
+      getReferencedColumn: (t) => t.schedulerTaskId,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$SchedulerTaskLogsTableFilterComposer(
+            $db: $db,
+            $table: $db.schedulerTaskLogs,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return f(composer);
+  }
+}
+
+class $$SchedulerTasksTableOrderingComposer
+    extends Composer<_$ErrandDatabase, $SchedulerTasksTable> {
+  $$SchedulerTasksTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<int> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get title => $composableBuilder(
+    column: $table.title,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get type => $composableBuilder(
+    column: $table.type,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get status => $composableBuilder(
+    column: $table.status,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get payloadJson => $composableBuilder(
+    column: $table.payloadJson,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get startsAt => $composableBuilder(
+    column: $table.startsAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get nextRunAt => $composableBuilder(
+    column: $table.nextRunAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get repeatAfter => $composableBuilder(
+    column: $table.repeatAfter,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get timezone => $composableBuilder(
+    column: $table.timezone,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get lastRunAt => $composableBuilder(
+    column: $table.lastRunAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get totalRuns => $composableBuilder(
+    column: $table.totalRuns,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get failures => $composableBuilder(
+    column: $table.failures,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get retriesPerTurn => $composableBuilder(
+    column: $table.retriesPerTurn,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get updatedAt => $composableBuilder(
+    column: $table.updatedAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+}
+
+class $$SchedulerTasksTableAnnotationComposer
+    extends Composer<_$ErrandDatabase, $SchedulerTasksTable> {
+  $$SchedulerTasksTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<int> get id =>
+      $composableBuilder(column: $table.id, builder: (column) => column);
+
+  GeneratedColumn<String> get title =>
+      $composableBuilder(column: $table.title, builder: (column) => column);
+
+  GeneratedColumn<String> get type =>
+      $composableBuilder(column: $table.type, builder: (column) => column);
+
+  GeneratedColumn<String> get status =>
+      $composableBuilder(column: $table.status, builder: (column) => column);
+
+  GeneratedColumn<String> get payloadJson => $composableBuilder(
+    column: $table.payloadJson,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get startsAt =>
+      $composableBuilder(column: $table.startsAt, builder: (column) => column);
+
+  GeneratedColumn<int> get nextRunAt =>
+      $composableBuilder(column: $table.nextRunAt, builder: (column) => column);
+
+  GeneratedColumn<int> get repeatAfter => $composableBuilder(
+    column: $table.repeatAfter,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get timezone =>
+      $composableBuilder(column: $table.timezone, builder: (column) => column);
+
+  GeneratedColumn<int> get lastRunAt =>
+      $composableBuilder(column: $table.lastRunAt, builder: (column) => column);
+
+  GeneratedColumn<int> get totalRuns =>
+      $composableBuilder(column: $table.totalRuns, builder: (column) => column);
+
+  GeneratedColumn<int> get failures =>
+      $composableBuilder(column: $table.failures, builder: (column) => column);
+
+  GeneratedColumn<int> get retriesPerTurn => $composableBuilder(
+    column: $table.retriesPerTurn,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get createdAt =>
+      $composableBuilder(column: $table.createdAt, builder: (column) => column);
+
+  GeneratedColumn<int> get updatedAt =>
+      $composableBuilder(column: $table.updatedAt, builder: (column) => column);
+
+  Expression<T> schedulerTaskLogsRefs<T extends Object>(
+    Expression<T> Function($$SchedulerTaskLogsTableAnnotationComposer a) f,
+  ) {
+    final $$SchedulerTaskLogsTableAnnotationComposer composer =
+        $composerBuilder(
+          composer: this,
+          getCurrentColumn: (t) => t.id,
+          referencedTable: $db.schedulerTaskLogs,
+          getReferencedColumn: (t) => t.schedulerTaskId,
+          builder:
+              (
+                joinBuilder, {
+                $addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer,
+              }) => $$SchedulerTaskLogsTableAnnotationComposer(
+                $db: $db,
+                $table: $db.schedulerTaskLogs,
+                $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+                joinBuilder: joinBuilder,
+                $removeJoinBuilderFromRootComposer:
+                    $removeJoinBuilderFromRootComposer,
+              ),
+        );
+    return f(composer);
+  }
+}
+
+class $$SchedulerTasksTableTableManager
+    extends
+        RootTableManager<
+          _$ErrandDatabase,
+          $SchedulerTasksTable,
+          SchedulerTaskRow,
+          $$SchedulerTasksTableFilterComposer,
+          $$SchedulerTasksTableOrderingComposer,
+          $$SchedulerTasksTableAnnotationComposer,
+          $$SchedulerTasksTableCreateCompanionBuilder,
+          $$SchedulerTasksTableUpdateCompanionBuilder,
+          (SchedulerTaskRow, $$SchedulerTasksTableReferences),
+          SchedulerTaskRow,
+          PrefetchHooks Function({bool schedulerTaskLogsRefs})
+        > {
+  $$SchedulerTasksTableTableManager(
+    _$ErrandDatabase db,
+    $SchedulerTasksTable table,
+  ) : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$SchedulerTasksTableFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $$SchedulerTasksTableOrderingComposer($db: db, $table: table),
+          createComputedFieldComposer: () =>
+              $$SchedulerTasksTableAnnotationComposer($db: db, $table: table),
+          updateCompanionCallback:
+              ({
+                Value<int> id = const Value.absent(),
+                Value<String> title = const Value.absent(),
+                Value<String> type = const Value.absent(),
+                Value<String> status = const Value.absent(),
+                Value<String> payloadJson = const Value.absent(),
+                Value<int> startsAt = const Value.absent(),
+                Value<int?> nextRunAt = const Value.absent(),
+                Value<int?> repeatAfter = const Value.absent(),
+                Value<String> timezone = const Value.absent(),
+                Value<int?> lastRunAt = const Value.absent(),
+                Value<int> totalRuns = const Value.absent(),
+                Value<int> failures = const Value.absent(),
+                Value<int> retriesPerTurn = const Value.absent(),
+                Value<int> createdAt = const Value.absent(),
+                Value<int> updatedAt = const Value.absent(),
+              }) => SchedulerTasksCompanion(
+                id: id,
+                title: title,
+                type: type,
+                status: status,
+                payloadJson: payloadJson,
+                startsAt: startsAt,
+                nextRunAt: nextRunAt,
+                repeatAfter: repeatAfter,
+                timezone: timezone,
+                lastRunAt: lastRunAt,
+                totalRuns: totalRuns,
+                failures: failures,
+                retriesPerTurn: retriesPerTurn,
+                createdAt: createdAt,
+                updatedAt: updatedAt,
+              ),
+          createCompanionCallback:
+              ({
+                Value<int> id = const Value.absent(),
+                required String title,
+                required String type,
+                required String status,
+                required String payloadJson,
+                required int startsAt,
+                Value<int?> nextRunAt = const Value.absent(),
+                Value<int?> repeatAfter = const Value.absent(),
+                required String timezone,
+                Value<int?> lastRunAt = const Value.absent(),
+                Value<int> totalRuns = const Value.absent(),
+                Value<int> failures = const Value.absent(),
+                Value<int> retriesPerTurn = const Value.absent(),
+                required int createdAt,
+                required int updatedAt,
+              }) => SchedulerTasksCompanion.insert(
+                id: id,
+                title: title,
+                type: type,
+                status: status,
+                payloadJson: payloadJson,
+                startsAt: startsAt,
+                nextRunAt: nextRunAt,
+                repeatAfter: repeatAfter,
+                timezone: timezone,
+                lastRunAt: lastRunAt,
+                totalRuns: totalRuns,
+                failures: failures,
+                retriesPerTurn: retriesPerTurn,
+                createdAt: createdAt,
+                updatedAt: updatedAt,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map(
+                (e) => (
+                  e.readTable(table),
+                  $$SchedulerTasksTableReferences(db, table, e),
+                ),
+              )
+              .toList(),
+          prefetchHooksCallback: ({schedulerTaskLogsRefs = false}) {
+            return PrefetchHooks(
+              db: db,
+              explicitlyWatchedTables: [
+                if (schedulerTaskLogsRefs) db.schedulerTaskLogs,
+              ],
+              addJoins: null,
+              getPrefetchedDataCallback: (items) async {
+                return [
+                  if (schedulerTaskLogsRefs)
+                    await $_getPrefetchedData<
+                      SchedulerTaskRow,
+                      $SchedulerTasksTable,
+                      SchedulerTaskLogRow
+                    >(
+                      currentTable: table,
+                      referencedTable: $$SchedulerTasksTableReferences
+                          ._schedulerTaskLogsRefsTable(db),
+                      managerFromTypedResult: (p0) =>
+                          $$SchedulerTasksTableReferences(
+                            db,
+                            table,
+                            p0,
+                          ).schedulerTaskLogsRefs,
+                      referencedItemsForCurrentItem: (item, referencedItems) =>
+                          referencedItems.where(
+                            (e) => e.schedulerTaskId == item.id,
+                          ),
+                      typedResults: items,
+                    ),
+                ];
+              },
+            );
+          },
+        ),
+      );
+}
+
+typedef $$SchedulerTasksTableProcessedTableManager =
+    ProcessedTableManager<
+      _$ErrandDatabase,
+      $SchedulerTasksTable,
+      SchedulerTaskRow,
+      $$SchedulerTasksTableFilterComposer,
+      $$SchedulerTasksTableOrderingComposer,
+      $$SchedulerTasksTableAnnotationComposer,
+      $$SchedulerTasksTableCreateCompanionBuilder,
+      $$SchedulerTasksTableUpdateCompanionBuilder,
+      (SchedulerTaskRow, $$SchedulerTasksTableReferences),
+      SchedulerTaskRow,
+      PrefetchHooks Function({bool schedulerTaskLogsRefs})
+    >;
+typedef $$SchedulerTaskLogsTableCreateCompanionBuilder =
+    SchedulerTaskLogsCompanion Function({
+      Value<int> id,
+      required int schedulerTaskId,
+      required int scheduledFor,
+      Value<int?> startedAt,
+      Value<int?> finishedAt,
+      required String status,
+      Value<int> noAttempts,
+      Value<String?> errorMessage,
+      Value<String?> outputFilePath,
+      Value<String?> summary,
+      Value<int> notificationSent,
+      Value<int> notificationSeen,
+      required int createdAt,
+      required int updatedAt,
+    });
+typedef $$SchedulerTaskLogsTableUpdateCompanionBuilder =
+    SchedulerTaskLogsCompanion Function({
+      Value<int> id,
+      Value<int> schedulerTaskId,
+      Value<int> scheduledFor,
+      Value<int?> startedAt,
+      Value<int?> finishedAt,
+      Value<String> status,
+      Value<int> noAttempts,
+      Value<String?> errorMessage,
+      Value<String?> outputFilePath,
+      Value<String?> summary,
+      Value<int> notificationSent,
+      Value<int> notificationSeen,
+      Value<int> createdAt,
+      Value<int> updatedAt,
+    });
+
+final class $$SchedulerTaskLogsTableReferences
+    extends
+        BaseReferences<
+          _$ErrandDatabase,
+          $SchedulerTaskLogsTable,
+          SchedulerTaskLogRow
+        > {
+  $$SchedulerTaskLogsTableReferences(
+    super.$_db,
+    super.$_table,
+    super.$_typedResult,
+  );
+
+  static $SchedulerTasksTable _schedulerTaskIdTable(_$ErrandDatabase db) => db
+      .schedulerTasks
+      .createAlias('scheduler_task_log__scheduler_task_id__scheduler_task__id');
+
+  $$SchedulerTasksTableProcessedTableManager get schedulerTaskId {
+    final $_column = $_itemColumn<int>('scheduler_task_id')!;
+
+    final manager = $$SchedulerTasksTableTableManager(
+      $_db,
+      $_db.schedulerTasks,
+    ).filter((f) => f.id.sqlEquals($_column));
+    final item = $_typedResult.readTableOrNull(_schedulerTaskIdTable($_db));
+    if (item == null) return manager;
+    return ProcessedTableManager(
+      manager.$state.copyWith(prefetchedData: [item]),
+    );
+  }
+}
+
+class $$SchedulerTaskLogsTableFilterComposer
+    extends Composer<_$ErrandDatabase, $SchedulerTaskLogsTable> {
+  $$SchedulerTaskLogsTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<int> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get scheduledFor => $composableBuilder(
+    column: $table.scheduledFor,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get startedAt => $composableBuilder(
+    column: $table.startedAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get finishedAt => $composableBuilder(
+    column: $table.finishedAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get status => $composableBuilder(
+    column: $table.status,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get noAttempts => $composableBuilder(
+    column: $table.noAttempts,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get errorMessage => $composableBuilder(
+    column: $table.errorMessage,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get outputFilePath => $composableBuilder(
+    column: $table.outputFilePath,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get summary => $composableBuilder(
+    column: $table.summary,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get notificationSent => $composableBuilder(
+    column: $table.notificationSent,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get notificationSeen => $composableBuilder(
+    column: $table.notificationSeen,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get updatedAt => $composableBuilder(
+    column: $table.updatedAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  $$SchedulerTasksTableFilterComposer get schedulerTaskId {
+    final $$SchedulerTasksTableFilterComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.schedulerTaskId,
+      referencedTable: $db.schedulerTasks,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$SchedulerTasksTableFilterComposer(
+            $db: $db,
+            $table: $db.schedulerTasks,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+}
+
+class $$SchedulerTaskLogsTableOrderingComposer
+    extends Composer<_$ErrandDatabase, $SchedulerTaskLogsTable> {
+  $$SchedulerTaskLogsTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<int> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get scheduledFor => $composableBuilder(
+    column: $table.scheduledFor,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get startedAt => $composableBuilder(
+    column: $table.startedAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get finishedAt => $composableBuilder(
+    column: $table.finishedAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get status => $composableBuilder(
+    column: $table.status,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get noAttempts => $composableBuilder(
+    column: $table.noAttempts,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get errorMessage => $composableBuilder(
+    column: $table.errorMessage,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get outputFilePath => $composableBuilder(
+    column: $table.outputFilePath,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get summary => $composableBuilder(
+    column: $table.summary,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get notificationSent => $composableBuilder(
+    column: $table.notificationSent,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get notificationSeen => $composableBuilder(
+    column: $table.notificationSeen,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get updatedAt => $composableBuilder(
+    column: $table.updatedAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  $$SchedulerTasksTableOrderingComposer get schedulerTaskId {
+    final $$SchedulerTasksTableOrderingComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.schedulerTaskId,
+      referencedTable: $db.schedulerTasks,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$SchedulerTasksTableOrderingComposer(
+            $db: $db,
+            $table: $db.schedulerTasks,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+}
+
+class $$SchedulerTaskLogsTableAnnotationComposer
+    extends Composer<_$ErrandDatabase, $SchedulerTaskLogsTable> {
+  $$SchedulerTaskLogsTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<int> get id =>
+      $composableBuilder(column: $table.id, builder: (column) => column);
+
+  GeneratedColumn<int> get scheduledFor => $composableBuilder(
+    column: $table.scheduledFor,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get startedAt =>
+      $composableBuilder(column: $table.startedAt, builder: (column) => column);
+
+  GeneratedColumn<int> get finishedAt => $composableBuilder(
+    column: $table.finishedAt,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get status =>
+      $composableBuilder(column: $table.status, builder: (column) => column);
+
+  GeneratedColumn<int> get noAttempts => $composableBuilder(
+    column: $table.noAttempts,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get errorMessage => $composableBuilder(
+    column: $table.errorMessage,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get outputFilePath => $composableBuilder(
+    column: $table.outputFilePath,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get summary =>
+      $composableBuilder(column: $table.summary, builder: (column) => column);
+
+  GeneratedColumn<int> get notificationSent => $composableBuilder(
+    column: $table.notificationSent,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get notificationSeen => $composableBuilder(
+    column: $table.notificationSeen,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get createdAt =>
+      $composableBuilder(column: $table.createdAt, builder: (column) => column);
+
+  GeneratedColumn<int> get updatedAt =>
+      $composableBuilder(column: $table.updatedAt, builder: (column) => column);
+
+  $$SchedulerTasksTableAnnotationComposer get schedulerTaskId {
+    final $$SchedulerTasksTableAnnotationComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.schedulerTaskId,
+      referencedTable: $db.schedulerTasks,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$SchedulerTasksTableAnnotationComposer(
+            $db: $db,
+            $table: $db.schedulerTasks,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+}
+
+class $$SchedulerTaskLogsTableTableManager
+    extends
+        RootTableManager<
+          _$ErrandDatabase,
+          $SchedulerTaskLogsTable,
+          SchedulerTaskLogRow,
+          $$SchedulerTaskLogsTableFilterComposer,
+          $$SchedulerTaskLogsTableOrderingComposer,
+          $$SchedulerTaskLogsTableAnnotationComposer,
+          $$SchedulerTaskLogsTableCreateCompanionBuilder,
+          $$SchedulerTaskLogsTableUpdateCompanionBuilder,
+          (SchedulerTaskLogRow, $$SchedulerTaskLogsTableReferences),
+          SchedulerTaskLogRow,
+          PrefetchHooks Function({bool schedulerTaskId})
+        > {
+  $$SchedulerTaskLogsTableTableManager(
+    _$ErrandDatabase db,
+    $SchedulerTaskLogsTable table,
+  ) : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$SchedulerTaskLogsTableFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $$SchedulerTaskLogsTableOrderingComposer($db: db, $table: table),
+          createComputedFieldComposer: () =>
+              $$SchedulerTaskLogsTableAnnotationComposer(
+                $db: db,
+                $table: table,
+              ),
+          updateCompanionCallback:
+              ({
+                Value<int> id = const Value.absent(),
+                Value<int> schedulerTaskId = const Value.absent(),
+                Value<int> scheduledFor = const Value.absent(),
+                Value<int?> startedAt = const Value.absent(),
+                Value<int?> finishedAt = const Value.absent(),
+                Value<String> status = const Value.absent(),
+                Value<int> noAttempts = const Value.absent(),
+                Value<String?> errorMessage = const Value.absent(),
+                Value<String?> outputFilePath = const Value.absent(),
+                Value<String?> summary = const Value.absent(),
+                Value<int> notificationSent = const Value.absent(),
+                Value<int> notificationSeen = const Value.absent(),
+                Value<int> createdAt = const Value.absent(),
+                Value<int> updatedAt = const Value.absent(),
+              }) => SchedulerTaskLogsCompanion(
+                id: id,
+                schedulerTaskId: schedulerTaskId,
+                scheduledFor: scheduledFor,
+                startedAt: startedAt,
+                finishedAt: finishedAt,
+                status: status,
+                noAttempts: noAttempts,
+                errorMessage: errorMessage,
+                outputFilePath: outputFilePath,
+                summary: summary,
+                notificationSent: notificationSent,
+                notificationSeen: notificationSeen,
+                createdAt: createdAt,
+                updatedAt: updatedAt,
+              ),
+          createCompanionCallback:
+              ({
+                Value<int> id = const Value.absent(),
+                required int schedulerTaskId,
+                required int scheduledFor,
+                Value<int?> startedAt = const Value.absent(),
+                Value<int?> finishedAt = const Value.absent(),
+                required String status,
+                Value<int> noAttempts = const Value.absent(),
+                Value<String?> errorMessage = const Value.absent(),
+                Value<String?> outputFilePath = const Value.absent(),
+                Value<String?> summary = const Value.absent(),
+                Value<int> notificationSent = const Value.absent(),
+                Value<int> notificationSeen = const Value.absent(),
+                required int createdAt,
+                required int updatedAt,
+              }) => SchedulerTaskLogsCompanion.insert(
+                id: id,
+                schedulerTaskId: schedulerTaskId,
+                scheduledFor: scheduledFor,
+                startedAt: startedAt,
+                finishedAt: finishedAt,
+                status: status,
+                noAttempts: noAttempts,
+                errorMessage: errorMessage,
+                outputFilePath: outputFilePath,
+                summary: summary,
+                notificationSent: notificationSent,
+                notificationSeen: notificationSeen,
+                createdAt: createdAt,
+                updatedAt: updatedAt,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map(
+                (e) => (
+                  e.readTable(table),
+                  $$SchedulerTaskLogsTableReferences(db, table, e),
+                ),
+              )
+              .toList(),
+          prefetchHooksCallback: ({schedulerTaskId = false}) {
+            return PrefetchHooks(
+              db: db,
+              explicitlyWatchedTables: [],
+              addJoins:
+                  <
+                    T extends TableManagerState<
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic
+                    >
+                  >(state) {
+                    if (schedulerTaskId) {
+                      state = state.withJoin(
+                        currentTable: table,
+                        currentColumn: table.schedulerTaskId,
+                        referencedTable: $$SchedulerTaskLogsTableReferences
+                            ._schedulerTaskIdTable(db),
+                        referencedColumn: $$SchedulerTaskLogsTableReferences
+                            ._schedulerTaskIdTable(db)
+                            .id,
+                      ) as T;
+                    }
+
+                    return state;
+                  },
+              getPrefetchedDataCallback: (items) async {
+                return [];
+              },
+            );
+          },
+        ),
+      );
+}
+
+typedef $$SchedulerTaskLogsTableProcessedTableManager =
+    ProcessedTableManager<
+      _$ErrandDatabase,
+      $SchedulerTaskLogsTable,
+      SchedulerTaskLogRow,
+      $$SchedulerTaskLogsTableFilterComposer,
+      $$SchedulerTaskLogsTableOrderingComposer,
+      $$SchedulerTaskLogsTableAnnotationComposer,
+      $$SchedulerTaskLogsTableCreateCompanionBuilder,
+      $$SchedulerTaskLogsTableUpdateCompanionBuilder,
+      (SchedulerTaskLogRow, $$SchedulerTaskLogsTableReferences),
+      SchedulerTaskLogRow,
+      PrefetchHooks Function({bool schedulerTaskId})
+    >;
 
 class $ErrandDatabaseManager {
   final _$ErrandDatabase _db;
@@ -4133,4 +6839,8 @@ class $ErrandDatabaseManager {
       $$AppSettingsTableTableManager(_db, _db.appSettings);
   $$MemoriesTableTableManager get memories =>
       $$MemoriesTableTableManager(_db, _db.memories);
+  $$SchedulerTasksTableTableManager get schedulerTasks =>
+      $$SchedulerTasksTableTableManager(_db, _db.schedulerTasks);
+  $$SchedulerTaskLogsTableTableManager get schedulerTaskLogs =>
+      $$SchedulerTaskLogsTableTableManager(_db, _db.schedulerTaskLogs);
 }
