@@ -1,10 +1,13 @@
+import 'dart:async';
 import 'dart:io';
 
+import 'package:drift/drift.dart' show Value;
 import 'package:errand/agent/agent_runner.dart';
 import 'package:errand/agent/tool.dart';
 import 'package:errand/services/database.dart';
 import 'package:errand/services/task_scheduler_service.dart';
 import 'package:errand/tools/schedule_task_tool.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 class TrackingSchedulerService extends TaskSchedulerService {
@@ -185,5 +188,151 @@ void main() {
     );
 
     expect(scheduler.scheduledTasks, contains(taskId));
+  });
+
+  group('TaskSchedulerService native channel tests', () {
+    late ErrandDatabase serviceDb;
+    late TaskSchedulerService realService;
+    final List<MethodCall> channelCalls = [];
+
+    setUp(() {
+      TestWidgetsFlutterBinding.ensureInitialized();
+      serviceDb = ErrandDatabase.inMemory();
+      realService = TaskSchedulerService(database: serviceDb);
+      channelCalls.clear();
+
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(const MethodChannel('task_scheduler'), (call) async {
+        channelCalls.add(call);
+        if (call.method == 'scheduleAlarm') {
+          return true;
+        } else if (call.method == 'cancelAlarm') {
+          return true;
+        } else if (call.method == 'canScheduleExactAlarms') {
+          return true;
+        }
+        return null;
+      });
+    });
+
+    tearDown(() async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(const MethodChannel('task_scheduler'), null);
+      await serviceDb.close();
+    });
+
+    test('scheduleTask invokes scheduleAlarm method on task_scheduler channel', () async {
+      final nowMillis = DateTime.now().millisecondsSinceEpoch;
+      final taskId = await serviceDb.into(serviceDb.schedulerTasks).insert(
+        SchedulerTasksCompanion.insert(
+          title: 'Daily Backup',
+          type: 'one_off',
+          status: 'scheduled',
+          payloadJson: '{}',
+          startsAt: nowMillis + 60000,
+          timezone: 'UTC',
+          createdAt: nowMillis,
+          updatedAt: nowMillis,
+        ),
+      );
+
+      await realService.scheduleTask(taskId);
+
+      expect(channelCalls.length, equals(1));
+      expect(channelCalls.first.method, equals('scheduleAlarm'));
+      final args = channelCalls.first.arguments as Map;
+      expect(args['taskId'], equals(taskId));
+      expect(args['title'], equals('Daily Backup'));
+      expect(args['triggerAtMillis'], equals(nowMillis + 60000));
+    });
+
+    test('cancelTask invokes cancelAlarm method on task_scheduler channel', () async {
+      await realService.cancelTask(42);
+
+      expect(channelCalls.length, equals(1));
+      expect(channelCalls.first.method, equals('cancelAlarm'));
+      final args = channelCalls.first.arguments as Map;
+      expect(args['taskId'], equals(42));
+    });
+
+    test('canScheduleExactAlarms queries task_scheduler channel', () async {
+      final canSchedule = await realService.canScheduleExactAlarms();
+      expect(canSchedule, isTrue);
+      expect(channelCalls.any((c) => c.method == 'canScheduleExactAlarms'), isTrue);
+    });
+
+    test('rescheduleAllActiveTasks schedules all active tasks and recovers stuck ones', () async {
+      final nowMillis = DateTime.now().millisecondsSinceEpoch;
+
+      final t1 = await serviceDb.into(serviceDb.schedulerTasks).insert(
+        SchedulerTasksCompanion.insert(
+          title: 'Task 1',
+          type: 'one_off',
+          status: 'scheduled',
+          payloadJson: '{}',
+          startsAt: nowMillis + 10000,
+          timezone: 'UTC',
+          createdAt: nowMillis,
+          updatedAt: nowMillis,
+        ),
+      );
+
+      final t2 = await serviceDb.into(serviceDb.schedulerTasks).insert(
+        SchedulerTasksCompanion.insert(
+          title: 'Task 2',
+          type: 'recurring',
+          status: 'scheduled',
+          payloadJson: '{}',
+          startsAt: nowMillis + 20000,
+          repeatAfter: const Value(3600000),
+          timezone: 'UTC',
+          createdAt: nowMillis,
+          updatedAt: nowMillis,
+        ),
+      );
+
+      // Also an un-scheduled one that should be ignored
+      await serviceDb.into(serviceDb.schedulerTasks).insert(
+        SchedulerTasksCompanion.insert(
+          title: 'Paused Task',
+          type: 'one_off',
+          status: 'paused',
+          payloadJson: '{}',
+          startsAt: nowMillis + 30000,
+          timezone: 'UTC',
+          createdAt: nowMillis,
+          updatedAt: nowMillis,
+        ),
+      );
+
+      final count = await realService.rescheduleAllActiveTasks();
+      expect(count, equals(2));
+
+      final scheduledIds = channelCalls
+          .where((c) => c.method == 'scheduleAlarm')
+          .map((c) => (c.arguments as Map)['taskId'])
+          .toList();
+
+      expect(scheduledIds, containsAll([t1, t2]));
+    });
+
+    test('initialize registers MethodCallHandler for executeTask and rescheduleAll', () async {
+      realService.initialize();
+
+      // We can simulate an incoming call from native Android to task_scheduler channel
+      final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      const codec = StandardMethodCodec();
+
+      // Test rescheduleAll callback
+      final rescheduleCall = codec.encodeMethodCall(const MethodCall('rescheduleAll'));
+      final rescheduleReply = Completer<ByteData?>();
+      await messenger.handlePlatformMessage('task_scheduler', rescheduleCall, (data) {
+        rescheduleReply.complete(data);
+      });
+      final replyData = await rescheduleReply.future;
+      expect(replyData, isNotNull);
+      final rescheduleResult = codec.decodeEnvelope(replyData!);
+      expect(rescheduleResult, isA<int>());
+    });
   });
 }

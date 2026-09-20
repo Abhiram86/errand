@@ -4,6 +4,7 @@ import '../theme/app_colors.dart';
 import '../types/conversation.dart';
 import 'options_modal_sheet.dart';
 import 'paging.dart';
+import 'tasks_sheet.dart';
 
 export 'options_modal_sheet.dart' show SheetOption, SheetOptionType;
 
@@ -14,6 +15,7 @@ class ChatSidebar extends StatelessWidget {
   final VoidCallback onClose;
   final VoidCallback? onShowReleaseNotes;
   final VoidCallback? onCheckForUpdates;
+  final VoidCallback? onManageTasks;
   final ValueChanged<Conversation> onSelectConversation;
   final ValueChanged<Conversation> onDeleteConversation;
   final List<Conversation> pinnedConversations;
@@ -31,6 +33,7 @@ class ChatSidebar extends StatelessWidget {
     required this.onClose,
     this.onShowReleaseNotes,
     this.onCheckForUpdates,
+    this.onManageTasks,
     required this.onSelectConversation,
     required this.onDeleteConversation,
     required this.pinnedConversations,
@@ -105,6 +108,17 @@ class ChatSidebar extends StatelessWidget {
                 child: ListView(
                   padding: const EdgeInsets.fromLTRB(12, 12, 12, 20),
                   children: [
+                    _ManageTasksRow(
+                      onTap: () {
+                        onClose();
+                        if (onManageTasks != null) {
+                          onManageTasks!();
+                        } else {
+                          showTasksSheet(context);
+                        }
+                      },
+                    ),
+                    const SizedBox(height: 14),
                     if (pinnedConversations.any((chat) => chat.isPinned)) ...[
                       const _SidebarSectionTitle('Pinned / favourites'),
                       const SizedBox(height: 8),
@@ -320,6 +334,47 @@ class _SidebarRow extends StatelessWidget {
                 ],
               ),
             ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ManageTasksRow extends StatelessWidget {
+  final VoidCallback onTap;
+
+  const _ManageTasksRow({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(14),
+        splashColor: kBubbleAssistant,
+        highlightColor: kBubbleAssistant.withValues(alpha: 0.5),
+        child: const Padding(
+          padding: EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          child: Row(
+            children: [
+              Icon(Icons.alarm_rounded, color: kMuted, size: 18),
+              SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Manage tasks',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: kText,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
       ),

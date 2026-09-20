@@ -16,6 +16,10 @@
 
     <!-- Alarms & Timers (Safe normal permission) -->
     <uses-permission android:name="com.android.alarm.permission.SET_ALARM"/>
+    <!-- Background Task Scheduling & Boot Recovery (P9) -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM"/>
 
     <!-- Connectivity Management (Safe normal permissions) -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
@@ -85,6 +89,29 @@
 
         <service
             android:name=".AgentForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync"/>
+
+        <!-- Background Task Scheduling Alarms, Boot Recovery & Execution Service (P9) -->
+        <receiver
+            android:name=".TaskAlarmReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.errand.ACTION_TASK_ALARM"/>
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".TaskBootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED"/>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>
+            </intent-filter>
+        </receiver>
+
+        <service
+            android:name=".TaskExecutionService"
             android:exported="false"
             android:foregroundServiceType="dataSync"/>
 

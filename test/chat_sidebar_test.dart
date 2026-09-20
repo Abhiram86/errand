@@ -92,4 +92,41 @@ void main() {
       expect(checkedUpdates, isTrue);
     },
   );
+
+  testWidgets(
+    'ChatSidebar displays "Manage tasks" at the top and invokes callback when tapped',
+    (tester) async {
+      bool managedTasks = false;
+      bool closed = false;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ChatSidebar(
+              pinnedConversations: const [],
+              conversations: const [],
+              activeConversationId: null,
+              hasMoreConversations: false,
+              isLoadingMoreConversations: false,
+              onLoadMoreConversations: () {},
+              onClose: () => closed = true,
+              onManageTasks: () => managedTasks = true,
+              onSelectConversation: (_) {},
+              onDeleteConversation: (_) {},
+              optionsBuilder: (_) => const [],
+            ),
+          ),
+        ),
+      );
+
+      expect(find.text('Manage tasks'), findsOneWidget);
+      expect(find.byIcon(Icons.alarm_rounded), findsOneWidget);
+
+      await tester.tap(find.text('Manage tasks'));
+      await tester.pumpAndSettle();
+
+      expect(managedTasks, isTrue);
+      expect(closed, isTrue);
+    },
+  );
 }

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:drift/drift.dart';
+import 'package:flutter/services.dart';
 
 import '../agent/agent_runner.dart';
 import '../llm/llm_client.dart';
@@ -28,19 +29,90 @@ class TaskSchedulerService {
         notificationService =
             notificationService ?? NotificationService.instance;
 
-  /// Schedules the next trigger for [taskId].
-  ///
-  /// Called when a task is created, updated, or resumed.
-  Future<void> scheduleTask(int taskId) async {
-    // TODO: Register task trigger with Android AlarmManager (for exact one-off/wall-clock runs)
-    // or WorkManager (for periodic background work with device constraints).
+  static const MethodChannel _channel = MethodChannel('task_scheduler');
+
+  /// Attaches method call handler to receive `executeTask` and `rescheduleAll`
+  /// triggers from native Android AlarmManager / WorkManager.
+  void initialize() {
+    _channel.setMethodCallHandler((call) async {
+      switch (call.method) {
+        case 'executeTask':
+          final args = call.arguments;
+          final taskId = (args is Map) ? (args['taskId'] as int? ?? -1) : -1;
+          if (taskId > 0) {
+            return await executeTask(taskId);
+          }
+          return false;
+        case 'rescheduleAll':
+          return await rescheduleAllActiveTasks();
+        default:
+          return null;
+      }
+    });
   }
 
-  /// Cancels any scheduled alarm or background work for [taskId].
+  /// Schedules the next trigger for [taskId] with native Android AlarmManager.
+  ///
+  /// Called when a task is created, updated, resumed, or rescheduled.
+  Future<void> scheduleTask(int taskId) async {
+    final task = await (db.select(db.schedulerTasks)..where((t) => t.id.equals(taskId)))
+        .getSingleOrNull();
+    if (task == null ||
+        task.status == 'paused' ||
+        task.status == 'cancelled' ||
+        task.status == 'completed') {
+      return;
+    }
+
+    final targetTime = task.nextRunAt ?? task.startsAt;
+    final nowMillis = DateTime.now().millisecondsSinceEpoch;
+    // Schedule for at least 1s into the future
+    final triggerAt = targetTime > nowMillis ? targetTime : nowMillis + 1000;
+
+    try {
+      await _channel.invokeMethod('scheduleAlarm', {
+        'taskId': taskId,
+        'triggerAtMillis': triggerAt,
+        'title': task.title,
+      });
+    } catch (_) {}
+  }
+
+  /// Cancels any scheduled alarm for [taskId] with native Android AlarmManager.
   ///
   /// Called when a task is paused, cancelled, or deleted.
   Future<void> cancelTask(int taskId) async {
-    // TODO: Cancel active alarm or worker for taskId with Android AlarmManager / WorkManager.
+    try {
+      await _channel.invokeMethod('cancelAlarm', {
+        'taskId': taskId,
+      });
+    } catch (_) {}
+  }
+
+  /// Re-registers all active tasks in 'scheduled' status with the native AlarmManager.
+  ///
+  /// Called on device boot or app startup.
+  Future<int> rescheduleAllActiveTasks() async {
+    await recoverStuckTasks();
+
+    final scheduled = await (db.select(db.schedulerTasks)
+          ..where((t) => t.status.equals('scheduled')))
+        .get();
+
+    for (final task in scheduled) {
+      await scheduleTask(task.id);
+    }
+    return scheduled.length;
+  }
+
+  /// Checks whether exact alarms can be scheduled without permission denials.
+  Future<bool> canScheduleExactAlarms() async {
+    try {
+      final result = await _channel.invokeMethod<bool>('canScheduleExactAlarms');
+      return result ?? true;
+    } catch (_) {
+      return true;
+    }
   }
 
   /// Sweeps tasks that were left in `running` status due to process crashes or kills.

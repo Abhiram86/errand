@@ -36,12 +36,17 @@ import java.io.File
 
 class MainActivity : FlutterActivity() {
 
+    companion object {
+        var schedulerChannel: MethodChannel? = null
+    }
+
     private val STORAGE_CHANNEL = "storage_access"
     private val INTENT_CHANNEL = "intent"
     private val A11Y_CHANNEL = "a11y"
     private val APP_INFO_CHANNEL = "app_info"
     private val LOCATION_CHANNEL = "location"
     private val WIDGET_CHANNEL = "widget"
+    private val SCHEDULER_CHANNEL = "task_scheduler"
 
     private var widgetChannel: MethodChannel? = null
     private var pendingVoicePrompt: Boolean = false
@@ -188,11 +193,43 @@ class MainActivity : FlutterActivity() {
         }
         widgetChannel?.setMethodCallHandler(null)
         widgetChannel = null
+        schedulerChannel?.setMethodCallHandler(null)
+        schedulerChannel = null
         super.onDestroy()
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+
+        // ---- Task Scheduler Channel (P9) ----
+        val scheduler = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, SCHEDULER_CHANNEL)
+        schedulerChannel = scheduler
+        scheduler.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "scheduleAlarm" -> {
+                    val taskId = call.argument<Int>("taskId") ?: -1
+                    val trigger = call.argument<Number>("triggerAtMillis")?.toLong() ?: 0L
+                    val title = call.argument<String>("title") ?: "Scheduled Task"
+                    if (taskId > 0 && trigger > 0) {
+                        val ok = TaskAlarmManager.scheduleExactAlarm(this, taskId, trigger, title)
+                        result.success(ok)
+                    } else {
+                        result.success(false)
+                    }
+                }
+                "cancelAlarm" -> {
+                    val taskId = call.argument<Int>("taskId") ?: -1
+                    if (taskId > 0) {
+                        TaskAlarmManager.cancelAlarm(this, taskId)
+                    }
+                    result.success(true)
+                }
+                "canScheduleExactAlarms" -> {
+                    result.success(TaskAlarmManager.canScheduleExactAlarms(this))
+                }
+                else -> result.notImplemented()
+            }
+        }
 
         // ---- Storage channel (unchanged) ----
         MethodChannel(
