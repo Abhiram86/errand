@@ -1,3 +1,6 @@
+import 'dart:io';
+
+import 'package:errand/agent/agent_runner.dart';
 import 'package:errand/agent/tool.dart';
 import 'package:errand/services/database.dart';
 import 'package:errand/services/task_scheduler_service.dart';
@@ -25,7 +28,13 @@ class TrackingSchedulerService extends TaskSchedulerService {
   }
 
   @override
-  Future<bool> executeTask(int taskId) async {
+  Future<bool> executeTask(
+    int taskId, {
+    AgentRunner? runner,
+    Directory? scratchDirectory,
+    Duration timeout = const Duration(minutes: 10),
+    dynamic cancelToken,
+  }) async {
     executedTasks.add(taskId);
     return true;
   }

@@ -85,11 +85,17 @@ Goal: Enable the model to schedule one-off and recurring tasks that execute auto
   - `ToolRegistry.headless(...)`: Factory constructor registering the headless toolset (`read`, `bash`, `websearch`, `webfetch`, `intent`, `location`, `memory`, `browser`, `schedule_task`). Strictly excludes `screen`, `screen_act`, `act`, and `attached_files`. Passes `isHeadless: true` to `bash`, `memory`, `browser`, and `schedule_task`. Binds `currentTaskId` to enforce task edit isolation.
   - Unit tests in `test/headless_system_prompt_and_registry_test.dart` (7/7 tests passing).
 
-- **Slice 4: Headless AgentRunner Integration (NEXT)**
-  - Wire `AgentRunner` headless mode using `ToolRegistry.headless` and `headlessSystemPromptFor`.
-  - Execute background turn cleanly without UI dock/sheet bindings.
-  - Save primary task report to `.scratch/task_<id>_<timestamp>.md`.
-  - Record execution log in `scheduler_task_logs` DB table and dispatch native Android notification via `NotificationService` when `notify == true`.
+- **Slice 4: Headless AgentRunner Integration & Lifecycle Hardening (COMPLETED)**
+  - `AgentRunner.runHeadless(...)`: Executes an isolated, headless background agent turn for a scheduled task. Injects `ToolRegistry.headless`, binds `currentTaskId`, uses `headlessSystemPromptFor`, runs `AgentLoop` on a single-turn `Conversation`, saves the output markdown report to `.scratch/task_<id>_<timestamp>.md`, logs report save failures via `debugPrint`, and guarantees `registry.dispose()` cleanup in `finally`.
+  - `TaskSchedulerService.executeTask(taskId, ...)`: Coordinates the full execution turn when an alarm or worker fires:
+    - **Allowlist Guard & Atomic Claim:** Restricts execution to `status: scheduled` (or `failed` for manual retry); uses conditional SQL update `WHERE id = ? AND status IN ('scheduled', 'failed')` to atomically transition to `running`, preventing double-fire races between AlarmManager and WorkManager. Rejects already `running`, `completed`, `paused`, and `cancelled` tasks.
+    - **Timeout & CancelToken:** Enforces execution timeout (`timeout`, default 10m) with `CancelToken` cancellation; logs `status: 'timeout'` on expiry.
+    - **Resource Lifecycle:** Closes locally instantiated `LlmClient` instances in `finally` to prevent connection leaks.
+    - **Resilient Recurring Retries:** Reschedules recurring tasks for `finishMillis + repeatAfter` on failure so transient glitches do not kill scheduled tasks, unless consecutive failures reach `retriesPerTurn`.
+    - **Counter Reset:** Automatically resets `failures` to 0 upon successful execution.
+    - **Bounded Notifications:** Safely clamps notification summary body to 250 characters before calling `NotificationService`.
+    - **Recovery Sweep:** Provides `recoverStuckTasks()` to sweep and recover tasks left in `running` status after process kills or system crashes.
+  - Unit tests in `test/headless_agent_runner_test.dart` (12/12 tests passing; 74/74 total tests across all scheduler & headless suites).
 
 #### 3. Native Background Wake-Up & Task UI (UPCOMING)
 - **Native AlarmManager & WorkManager:**

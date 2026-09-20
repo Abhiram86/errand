@@ -1,11 +1,19 @@
+import 'dart:io';
+import 'package:flutter/foundation.dart';
+
 import '../llm/llm_client.dart';
 import '../services/app_settings.dart';
+import '../services/browser_service.dart';
+import '../services/database.dart';
 import '../services/location_service.dart';
+import '../services/memory_service.dart';
 import '../services/model_catalog.dart';
 import '../services/shell_service.dart';
+import '../services/task_scheduler_service.dart';
 import '../services/workspace.dart';
 import '../tools/file_tools.dart';
 import '../types/conversation.dart';
+import '../types/message.dart';
 import 'agent_loop.dart';
 import 'context_budget.dart';
 import 'system_prompt.dart';
@@ -133,4 +141,149 @@ class AgentRunner {
       registry.dispose();
     }
   }
+
+  /// Executes an isolated, headless background agent turn for a scheduled task.
+  ///
+  /// Disallows UI tools, enforces task ID isolation, generates output reports
+  /// in the scratch directory, and cleanly releases tool resources on completion.
+  Future<HeadlessRunResult> runHeadless({
+    required int taskId,
+    required String prompt,
+    String? taskTitle,
+    Directory? scratchDirectory,
+    MemoryService? memoryService,
+    BrowserService? browserService,
+    LocationService? locationService,
+    ErrandDatabase? db,
+    TaskSchedulerService? schedulerService,
+    CancelToken? cancelToken,
+    AgentObserver? onEvent,
+    AgentTextObserver? onTextDelta,
+    AgentReasoningObserver? onReasoningDelta,
+    void Function()? onReset,
+    AgentRetryObserver? onRetry,
+  }) async {
+    final scratch = scratchDirectory ?? Workspace.instance.scratchDir;
+    final token = cancelToken ?? this.cancelToken;
+    final baseUrl = effectiveBaseUrl ?? llm.config.baseUrl;
+
+    final registry = ToolRegistry.headless(
+      currentDir: workingDirectory.root,
+      workingDirectory: workingDirectory,
+      currentTaskId: taskId,
+      supportsInput: (modality) =>
+          ModelCatalogService.supportsInput(
+            selectedModel,
+            modality,
+            baseUrl: baseUrl,
+          ) !=
+          false,
+      getCancelToken: token != null ? () => token : null,
+      memoryService: memoryService,
+      browserService: browserService,
+      locationService: locationService,
+      db: db,
+      schedulerService: schedulerService,
+    );
+
+    final activeBudget = budget ??
+        ContextBudget(
+          contextSize: ModelCatalogService.getContextLength(
+            selectedModel,
+            baseUrl: baseUrl,
+          ),
+        );
+
+    final loop = AgentLoop(
+      llm: llm,
+      registry: registry,
+      budget: activeBudget,
+      systemPromptBuilder: () => headlessSystemPromptFor(
+        currentDir: workingDirectory.current,
+        scratchDir: scratch,
+        taskId: taskId,
+        taskTitle: taskTitle,
+        locationSummary: locationService?.lastKnown?.toCoarseSummary() ??
+            LocationService.instance.lastKnown?.toCoarseSummary(),
+      ),
+      cancelToken: cancelToken,
+      supportsInput: (modality) =>
+          ModelCatalogService.supportsInput(
+            selectedModel,
+            modality,
+            baseUrl: baseUrl,
+          ) !=
+          false,
+      onEvent: onEvent,
+      onTextDelta: onTextDelta,
+      onReasoningDelta: onReasoningDelta,
+      onReset: onReset,
+      onRetry: onRetry,
+    );
+
+    final nowIso = DateTime.now().toIso8601String().replaceAll(':', '-');
+    final conversation = Conversation(
+      id: 'headless_task_${taskId}_$nowIso',
+      currentDir: workingDirectory.current,
+      messages: [
+        UserMessage(
+          id: 'prompt_$nowIso',
+          text: prompt,
+        ),
+      ],
+      model: selectedModel,
+      createdAt: DateTime.now(),
+      updatedAt: DateTime.now(),
+    );
+
+    try {
+      final output = await loop.run(conversation);
+      String? reportPath;
+      try {
+        if (!scratch.existsSync()) {
+          scratch.createSync(recursive: true);
+        }
+        final reportFile = File('${scratch.path}/task_${taskId}_$nowIso.md');
+        await reportFile.writeAsString(output);
+        reportPath = reportFile.path;
+      } catch (e, st) {
+        debugPrint('Failed to save headless task report: $e\n$st');
+      }
+
+      return HeadlessRunResult(
+        ok: true,
+        output: output,
+        reportPath: reportPath,
+      );
+    } catch (e) {
+      return HeadlessRunResult(
+        ok: false,
+        output: '',
+        errorMessage: e.toString(),
+      );
+    } finally {
+      registry.dispose();
+    }
+  }
+
+  /// Disposes resources held by this runner.
+  void dispose() {
+    llm.close();
+  }
 }
+
+/// The result of an autonomous headless background execution turn.
+class HeadlessRunResult {
+  final bool ok;
+  final String output;
+  final String? reportPath;
+  final String? errorMessage;
+
+  const HeadlessRunResult({
+    required this.ok,
+    required this.output,
+    this.reportPath,
+    this.errorMessage,
+  });
+}
+

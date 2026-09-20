@@ -97,10 +97,7 @@ Tool intentTool({
     handler: (call) async {
       final action = (call.arguments['action'] as String?)?.trim().toLowerCase();
       if (isHeadless) {
-        if (action == 'open_app' ||
-            action == 'settings' ||
-            action == 'open_file' ||
-            action == 'open_url') {
+        if (action != 'intent' && action != 'docs') {
           return ToolCallResult.failure(
             call.id,
             'Action "$action" opens interactive foreground UI and is disabled in background scheduled tasks.',
@@ -110,9 +107,18 @@ Tool intentTool({
         if (action == 'intent') {
           final androidAction =
               (call.arguments['android_action'] as String?)?.trim() ?? '';
-          if (androidAction.startsWith('android.settings.') ||
+          if (androidAction.isEmpty ||
+              androidAction.startsWith('android.settings.') ||
               androidAction == 'android.intent.action.VIEW' ||
-              androidAction == 'android.intent.action.MAIN') {
+              androidAction == 'android.intent.action.MAIN' ||
+              androidAction == 'android.intent.action.DIAL' ||
+              androidAction == 'android.intent.action.CALL' ||
+              androidAction == 'android.intent.action.SEND' ||
+              androidAction == 'android.intent.action.SENDTO' ||
+              androidAction == 'android.intent.action.WEB_SEARCH' ||
+              androidAction == 'android.intent.action.SHOW_ALARMS' ||
+              androidAction == 'android.intent.action.SHOW_TIMERS' ||
+              androidAction.startsWith('android.media.action.')) {
             return ToolCallResult.failure(
               call.id,
               'Android intent action "$androidAction" opens an interactive UI window and is blocked in background scheduled tasks.',
