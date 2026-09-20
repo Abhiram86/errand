@@ -2,36 +2,49 @@ import 'dart:convert';
 
 import '../agent/tool.dart';
 import '../services/browser_service.dart';
+import '../services/headless_browser_service.dart';
 import '../types/tool.dart';
 
 /// Creates the `browser` tool group, exposing embedded web automation functions:
-/// - `open` (`browser.open`): navigate to a URL and display the browser
+/// - `open` (`browser.open`): navigate to a URL and display the browser (or run offscreen in headless mode)
 /// - `close` (`browser.close`): dismiss the browser
 /// - `reload` (`browser.reload`): reload the current page
 /// - `snapshot` (`browser.snapshot`): extract a token-efficient DOM outline with interactive refs
 /// - `extract_text` (`browser.extract_text`): extract clean Markdown text of the page via html2md
 /// - `execute_dom_js` (`browser.execute_dom_js`): evaluate arbitrary JS in the DOM
 /// - `act` (`browser.act`): perform clicks, typing, or scrolling
-/// - `screenshot` (`browser.screenshot`): capture the visible viewport
+/// - `screenshot` (`browser.screenshot`): capture the viewport (visible or offscreen)
 Tool browserTool({
   BrowserService? browserService,
   bool Function(String modality)? supportsInput,
+  bool isHeadless = false,
 }) {
-  final service = browserService ?? BrowserService.instance;
+  final service = browserService ??
+      (isHeadless ? HeadlessBrowserService() : BrowserService.instance);
 
   return Tool(
     name: 'browser',
-    description:
-        'Embedded web browser tool group to inspect and interact with websites. '
-        'Functions: '
-        'open (load a URL and show the browser), '
-        'close (hide the browser view), '
-        'reload (refresh the current page), '
-        'snapshot (extract a structured DOM outline with interactive element refs [e1], [e2] and text preview), '
-        'extract_text (extract clean Markdown text of the page via html2md), '
-        'execute_dom_js (evaluate custom JavaScript in the page DOM), '
-        'act (click, type, or scroll using element refs or selectors), '
-        'screenshot (capture the visible viewport).',
+    description: isHeadless
+        ? 'Embedded headless web browser tool group to inspect and interact with websites offscreen without showing UI. '
+            'Functions: '
+            'open (load a URL offscreen), '
+            'close (teardown headless browser), '
+            'reload (refresh the current page), '
+            'snapshot (extract a structured DOM outline with interactive element refs [e1], [e2] and text preview), '
+            'extract_text (extract clean Markdown text of the page via html2md), '
+            'execute_dom_js (evaluate custom JavaScript in the page DOM), '
+            'act (click, type, or scroll using element refs or selectors), '
+            'screenshot (capture the offscreen viewport).'
+        : 'Embedded web browser tool group to inspect and interact with websites. '
+            'Functions: '
+            'open (load a URL and show the browser), '
+            'close (hide the browser view), '
+            'reload (refresh the current page), '
+            'snapshot (extract a structured DOM outline with interactive element refs [e1], [e2] and text preview), '
+            'extract_text (extract clean Markdown text of the page via html2md), '
+            'execute_dom_js (evaluate custom JavaScript in the page DOM), '
+            'act (click, type, or scroll using element refs or selectors), '
+            'screenshot (capture the visible viewport).',
     parameters: {
       'type': 'object',
       'properties': {

@@ -48,39 +48,57 @@ Goal: Give the agent access to user coordinates and reverse-geocoded address via
 
 ---
 
-### 🟢 P9 — Autonomous Scheduler Tool Group & Background Engine (UPCOMING)
+### 🟡 P9 — Autonomous Scheduler & Headless Background Engine (ACTIVE)
 
-Goal: Enable the model to schedule one-off and recurring tasks that execute autonomously or issue timely reminders, with full parity across Full and Lite flavors.
+Goal: Enable the model to schedule one-off and recurring tasks that execute autonomously in the background and dispatch native Android notifications, with full parity across Full and Lite flavors.
 
-1. **Dual Android Scheduling Backend:**
-   - `AlarmManager` (`setExactAndAllowWhileIdle`): For exact-time alerts and one-off execution.
-   - `WorkManager`: For persistent recurring jobs surviving reboots and honoring battery constraints.
-   - 100% compatible with both Full and Lite flavors (requires zero accessibility permissions).
+#### 1. Schema & Foundation (SHIPPED)
+- **Database Schema v7 (`ErrandDatabase`):**
+  - `SchedulerTasks`: `id`, `title`, `type` (`one_off`/`recurring`), `status` (`scheduled`, `paused`, `running`, `completed`, `failed`, `cancelled`), `payload_json`, `starts_at`, `next_run_at`, `repeat_after` (interval in millis), `timezone`, `notify` (boolean), `last_run_at`, `total_runs`, `failures`, `retries_per_turn`, timestamps.
+  - `SchedulerTaskLogs`: `id`, `scheduler_task_id` (FK with `ON DELETE CASCADE`), `scheduled_for`, `started_at`, `finished_at`, `status`, `no_attempts`, `error_message`, `output_file_path`, `summary`, `notification_sent`, `notification_seen`, timestamps.
+- **`schedule_task` Tool:**
+  - Standardized on `action` discriminator (`create`, `edit`, `delete`, `get`, `list`, `logs`).
+  - Uses exact `starts_at` (ISO 8601 string or epoch millis) and `repeat_after` interval millis.
+- **Native Android Notification Channel:**
+  - MethodChannel in `MainActivity.kt` (`showNotification`, `cancelNotification`, `hasNotificationPermission`) with `BigTextStyle` and launch intent back to Errand.
+  - Dart `NotificationService` wrapper.
 
-2. **Persistence & Lifecycle Policy (Drift Schema v7):**
-   - New `ScheduledTasks` table: task ID, title, prompt, schedule type (`once`, `daily`, `interval`), next trigger time, autonomous flag, network requirement, and execution status/history.
-   - **TTL Retention Policy:** Completed or expired one-off reminders and autonomous task runs do not persist indefinitely in the database. A configurable retention TTL (e.g., auto-pruning completed/cancelled one-offs older than 3 to 7 days) keeps storage lean and prevents DB bloat.
+#### 2. Headless Agent Runner Execution Slices (IN PROGRESS)
 
-3. **Task Manager UI & Management:**
-   - Add a dedicated "Tasks / Schedule" management tab/sheet in Settings (or tool inspector) where users can view active/upcoming alarms and periodic workers, manually edit trigger times, run tasks on demand, or cancel/delete them.
+- **Slice 1: Tool Safety Guards for Headless Mode (COMPLETED)**
+  - `bash`: `isHeadless: true`. Destructive operations needing confirmation (`rm -rf`, bulk deletions) fail fast with `headless_destructive_blocked`. Added bash arithmetic note (`echo \$((expr))`) in system prompt.
+  - `schedule_task`: `isHeadless: true` and `currentTaskId`. Disallows `action: "create"` and `action: "delete"` with `headless_recursion_blocked`. Disallows editing other tasks outside `currentTaskId` with `headless_cross_task_edit_blocked`. Preserves `delay_seconds` alongside `starts_at` for relative time ease.
+  - `memory`: `isHeadless: true`. Disallows background writes (`create`, `edit`) with `headless_memory_write_blocked`; allows introspection (`find`, `read`).
+  - Unit tests verifying all guards in `test/headless_tool_guards_test.dart` and `test/schedule_task_tool_test.dart` (28/28 tests passing).
 
-4. **Execution Flow & Real-World Handling:**
-   - **Case 1: Simple One-Off Reminder:**
-     - User requests a reminder (e.g. *"Remind me in 45m to submit report"*). Model calls `scheduler(action: "schedule_task", time: "+45m", autonomous: false)`.
-     - At target time, native `AlarmManager` fires a BroadcastReceiver that posts a local Android system notification with sound/vibration and a direct chat link. Pruned after TTL.
-   - **Case 2: Autonomous Agent Task (Executing Background Work):**
-     - User requests background work (e.g. *"At 7:00 AM, fetch morning tech news and save to Documents/Errand/news.md"*).
-     - At 7:00 AM, `AlarmManager` wakes Errand, starts `AgentForegroundService` (preventing OS from freezing sockets), executes a headless `AgentLoop` with tools (`websearch`, `bash`, etc.), saves results to disk/DB, posts a completion notification, and shuts down the service. Pruned after TTL.
-   - **Case 3: Recurring Periodic Job:**
-     - User schedules regular work (e.g. *"Clean .scratch directory daily at midnight"*).
-     - Registered with Android's `WorkManager`. Automatically survives reboots, respects Doze mode, and runs when constraints (idle/charging) are satisfied.
-   - **Case 4: Reboots & App Closure:**
-     - On device restart, Android's `BOOT_COMPLETED` receiver re-registers all pending alarms and jobs directly from the SQLite database. Even if Errand is swiped away, the OS wakes the service on schedule.
-   - **Case 5: Network Constraints:**
-     - If an autonomous task requires network and the phone is offline, `WorkManager` holds execution until connectivity is restored.
+- **Slice 2: Headless Browser Service & Tool (COMPLETED)**
+  - `HeadlessBrowserService`: Subclasses `BrowserService` using `HeadlessInAppWebView`.
+  - 1-to-1 feature parity (`open`, `close`, `reload`, `snapshot`, `extract_text`, `execute_dom_js`, `act`, `screenshot` offscreen).
+  - Testable with mock/injected controller override to enable robust unit and integration tests.
+  - Completely detached from the Flutter chat widget tree (no UI popping or dock bar animations).
+  - Clean `dispose()` and `disposeHeadlessView()` on turn completion.
+  - `browserTool`: Updated to accept `isHeadless: true` and instantiate `HeadlessBrowserService` automatically.
+  - Unit tests verifying offscreen operation, screenshots, parity, and teardown in `test/headless_browser_test.dart` (9/9 tests passing).
 
-5. **Agent Tool Surface (`scheduler`):**
-   - Actions: `schedule_task`, `list_tasks`, `cancel_task`, `get_task_status`, `update_task`.
+- **Slice 3: Headless System Prompt & ToolRegistry (COMPLETED)**
+  - `headlessSystemPromptFor(...)`: Tailored prompt instructing the model it is running headlessly as a background task. Injects active execution context (task ID, title, workspace, scratch directory, user location). Enforces intent policy (alarms, timers, calendar entries allowed; UI app launches disallowed), output delivery to `.scratch/` (`task_<id>_<timestamp>.md`), bash math advice (`echo \$((expr))`), and headless tool rules. Strictly excludes interactive screen automation prompts.
+  - `ToolRegistry.headless(...)`: Factory constructor registering the headless toolset (`read`, `bash`, `websearch`, `webfetch`, `intent`, `location`, `memory`, `browser`, `schedule_task`). Strictly excludes `screen`, `screen_act`, `act`, and `attached_files`. Passes `isHeadless: true` to `bash`, `memory`, `browser`, and `schedule_task`. Binds `currentTaskId` to enforce task edit isolation.
+  - Unit tests in `test/headless_system_prompt_and_registry_test.dart` (7/7 tests passing).
+
+- **Slice 4: Headless AgentRunner Integration (NEXT)**
+  - Wire `AgentRunner` headless mode using `ToolRegistry.headless` and `headlessSystemPromptFor`.
+  - Execute background turn cleanly without UI dock/sheet bindings.
+  - Save primary task report to `.scratch/task_<id>_<timestamp>.md`.
+  - Record execution log in `scheduler_task_logs` DB table and dispatch native Android notification via `NotificationService` when `notify == true`.
+
+#### 3. Native Background Wake-Up & Task UI (UPCOMING)
+- **Native AlarmManager & WorkManager:**
+  - `AlarmManager` (`setExactAndAllowWhileIdle`): For exact wall-clock one-off alarms and tasks.
+  - `WorkManager`: For recurring background tasks surviving reboots.
+  - `BOOT_COMPLETED` receiver to reschedule active tasks on reboot.
+- **Dedicated Tasks Screen:**
+  - Full-screen UI (`TasksScreen` via `Navigator.push`), navigated from top of `ChatSidebar`. (NO nested bottom sheets).
+  - In-app markdown preview for task reports in `.scratch/`.
 
 ---
 

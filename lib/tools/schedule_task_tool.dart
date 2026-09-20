@@ -4,12 +4,16 @@ import 'package:drift/drift.dart';
 
 import '../agent/tool.dart';
 import '../services/database.dart';
+import '../services/task_scheduler_service.dart';
 import '../types/tool.dart';
 
 /// Tool allowing the agent to create, edit, inspect, and manage background
 /// scheduled tasks and their execution logs.
 Tool scheduleTaskTool({
   ErrandDatabase? db,
+  TaskSchedulerService? schedulerService,
+  bool isHeadless = false,
+  int? currentTaskId,
 }) {
   return Tool(
     name: 'schedule_task',
@@ -22,7 +26,7 @@ Tool scheduleTaskTool({
         'get (retrieve task details by id), '
         'list (list tasks with optional status_filter, limit, offset), '
         'logs (view execution history logs for a task). '
-        'For one-off tasks, specify starts_at (ISO 8601 or epoch millis) or delay_seconds (e.g. 300 for 5m). '
+        'For one-off tasks, specify starts_at (ISO 8601 string or epoch millis) or delay_seconds (e.g. 300 for 5m). '
         'For recurring tasks, specify repeat_after interval in millis (e.g. 900000 for 15m, 3600000 for 1h). '
         'The task will execute headlessly in the background, run agent tools, and save output to the scratch directory.',
     parameters: {
@@ -92,8 +96,22 @@ Tool scheduleTaskTool({
     },
     handler: (call) async {
       final database = db ?? ErrandDatabase.instance;
+      TaskSchedulerService? scheduler = schedulerService;
+      if (scheduler == null && db == null) {
+        try {
+          scheduler = TaskSchedulerService.instance;
+        } catch (_) {}
+      }
       final args = call.arguments;
       final action = ((args['action'] ?? args['type']) as String?)?.trim().toLowerCase() ?? '';
+
+      if (isHeadless && (action == 'create' || action == 'delete')) {
+        return ToolCallResult.failure(
+          call.id,
+          'Action "$action" is disabled in background scheduled tasks to prevent recursive scheduling loops.',
+          type: 'headless_recursion_blocked',
+        );
+      }
 
       switch (action) {
         case 'create':
@@ -171,6 +189,8 @@ Tool scheduleTaskTool({
                 ..where((t) => t.id.equals(taskId)))
               .getSingle();
 
+          await scheduler?.scheduleTask(taskId);
+
           return ToolCallResult(
             id: call.id,
             ok: true,
@@ -184,6 +204,16 @@ Tool scheduleTaskTool({
           final taskId = _parseId(args['id']);
           if (taskId == null) {
             return ToolCallResult.failure(call.id, 'Action "edit" requires a valid "id".');
+          }
+
+          if (isHeadless && (currentTaskId == null || taskId != currentTaskId)) {
+            return ToolCallResult.failure(
+              call.id,
+              currentTaskId == null
+                  ? 'Headless tasks cannot edit tasks without a recognized current task context.'
+                  : 'Headless task can only edit its own task (id: $currentTaskId). Cannot modify task $taskId.',
+              type: 'headless_cross_task_edit_blocked',
+            );
           }
 
           final existing = await (database.select(database.schedulerTasks)
@@ -213,9 +243,9 @@ Tool scheduleTaskTool({
           }
 
           int newStartsAt = existing.startsAt;
-          final delaySeconds = args['delay_seconds'] as int?;
-          if (delaySeconds != null && delaySeconds > 0) {
-            newStartsAt = nowMillis + (delaySeconds * 1000);
+          final editDelaySeconds = args['delay_seconds'] as int?;
+          if (editDelaySeconds != null && editDelaySeconds > 0) {
+            newStartsAt = nowMillis + (editDelaySeconds * 1000);
           } else if (args['starts_at'] != null) {
             final parsed = _parseTimestampMillis(args['starts_at']);
             if (parsed != null) newStartsAt = parsed;
@@ -270,6 +300,12 @@ Tool scheduleTaskTool({
                 ..where((t) => t.id.equals(taskId)))
               .getSingle();
 
+          if (newStatus == 'paused' || newStatus == 'cancelled') {
+            await scheduler?.cancelTask(taskId);
+          } else {
+            await scheduler?.scheduleTask(taskId);
+          }
+
           return ToolCallResult(
             id: call.id,
             ok: true,
@@ -293,6 +329,8 @@ Tool scheduleTaskTool({
           }
 
           await (database.delete(database.schedulerTasks)..where((t) => t.id.equals(taskId))).go();
+
+          await scheduler?.cancelTask(taskId);
 
           return ToolCallResult(
             id: call.id,

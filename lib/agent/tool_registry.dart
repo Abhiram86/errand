@@ -2,8 +2,11 @@ import 'dart:io';
 
 import '../llm/llm_client.dart';
 import '../services/browser_service.dart';
+import '../services/database.dart';
+import '../services/location_service.dart';
 import '../services/memory_service.dart';
 import '../services/shell_service.dart';
+import '../services/task_scheduler_service.dart';
 import '../services/tool_output_file_service.dart';
 import '../tools/act_tool.dart';
 import '../tools/attached_files_tool.dart';
@@ -84,6 +87,58 @@ class ToolRegistry {
       ],
       attachedFilesTool(
         getAttachedFiles: getAttachedFiles ?? () => const [],
+      ),
+    ]);
+  }
+
+  /// Headless tool registry for autonomous background task execution.
+  ///
+  /// Strictly excludes interactive UI tools ([screenTool], [actTool], [attachedFilesTool]).
+  /// Passes `isHeadless: true` to [bashTool], [memoryTool], [browserTool], and [scheduleTaskTool].
+  /// Enforces [currentTaskId] on [scheduleTaskTool] to restrict edits to the executing task.
+  factory ToolRegistry.headless({
+    required Directory currentDir,
+    int? currentTaskId,
+    WorkingDirectory? workingDirectory,
+    bool Function(String modality)? supportsInput,
+    ShellService? shellService,
+    CancelToken Function()? getCancelToken,
+    MemoryService? memoryService,
+    BrowserService? browserService,
+    LocationService? locationService,
+    ErrandDatabase? db,
+    TaskSchedulerService? schedulerService,
+  }) {
+    final directory = workingDirectory ?? WorkingDirectory(currentDir);
+    return ToolRegistry([
+      readTool(
+        directory,
+        supportsInput: supportsInput,
+      ),
+      bashTool(
+        workingDirectory: directory,
+        shellService: shellService,
+        getCancelToken: getCancelToken,
+        isHeadless: true,
+      ),
+      webSearchTavilyTool(),
+      webFetchTool(),
+      intentTool(),
+      locationTool(locationService: locationService),
+      memoryTool(
+        memoryService: memoryService,
+        isHeadless: true,
+      ),
+      browserTool(
+        browserService: browserService,
+        supportsInput: supportsInput,
+        isHeadless: true,
+      ),
+      scheduleTaskTool(
+        db: db,
+        schedulerService: schedulerService,
+        isHeadless: true,
+        currentTaskId: currentTaskId,
       ),
     ]);
   }

@@ -10,6 +10,7 @@ import '../types/tool.dart';
 Tool memoryTool({
   MemoryService? memoryService,
   String? currentConversationId,
+  bool isHeadless = false,
 }) {
   return Tool(
     name: 'memory',
@@ -80,6 +81,7 @@ Tool memoryTool({
       call,
       memoryService ?? MemoryService.instance,
       currentConversationId,
+      isHeadless: isHeadless,
     ),
   );
 }
@@ -95,12 +97,21 @@ String _actionFromToolName(String name) {
 Future<ToolCallResult> _handleMemoryCall(
   ToolCall call,
   MemoryService service,
-  String? currentConversationId,
-) async {
+  String? currentConversationId, {
+  bool isHeadless = false,
+}) async {
   final rawAction = call.arguments['action']?.toString().trim();
   final action = (rawAction != null && rawAction.isNotEmpty)
       ? rawAction
       : _actionFromToolName(call.name);
+
+  if (isHeadless && (action == 'create' || action == 'edit')) {
+    return ToolCallResult.failure(
+      call.id,
+      'Memory cannot be modified in background headless mode. Only "find" and "read" are permitted.',
+      type: 'headless_memory_write_blocked',
+    );
+  }
 
   switch (action) {
     case 'find':

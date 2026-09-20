@@ -28,6 +28,7 @@ Tool bashTool({
     String? reason,
   })? onConfirmCommand,
   bool Function()? isSessionTrusted,
+  bool isHeadless = false,
 }) {
   final svc = shellService ?? ShellService();
 
@@ -113,6 +114,14 @@ Tool bashTool({
       final explicitConfirm = call.arguments['confirm_destructive'] == true;
       final sessionTrusted = isSessionTrusted?.call() == true;
       final safetyCheck = ShellSafetyCheck.analyze(command);
+
+      if (safetyCheck.needsConfirmation && isHeadless) {
+        return ToolCallResult.failure(
+          call.id,
+          'Cannot perform destructive operations in headless background mode: ${safetyCheck.reason ?? command}',
+          type: 'headless_destructive_blocked',
+        );
+      }
 
       var effectiveConfirm = explicitConfirm || sessionTrusted;
 

@@ -3,6 +3,9 @@ package com.errand.errand
 import android.Manifest
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.app.ActivityOptions
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.ClipData
 import android.content.Context
@@ -573,6 +576,85 @@ class MainActivity : FlutterActivity() {
                         )
                     }
                     result.success(null)
+                }
+
+                "showNotification" -> {
+                    try {
+                        val id = call.argument<Int>("id") ?: 1000
+                        val title = call.argument<String>("title") ?: "Errand Task"
+                        val body = call.argument<String>("body") ?: ""
+                        val channelId = call.argument<String>("channelId") ?: "scheduled_tasks"
+                        val channelName = call.argument<String>("channelName") ?: "Scheduled Tasks"
+
+                        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            val channel = NotificationChannel(
+                                channelId,
+                                channelName,
+                                NotificationManager.IMPORTANCE_HIGH
+                            ).apply {
+                                description = "Notifications for background scheduled tasks"
+                                enableLights(true)
+                                enableVibration(true)
+                            }
+                            manager.createNotificationChannel(channel)
+                        }
+
+                        val tapIntent = packageManager.getLaunchIntentForPackage(packageName)
+                            ?: Intent(this, MainActivity::class.java)
+                        tapIntent.flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                        tapIntent.putExtra("task_id", id)
+
+                        val pendingTap = PendingIntent.getActivity(
+                            this,
+                            id,
+                            tapIntent,
+                            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                        )
+
+                        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            Notification.Builder(this, channelId)
+                        } else {
+                            @Suppress("DEPRECATION")
+                            Notification.Builder(this)
+                        }
+
+                        val notification = builder
+                            .setContentTitle(title)
+                            .setContentText(body)
+                            .setStyle(Notification.BigTextStyle().bigText(body))
+                            .setSmallIcon(applicationInfo.icon)
+                            .setContentIntent(pendingTap)
+                            .setAutoCancel(true)
+                            .build()
+
+                        manager.notify(id, notification)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.error("NOTIF_ERR", e.message, null)
+                    }
+                }
+
+                "cancelNotification" -> {
+                    try {
+                        val id = call.argument<Int>("id") ?: return@setMethodCallHandler result.success(false)
+                        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                        manager.cancel(id)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.error("NOTIF_ERR", e.message, null)
+                    }
+                }
+
+                "hasNotificationPermission" -> {
+                    if (Build.VERSION.SDK_INT >= 33) {
+                        result.success(
+                            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
+                                PackageManager.PERMISSION_GRANTED
+                        )
+                    } else {
+                        result.success(true)
+                    }
                 }
 
                 "hasMicPermission" -> {

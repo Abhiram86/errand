@@ -18,11 +18,13 @@ void main() {
   });
 
   group('scheduleTaskTool', () {
-    test('create one-off task with delay_seconds', () async {
+    test('create one-off task with starts_at ISO string', () async {
       final tool = scheduleTaskTool(db: db);
 
+      final startsAt =
+          DateTime.now().add(const Duration(minutes: 5)).toIso8601String();
       final result = await tool.handler(
-        const ToolCall(
+        ToolCall(
           id: 'call-1',
           name: 'schedule_task',
           arguments: {
@@ -30,7 +32,7 @@ void main() {
             'title': 'Remind to drink water',
             'prompt': 'Send a friendly reminder to hydrate',
             'schedule_type': 'one_off',
-            'delay_seconds': 300,
+            'starts_at': startsAt,
             'notify': true,
           },
         ),
@@ -45,6 +47,32 @@ void main() {
       expect(data['task']['notify'], isTrue);
       expect(data['task']['repeat_after'], isNull);
       expect(data['task']['payload']['prompt'], equals('Send a friendly reminder to hydrate'));
+    });
+
+    test('create one-off task with delay_seconds', () async {
+      final tool = scheduleTaskTool(db: db);
+      final before = DateTime.now().millisecondsSinceEpoch;
+
+      final result = await tool.handler(
+        const ToolCall(
+          id: 'call-delay-1',
+          name: 'schedule_task',
+          arguments: {
+            'action': 'create',
+            'title': 'Delayed reminder',
+            'prompt': 'Check the oven',
+            'schedule_type': 'one_off',
+            'delay_seconds': 300,
+          },
+        ),
+      );
+
+      final after = DateTime.now().millisecondsSinceEpoch;
+      expect(result.ok, isTrue);
+      final data = jsonDecode(result.output) as Map<String, dynamic>;
+      final startsAt = data['task']['starts_at'] as int;
+      expect(startsAt, greaterThanOrEqualTo(before + 300000));
+      expect(startsAt, lessThanOrEqualTo(after + 300000 + 1000));
     });
 
     test('create recurring task with repeat_after', () async {
