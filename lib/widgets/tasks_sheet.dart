@@ -317,9 +317,27 @@ class _TaskCardState extends State<_TaskCard> {
           const SizedBox(height: 6),
           Row(
             children: [
-              Text(
-                'Runs: ${task.totalRuns} • Failures: ${task.failures}',
-                style: const TextStyle(color: kMuted, fontSize: 11),
+              StreamBuilder<List<SchedulerTaskLogRow>>(
+                stream: (widget.db.select(widget.db.schedulerTaskLogs)
+                      ..where((l) => l.schedulerTaskId.equals(task.id)))
+                    .watch(),
+                builder: (context, snapshot) {
+                  final logs = snapshot.data;
+                  if (logs == null) {
+                    return Text(
+                      'Runs: ${task.totalRuns}',
+                      style: const TextStyle(color: kMuted, fontSize: 11),
+                    );
+                  }
+                  final successes = logs.where((l) => l.status == 'success').length;
+                  final fails = logs
+                      .where((l) => l.status == 'failed' || l.status == 'timeout')
+                      .length;
+                  return Text(
+                    'Runs: ${task.totalRuns} • Success: $successes • Fails: $fails',
+                    style: const TextStyle(color: kMuted, fontSize: 11),
+                  );
+                },
               ),
               const Spacer(),
               if (_executing)

@@ -60,7 +60,7 @@ void main() {
 
   testWidgets('TasksSheet renders existing task with status and actions', (tester) async {
     final now = DateTime.now().millisecondsSinceEpoch;
-    await db.into(db.schedulerTasks).insert(
+    final taskId = await db.into(db.schedulerTasks).insert(
       SchedulerTasksCompanion.insert(
         title: 'Battery check task',
         type: 'recurring',
@@ -69,8 +69,37 @@ void main() {
         startsAt: now + 60000,
         nextRunAt: Value(now + 60000),
         repeatAfter: const Value(3600000),
-        notify: const Value(true),
+        totalRuns: const Value(3),
         timezone: 'UTC',
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
+
+    // Insert 3 execution logs: 2 successes and 1 failed
+    await db.into(db.schedulerTaskLogs).insert(
+      SchedulerTaskLogsCompanion.insert(
+        schedulerTaskId: taskId,
+        scheduledFor: now - 7200000,
+        status: 'success',
+        createdAt: now - 7200000,
+        updatedAt: now - 7200000,
+      ),
+    );
+    await db.into(db.schedulerTaskLogs).insert(
+      SchedulerTaskLogsCompanion.insert(
+        schedulerTaskId: taskId,
+        scheduledFor: now - 3600000,
+        status: 'failed',
+        createdAt: now - 3600000,
+        updatedAt: now - 3600000,
+      ),
+    );
+    await db.into(db.schedulerTaskLogs).insert(
+      SchedulerTaskLogsCompanion.insert(
+        schedulerTaskId: taskId,
+        scheduledFor: now,
+        status: 'success',
         createdAt: now,
         updatedAt: now,
       ),
@@ -91,6 +120,7 @@ void main() {
     expect(find.text('SCHEDULED'), findsOneWidget);
     expect(find.text('RECURRING'), findsOneWidget);
     expect(find.textContaining('repeats every 60m'), findsOneWidget);
+    expect(find.text('Runs: 3 • Success: 2 • Fails: 1'), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox());
     await tester.pump(const Duration(milliseconds: 50));
