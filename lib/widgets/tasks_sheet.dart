@@ -93,6 +93,47 @@ class TasksSheet extends StatelessWidget {
               ),
             ),
             const Divider(color: kBorder, height: 1),
+            FutureBuilder<bool>(
+              future: TaskSchedulerService.instance.canScheduleExactAlarms(),
+              builder: (context, snapshot) {
+                if (snapshot.hasData && snapshot.data == false) {
+                  return Container(
+                    margin: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.amber.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: Colors.amber.withValues(alpha: 0.4)),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.warning_amber_rounded, color: Colors.amber, size: 18),
+                        const SizedBox(width: 8),
+                        const Expanded(
+                          child: Text(
+                            'Exact alarms not permitted. Tasks may be delayed by battery optimization.',
+                            style: TextStyle(color: Colors.amber, fontSize: 11),
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        TextButton(
+                          style: TextButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            visualDensity: VisualDensity.compact,
+                          ),
+                          onPressed: () => TaskSchedulerService.instance.openExactAlarmSettings(),
+                          child: const Text(
+                            'Enable',
+                            style: TextStyle(color: Colors.amber, fontWeight: FontWeight.bold, fontSize: 12),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }
+                return const SizedBox.shrink();
+              },
+            ),
             Expanded(
               child: StreamBuilder<List<SchedulerTaskRow>>(
                 stream: (db.select(db.schedulerTasks)

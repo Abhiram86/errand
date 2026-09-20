@@ -115,6 +115,16 @@ class TaskSchedulerService {
     }
   }
 
+  /// Opens system exact alarms settings page on Android 12+ (API 31+).
+  Future<bool> openExactAlarmSettings() async {
+    try {
+      final result = await _channel.invokeMethod<bool>('openExactAlarmSettings');
+      return result ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// Sweeps tasks that were left in `running` status due to process crashes or kills.
   ///
   /// Tasks running longer than [maxRunningDuration] are considered abandoned.

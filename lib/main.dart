@@ -31,6 +31,9 @@ void backgroundTaskMain() async {
   WidgetsFlutterBinding.ensureInitialized();
   await AppSettingsService.instance.ensureLoaded();
   TaskSchedulerService.instance.initialize();
+  try {
+    await const MethodChannel('task_scheduler').invokeMethod('onEngineReady');
+  } catch (_) {}
 }
 
 class ErrandApp extends StatelessWidget {

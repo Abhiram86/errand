@@ -227,6 +227,23 @@ class MainActivity : FlutterActivity() {
                 "canScheduleExactAlarms" -> {
                     result.success(TaskAlarmManager.canScheduleExactAlarms(this))
                 }
+                "openExactAlarmSettings" -> {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        try {
+                            val intent = Intent(android.provider.Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
+                                data = android.net.Uri.parse("package:$packageName")
+                                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                            }
+                            startActivity(intent)
+                            result.success(true)
+                        } catch (e: Exception) {
+                            Log.e("MainActivity", "Failed to open exact alarm settings", e)
+                            result.success(false)
+                        }
+                    } else {
+                        result.success(false)
+                    }
+                }
                 else -> result.notImplemented()
             }
         }

@@ -95,4 +95,39 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     await tester.pump(const Duration(milliseconds: 50));
   });
+
+  testWidgets('TasksSheet surfaces exact alarm denial banner when not permitted', (tester) async {
+    var openedSettings = false;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(const MethodChannel('task_scheduler'), (call) async {
+      if (call.method == 'canScheduleExactAlarms') return false;
+      if (call.method == 'openExactAlarmSettings') {
+        openedSettings = true;
+        return true;
+      }
+      return true;
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: TasksSheet(database: db),
+        ),
+      ),
+    );
+
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(find.textContaining('Exact alarms not permitted'), findsOneWidget);
+    expect(find.text('Enable'), findsOneWidget);
+
+    await tester.tap(find.text('Enable'));
+    await tester.pump();
+
+    expect(openedSettings, isTrue);
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(milliseconds: 50));
+  });
 }

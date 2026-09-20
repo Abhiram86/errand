@@ -18,14 +18,17 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.engine.dart.DartExecutor
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugins.GeneratedPluginRegistrant
+import java.util.ArrayDeque
 
 /**
- * Foreground service that guarantees process survival and CPU wake-lock while a background
- * task executes.
+ * Foreground service that guarantees process survival and CPU wake-lock while background
+ * tasks execute.
  *
- * If the application UI is active, delegates to the existing Flutter engine.
- * If the application is in the background or killed, spins up an isolated background FlutterEngine,
- * executes [backgroundTaskMain], invokes the requested operation, and cleanly disposes when finished.
+ * Concurrency & Reliability Architecture:
+ * - Queues concurrent onStartCommand alarm requests and processes them sequentially.
+ * - Reuses a single background FlutterEngine instance across queued runs.
+ * - Waits for Dart to signal readiness (onEngineReady) with retry polling fallback to eliminate fixed-sleep race conditions.
+ * - Only stops the service with stopSelf(lastStartId) once all queued tasks have finished.
  */
 class TaskExecutionService : Service() {
     companion object {
@@ -61,8 +64,21 @@ class TaskExecutionService : Service() {
         }
     }
 
+    private data class ServiceRequest(
+        val action: String,
+        val taskId: Int,
+        val taskTitle: String,
+        val startId: Int
+    )
+
+    private val requestQueue = ArrayDeque<ServiceRequest>()
+    private var isProcessing = false
+    private var lastStartId = -1
+
     private var wakeLock: PowerManager.WakeLock? = null
     private var backgroundEngine: FlutterEngine? = null
+    private var isEngineReady = false
+    private val engineReadyCallbacks = ArrayList<() -> Unit>()
     private val mainHandler = Handler(Looper.getMainLooper())
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -80,167 +96,189 @@ class TaskExecutionService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        lastStartId = startId
+        val action = intent?.action ?: ""
+        val taskId = intent?.getIntExtra(TaskAlarmManager.EXTRA_TASK_ID, -1) ?: -1
         val title = intent?.getStringExtra(TaskAlarmManager.EXTRA_TASK_TITLE) ?: "Task in progress"
+
         startForeground(NOTIFICATION_ID, buildForegroundNotification(title))
 
-        val action = intent?.action
-        if (action == ACTION_EXECUTE_TASK) {
-            val taskId = intent.getIntExtra(TaskAlarmManager.EXTRA_TASK_ID, -1)
-            if (taskId > 0) {
-                runTask(taskId)
-            } else {
-                stopExecution()
-            }
-        } else if (action == ACTION_RESCHEDULE_ALL) {
-            runRescheduleAll()
-        } else {
-            stopExecution()
+        val request = ServiceRequest(action, taskId, title, startId)
+        requestQueue.addLast(request)
+
+        if (!isProcessing) {
+            processNextRequest()
         }
 
         return START_NOT_STICKY
     }
 
-    private fun runTask(taskId: Int) {
-        val mainChannel = MainActivity.schedulerChannel
-        if (mainChannel != null) {
-            Log.d(TAG, "Dispatching executeTask($taskId) to active MainActivity engine")
-            mainChannel.invokeMethod(
-                "executeTask",
-                mapOf("taskId" to taskId),
-                object : MethodChannel.Result {
+    private fun processNextRequest() {
+        mainHandler.post {
+            if (requestQueue.isEmpty()) {
+                Log.d(TAG, "Request queue empty; shutting down service with startId $lastStartId")
+                isProcessing = false
+                destroyBackgroundEngine()
+
+                try {
+                    if (wakeLock?.isHeld == true) {
+                        wakeLock?.release()
+                    }
+                    wakeLock = null
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error releasing wake lock", e)
+                }
+
+                stopForeground(true)
+                stopSelf(lastStartId)
+                return@post
+            }
+
+            isProcessing = true
+            val request = requestQueue.removeFirst()
+
+            // Update foreground notification with current task title
+            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            notificationManager.notify(NOTIFICATION_ID, buildForegroundNotification(request.taskTitle))
+
+            // Check if active foreground UI engine is available
+            val mainChannel = MainActivity.schedulerChannel
+            if (mainChannel != null) {
+                dispatchToMainEngine(request, mainChannel)
+            } else {
+                dispatchToBackgroundEngine(request)
+            }
+        }
+    }
+
+    private fun dispatchToMainEngine(request: ServiceRequest, mainChannel: MethodChannel) {
+        val methodName = if (request.action == ACTION_EXECUTE_TASK) "executeTask" else "rescheduleAll"
+        val methodArgs = if (request.action == ACTION_EXECUTE_TASK) mapOf("taskId" to request.taskId) else null
+
+        Log.d(TAG, "Dispatching $methodName to active MainActivity engine")
+        mainChannel.invokeMethod(methodName, methodArgs, object : MethodChannel.Result {
+            override fun success(result: Any?) {
+                Log.d(TAG, "$methodName completed on main engine: $result")
+                processNextRequest()
+            }
+
+            override fun error(code: String, message: String?, details: Any?) {
+                Log.e(TAG, "$methodName failed on main engine: $code: $message")
+                processNextRequest()
+            }
+
+            override fun notImplemented() {
+                Log.w(TAG, "$methodName not implemented on main engine, falling back to background engine")
+                dispatchToBackgroundEngine(request)
+            }
+        })
+    }
+
+    private fun dispatchToBackgroundEngine(request: ServiceRequest) {
+        ensureBackgroundEngine { engine ->
+            val channel = MethodChannel(engine.dartExecutor.binaryMessenger, "task_scheduler")
+            val methodName = if (request.action == ACTION_EXECUTE_TASK) "executeTask" else "rescheduleAll"
+            val methodArgs = if (request.action == ACTION_EXECUTE_TASK) mapOf("taskId" to request.taskId) else null
+
+            waitForEngineReady {
+                Log.d(TAG, "Invoking $methodName on background engine (taskId: ${request.taskId})")
+                channel.invokeMethod(methodName, methodArgs, object : MethodChannel.Result {
                     override fun success(result: Any?) {
-                        Log.d(TAG, "Task $taskId completed on main engine: $result")
-                        stopExecution()
+                        Log.d(TAG, "Background $methodName completed: $result")
+                        processNextRequest()
                     }
 
                     override fun error(code: String, message: String?, details: Any?) {
-                        Log.e(TAG, "Task $taskId failed on main engine: $code: $message")
-                        stopExecution()
+                        Log.e(TAG, "Background $methodName failed: $code: $message")
+                        processNextRequest()
                     }
 
                     override fun notImplemented() {
-                        Log.w(TAG, "executeTask not implemented on main engine, spinning background engine")
-                        runTaskOnBackgroundEngine(taskId)
+                        Log.e(TAG, "Background $methodName not implemented in backgroundTaskMain")
+                        processNextRequest()
                     }
-                }
+                })
+            }
+        }
+    }
+
+    private fun ensureBackgroundEngine(onReady: (FlutterEngine) -> Unit) {
+        val existing = backgroundEngine
+        if (existing != null) {
+            onReady(existing)
+            return
+        }
+
+        try {
+            Log.d(TAG, "Initializing new background FlutterEngine")
+            val loader = FlutterInjector.instance().flutterLoader()
+            loader.startInitialization(applicationContext)
+            loader.ensureInitializationComplete(applicationContext, null)
+
+            val engine = FlutterEngine(applicationContext)
+            backgroundEngine = engine
+            GeneratedPluginRegistrant.registerWith(engine)
+
+            setupEngineChannels(engine)
+
+            val entrypoint = DartExecutor.DartEntrypoint(
+                loader.findAppBundlePath(),
+                "backgroundTaskMain"
             )
+            engine.dartExecutor.executeDartEntrypoint(entrypoint)
+            onReady(engine)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to initialize background Flutter engine", e)
+            processNextRequest()
+        }
+    }
+
+    private fun waitForEngineReady(onReady: () -> Unit) {
+        if (isEngineReady) {
+            onReady()
             return
         }
 
-        runTaskOnBackgroundEngine(taskId)
+        engineReadyCallbacks.add(onReady)
+
+        // Polling fallback in case Dart does not signal or onEngineReady is delayed
+        var attempts = 0
+        fun poll() {
+            if (isEngineReady) return
+            attempts++
+            if (attempts >= 10) { // 5.0 seconds maximum fallback timeout
+                Log.w(TAG, "Timed out waiting for Dart onEngineReady; proceeding with invocation attempt")
+                onEngineSignaledReady()
+            } else {
+                mainHandler.postDelayed({ poll() }, 500)
+            }
+        }
+        mainHandler.postDelayed({ poll() }, 500)
     }
 
-    private fun runTaskOnBackgroundEngine(taskId: Int) {
-        mainHandler.post {
+    private fun onEngineSignaledReady() {
+        if (isEngineReady) return
+        isEngineReady = true
+        val callbacks = ArrayList(engineReadyCallbacks)
+        engineReadyCallbacks.clear()
+        for (cb in callbacks) {
             try {
-                Log.d(TAG, "Starting background FlutterEngine for task $taskId")
-                val loader = FlutterInjector.instance().flutterLoader()
-                loader.startInitialization(applicationContext)
-                loader.ensureInitializationComplete(applicationContext, null)
-
-                val engine = FlutterEngine(applicationContext)
-                backgroundEngine = engine
-                GeneratedPluginRegistrant.registerWith(engine)
-
-                val channel = setupEngineChannels(engine)
-
-                val entrypoint = DartExecutor.DartEntrypoint(
-                    loader.findAppBundlePath(),
-                    "backgroundTaskMain"
-                )
-                engine.dartExecutor.executeDartEntrypoint(entrypoint)
-
-                // Give Dart a short moment to attach its MethodCallHandler, then invoke executeTask
-                mainHandler.postDelayed({
-                    channel.invokeMethod(
-                        "executeTask",
-                        mapOf("taskId" to taskId),
-                        object : MethodChannel.Result {
-                            override fun success(res: Any?) {
-                                Log.d(TAG, "Background execution of task $taskId completed: $res")
-                                stopExecution()
-                            }
-
-                            override fun error(code: String, msg: String?, details: Any?) {
-                                Log.e(TAG, "Background execution of task $taskId failed: $code: $msg")
-                                stopExecution()
-                            }
-
-                            override fun notImplemented() {
-                                Log.e(TAG, "executeTask not implemented in backgroundTaskMain")
-                                stopExecution()
-                            }
-                        }
-                    )
-                }, 500)
+                cb()
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to initialize background Flutter engine", e)
-                stopExecution()
+                Log.e(TAG, "Error executing engineReady callback", e)
             }
         }
     }
 
-    private fun runRescheduleAll() {
-        val mainChannel = MainActivity.schedulerChannel
-        if (mainChannel != null) {
-            mainChannel.invokeMethod("rescheduleAll", null, object : MethodChannel.Result {
-                override fun success(result: Any?) {
-                    Log.d(TAG, "Rescheduled all tasks via main engine")
-                    stopExecution()
-                }
-                override fun error(code: String, message: String?, details: Any?) {
-                    stopExecution()
-                }
-                override fun notImplemented() {
-                    stopExecution()
-                }
-            })
-            return
-        }
-
-        mainHandler.post {
-            try {
-                val loader = FlutterInjector.instance().flutterLoader()
-                loader.startInitialization(applicationContext)
-                loader.ensureInitializationComplete(applicationContext, null)
-
-                val engine = FlutterEngine(applicationContext)
-                backgroundEngine = engine
-                GeneratedPluginRegistrant.registerWith(engine)
-
-                val channel = setupEngineChannels(engine)
-
-                val entrypoint = DartExecutor.DartEntrypoint(
-                    loader.findAppBundlePath(),
-                    "backgroundTaskMain"
-                )
-                engine.dartExecutor.executeDartEntrypoint(entrypoint)
-
-                mainHandler.postDelayed({
-                    channel.invokeMethod("rescheduleAll", null, object : MethodChannel.Result {
-                        override fun success(res: Any?) {
-                            Log.d(TAG, "Rescheduled all tasks via background engine: $res")
-                            stopExecution()
-                        }
-                        override fun error(code: String, msg: String?, details: Any?) {
-                            stopExecution()
-                        }
-                        override fun notImplemented() {
-                            stopExecution()
-                        }
-                    })
-                }, 500)
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to reschedule via background engine", e)
-                stopExecution()
-            }
-        }
-    }
-
-    private fun setupEngineChannels(engine: FlutterEngine): MethodChannel {
+    private fun setupEngineChannels(engine: FlutterEngine) {
         val schedulerChannel = MethodChannel(engine.dartExecutor.binaryMessenger, "task_scheduler")
         schedulerChannel.setMethodCallHandler { call, result ->
             when (call.method) {
+                "onEngineReady" -> {
+                    Log.d(TAG, "Dart backgroundTaskMain signaled onEngineReady")
+                    onEngineSignaledReady()
+                    result.success(true)
+                }
                 "scheduleAlarm" -> {
                     val id = call.argument<Int>("taskId") ?: -1
                     val trigger = call.argument<Number>("triggerAtMillis")?.toLong() ?: 0L
@@ -303,35 +341,27 @@ class TaskExecutionService : Service() {
                 else -> result.notImplemented()
             }
         }
-
-        return schedulerChannel
     }
 
-    private fun stopExecution() {
-        mainHandler.post {
-            try {
-                backgroundEngine?.destroy()
-                backgroundEngine = null
-            } catch (e: Exception) {
-                Log.e(TAG, "Error destroying background engine", e)
-            }
-
-            try {
-                if (wakeLock?.isHeld == true) {
-                    wakeLock?.release()
-                }
-                wakeLock = null
-            } catch (e: Exception) {
-                Log.e(TAG, "Error releasing wake lock", e)
-            }
-
-            stopForeground(true)
-            stopSelf()
+    private fun destroyBackgroundEngine() {
+        try {
+            isEngineReady = false
+            engineReadyCallbacks.clear()
+            backgroundEngine?.destroy()
+            backgroundEngine = null
+        } catch (e: Exception) {
+            Log.e(TAG, "Error destroying background engine", e)
         }
     }
 
     override fun onDestroy() {
-        stopExecution()
+        destroyBackgroundEngine()
+        try {
+            if (wakeLock?.isHeld == true) {
+                wakeLock?.release()
+            }
+            wakeLock = null
+        } catch (_) {}
         super.onDestroy()
     }
 
@@ -348,6 +378,7 @@ class TaskExecutionService : Service() {
         }
 
         val tapIntent = packageManager.getLaunchIntentForPackage(packageName)
+            ?: Intent(this, MainActivity::class.java)
         val pendingTap = PendingIntent.getActivity(
             this, 0, tapIntent,
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -364,10 +395,12 @@ class TaskExecutionService : Service() {
             Notification.Builder(this)
         }
 
+        val iconRes = if (applicationInfo.icon != 0) applicationInfo.icon else android.R.drawable.ic_dialog_info
+
         return builder
             .setContentTitle("Errand Scheduled Task")
             .setContentText("Executing: $taskTitle")
-            .setSmallIcon(applicationInfo.icon)
+            .setSmallIcon(iconRes)
             .setContentIntent(pendingTap)
             .setOngoing(true)
             .build()
