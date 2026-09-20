@@ -272,6 +272,15 @@ class TaskSchedulerService {
           updatedAt: Value(finishMillis),
         ),
       );
+      if (task.notify) {
+        try {
+          await notificationService.showNotification(
+            id: taskId,
+            title: 'Task Failed: ${task.title}',
+            body: 'No LLM client configured for background task execution.',
+          );
+        } catch (_) {}
+      }
       return false;
     }
 

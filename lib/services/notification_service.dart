@@ -30,7 +30,19 @@ class NotificationService {
       });
       return res ?? false;
     } catch (_) {
-      return false;
+      try {
+        final fallbackRes = await const MethodChannel('task_scheduler')
+            .invokeMethod<bool>('showNotification', {
+          'id': id,
+          'title': title,
+          'body': body,
+          'channelId': channelId,
+          'channelName': channelName,
+        });
+        return fallbackRes ?? false;
+      } catch (_) {
+        return false;
+      }
     }
   }
 
@@ -42,7 +54,15 @@ class NotificationService {
       });
       return res ?? false;
     } catch (_) {
-      return false;
+      try {
+        final fallbackRes = await const MethodChannel('task_scheduler')
+            .invokeMethod<bool>('cancelNotification', {
+          'id': id,
+        });
+        return fallbackRes ?? false;
+      } catch (_) {
+        return false;
+      }
     }
   }
 

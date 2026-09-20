@@ -142,33 +142,7 @@ class TaskExecutionService : Service() {
                 backgroundEngine = engine
                 GeneratedPluginRegistrant.registerWith(engine)
 
-                val channel = MethodChannel(engine.dartExecutor.binaryMessenger, "task_scheduler")
-                channel.setMethodCallHandler { call, result ->
-                    when (call.method) {
-                        "scheduleAlarm" -> {
-                            val id = call.argument<Int>("taskId") ?: -1
-                            val trigger = call.argument<Number>("triggerAtMillis")?.toLong() ?: 0L
-                            val title = call.argument<String>("title") ?: ""
-                            if (id > 0 && trigger > 0) {
-                                TaskAlarmManager.scheduleExactAlarm(applicationContext, id, trigger, title)
-                                result.success(true)
-                            } else {
-                                result.success(false)
-                            }
-                        }
-                        "cancelAlarm" -> {
-                            val id = call.argument<Int>("taskId") ?: -1
-                            if (id > 0) {
-                                TaskAlarmManager.cancelAlarm(applicationContext, id)
-                            }
-                            result.success(true)
-                        }
-                        "canScheduleExactAlarms" -> {
-                            result.success(TaskAlarmManager.canScheduleExactAlarms(applicationContext))
-                        }
-                        else -> result.notImplemented()
-                    }
-                }
+                val channel = setupEngineChannels(engine)
 
                 val entrypoint = DartExecutor.DartEntrypoint(
                     loader.findAppBundlePath(),
@@ -234,30 +208,7 @@ class TaskExecutionService : Service() {
                 backgroundEngine = engine
                 GeneratedPluginRegistrant.registerWith(engine)
 
-                val channel = MethodChannel(engine.dartExecutor.binaryMessenger, "task_scheduler")
-                channel.setMethodCallHandler { call, result ->
-                    when (call.method) {
-                        "scheduleAlarm" -> {
-                            val id = call.argument<Int>("taskId") ?: -1
-                            val trigger = call.argument<Number>("triggerAtMillis")?.toLong() ?: 0L
-                            val title = call.argument<String>("title") ?: ""
-                            if (id > 0 && trigger > 0) {
-                                TaskAlarmManager.scheduleExactAlarm(applicationContext, id, trigger, title)
-                                result.success(true)
-                            } else {
-                                result.success(false)
-                            }
-                        }
-                        "cancelAlarm" -> {
-                            val id = call.argument<Int>("taskId") ?: -1
-                            if (id > 0) {
-                                TaskAlarmManager.cancelAlarm(applicationContext, id)
-                            }
-                            result.success(true)
-                        }
-                        else -> result.notImplemented()
-                    }
-                }
+                val channel = setupEngineChannels(engine)
 
                 val entrypoint = DartExecutor.DartEntrypoint(
                     loader.findAppBundlePath(),
@@ -284,6 +235,76 @@ class TaskExecutionService : Service() {
                 stopExecution()
             }
         }
+    }
+
+    private fun setupEngineChannels(engine: FlutterEngine): MethodChannel {
+        val schedulerChannel = MethodChannel(engine.dartExecutor.binaryMessenger, "task_scheduler")
+        schedulerChannel.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "scheduleAlarm" -> {
+                    val id = call.argument<Int>("taskId") ?: -1
+                    val trigger = call.argument<Number>("triggerAtMillis")?.toLong() ?: 0L
+                    val title = call.argument<String>("title") ?: ""
+                    if (id > 0 && trigger > 0) {
+                        TaskAlarmManager.scheduleExactAlarm(applicationContext, id, trigger, title)
+                        result.success(true)
+                    } else {
+                        result.success(false)
+                    }
+                }
+                "cancelAlarm" -> {
+                    val id = call.argument<Int>("taskId") ?: -1
+                    if (id > 0) {
+                        TaskAlarmManager.cancelAlarm(applicationContext, id)
+                    }
+                    result.success(true)
+                }
+                "canScheduleExactAlarms" -> {
+                    result.success(TaskAlarmManager.canScheduleExactAlarms(applicationContext))
+                }
+                "showNotification" -> {
+                    val id = call.argument<Int>("id") ?: 1000
+                    val title = call.argument<String>("title") ?: "Errand Task"
+                    val body = call.argument<String>("body") ?: ""
+                    val channelId = call.argument<String>("channelId") ?: "scheduled_tasks"
+                    val channelName = call.argument<String>("channelName") ?: "Scheduled Tasks"
+                    val ok = NotificationHelper.showNotification(applicationContext, id, title, body, channelId, channelName)
+                    result.success(ok)
+                }
+                "cancelNotification" -> {
+                    val id = call.argument<Int>("id") ?: -1
+                    val ok = if (id > 0) NotificationHelper.cancelNotification(applicationContext, id) else false
+                    result.success(ok)
+                }
+                else -> result.notImplemented()
+            }
+        }
+
+        val appInfoChannel = MethodChannel(engine.dartExecutor.binaryMessenger, "app_info")
+        appInfoChannel.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "showNotification" -> {
+                    val id = call.argument<Int>("id") ?: 1000
+                    val title = call.argument<String>("title") ?: "Errand Task"
+                    val body = call.argument<String>("body") ?: ""
+                    val channelId = call.argument<String>("channelId") ?: "scheduled_tasks"
+                    val channelName = call.argument<String>("channelName") ?: "Scheduled Tasks"
+                    val ok = NotificationHelper.showNotification(applicationContext, id, title, body, channelId, channelName)
+                    result.success(ok)
+                }
+                "cancelNotification" -> {
+                    val id = call.argument<Int>("id") ?: -1
+                    val ok = if (id > 0) NotificationHelper.cancelNotification(applicationContext, id) else false
+                    result.success(ok)
+                }
+                "hasNotificationPermission" -> {
+                    result.success(NotificationHelper.hasPermission(applicationContext))
+                }
+                else -> result.notImplemented()
+            }
+        }
+
+        return schedulerChannel
     }
 
     private fun stopExecution() {
