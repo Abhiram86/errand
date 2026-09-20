@@ -435,12 +435,24 @@ int? _parseId(dynamic raw) {
 
 int? _parseTimestampMillis(dynamic raw) {
   if (raw == null) return null;
-  if (raw is int) return raw;
-  if (raw is String) {
+  int? millis;
+  if (raw is int) {
+    millis = raw;
+  } else if (raw is String) {
     final asInt = int.tryParse(raw.trim());
-    if (asInt != null) return asInt;
-    final asDate = DateTime.tryParse(raw.trim());
-    if (asDate != null) return asDate.millisecondsSinceEpoch;
+    if (asInt != null) {
+      millis = asInt;
+    } else {
+      final asDate = DateTime.tryParse(raw.trim());
+      if (asDate != null) return asDate.millisecondsSinceEpoch;
+    }
+  }
+  if (millis != null) {
+    // If epoch seconds was passed (e.g. 10 digits, < 10000000000), convert to millis
+    if (millis > 0 && millis < 10000000000) {
+      millis *= 1000;
+    }
+    return millis;
   }
   return null;
 }

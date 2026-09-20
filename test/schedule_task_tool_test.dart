@@ -75,6 +75,31 @@ void main() {
       expect(startsAt, lessThanOrEqualTo(after + 300000 + 1000));
     });
 
+    test('create one-off task with epoch seconds parses into milliseconds', () async {
+      final tool = scheduleTaskTool(db: db);
+
+      // Pass 10-digit epoch seconds (e.g. 1750000000)
+      final result = await tool.handler(
+        const ToolCall(
+          id: 'call-sec-1',
+          name: 'schedule_task',
+          arguments: {
+            'action': 'create',
+            'title': 'Epoch seconds reminder',
+            'prompt': 'Check seconds conversion',
+            'schedule_type': 'one_off',
+            'starts_at': '1750000000',
+          },
+        ),
+      );
+
+      expect(result.ok, isTrue);
+      final data = jsonDecode(result.output) as Map<String, dynamic>;
+      final startsAt = data['task']['starts_at'] as int;
+      // Should be scaled to milliseconds (13 digits: 1750000000000)
+      expect(startsAt, equals(1750000000000));
+    });
+
     test('create recurring task with repeat_after', () async {
       final tool = scheduleTaskTool(db: db);
 

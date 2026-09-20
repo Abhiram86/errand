@@ -123,7 +123,7 @@ class ToolRegistry {
       ),
       webSearchTavilyTool(),
       webFetchTool(),
-      intentTool(),
+      intentTool(isHeadless: true),
       locationTool(locationService: locationService),
       memoryTool(
         memoryService: memoryService,

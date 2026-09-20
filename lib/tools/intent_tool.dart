@@ -10,6 +10,7 @@ Tool intentTool({
   IntentService? service,
   A11yService? a11yService,
   InstalledAppsService? installedAppsService,
+  bool isHeadless = false,
 }) {
   final svc = service ?? IntentService();
   final a11y = a11yService ?? A11yService();
@@ -17,13 +18,16 @@ Tool intentTool({
 
   return Tool(
     name: 'intent',
-    description:
-        'Interacts with external Android apps, files, URLs, settings, and Android intents. '
-        'Supports opening local files (images, audio, videos, PDFs), opening URLs or URI schemes '
-        '(https, tel, mailto, geo), launching apps by package, navigating system settings pages, '
-        'or sending a custom Android intent. For action:"intent", pass the exact Android '
-        'action constant, data URI, MIME type, package, and typed extras required by the target app. '
-        'Errand does not infer or synthesize app-specific fields.',
+    description: isHeadless
+        ? 'Interacts with external Android system services and intents in background headless mode. '
+            'Non-UI background intents (alarms, timers, calendar entries, system broadcasts) and docs are supported. '
+            'Interactive UI actions (open_app, settings, open_file, open_url) are disabled in background mode.'
+        : 'Interacts with external Android apps, files, URLs, settings, and Android intents. '
+            'Supports opening local files (images, audio, videos, PDFs), opening URLs or URI schemes '
+            '(https, tel, mailto, geo), launching apps by package, navigating system settings pages, '
+            'or sending a custom Android intent. For action:"intent", pass the exact Android '
+            'action constant, data URI, MIME type, package, and typed extras required by the target app. '
+            'Errand does not infer or synthesize app-specific fields.',
     parameters: {
       'type': 'object',
       'properties': {
@@ -91,6 +95,32 @@ Tool intentTool({
       'required': ['action'],
     },
     handler: (call) async {
+      final action = (call.arguments['action'] as String?)?.trim().toLowerCase();
+      if (isHeadless) {
+        if (action == 'open_app' ||
+            action == 'settings' ||
+            action == 'open_file' ||
+            action == 'open_url') {
+          return ToolCallResult.failure(
+            call.id,
+            'Action "$action" opens interactive foreground UI and is disabled in background scheduled tasks.',
+            type: 'headless_ui_intent_blocked',
+          );
+        }
+        if (action == 'intent') {
+          final androidAction =
+              (call.arguments['android_action'] as String?)?.trim() ?? '';
+          if (androidAction.startsWith('android.settings.') ||
+              androidAction == 'android.intent.action.VIEW' ||
+              androidAction == 'android.intent.action.MAIN') {
+            return ToolCallResult.failure(
+              call.id,
+              'Android intent action "$androidAction" opens an interactive UI window and is blocked in background scheduled tasks.',
+              type: 'headless_ui_intent_blocked',
+            );
+          }
+        }
+      }
       try {
         return await handleIntentAction(
           call,

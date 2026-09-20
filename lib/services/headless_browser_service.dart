@@ -134,10 +134,8 @@ class HeadlessBrowserService extends BrowserService {
 
   @override
   Future<void> close({bool clear = false}) async {
-    await super.close(clear: clear);
-    if (clear) {
-      await disposeHeadlessView();
-    }
+    await super.close(clear: true);
+    await disposeHeadlessView();
   }
 
   /// Explicitly terminates and disposes the native offscreen web view.

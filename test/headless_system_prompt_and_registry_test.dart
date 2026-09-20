@@ -210,5 +210,90 @@ void main() {
       expect(browser.description, contains('Embedded headless web browser'));
       expect(browser.description, contains('offscreen without showing UI'));
     });
+
+    test('wires intent with isHeadless: true and blocks UI-popping actions', () async {
+      // open_app blocked
+      final appRes = await registry.execute(
+        const ToolCall(
+          id: 'call-app',
+          name: 'intent',
+          arguments: {
+            'action': 'open_app',
+            'package': 'com.spotify.music',
+          },
+        ),
+      );
+      expect(appRes.ok, isFalse);
+      expect(appRes.error?.type, equals('headless_ui_intent_blocked'));
+
+      // settings blocked
+      final settingsRes = await registry.execute(
+        const ToolCall(
+          id: 'call-settings',
+          name: 'intent',
+          arguments: {
+            'action': 'settings',
+            'page': 'wifi',
+          },
+        ),
+      );
+      expect(settingsRes.ok, isFalse);
+      expect(settingsRes.error?.type, equals('headless_ui_intent_blocked'));
+
+      // open_file blocked
+      final fileRes = await registry.execute(
+        const ToolCall(
+          id: 'call-file',
+          name: 'intent',
+          arguments: {
+            'action': 'open_file',
+            'path': '/storage/emulated/0/Download/test.pdf',
+          },
+        ),
+      );
+      expect(fileRes.ok, isFalse);
+      expect(fileRes.error?.type, equals('headless_ui_intent_blocked'));
+
+      // open_url blocked
+      final urlRes = await registry.execute(
+        const ToolCall(
+          id: 'call-url',
+          name: 'intent',
+          arguments: {
+            'action': 'open_url',
+            'url': 'https://example.com',
+          },
+        ),
+      );
+      expect(urlRes.ok, isFalse);
+      expect(urlRes.error?.type, equals('headless_ui_intent_blocked'));
+
+      // intent with android.settings.* blocked
+      final customSettingsRes = await registry.execute(
+        const ToolCall(
+          id: 'call-custom-settings',
+          name: 'intent',
+          arguments: {
+            'action': 'intent',
+            'android_action': 'android.settings.DISPLAY_SETTINGS',
+          },
+        ),
+      );
+      expect(customSettingsRes.ok, isFalse);
+      expect(customSettingsRes.error?.type, equals('headless_ui_intent_blocked'));
+
+      // docs is allowed
+      final docsRes = await registry.execute(
+        const ToolCall(
+          id: 'call-docs',
+          name: 'intent',
+          arguments: {
+            'action': 'docs',
+            'name': 'alarm',
+          },
+        ),
+      );
+      expect(docsRes.ok, isTrue);
+    });
   });
 }

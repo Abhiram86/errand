@@ -45,6 +45,15 @@ Tool browserTool({
             'execute_dom_js (evaluate custom JavaScript in the page DOM), '
             'act (click, type, or scroll using element refs or selectors), '
             'screenshot (capture the visible viewport).',
+    onDispose: () {
+      if (isHeadless) {
+        if (service is HeadlessBrowserService) {
+          service.dispose();
+        } else {
+          service.close(clear: true);
+        }
+      }
+    },
     parameters: {
       'type': 'object',
       'properties': {
