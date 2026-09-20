@@ -13,6 +13,7 @@ import '../tools/file_tools.dart';
 import '../tools/intent_tool.dart';
 import '../tools/location_tool.dart';
 import '../tools/memory_tool.dart';
+import '../tools/schedule_task_tool.dart';
 import '../tools/screen_tool.dart';
 import '../tools/web_tools.dart';
 import '../types/tool.dart';
@@ -74,6 +75,7 @@ class ToolRegistry {
         browserService: browserService,
         supportsInput: supportsInput,
       ),
+      scheduleTaskTool(),
       if (enableA11yTools) ...[
         screenTool(
           supportsInput: supportsInput,
@@ -97,6 +99,14 @@ class ToolRegistry {
 
   Future<ToolCallResult> execute(ToolCall call) async {
     var tool = _tools[call.name];
+    if (tool == null &&
+        (call.name.startsWith('schedule_task.') ||
+            call.name.startsWith('schedule_task_') ||
+            call.name.startsWith('schedule.') ||
+            call.name == 'schedule' ||
+            call.name == 'schedule_task')) {
+      tool = _tools['schedule_task'];
+    }
     if (tool == null &&
         (call.name.startsWith('memory.') || call.name.startsWith('memory_'))) {
       tool = _tools['memory'];

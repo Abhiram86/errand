@@ -2499,6 +2499,19 @@ class $SchedulerTasksTable extends SchedulerTasks
     type: DriftSqlType.string,
     requiredDuringInsert: true,
   );
+  static const VerificationMeta _notifyMeta = const VerificationMeta('notify');
+  @override
+  late final GeneratedColumn<bool> notify = GeneratedColumn<bool>(
+    'notify',
+    aliasedName,
+    false,
+    type: DriftSqlType.bool,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'CHECK ("notify" IN (0, 1))',
+    ),
+    defaultValue: const Constant(true),
+  );
   static const VerificationMeta _lastRunAtMeta = const VerificationMeta(
     'lastRunAt',
   );
@@ -2579,6 +2592,7 @@ class $SchedulerTasksTable extends SchedulerTasks
     nextRunAt,
     repeatAfter,
     timezone,
+    notify,
     lastRunAt,
     totalRuns,
     failures,
@@ -2666,6 +2680,12 @@ class $SchedulerTasksTable extends SchedulerTasks
       );
     } else if (isInserting) {
       context.missing(_timezoneMeta);
+    }
+    if (data.containsKey('notify')) {
+      context.handle(
+        _notifyMeta,
+        notify.isAcceptableOrUnknown(data['notify']!, _notifyMeta),
+      );
     }
     if (data.containsKey('last_run_at')) {
       context.handle(
@@ -2755,6 +2775,10 @@ class $SchedulerTasksTable extends SchedulerTasks
         DriftSqlType.string,
         data['${effectivePrefix}timezone'],
       )!,
+      notify: attachedDatabase.typeMapping.read(
+        DriftSqlType.bool,
+        data['${effectivePrefix}notify'],
+      )!,
       lastRunAt: attachedDatabase.typeMapping.read(
         DriftSqlType.int,
         data['${effectivePrefix}last_run_at'],
@@ -2799,6 +2823,7 @@ class SchedulerTaskRow extends DataClass
   final int? nextRunAt;
   final int? repeatAfter;
   final String timezone;
+  final bool notify;
   final int? lastRunAt;
   final int totalRuns;
   final int failures;
@@ -2815,6 +2840,7 @@ class SchedulerTaskRow extends DataClass
     this.nextRunAt,
     this.repeatAfter,
     required this.timezone,
+    required this.notify,
     this.lastRunAt,
     required this.totalRuns,
     required this.failures,
@@ -2838,6 +2864,7 @@ class SchedulerTaskRow extends DataClass
       map['repeat_after'] = Variable<int>(repeatAfter);
     }
     map['timezone'] = Variable<String>(timezone);
+    map['notify'] = Variable<bool>(notify);
     if (!nullToAbsent || lastRunAt != null) {
       map['last_run_at'] = Variable<int>(lastRunAt);
     }
@@ -2864,6 +2891,7 @@ class SchedulerTaskRow extends DataClass
           ? const Value.absent()
           : Value(repeatAfter),
       timezone: Value(timezone),
+      notify: Value(notify),
       lastRunAt: lastRunAt == null && nullToAbsent
           ? const Value.absent()
           : Value(lastRunAt),
@@ -2890,6 +2918,7 @@ class SchedulerTaskRow extends DataClass
       nextRunAt: serializer.fromJson<int?>(json['nextRunAt']),
       repeatAfter: serializer.fromJson<int?>(json['repeatAfter']),
       timezone: serializer.fromJson<String>(json['timezone']),
+      notify: serializer.fromJson<bool>(json['notify']),
       lastRunAt: serializer.fromJson<int?>(json['lastRunAt']),
       totalRuns: serializer.fromJson<int>(json['totalRuns']),
       failures: serializer.fromJson<int>(json['failures']),
@@ -2911,6 +2940,7 @@ class SchedulerTaskRow extends DataClass
       'nextRunAt': serializer.toJson<int?>(nextRunAt),
       'repeatAfter': serializer.toJson<int?>(repeatAfter),
       'timezone': serializer.toJson<String>(timezone),
+      'notify': serializer.toJson<bool>(notify),
       'lastRunAt': serializer.toJson<int?>(lastRunAt),
       'totalRuns': serializer.toJson<int>(totalRuns),
       'failures': serializer.toJson<int>(failures),
@@ -2930,6 +2960,7 @@ class SchedulerTaskRow extends DataClass
     Value<int?> nextRunAt = const Value.absent(),
     Value<int?> repeatAfter = const Value.absent(),
     String? timezone,
+    bool? notify,
     Value<int?> lastRunAt = const Value.absent(),
     int? totalRuns,
     int? failures,
@@ -2946,6 +2977,7 @@ class SchedulerTaskRow extends DataClass
     nextRunAt: nextRunAt.present ? nextRunAt.value : this.nextRunAt,
     repeatAfter: repeatAfter.present ? repeatAfter.value : this.repeatAfter,
     timezone: timezone ?? this.timezone,
+    notify: notify ?? this.notify,
     lastRunAt: lastRunAt.present ? lastRunAt.value : this.lastRunAt,
     totalRuns: totalRuns ?? this.totalRuns,
     failures: failures ?? this.failures,
@@ -2968,6 +3000,7 @@ class SchedulerTaskRow extends DataClass
           ? data.repeatAfter.value
           : this.repeatAfter,
       timezone: data.timezone.present ? data.timezone.value : this.timezone,
+      notify: data.notify.present ? data.notify.value : this.notify,
       lastRunAt: data.lastRunAt.present ? data.lastRunAt.value : this.lastRunAt,
       totalRuns: data.totalRuns.present ? data.totalRuns.value : this.totalRuns,
       failures: data.failures.present ? data.failures.value : this.failures,
@@ -2991,6 +3024,7 @@ class SchedulerTaskRow extends DataClass
           ..write('nextRunAt: $nextRunAt, ')
           ..write('repeatAfter: $repeatAfter, ')
           ..write('timezone: $timezone, ')
+          ..write('notify: $notify, ')
           ..write('lastRunAt: $lastRunAt, ')
           ..write('totalRuns: $totalRuns, ')
           ..write('failures: $failures, ')
@@ -3012,6 +3046,7 @@ class SchedulerTaskRow extends DataClass
     nextRunAt,
     repeatAfter,
     timezone,
+    notify,
     lastRunAt,
     totalRuns,
     failures,
@@ -3032,6 +3067,7 @@ class SchedulerTaskRow extends DataClass
           other.nextRunAt == this.nextRunAt &&
           other.repeatAfter == this.repeatAfter &&
           other.timezone == this.timezone &&
+          other.notify == this.notify &&
           other.lastRunAt == this.lastRunAt &&
           other.totalRuns == this.totalRuns &&
           other.failures == this.failures &&
@@ -3050,6 +3086,7 @@ class SchedulerTasksCompanion extends UpdateCompanion<SchedulerTaskRow> {
   final Value<int?> nextRunAt;
   final Value<int?> repeatAfter;
   final Value<String> timezone;
+  final Value<bool> notify;
   final Value<int?> lastRunAt;
   final Value<int> totalRuns;
   final Value<int> failures;
@@ -3066,6 +3103,7 @@ class SchedulerTasksCompanion extends UpdateCompanion<SchedulerTaskRow> {
     this.nextRunAt = const Value.absent(),
     this.repeatAfter = const Value.absent(),
     this.timezone = const Value.absent(),
+    this.notify = const Value.absent(),
     this.lastRunAt = const Value.absent(),
     this.totalRuns = const Value.absent(),
     this.failures = const Value.absent(),
@@ -3083,6 +3121,7 @@ class SchedulerTasksCompanion extends UpdateCompanion<SchedulerTaskRow> {
     this.nextRunAt = const Value.absent(),
     this.repeatAfter = const Value.absent(),
     required String timezone,
+    this.notify = const Value.absent(),
     this.lastRunAt = const Value.absent(),
     this.totalRuns = const Value.absent(),
     this.failures = const Value.absent(),
@@ -3107,6 +3146,7 @@ class SchedulerTasksCompanion extends UpdateCompanion<SchedulerTaskRow> {
     Expression<int>? nextRunAt,
     Expression<int>? repeatAfter,
     Expression<String>? timezone,
+    Expression<bool>? notify,
     Expression<int>? lastRunAt,
     Expression<int>? totalRuns,
     Expression<int>? failures,
@@ -3124,6 +3164,7 @@ class SchedulerTasksCompanion extends UpdateCompanion<SchedulerTaskRow> {
       if (nextRunAt != null) 'next_run_at': nextRunAt,
       if (repeatAfter != null) 'repeat_after': repeatAfter,
       if (timezone != null) 'timezone': timezone,
+      if (notify != null) 'notify': notify,
       if (lastRunAt != null) 'last_run_at': lastRunAt,
       if (totalRuns != null) 'total_runs': totalRuns,
       if (failures != null) 'failures': failures,
@@ -3143,6 +3184,7 @@ class SchedulerTasksCompanion extends UpdateCompanion<SchedulerTaskRow> {
     Value<int?>? nextRunAt,
     Value<int?>? repeatAfter,
     Value<String>? timezone,
+    Value<bool>? notify,
     Value<int?>? lastRunAt,
     Value<int>? totalRuns,
     Value<int>? failures,
@@ -3160,6 +3202,7 @@ class SchedulerTasksCompanion extends UpdateCompanion<SchedulerTaskRow> {
       nextRunAt: nextRunAt ?? this.nextRunAt,
       repeatAfter: repeatAfter ?? this.repeatAfter,
       timezone: timezone ?? this.timezone,
+      notify: notify ?? this.notify,
       lastRunAt: lastRunAt ?? this.lastRunAt,
       totalRuns: totalRuns ?? this.totalRuns,
       failures: failures ?? this.failures,
@@ -3199,6 +3242,9 @@ class SchedulerTasksCompanion extends UpdateCompanion<SchedulerTaskRow> {
     if (timezone.present) {
       map['timezone'] = Variable<String>(timezone.value);
     }
+    if (notify.present) {
+      map['notify'] = Variable<bool>(notify.value);
+    }
     if (lastRunAt.present) {
       map['last_run_at'] = Variable<int>(lastRunAt.value);
     }
@@ -3232,6 +3278,7 @@ class SchedulerTasksCompanion extends UpdateCompanion<SchedulerTaskRow> {
           ..write('nextRunAt: $nextRunAt, ')
           ..write('repeatAfter: $repeatAfter, ')
           ..write('timezone: $timezone, ')
+          ..write('notify: $notify, ')
           ..write('lastRunAt: $lastRunAt, ')
           ..write('totalRuns: $totalRuns, ')
           ..write('failures: $failures, ')
@@ -5814,6 +5861,7 @@ typedef $$SchedulerTasksTableCreateCompanionBuilder =
       Value<int?> nextRunAt,
       Value<int?> repeatAfter,
       required String timezone,
+      Value<bool> notify,
       Value<int?> lastRunAt,
       Value<int> totalRuns,
       Value<int> failures,
@@ -5832,6 +5880,7 @@ typedef $$SchedulerTasksTableUpdateCompanionBuilder =
       Value<int?> nextRunAt,
       Value<int?> repeatAfter,
       Value<String> timezone,
+      Value<bool> notify,
       Value<int?> lastRunAt,
       Value<int> totalRuns,
       Value<int> failures,
@@ -5926,6 +5975,11 @@ class $$SchedulerTasksTableFilterComposer
 
   ColumnFilters<String> get timezone => $composableBuilder(
     column: $table.timezone,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<bool> get notify => $composableBuilder(
+    column: $table.notify,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -6039,6 +6093,11 @@ class $$SchedulerTasksTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<bool> get notify => $composableBuilder(
+    column: $table.notify,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<int> get lastRunAt => $composableBuilder(
     column: $table.lastRunAt,
     builder: (column) => ColumnOrderings(column),
@@ -6109,6 +6168,9 @@ class $$SchedulerTasksTableAnnotationComposer
 
   GeneratedColumn<String> get timezone =>
       $composableBuilder(column: $table.timezone, builder: (column) => column);
+
+  GeneratedColumn<bool> get notify =>
+      $composableBuilder(column: $table.notify, builder: (column) => column);
 
   GeneratedColumn<int> get lastRunAt =>
       $composableBuilder(column: $table.lastRunAt, builder: (column) => column);
@@ -6196,6 +6258,7 @@ class $$SchedulerTasksTableTableManager
                 Value<int?> nextRunAt = const Value.absent(),
                 Value<int?> repeatAfter = const Value.absent(),
                 Value<String> timezone = const Value.absent(),
+                Value<bool> notify = const Value.absent(),
                 Value<int?> lastRunAt = const Value.absent(),
                 Value<int> totalRuns = const Value.absent(),
                 Value<int> failures = const Value.absent(),
@@ -6212,6 +6275,7 @@ class $$SchedulerTasksTableTableManager
                 nextRunAt: nextRunAt,
                 repeatAfter: repeatAfter,
                 timezone: timezone,
+                notify: notify,
                 lastRunAt: lastRunAt,
                 totalRuns: totalRuns,
                 failures: failures,
@@ -6230,6 +6294,7 @@ class $$SchedulerTasksTableTableManager
                 Value<int?> nextRunAt = const Value.absent(),
                 Value<int?> repeatAfter = const Value.absent(),
                 required String timezone,
+                Value<bool> notify = const Value.absent(),
                 Value<int?> lastRunAt = const Value.absent(),
                 Value<int> totalRuns = const Value.absent(),
                 Value<int> failures = const Value.absent(),
@@ -6246,6 +6311,7 @@ class $$SchedulerTasksTableTableManager
                 nextRunAt: nextRunAt,
                 repeatAfter: repeatAfter,
                 timezone: timezone,
+                notify: notify,
                 lastRunAt: lastRunAt,
                 totalRuns: totalRuns,
                 failures: failures,

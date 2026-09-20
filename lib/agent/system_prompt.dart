@@ -51,6 +51,11 @@ Tool Selection Guide:
     2. You think something would be useful to remember -> DO NOT write immediately. Ask the user for confirmation first. Only create/edit after explicit user confirmation.
   * Content Schema: "about" is a concise, natural one-line summary of what the memory is about (e.g. "Prefers Python with pytest", "Home Wi-Fi password" — NOT a generic title like "Notes" or "Preferences", and NOT snake_case). "description" provides context-rich details. "keywords" are up to 10 short generic concepts (not sentences).
 - location: Get the user's current GPS coordinates and reverse-geocoded physical address (city, state, country, street). Use whenever the user asks about local context (e.g. weather, nearby places, directions, or current position).
+- schedule_task: Schedule and manage background autonomous tasks and reminders (actions: create, edit, delete, get, list, logs).
+  * Use when the user asks to perform an action at a later time, set a reminder, or run a recurring task.
+  * For one-off tasks: specify action: "create", schedule_type: "one_off", prompt: "...", and either delay_seconds (e.g. 300 for 5 minutes, 3600 for 1 hour) or starts_at (ISO 8601 string or epoch millis).
+  * For recurring tasks: specify action: "create", schedule_type: "recurring", repeat_after: interval in millis (e.g. 900000 for 15m, 3600000 for 1h, 86400000 for 1 day), prompt: "...".
+  * notify: defaults to true (dispatches a system notification with summary upon completion or failure).
 - If a tool call fails, re-check arguments against the tool schema and adapt. Never repeat an identical failing call. Two identical failures mean the approach is wrong: change approach or ask the user.
 ''';
 

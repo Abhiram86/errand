@@ -139,6 +139,7 @@ class SchedulerTasks extends Table {
   IntColumn get nextRunAt => integer().nullable()(); // epoch millis
   IntColumn get repeatAfter => integer().nullable()(); // interval in millis for recurring
   TextColumn get timezone => text()(); // IANA timezone name
+  BoolColumn get notify => boolean().withDefault(const Constant(true))();
   IntColumn get lastRunAt => integer().nullable()();
   IntColumn get totalRuns => integer().withDefault(const Constant(0))();
   IntColumn get failures => integer().withDefault(const Constant(0))();
