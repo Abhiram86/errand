@@ -246,6 +246,32 @@ void main() {
       expect(args['triggerAtMillis'], equals(nowMillis + 60000));
     });
 
+    test('scheduleTask clamps past triggers to ~1s in the future', () async {
+      final before = DateTime.now().millisecondsSinceEpoch;
+      final taskId = await serviceDb.into(serviceDb.schedulerTasks).insert(
+        SchedulerTasksCompanion.insert(
+          title: 'Overdue task',
+          type: 'one_off',
+          status: 'scheduled',
+          payloadJson: '{}',
+          startsAt: before - 60000,
+          nextRunAt: Value(before - 60000),
+          timezone: 'UTC',
+          createdAt: before - 60000,
+          updatedAt: before - 60000,
+        ),
+      );
+
+      await realService.scheduleTask(taskId);
+
+      expect(channelCalls.length, equals(1));
+      final args = channelCalls.first.arguments as Map;
+      final trigger = args['triggerAtMillis'] as int;
+      final after = DateTime.now().millisecondsSinceEpoch;
+      expect(trigger, greaterThanOrEqualTo(before + 1000));
+      expect(trigger, lessThanOrEqualTo(after + 1000));
+    });
+
     test('cancelTask invokes cancelAlarm method on task_scheduler channel', () async {
       await realService.cancelTask(42);
 

@@ -10,8 +10,12 @@ import android.util.Log
 /**
  * Coordinates native Android [AlarmManager] registrations for scheduled background tasks.
  *
- * Uses [AlarmManager.setExactAndAllowWhileIdle] (or [AlarmManager.setAlarmClock] when possible)
- * to ensure exact-time firing even when the device is in low-power Doze mode.
+ * Uses [AlarmManager.setExactAndAllowWhileIdle] to fire at exact trigger times when
+ * exact-alarm permission is granted, with graceful downgrade to inexact
+ * [AlarmManager.setAndAllowWhileIdle] otherwise.
+ *
+ * Note: while idle, Android throttles [AlarmManager.setExactAndAllowWhileIdle] to
+ * roughly one alarm per ~9 minutes per app, so closely spaced tasks may be delayed.
  */
 object TaskAlarmManager {
     private const val TAG = "TaskAlarmManager"
@@ -100,19 +104,19 @@ object TaskAlarmManager {
     }
 
     /**
-     * Cancels any pending alarm for [taskId].
+     * Cancels any pending alarm for [taskId]. Uses FLAG_NO_CREATE so no
+     * PendingIntent is resurrected just to cancel it.
      */
     fun cancelAlarm(context: Context, taskId: Int) {
         val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val intent = Intent(context, TaskAlarmReceiver::class.java).apply {
             action = ACTION_TASK_ALARM
-            putExtra(EXTRA_TASK_ID, taskId)
         }
 
         val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
         } else {
-            PendingIntent.FLAG_UPDATE_CURRENT
+            PendingIntent.FLAG_NO_CREATE
         }
 
         val pendingIntent = PendingIntent.getBroadcast(
@@ -120,7 +124,7 @@ object TaskAlarmManager {
             taskId,
             intent,
             flags
-        )
+        ) ?: return
 
         alarmManager.cancel(pendingIntent)
         pendingIntent.cancel()

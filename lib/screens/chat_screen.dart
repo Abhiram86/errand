@@ -583,18 +583,30 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     final availableModels = List<ModelOption>.from(rawAvailable)
       ..sort(ModelOption.compareByReleaseDate);
 
+    // Startup must never clobber the persisted pick: with an empty
+    // in-memory catalog `availableModels` is just the hardcoded fallback, so
+    // a valid live model (e.g. provider_a/model_b) would fail the existence
+    // check and get overwritten before the network ever runs. Adopt the
+    // stored value optimistically; _loadModelCatalog() validates it against
+    // the live list below and heals/persists only then. The single exception
+    // is the free-router-with-key case, which is knowably stale without any
+    // live data.
     final String model;
-    if (hasCachedModel &&
-        !_isFallbackOrStaleModel(
-          settings.selectedModelFor(provider.id),
-          provider,
-          availableModels,
-        ) &&
-        availableModels
-            .any((m) => m.id == settings.selectedModelFor(provider.id))) {
-      model = settings.selectedModelFor(provider.id);
+    if (hasCachedModel) {
+      final stored = settings.selectedModelFor(provider.id);
+      final isFreeWithKey =
+          _isFallbackOrStaleModel(stored, provider, const []) &&
+          _isFreeRouterId(stored);
+      if (!isFreeWithKey) {
+        model = stored;
+      } else {
+        model = _resolveModelForProvider(provider, availableModels);
+        // Stored value is definitively wrong (free fallback despite a key),
+        // safe to replace even before live data arrives.
+        unawaited(settings.setSelectedModelFor(provider.id, model));
+      }
     } else {
-      // last selected model > first in sorted list > hardcoded preset.
+      // First launch ever: no stored pick, safe to persist a fresh default.
       model = _resolveModelForProvider(provider, availableModels);
       unawaited(settings.setSelectedModelFor(provider.id, model));
     }
@@ -659,34 +671,53 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         ..sort(ModelOption.compareByReleaseDate);
 
       String modelToUse = _selectedModel;
+      // This runs right before _loadModelCatalog(forceRefresh: true), which
+      // re-validates against the live list and persists. So when the list
+      // here is just the hardcoded fallback, adopt optimistically and let
+      // the catalog pass persist the confirmed value.
+      final hasLiveList = cached != null && cached.isNotEmpty;
       if (providerChanged) {
         // Switching providers restores that provider's last pick, else its
         // list head, else its hardcoded fallback.
-        modelToUse = _resolveModelForProvider(
-          activeProvider,
-          availableModels,
-        );
-        unawaited(
-          AppSettingsService.instance.setSelectedModelFor(
+        if (hasLiveList) {
+          modelToUse = _resolveModelForProvider(
+            activeProvider,
+            availableModels,
+          );
+          unawaited(
+            AppSettingsService.instance.setSelectedModelFor(
+              activeProvider.id,
+              modelToUse,
+            ),
+          );
+        } else {
+          final stored = AppSettingsService.instance.selectedModelFor(
             activeProvider.id,
-            modelToUse,
-          ),
-        );
+          );
+          modelToUse =
+              AppSettingsService.instance.hasSelectedModelFor(activeProvider.id)
+              ? stored
+              : _resolveModelForProvider(activeProvider, availableModels);
+        }
       } else if (_isFallbackOrStaleModel(
         _selectedModel,
         activeProvider,
-        availableModels,
+        hasLiveList ? availableModels : const [],
       )) {
         modelToUse = _resolveModelForProvider(
           activeProvider,
           availableModels,
         );
-        unawaited(
-          AppSettingsService.instance.setSelectedModelFor(
-            activeProvider.id,
-            modelToUse,
-          ),
-        );
+        // Persist only against live data; the force-refresh catalog pass
+        // below persists the confirmed value otherwise.
+        if (hasLiveList) {
+          unawaited(
+            AppSettingsService.instance.setSelectedModelFor(
+              activeProvider.id,
+              modelToUse,
+            ),
+          );
+        }
       }
 
       setState(() {
@@ -738,23 +769,49 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   Future<List<ModelOption>> _selectProvider(LlmProvider provider) async {
     await AppSettingsService.instance.setActiveProvider(provider.id);
     final cached = ModelCatalogService.getCachedModels(provider.baseUrl);
-    final rawAvailable = (cached != null && cached.isNotEmpty)
-        ? cached
-        : provider.defaultModels;
+    final hasLiveList = cached != null && cached.isNotEmpty;
+    final rawAvailable = hasLiveList ? cached : provider.defaultModels;
     final availableModels = List<ModelOption>.from(rawAvailable)
       ..sort(ModelOption.compareByReleaseDate);
     // Per-provider priority: that provider's last pick (when still valid)
-    // > first in its sorted list > hardcoded preset.
-    final modelToUse = _resolveModelForProvider(provider, availableModels);
+    // > first in its sorted list > hardcoded preset. When the list is just
+    // the hardcoded fallback (no live data yet), adopt the stored pick
+    // optimistically and persist nothing — _loadModelCatalog() below
+    // validates against the live list and persists the healed/confirmed
+    // value. Persisting here would clobber a valid live pick with a
+    // defaults-only guess.
+    final stored = AppSettingsService.instance.selectedModelFor(provider.id);
+    final hasStored =
+        AppSettingsService.instance.hasSelectedModelFor(provider.id);
+    final String modelToUse;
+    final bool persistNow;
+    if (!hasLiveList && hasStored) {
+      final isFreeWithKey = _isFreeRouterId(stored) &&
+          (provider.hasKey ||
+              (provider.id == ProviderPresetType.openRouter.id &&
+                  AppSettingsService.instance.hasOpenRouterKey));
+      if (isFreeWithKey) {
+        modelToUse = _resolveModelForProvider(provider, availableModels);
+        persistNow = true;
+      } else {
+        modelToUse = stored;
+        persistNow = false;
+      }
+    } else {
+      modelToUse = _resolveModelForProvider(provider, availableModels);
+      persistNow = true;
+    }
 
     _llm.close();
     _llm = _createLlmClient(modelToUse);
-    unawaited(
-      AppSettingsService.instance.setSelectedModelFor(
-        provider.id,
-        modelToUse,
-      ),
-    );
+    if (persistNow) {
+      unawaited(
+        AppSettingsService.instance.setSelectedModelFor(
+          provider.id,
+          modelToUse,
+        ),
+      );
+    }
 
     setState(() {
       _selectedModel = modelToUse;

@@ -34,8 +34,11 @@ class TaskExecutionService : Service() {
     companion object {
         private const val TAG = "TaskExecutionService"
         private const val CHANNEL_ID = "scheduled_tasks_service"
-        private const val NOTIFICATION_ID = 5823
+        // High constant far outside task-row-id range so task notifications
+        // (keyed by task id) can never overwrite the foreground notification.
+        private const val NOTIFICATION_ID = 2_000_000_007
         private val MAIN_ENGINE_TIMEOUT_MS = 30_000L
+        private val BACKGROUND_ENGINE_TIMEOUT_MS = 12 * 60 * 1000L
 
         const val ACTION_EXECUTE_TASK = "com.errand.ACTION_EXECUTE_TASK"
         const val ACTION_RESCHEDULE_ALL = "com.errand.ACTION_RESCHEDULE_ALL"
@@ -46,10 +49,16 @@ class TaskExecutionService : Service() {
                 putExtra(TaskAlarmManager.EXTRA_TASK_ID, taskId)
                 putExtra(TaskAlarmManager.EXTRA_TASK_TITLE, taskTitle)
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            } catch (e: Exception) {
+                // Android 12+ background-start restriction (or dead process):
+                // nothing further we can do here; the alarm is logged below.
+                Log.e(TAG, "Failed to start TaskExecutionService for task $taskId", e)
             }
         }
 
@@ -57,10 +66,14 @@ class TaskExecutionService : Service() {
             val intent = Intent(context, TaskExecutionService::class.java).apply {
                 action = ACTION_RESCHEDULE_ALL
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to start TaskExecutionService for reschedule", e)
             }
         }
     }
@@ -97,8 +110,12 @@ class TaskExecutionService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent == null) {
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
         lastStartId = startId
-        val action = intent?.action ?: ""
+        val action = intent.action ?: ""
         val taskId = intent?.getIntExtra(TaskAlarmManager.EXTRA_TASK_ID, -1) ?: -1
         val title = intent?.getStringExtra(TaskAlarmManager.EXTRA_TASK_TITLE) ?: "Task in progress"
 
@@ -216,7 +233,10 @@ class TaskExecutionService : Service() {
                         "$methodName failed on main engine: $code: $message"
                     )
 
-                    processNextRequest()
+                    // Fall through to the background engine: the failure may be
+                    // transient (e.g. Dart-side DB contention). The task claim
+                    // guard makes a duplicate run safe.
+                    dispatchToBackgroundEngine(request)
                 }
 
                 override fun notImplemented() {
@@ -245,18 +265,39 @@ class TaskExecutionService : Service() {
 
             waitForEngineReady {
                 Log.d(TAG, "Invoking $methodName on background engine (taskId: ${request.taskId})")
+                var completed = false
+                // Watchdog: Dart caps runs at 10 min, so silence beyond 12 min
+                // means the engine wedged. Advance the queue instead of
+                // stalling forever; the completed flag prevents double-advance
+                // if Dart responds late.
+                val watchdog = Runnable {
+                    if (completed) return@Runnable
+                    completed = true
+                    Log.w(TAG, "Background $methodName timed out; advancing queue")
+                    processNextRequest()
+                }
+                mainHandler.postDelayed(watchdog, BACKGROUND_ENGINE_TIMEOUT_MS)
                 channel.invokeMethod(methodName, methodArgs, object : MethodChannel.Result {
                     override fun success(result: Any?) {
+                        if (completed) return
+                        completed = true
+                        mainHandler.removeCallbacks(watchdog)
                         Log.d(TAG, "Background $methodName completed: $result")
                         processNextRequest()
                     }
 
                     override fun error(code: String, message: String?, details: Any?) {
+                        if (completed) return
+                        completed = true
+                        mainHandler.removeCallbacks(watchdog)
                         Log.e(TAG, "Background $methodName failed: $code: $message")
                         processNextRequest()
                     }
 
                     override fun notImplemented() {
+                        if (completed) return
+                        completed = true
+                        mainHandler.removeCallbacks(watchdog)
                         Log.e(TAG, "Background $methodName not implemented in backgroundTaskMain")
                         processNextRequest()
                     }
@@ -347,8 +388,8 @@ class TaskExecutionService : Service() {
                     val trigger = call.argument<Number>("triggerAtMillis")?.toLong() ?: 0L
                     val title = call.argument<String>("title") ?: ""
                     if (id > 0 && trigger > 0) {
-                        TaskAlarmManager.scheduleExactAlarm(applicationContext, id, trigger, title)
-                        result.success(true)
+                        val scheduled = TaskAlarmManager.scheduleExactAlarm(applicationContext, id, trigger, title)
+                        result.success(scheduled)
                     } else {
                         result.success(false)
                     }
@@ -369,7 +410,8 @@ class TaskExecutionService : Service() {
                     val body = call.argument<String>("body") ?: ""
                     val channelId = call.argument<String>("channelId") ?: "scheduled_tasks"
                     val channelName = call.argument<String>("channelName") ?: "Scheduled Tasks"
-                    val ok = NotificationHelper.showNotification(applicationContext, id, title, body, channelId, channelName)
+                    val isSuccess = call.argument<Boolean>("isSuccess")
+                    val ok = NotificationHelper.showNotification(applicationContext, id, title, body, channelId, channelName, isSuccess)
                     result.success(ok)
                 }
                 "cancelNotification" -> {

@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:path/path.dart' as p;
 
 import '../llm/llm_client.dart';
 import '../services/app_settings.dart';
@@ -206,7 +207,7 @@ class AgentRunner {
         locationSummary: locationService?.lastKnown?.toCoarseSummary() ??
             LocationService.instance.lastKnown?.toCoarseSummary(),
       ),
-      cancelToken: cancelToken,
+      cancelToken: token,
       supportsInput: (modality) =>
           ModelCatalogService.supportsInput(
             selectedModel,
@@ -221,6 +222,7 @@ class AgentRunner {
       onRetry: onRetry,
     );
 
+    final turnStartTime = DateTime.now().subtract(const Duration(seconds: 2));
     final nowIso = DateTime.now().toIso8601String().replaceAll(':', '-');
     final conversation = Conversation(
       id: 'headless_task_${taskId}_$nowIso',
@@ -240,14 +242,134 @@ class AgentRunner {
       final output = await loop.run(conversation);
       String? reportPath;
       try {
-        if (!scratch.existsSync()) {
-          scratch.createSync(recursive: true);
+        if (scratch.existsSync()) {
+          final candidates = scratch
+              .listSync()
+              .whereType<File>()
+              .where((f) {
+                final name = f.uri.pathSegments.last;
+                return name.startsWith('task-$taskId.') ||
+                    name.startsWith('task_$taskId.') ||
+                    name == 'task-$taskId' ||
+                    name == 'task_$taskId';
+              })
+              .toList();
+
+          if (candidates.isNotEmpty) {
+            candidates.sort((a, b) {
+              final aIsHtml = a.path.toLowerCase().endsWith('.html');
+              final bIsHtml = b.path.toLowerCase().endsWith('.html');
+              if (aIsHtml && !bIsHtml) return -1;
+              if (!aIsHtml && bIsHtml) return 1;
+              return b.lastModifiedSync().compareTo(a.lastModifiedSync());
+            });
+            reportPath = candidates.first.path;
+          }
         }
-        final reportFile = File('${scratch.path}/task_${taskId}_$nowIso.md');
-        await reportFile.writeAsString(output);
-        reportPath = reportFile.path;
+
+        // Check if task-$taskId.* was accidentally written to workingDirectory.current
+        if (reportPath == null && workingDirectory.current.existsSync()) {
+          final docCandidates = workingDirectory.current
+              .listSync()
+              .whereType<File>()
+              .where((f) {
+                final name = f.uri.pathSegments.last;
+                return name.startsWith('task-$taskId.') ||
+                    name.startsWith('task_$taskId.') ||
+                    name == 'task-$taskId' ||
+                    name == 'task_$taskId';
+              })
+              .toList();
+          if (docCandidates.isNotEmpty) {
+            docCandidates.sort((a, b) {
+              final aIsHtml = a.path.toLowerCase().endsWith('.html');
+              final bIsHtml = b.path.toLowerCase().endsWith('.html');
+              if (aIsHtml && !bIsHtml) return -1;
+              if (!aIsHtml && bIsHtml) return 1;
+              return b.lastModifiedSync().compareTo(a.lastModifiedSync());
+            });
+            final docFile = docCandidates.first;
+            final targetFile = File('${scratch.path}/${docFile.uri.pathSegments.last}');
+            try {
+              if (targetFile.existsSync()) targetFile.deleteSync();
+              docFile.renameSync(targetFile.path);
+              reportPath = targetFile.path;
+            } catch (_) {
+              try {
+                docFile.copySync(targetFile.path);
+                docFile.deleteSync();
+                reportPath = targetFile.path;
+              } catch (_) {
+                reportPath = docFile.path;
+              }
+            }
+          }
+        }
+
+        // Fallback: If agent wrote a recent file with an arbitrary name (e.g. hello_world.html)
+        // during this turn in scratch or workingDirectory.current, relocate and rename it to task-$taskId.<ext>!
+        if (reportPath == null) {
+          final searchDirs = [
+            scratch,
+            workingDirectory.current,
+          ];
+          for (final dir in searchDirs) {
+            if (!dir.existsSync()) continue;
+            final recentFiles = dir
+                .listSync()
+                .whereType<File>()
+                .where((f) {
+                  final name = f.uri.pathSegments.last;
+                  if (name.startsWith('.')) return false;
+                  if (name.endsWith('.db') ||
+                      name.endsWith('.db-wal') ||
+                      name.endsWith('.db-shm')) {
+                    return false;
+                  }
+                  try {
+                    return f.lastModifiedSync().isAfter(turnStartTime);
+                  } catch (_) {
+                    return false;
+                  }
+                })
+                .toList();
+
+            if (recentFiles.isNotEmpty) {
+              recentFiles.sort((a, b) {
+                final aIsHtml = a.path.toLowerCase().endsWith('.html');
+                final bIsHtml = b.path.toLowerCase().endsWith('.html');
+                if (aIsHtml && !bIsHtml) return -1;
+                if (!aIsHtml && bIsHtml) return 1;
+                return b.lastModifiedSync().compareTo(a.lastModifiedSync());
+              });
+              final chosenFile = recentFiles.first;
+              final ext = p.extension(chosenFile.path).isNotEmpty
+                  ? p.extension(chosenFile.path)
+                  : '.md';
+              final targetFile = File('${scratch.path}/task-$taskId$ext');
+              try {
+                if (chosenFile.path != targetFile.path) {
+                  if (targetFile.existsSync()) targetFile.deleteSync();
+                  chosenFile.renameSync(targetFile.path);
+                  reportPath = targetFile.path;
+                } else {
+                  reportPath = chosenFile.path;
+                }
+              } catch (_) {
+                try {
+                  chosenFile.copySync(targetFile.path);
+                  chosenFile.deleteSync();
+                  reportPath = targetFile.path;
+                } catch (_) {
+                  reportPath = chosenFile.path;
+                }
+              }
+              break;
+            }
+          }
+        }
       } catch (e, st) {
-        debugPrint('Failed to save headless task report: $e\n$st');
+        debugPrint('Failed to locate task report file: $e\n$st');
       }
 
       return HeadlessRunResult(

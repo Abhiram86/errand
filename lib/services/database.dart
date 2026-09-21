@@ -203,7 +203,6 @@ final class ErrandDatabase extends _$ErrandDatabase {
     onCreate: (m) async {
       await m.createAll();
       await _createMessageIndexes(m);
-      await _createMemoryIndexes(m);
       await _createSchedulerIndexes(m);
     },
     onUpgrade: (m, from, to) async {
@@ -233,7 +232,6 @@ final class ErrandDatabase extends _$ErrandDatabase {
       }
       if (from < 6) {
         await m.createTable(memories);
-        await _createMemoryIndexes(m);
       }
       if (from < 7) {
         await m.createTable(schedulerTasks);
@@ -256,15 +254,6 @@ final class ErrandDatabase extends _$ErrandDatabase {
     await customStatement(
       'CREATE INDEX IF NOT EXISTS idx_conv_msg_sort '
       'ON conversation_messages (conversation_id, sort_order)',
-    );
-  }
-
-  /// Indexes backing memory queries:
-  /// - (updated_at DESC): recency sorting.
-  Future<void> _createMemoryIndexes(Migrator m) async {
-    await customStatement(
-      'CREATE INDEX IF NOT EXISTS idx_memories_updated_at '
-      'ON memories (updated_at DESC)',
     );
   }
 

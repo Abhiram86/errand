@@ -1,8 +1,9 @@
 import 'dart:convert';
 
-import 'package:drift/drift.dart' hide isNull;
+import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:errand/agent/tool.dart';
 import 'package:errand/services/database.dart';
+import 'package:errand/services/task_toast_service.dart';
 import 'package:errand/tools/schedule_task_tool.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -47,6 +48,71 @@ void main() {
       expect(data['task']['notify'], isTrue);
       expect(data['task']['repeat_after'], isNull);
       expect(data['task']['payload']['prompt'], equals('Send a friendly reminder to hydrate'));
+    });
+
+    test('create, edit, and delete fire TaskToastService events directly', () async {
+      final events = <TaskToastEvent>[];
+      final sub = TaskToastService.instance.stream.listen(events.add);
+
+      final tool = scheduleTaskTool(db: db);
+
+      // 1. Create
+      final createResult = await tool.handler(
+        const ToolCall(
+          id: 'call-toast-create',
+          name: 'schedule_task',
+          arguments: {
+            'action': 'create',
+            'title': 'Toast Showcase Task',
+            'prompt': 'Show notification toast',
+            'schedule_type': 'one_off',
+            'delay_seconds': 60,
+          },
+        ),
+      );
+      await pumpEventQueue();
+      expect(createResult.ok, isTrue);
+      expect(events.length, equals(1));
+      expect(events.last.type, equals(TaskToastType.create));
+      expect(events.last.message, contains('Toast Showcase Task'));
+      final taskId = events.last.taskId!;
+
+      // 2. Edit
+      final editResult = await tool.handler(
+        ToolCall(
+          id: 'call-toast-edit',
+          name: 'schedule_task',
+          arguments: {
+            'action': 'edit',
+            'id': taskId,
+            'title': 'Updated Toast Task',
+          },
+        ),
+      );
+      await pumpEventQueue();
+      expect(editResult.ok, isTrue);
+      expect(events.length, equals(2));
+      expect(events.last.type, equals(TaskToastType.edit));
+      expect(events.last.message, contains('Updated Toast Task'));
+
+      // 3. Delete
+      final deleteResult = await tool.handler(
+        ToolCall(
+          id: 'call-toast-delete',
+          name: 'schedule_task',
+          arguments: {
+            'action': 'delete',
+            'id': taskId,
+          },
+        ),
+      );
+      await pumpEventQueue();
+      expect(deleteResult.ok, isTrue);
+      expect(events.length, equals(3));
+      expect(events.last.type, equals(TaskToastType.delete));
+      expect(events.last.message, contains('deleted'));
+
+      await sub.cancel();
     });
 
     test('create one-off task with delay_seconds', () async {
@@ -461,6 +527,90 @@ void main() {
       expect(logsData['count'], equals(1));
       expect(logsData['logs'][0]['summary'], equals('Report summary test'));
       expect(logsData['logs'][0]['output_file_path'], equals('/scratch/task_report.md'));
+    });
+
+    test('create stores model and provider overrides in payload', () async {
+      final tool = scheduleTaskTool(db: db);
+      final result = await tool.handler(
+        ToolCall(
+          id: 'ovr-1',
+          name: 'schedule_task',
+          arguments: {
+            'action': 'create',
+            'title': 'Override task',
+            'prompt': 'Do work',
+            'schedule_type': 'one_off',
+            'delay_seconds': 60,
+            'model': 'google/gemini-2.0-flash',
+            'provider_id': 'openrouter',
+          },
+        ),
+      );
+
+      expect(result.ok, isTrue);
+      final data = jsonDecode(result.output) as Map<String, dynamic>;
+      expect(data['task']['payload']['model'], equals('google/gemini-2.0-flash'));
+      expect(data['task']['payload']['providerId'], equals('openrouter'));
+    });
+
+    test('edit rejects invalid status and schedule_type', () async {
+      final tool = scheduleTaskTool(db: db);
+      final createRes = await tool.handler(
+        const ToolCall(
+          id: 'inv-0',
+          name: 'schedule_task',
+          arguments: {
+            'action': 'create',
+            'title': 'Validation task',
+            'prompt': 'Do work',
+            'schedule_type': 'one_off',
+          },
+        ),
+      );
+      expect(createRes.ok, isTrue);
+      final taskId = (jsonDecode(createRes.output) as Map)['task']['id'];
+
+      final badStatus = await tool.handler(
+        ToolCall(
+          id: 'inv-1',
+          name: 'schedule_task',
+          arguments: {'action': 'edit', 'id': taskId, 'status': 'bogus'},
+        ),
+      );
+      expect(badStatus.ok, isFalse);
+      expect(badStatus.errorMessage ?? badStatus.output, contains('Invalid "status"'));
+
+      final badType = await tool.handler(
+        ToolCall(
+          id: 'inv-2',
+          name: 'schedule_task',
+          arguments: {'action': 'edit', 'id': taskId, 'schedule_type': 'sometimes'},
+        ),
+      );
+      expect(badType.ok, isFalse);
+      expect(badType.errorMessage ?? badType.output, contains('Invalid "schedule_type"'));
+    });
+
+    test('create coerces numeric-string and double args instead of throwing', () async {
+      final tool = scheduleTaskTool(db: db);
+      final result = await tool.handler(
+        ToolCall(
+          id: 'coerce-1',
+          name: 'schedule_task',
+          arguments: {
+            'action': 'create',
+            'title': 'Coerced task',
+            'prompt': 'Do work',
+            'schedule_type': 'one_off',
+            'delay_seconds': 300.0,
+            'notify': 'true',
+          },
+        ),
+      );
+
+      expect(result.ok, isTrue);
+      final data = jsonDecode(result.output) as Map<String, dynamic>;
+      expect(data['task']['notify'], isTrue);
     });
   });
 }

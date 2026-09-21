@@ -50,6 +50,7 @@ class MainActivity : FlutterActivity() {
 
     private var widgetChannel: MethodChannel? = null
     private var pendingVoicePrompt: Boolean = false
+    private var pendingTaskNotification: Map<String, Any>? = null
 
     private fun checkVoicePromptIntent(incomingIntent: Intent?) {
         if (incomingIntent == null) return
@@ -66,10 +67,29 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    private fun checkTaskNotificationIntent(incomingIntent: Intent?) {
+        if (incomingIntent == null) return
+        val taskId = incomingIntent.getIntExtra("task_id", -1)
+        val route = incomingIntent.getStringExtra("route")
+        val openUnread = incomingIntent.getBooleanExtra("open_unread_tasks", false)
+        if (taskId > 0 || route == "manage_tasks_unread" || openUnread) {
+            val data = mapOf(
+                "taskId" to taskId,
+                "route" to (route ?: "manage_tasks_unread"),
+                "initialTab" to 1
+            )
+            pendingTaskNotification = data
+            try {
+                schedulerChannel?.invokeMethod("onTaskNotificationClicked", data)
+            } catch (_: Exception) {}
+        }
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         checkVoicePromptIntent(intent)
+        checkTaskNotificationIntent(intent)
     }
 
     private val MIC_PERMISSION_CODE = 9001
@@ -244,9 +264,15 @@ class MainActivity : FlutterActivity() {
                         result.success(false)
                     }
                 }
+                "getPendingNotificationClick" -> {
+                    val pending = pendingTaskNotification
+                    pendingTaskNotification = null
+                    result.success(pending)
+                }
                 else -> result.notImplemented()
             }
         }
+        checkTaskNotificationIntent(intent)
 
         // ---- Storage channel (unchanged) ----
         MethodChannel(
@@ -638,7 +664,8 @@ class MainActivity : FlutterActivity() {
                     val body = call.argument<String>("body") ?: ""
                     val channelId = call.argument<String>("channelId") ?: "scheduled_tasks"
                     val channelName = call.argument<String>("channelName") ?: "Scheduled Tasks"
-                    val ok = NotificationHelper.showNotification(this, id, title, body, channelId, channelName)
+                    val isSuccess = call.argument<Boolean>("isSuccess")
+                    val ok = NotificationHelper.showNotification(this, id, title, body, channelId, channelName, isSuccess)
                     result.success(ok)
                 }
 
@@ -672,6 +699,24 @@ class MainActivity : FlutterActivity() {
                     ActivityCompat.requestPermissions(
                         this, arrayOf(Manifest.permission.RECORD_AUDIO), MIC_PERMISSION_CODE
                     )
+                }
+
+                "copyRichText" -> {
+                    try {
+                        val text = call.argument<String>("text") ?: ""
+                        val html = call.argument<String>("html") ?: ""
+                        if (text.isEmpty() && html.isEmpty()) {
+                            result.error("EMPTY_CLIP", "Both text and html are empty", null)
+                        } else {
+                            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                            val clip = ClipData.newHtmlText("Errand", text, html)
+                            clipboard.setPrimaryClip(clip)
+                            result.success(true)
+                        }
+                    } catch (e: Exception) {
+                        Log.e("MainActivity", "Failed to copy rich text", e)
+                        result.error("CLIPBOARD_ERR", e.message, null)
+                    }
                 }
 
                 else -> result.notImplemented()

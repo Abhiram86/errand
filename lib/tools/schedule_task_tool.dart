@@ -5,6 +5,7 @@ import 'package:drift/drift.dart';
 import '../agent/tool.dart';
 import '../services/database.dart';
 import '../services/task_scheduler_service.dart';
+import '../services/task_toast_service.dart';
 import '../types/tool.dart';
 
 /// Tool allowing the agent to create, edit, inspect, and manage background
@@ -71,6 +72,14 @@ Tool scheduleTaskTool({
           'default': true,
           'description': 'Whether to send a system notification on completion or failure. Default true. Optional on edit.',
         },
+        'model': {
+          'type': 'string',
+          'description': 'Model override for background runs (e.g. "google/gemini-2.0-flash"). Defaults to the active model. Optional on create and edit.',
+        },
+        'provider_id': {
+          'type': 'string',
+          'description': 'Provider override id for background runs. Defaults to the active provider. Optional on create and edit.',
+        },
         'status': {
           'type': 'string',
           'enum': ['paused', 'scheduled', 'cancelled'],
@@ -103,7 +112,7 @@ Tool scheduleTaskTool({
         } catch (_) {}
       }
       final args = call.arguments;
-      final action = ((args['action'] ?? args['type']) as String?)?.trim().toLowerCase() ?? '';
+      final action = _parseStringArg(args['action'] ?? args['type'])?.trim().toLowerCase() ?? '';
 
       if (isHeadless && (action == 'create' || action == 'delete')) {
         return ToolCallResult.failure(
@@ -115,17 +124,17 @@ Tool scheduleTaskTool({
 
       switch (action) {
         case 'create':
-          final title = (args['title'] as String?)?.trim() ?? '';
+          final title = _parseStringArg(args['title'])?.trim() ?? '';
           if (title.isEmpty) {
             return ToolCallResult.failure(call.id, 'Action "create" requires a non-empty "title".');
           }
 
-          final prompt = (args['prompt'] as String?)?.trim() ?? '';
+          final prompt = _parseStringArg(args['prompt'])?.trim() ?? '';
           if (prompt.isEmpty) {
             return ToolCallResult.failure(call.id, 'Action "create" requires a non-empty "prompt".');
           }
 
-          final scheduleType = (args['schedule_type'] as String?)?.trim().toLowerCase() ?? 'one_off';
+          final scheduleType = _parseStringArg(args['schedule_type'])?.trim().toLowerCase() ?? 'one_off';
           if (scheduleType != 'one_off' && scheduleType != 'recurring') {
             return ToolCallResult.failure(
               call.id,
@@ -134,7 +143,7 @@ Tool scheduleTaskTool({
           }
 
           final isRecurring = scheduleType == 'recurring';
-          final repeatAfter = args['repeat_after'] as int?;
+          final repeatAfter = _parseIntArg(args['repeat_after']);
           if (isRecurring && (repeatAfter == null || repeatAfter <= 0)) {
             return ToolCallResult.failure(
               call.id,
@@ -144,7 +153,7 @@ Tool scheduleTaskTool({
 
           final nowMillis = DateTime.now().millisecondsSinceEpoch;
           int startsAtMillis;
-          final delaySeconds = args['delay_seconds'] as int?;
+          final delaySeconds = _parseIntArg(args['delay_seconds']);
           final startsAtRaw = args['starts_at'];
 
           if (delaySeconds != null && delaySeconds > 0) {
@@ -163,10 +172,15 @@ Tool scheduleTaskTool({
             startsAtMillis = nowMillis + 60000;
           }
 
-          final notify = (args['notify'] as bool?) ?? true;
+          final notify = _parseBoolArg(args['notify']) ?? true;
           final timezone = DateTime.now().timeZoneName;
+          final modelOverride = _parseStringArg(args['model'])?.trim() ?? '';
+          final providerOverride =
+              _parseStringArg(args['provider_id'] ?? args['providerId'])?.trim() ?? '';
           final payloadJson = jsonEncode({
             'prompt': prompt,
+            if (modelOverride.isNotEmpty) 'model': modelOverride,
+            if (providerOverride.isNotEmpty) 'providerId': providerOverride,
           });
 
           final taskId = await database.into(database.schedulerTasks).insert(
@@ -190,6 +204,7 @@ Tool scheduleTaskTool({
               .getSingle();
 
           await scheduler?.scheduleTask(taskId);
+          TaskToastService.instance.taskCreated(taskId, title);
 
           return ToolCallResult(
             id: call.id,
@@ -224,23 +239,41 @@ Tool scheduleTaskTool({
           }
 
           final nowMillis = DateTime.now().millisecondsSinceEpoch;
+          final titleArg = _parseStringArg(args['title'])?.trim() ?? '';
           String newTitle = existing.title;
-          if (args['title'] != null && (args['title'] as String).trim().isNotEmpty) {
-            newTitle = (args['title'] as String).trim();
+          if (args['title'] != null && titleArg.isNotEmpty) {
+            newTitle = titleArg;
           }
 
           String newType = existing.type;
           if (args['schedule_type'] != null) {
-            final st = (args['schedule_type'] as String).trim().toLowerCase();
+            final st = _parseStringArg(args['schedule_type'])?.trim().toLowerCase() ?? '';
             if (st == 'one_off' || st == 'recurring') {
               newType = st;
+            } else {
+              return ToolCallResult.failure(
+                call.id,
+                'Invalid "schedule_type": "${args['schedule_type']}". Expected "one_off" or "recurring".',
+              );
             }
           }
 
           int? newRepeatAfter = existing.repeatAfter;
           final bool repeatChanged = args.containsKey('repeat_after');
           if (repeatChanged) {
-            newRepeatAfter = args['repeat_after'] as int?;
+            final rawRepeat = args['repeat_after'];
+            if (rawRepeat == null) {
+              newRepeatAfter = null;
+            } else {
+              final parsedRepeat = _parseIntArg(rawRepeat);
+              if (parsedRepeat == null) {
+                return ToolCallResult.failure(
+                  call.id,
+                  'Invalid "repeat_after": "$rawRepeat". Expected a positive integer in milliseconds.',
+                );
+              }
+              newRepeatAfter = parsedRepeat;
+            }
           }
 
           if (newType == 'one_off') {
@@ -256,7 +289,7 @@ Tool scheduleTaskTool({
           }
 
           int newStartsAt = existing.startsAt;
-          final editDelaySeconds = args['delay_seconds'] as int?;
+          final editDelaySeconds = _parseIntArg(args['delay_seconds']);
           bool timingChanged = false;
           if (editDelaySeconds != null && editDelaySeconds > 0) {
             newStartsAt = nowMillis + (editDelaySeconds * 1000);
@@ -270,29 +303,64 @@ Tool scheduleTaskTool({
           }
 
           String newPayloadJson = existing.payloadJson;
-          if (args['prompt'] != null && (args['prompt'] as String).trim().isNotEmpty) {
+          final promptArg = _parseStringArg(args['prompt'])?.trim() ?? '';
+          final modelArg = args.containsKey('model')
+              ? (_parseStringArg(args['model'])?.trim() ?? '')
+              : null;
+          final providerArg = (args.containsKey('provider_id') || args.containsKey('providerId'))
+              ? (_parseStringArg(args['provider_id'] ?? args['providerId'])?.trim() ?? '')
+              : null;
+          if (promptArg.isNotEmpty || modelArg != null || providerArg != null) {
             Map<String, dynamic> payloadMap;
             try {
               payloadMap = jsonDecode(existing.payloadJson) as Map<String, dynamic>;
             } catch (_) {
               payloadMap = {};
             }
-            payloadMap['prompt'] = (args['prompt'] as String).trim();
+            if (promptArg.isNotEmpty) {
+              payloadMap['prompt'] = promptArg;
+            }
+            if (modelArg != null) {
+              if (modelArg.isNotEmpty) {
+                payloadMap['model'] = modelArg;
+              } else {
+                payloadMap.remove('model');
+              }
+            }
+            if (providerArg != null) {
+              if (providerArg.isNotEmpty) {
+                payloadMap['providerId'] = providerArg;
+              } else {
+                payloadMap.remove('providerId');
+              }
+            }
             newPayloadJson = jsonEncode(payloadMap);
           }
 
           bool newNotify = existing.notify;
           if (args['notify'] != null) {
-            newNotify = args['notify'] as bool;
+            final parsedNotify = _parseBoolArg(args['notify']);
+            if (parsedNotify == null) {
+              return ToolCallResult.failure(
+                call.id,
+                'Invalid "notify": "${args['notify']}". Expected a boolean.',
+              );
+            }
+            newNotify = parsedNotify;
           }
 
           String newStatus = existing.status;
           bool statusChanged = false;
           if (args['status'] != null) {
-            final st = (args['status'] as String).trim().toLowerCase();
+            final st = _parseStringArg(args['status'])?.trim().toLowerCase() ?? '';
             if (st == 'paused' || st == 'scheduled' || st == 'cancelled') {
               newStatus = st;
               statusChanged = true;
+            } else {
+              return ToolCallResult.failure(
+                call.id,
+                'Invalid "status": "${args['status']}". Expected one of: "paused", "scheduled", "cancelled".',
+              );
             }
           }
 
@@ -383,6 +451,7 @@ Tool scheduleTaskTool({
           } else {
             await scheduler?.scheduleTask(taskId);
           }
+          TaskToastService.instance.taskUpdated(taskId, newTitle);
 
           return ToolCallResult(
             id: call.id,
@@ -409,6 +478,7 @@ Tool scheduleTaskTool({
           await (database.delete(database.schedulerTasks)..where((t) => t.id.equals(taskId))).go();
 
           await scheduler?.cancelTask(taskId);
+          TaskToastService.instance.taskDeleted(taskId, existing.title);
 
           return ToolCallResult(
             id: call.id,
@@ -442,9 +512,10 @@ Tool scheduleTaskTool({
           );
 
         case 'list':
-          final statusFilter = (args['status_filter'] as String?)?.trim().toLowerCase();
-          final limit = (args['limit'] as int?) ?? 20;
-          final offset = (args['offset'] as int?) ?? 0;
+          final statusFilter =
+              _parseStringArg(args['status_filter'])?.trim().toLowerCase();
+          final limit = (_parseIntArg(args['limit']) ?? 20).clamp(1, 200);
+          final offset = (_parseIntArg(args['offset']) ?? 0).clamp(0, 1 << 31);
 
           if (limit <= 0 || offset < 0) {
             return ToolCallResult.failure(
@@ -479,8 +550,8 @@ Tool scheduleTaskTool({
             return ToolCallResult.failure(call.id, 'Action "logs" requires a valid "id".');
           }
 
-          final limit = (args['limit'] as int?) ?? 20;
-          final offset = (args['offset'] as int?) ?? 0;
+          final limit = (_parseIntArg(args['limit']) ?? 20).clamp(1, 200);
+          final offset = (_parseIntArg(args['offset']) ?? 0).clamp(0, 1 << 31);
 
           if (limit <= 0 || offset < 0) {
             return ToolCallResult.failure(
@@ -521,8 +592,40 @@ Tool scheduleTaskTool({
 int? _parseId(dynamic raw) {
   if (raw == null) return null;
   if (raw is int) return raw;
+  if (raw is num) return raw.toInt();
   if (raw is String) return int.tryParse(raw.trim());
   return null;
+}
+
+/// Lenient int coercion for LLM arguments (accepts doubles and numeric strings).
+int? _parseIntArg(dynamic raw) {
+  if (raw == null) return null;
+  if (raw is int) return raw;
+  if (raw is num) return raw.toInt();
+  if (raw is String) {
+    return int.tryParse(raw.trim()) ?? double.tryParse(raw.trim())?.toInt();
+  }
+  return null;
+}
+
+/// Lenient bool coercion for LLM arguments (accepts 0/1 and "true"/"false" strings).
+bool? _parseBoolArg(dynamic raw) {
+  if (raw == null) return null;
+  if (raw is bool) return raw;
+  if (raw is num) return raw != 0;
+  if (raw is String) {
+    final v = raw.trim().toLowerCase();
+    if (v == 'true' || v == '1' || v == 'yes') return true;
+    if (v == 'false' || v == '0' || v == 'no') return false;
+  }
+  return null;
+}
+
+/// Lenient string coercion for LLM arguments (never throws on non-string input).
+String? _parseStringArg(dynamic raw) {
+  if (raw == null) return null;
+  if (raw is String) return raw;
+  return raw.toString();
 }
 
 int? _parseTimestampMillis(dynamic raw) {

@@ -18,17 +18,22 @@ import androidx.core.content.ContextCompat
 object NotificationHelper {
     private const val TAG = "NotificationHelper"
 
+    private val createdChannels = mutableSetOf<String>()
+
     fun showNotification(
         context: Context,
         id: Int,
         title: String,
         body: String,
         channelId: String = "scheduled_tasks",
-        channelName: String = "Scheduled Tasks"
+        channelName: String = "Scheduled Tasks",
+        isSuccess: Boolean? = null
     ): Boolean {
         try {
             val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                createdChannels.add(channelId)
+            ) {
                 val channel = NotificationChannel(
                     channelId,
                     channelName,
@@ -41,10 +46,13 @@ object NotificationHelper {
                 manager.createNotificationChannel(channel)
             }
 
-            val tapIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)
-                ?: Intent(context, MainActivity::class.java)
-            tapIntent.flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            tapIntent.putExtra("task_id", id)
+            val tapIntent = (context.packageManager.getLaunchIntentForPackage(context.packageName)
+                ?: Intent(context, MainActivity::class.java)).apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                putExtra("task_id", id)
+                putExtra("route", "manage_tasks_unread")
+                putExtra("open_unread_tasks", true)
+            }
 
             val pendingTap = PendingIntent.getActivity(
                 context,
@@ -64,10 +72,16 @@ object NotificationHelper {
                 Notification.Builder(context)
             }
 
-            val iconRes = if (context.applicationInfo.icon != 0) {
-                context.applicationInfo.icon
-            } else {
-                android.R.drawable.ic_dialog_info
+            val iconRes = when (isSuccess) {
+                true -> android.R.drawable.checkbox_on_background
+                false -> android.R.drawable.stat_notify_error
+                null -> if (context.applicationInfo.icon != 0) context.applicationInfo.icon else android.R.drawable.ic_dialog_info
+            }
+
+            val notifColor = when (isSuccess) {
+                true -> 0xFF238636.toInt() // Green
+                false -> 0xFFDA3633.toInt() // Red
+                null -> 0xFF58A6FF.toInt() // Blue
             }
 
             val notification = builder
@@ -75,6 +89,8 @@ object NotificationHelper {
                 .setContentText(body)
                 .setStyle(Notification.BigTextStyle().bigText(body))
                 .setSmallIcon(iconRes)
+                .setColor(notifColor)
+                .setColorized(isSuccess != null)
                 .setContentIntent(pendingTap)
                 .setAutoCancel(true)
                 .build()

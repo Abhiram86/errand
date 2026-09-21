@@ -48,8 +48,8 @@ void main() {
       expect(prompt, contains('Current user location: San Francisco, CA'));
 
       // Output & Scratch policy
-      expect(prompt, contains('Save your primary report or output file in the scratch directory'));
-      expect(prompt, contains('task_42_<timestamp>.md'));
+      expect(prompt, contains('Target Report File Base Path: `${scratchDir.path}/task-42`'));
+      expect(prompt, contains('${scratchDir.path}/task-42.<ext>'));
       expect(prompt, contains('NEVER write files directly into /storage/emulated/0/ or /sdcard/'));
 
       // Intent policy (non-UI allowed, UI-popping prohibited)

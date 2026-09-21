@@ -107,4 +107,19 @@ class IntentService {
       await _channel.invokeMethod<void>('requestNotificationPermission');
     } catch (_) {}
   }
+
+  /// Copies text and HTML content to clipboard via ClipData.newHtmlText.
+  /// This allows apps like Notion, Apple Notes, Google Docs, OneNote, etc.
+  /// to paste formatted HTML tables directly.
+  Future<bool> copyRichText({required String text, required String html}) async {
+    try {
+      final res = await _channel.invokeMethod<bool>('copyRichText', {
+        'text': text,
+        'html': html,
+      });
+      return res ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
 }

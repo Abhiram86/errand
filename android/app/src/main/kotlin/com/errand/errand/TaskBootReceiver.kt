@@ -17,9 +17,16 @@ class TaskBootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
         if (intent == null) return
         val action = intent.action
-        if (action == Intent.ACTION_BOOT_COMPLETED || action == Intent.ACTION_MY_PACKAGE_REPLACED) {
+        if (action == Intent.ACTION_BOOT_COMPLETED ||
+            action == Intent.ACTION_MY_PACKAGE_REPLACED ||
+            action == "android.intent.action.QUICKBOOT_POWERON"
+        ) {
             Log.d(TAG, "Boot or package update received: triggering task reschedule")
-            TaskExecutionService.startForReschedule(context)
+            try {
+                TaskExecutionService.startForReschedule(context)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to start reschedule from boot receiver", e)
+            }
         }
     }
 }

@@ -280,12 +280,21 @@ class _ModelPickerDialogState extends State<_ModelPickerDialog> {
     _currentOptions = List<ModelOption>.from(baseOptions)
       ..sort(ModelOption.compareByReleaseDate);
 
+    // Reset immediately only when knowably stale (free fallback with a key)
+    // or when missing from a live cached list. A miss against a
+    // defaults-only list proves nothing — keep the stored pick and let the
+    // post-fetch check heal it if genuinely dead.
+    final hasLiveList = cached != null && cached.isNotEmpty;
+    final isFreeWithKey = _currentProviderHasKey &&
+        (_currentSelectedModel == 'openrouter/free' ||
+            _currentSelectedModel == 'openrouter/auto' ||
+            _currentSelectedModel == kDefaultModelId);
     final isStaleOrFallback = (provider != null) &&
-        (!_currentOptions.any((m) => m.id == _currentSelectedModel) ||
-            (_currentProviderHasKey &&
-                (_currentSelectedModel == 'openrouter/free' ||
-                    _currentSelectedModel == 'openrouter/auto' ||
-                    _currentSelectedModel == kDefaultModelId)));
+        (isFreeWithKey ||
+            (hasLiveList &&
+                !_currentOptions.any(
+                  (m) => m.id == _currentSelectedModel,
+                )));
     if (isStaleOrFallback && _currentOptions.isNotEmpty) {
       _currentSelectedModel = _resolveDisplayModel(provider, _currentOptions);
     }
@@ -358,21 +367,22 @@ class _ModelPickerDialogState extends State<_ModelPickerDialog> {
   }
 
   /// Full per-provider priority for display: that provider's last pick
-  /// (when still in the list and not a stale free fallback) > list head
-  /// > hardcoded preset.
+  /// > list head > hardcoded preset. The stored pick is shown optimistically
+  /// even when absent from a defaults-only list (rendered as a synthetic
+  /// option) — the post-fetch stale check heals it if genuinely dead. Only
+  /// the free-router-with-key case resets immediately, since it is knowably
+  /// stale without live data.
   String _resolveDisplayModel(LlmProvider provider, List<ModelOption> opts) {
     final stored = AppSettingsService.instance.selectedModelFor(provider.id);
-    if (AppSettingsService.instance.hasSelectedModelFor(provider.id) &&
-        opts.any((m) => m.id == stored)) {
+    if (AppSettingsService.instance.hasSelectedModelFor(provider.id)) {
       final hasKey = provider.hasKey ||
           (provider.id == ProviderPresetType.openRouter.id &&
               AppSettingsService.instance.hasOpenRouterKey);
-      if (!hasKey ||
-          (stored != 'openrouter/free' &&
-              stored != 'openrouter/auto' &&
-              stored != kDefaultModelId)) {
-        return stored;
-      }
+      final isFreeWithKey = hasKey &&
+          (stored == 'openrouter/free' ||
+              stored == 'openrouter/auto' ||
+              stored == kDefaultModelId);
+      if (!isFreeWithKey) return stored;
     }
     return _pickInitialModel(provider, opts);
   }
@@ -409,11 +419,20 @@ class _ModelPickerDialogState extends State<_ModelPickerDialog> {
             final sorted = List<ModelOption>.from(updated)
               ..sort(ModelOption.compareByReleaseDate);
             _currentOptions = sorted;
-            final isStale = !_currentOptions.any((m) => m.id == _currentSelectedModel) ||
-                (hasKey &&
-                    (_currentSelectedModel == 'openrouter/free' ||
-                        _currentSelectedModel == 'openrouter/auto' ||
-                        _currentSelectedModel == kDefaultModelId));
+            // `updated` may be a defaults-only list when the fetch failed
+            // offline — only treat a miss as stale against live data.
+            final liveNow =
+                ModelCatalogService.getCachedModels(provider.baseUrl);
+            final hasLiveNow = liveNow != null && liveNow.isNotEmpty;
+            final isFreeWithKey = hasKey &&
+                (_currentSelectedModel == 'openrouter/free' ||
+                    _currentSelectedModel == 'openrouter/auto' ||
+                    _currentSelectedModel == kDefaultModelId);
+            final isStale = isFreeWithKey ||
+                (hasLiveNow &&
+                    !_currentOptions.any(
+                      (m) => m.id == _currentSelectedModel,
+                    ));
             if (isStale) {
               _currentSelectedModel = _pickInitialModel(provider, sorted);
             }

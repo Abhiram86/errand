@@ -13,13 +13,17 @@ class NotificationService {
       : _methodChannel = channel ?? _channel;
 
   /// Shows an Android system notification with [title] and [body].
+  /// [isSuccess] applies contextual branding (green checkbox for success, red warning for failure).
+  /// Returns false without invoking native code when notification permission is denied.
   Future<bool> showNotification({
     required int id,
     required String title,
     required String body,
     String channelId = 'scheduled_tasks',
     String channelName = 'Scheduled Tasks',
+    bool? isSuccess,
   }) async {
+    if (!await hasPermission()) return false;
     try {
       final res = await _methodChannel.invokeMethod<bool>('showNotification', {
         'id': id,
@@ -27,6 +31,7 @@ class NotificationService {
         'body': body,
         'channelId': channelId,
         'channelName': channelName,
+        'isSuccess': isSuccess,
       });
       return res ?? false;
     } catch (_) {
@@ -38,6 +43,7 @@ class NotificationService {
           'body': body,
           'channelId': channelId,
           'channelName': channelName,
+          'isSuccess': isSuccess,
         });
         return fallbackRes ?? false;
       } catch (_) {

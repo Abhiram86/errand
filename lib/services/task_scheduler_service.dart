@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:drift/drift.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import '../agent/agent_runner.dart';
@@ -65,6 +66,22 @@ class TaskSchedulerService {
     );
   }
 
+  final StreamController<Map<String, dynamic>> _notificationClicks =
+      StreamController<Map<String, dynamic>>.broadcast();
+
+  /// Stream of notification clicks delivered while the app is active.
+  Stream<Map<String, dynamic>> get notificationClicks => _notificationClicks.stream;
+
+  /// Retrieves any cold-launch notification click intent that started the app.
+  Future<Map<String, dynamic>?> getPendingNotificationClick() async {
+    try {
+      final res = await _channel.invokeMapMethod<String, dynamic>('getPendingNotificationClick');
+      return res;
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Attaches method call handler to receive `executeTask` and `rescheduleAll`
   /// triggers from native Android AlarmManager / WorkManager.
   void initialize() {
@@ -79,6 +96,12 @@ class TaskSchedulerService {
           return false;
         case 'rescheduleAll':
           return await rescheduleAllActiveTasks();
+        case 'onTaskNotificationClicked':
+          final args = call.arguments;
+          if (args is Map) {
+            _notificationClicks.add(Map<String, dynamic>.from(args));
+          }
+          return true;
         default:
           return null;
       }
@@ -104,11 +127,17 @@ class TaskSchedulerService {
     final triggerAt = targetTime > nowMillis ? targetTime : nowMillis + 1000;
 
     try {
-      await _channel.invokeMethod('scheduleAlarm', {
+      final scheduled = await _channel.invokeMethod<bool>('scheduleAlarm', {
         'taskId': taskId,
         'triggerAtMillis': triggerAt,
         'title': task.title,
       });
+      if (scheduled == false) {
+        debugPrint(
+          '[TaskSchedulerService] Exact alarm denied for task $taskId; '
+          'falling back to inexact timing. Ask the user to grant exact alarms.',
+        );
+      }
     } catch (_) {}
   }
 
@@ -278,7 +307,22 @@ class TaskSchedulerService {
     if (agentRunner == null) {
       try {
         final settings = AppSettingsService.instance;
-        final provider = settings.activeProvider;
+        final targetProviderId = payload['providerId'] as String?;
+        final targetModel = (payload['model'] as String?)?.trim();
+
+        // Resolve provider (override or active default)
+        LlmProvider provider = settings.activeProvider;
+        if (targetProviderId != null && targetProviderId.isNotEmpty) {
+          final found = settings.providers.where((p) => p.id == targetProviderId).firstOrNull;
+          if (found != null) {
+            provider = found;
+          }
+        }
+
+        final model = (targetModel != null && targetModel.isNotEmpty)
+            ? targetModel
+            : settings.selectedModel;
+
         final apiKey = provider.id == ProviderPresetType.openRouter.id
             ? (provider.apiKey ?? settings.openRouterKey ?? '')
             : (provider.apiKey ?? '');
@@ -288,13 +332,13 @@ class TaskSchedulerService {
                 ? provider.baseUrl
                 : provider.defaultBaseUrl,
             apiKey: apiKey,
-            model: settings.selectedModel,
+            model: model,
           ),
         );
         agentRunner = AgentRunner(
           llm: locallyCreatedClient,
           workingDirectory: WorkingDirectory(Workspace.instance.documentsDir),
-          selectedModel: settings.selectedModel,
+          selectedModel: model,
         );
       } catch (_) {}
     }
@@ -387,6 +431,37 @@ class TaskSchedulerService {
 
     final isSuccess = result.ok;
 
+    // Check .scratch/ for task-$taskId.* report written by the agent
+    String? reportPath = result.reportPath;
+    if (reportPath == null) {
+      final scratch = scratchDirectory ?? Workspace.instance.scratchDir;
+      try {
+        if (scratch.existsSync()) {
+          final candidates = scratch
+              .listSync()
+              .whereType<File>()
+              .where((f) {
+                final name = f.uri.pathSegments.last;
+                return name.startsWith('task-$taskId.') ||
+                    name.startsWith('task_$taskId.') ||
+                    name == 'task-$taskId' ||
+                    name == 'task_$taskId';
+              })
+              .toList();
+          if (candidates.isNotEmpty) {
+            candidates.sort((a, b) {
+              final aIsHtml = a.path.toLowerCase().endsWith('.html');
+              final bIsHtml = b.path.toLowerCase().endsWith('.html');
+              if (aIsHtml && !bIsHtml) return -1;
+              if (!aIsHtml && bIsHtml) return 1;
+              return b.lastModifiedSync().compareTo(a.lastModifiedSync());
+            });
+            reportPath = candidates.first.path;
+          }
+        }
+      } catch (_) {}
+    }
+
     // Extract one-line summary for logs and notification
     final summary = result.output.trim().split('\n').firstWhere(
       (line) => line.trim().isNotEmpty,
@@ -401,7 +476,7 @@ class TaskSchedulerService {
       SchedulerTaskLogsCompanion(
         finishedAt: Value(finishMillis),
         status: Value(logStatus),
-        outputFilePath: Value(result.reportPath),
+        outputFilePath: Value(reportPath),
         summary: Value(summary),
         errorMessage: Value(result.errorMessage),
         updatedAt: Value(finishMillis),
@@ -483,6 +558,7 @@ class TaskSchedulerService {
           id: taskId,
           title: notifTitle,
           body: notifBody,
+          isSuccess: isSuccess,
         );
         await (db.update(db.schedulerTaskLogs)..where((l) => l.id.equals(logId))).write(
           SchedulerTaskLogsCompanion(
@@ -492,6 +568,8 @@ class TaskSchedulerService {
         );
       } catch (_) {}
     }
+
+    locallyCreatedClient?.close();
 
     return isSuccess;
   }

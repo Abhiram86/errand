@@ -63,6 +63,9 @@ Tool Selection Guide:
     - For absolute calendar schedules ("tomorrow at 3:00 PM"), verify AM/PM and today vs tomorrow first, compute starts_at (ISO 8601 string or epoch millis), and explicitly state the confirmed schedule back to the user.
   * For one-off tasks: specify action: "create", schedule_type: "one_off", prompt: "...", and either delay_seconds or starts_at.
   * For recurring tasks: specify action: "create", schedule_type: "recurring", repeat_after: interval in millis (e.g. 900000 for 15m, 3600000 for 1h, 86400000 for 1 day), prompt: "...".
+  * Task Prompt Formatting (DO NOT invent file paths or filenames):
+    - In "prompt", state only the user's goal or instructions (e.g. "Create a hello world HTML website", "Check battery and memory usage").
+    - NEVER specify or invent file paths or filenames (such as "/storage/emulated/0/Documents/Errand/hello_world.html" or "index.html") in the task prompt. Headless background tasks have their own deterministic output handling and naming.
   * notify: defaults to true (dispatches a system notification with summary upon completion or failure).
 - If a tool call fails, re-check arguments against the tool schema and adapt. Never repeat an identical failing call. Two identical failures mean the approach is wrong: change approach or ask the user.
 ''';
@@ -131,7 +134,7 @@ Your objective is to execute the assigned task completely and self-sufficiently,
 
 Autonomous Background Execution Principles:
 - Fully Autonomous: Proceed decisively through steps to completion without pausing for back-and-forth conversation or rhetorical confirmation questions.
-- Clear Conclusive Output: When the task is complete, provide a structured summary of what was accomplished, key findings, and paths to any generated output files.
+- User-Facing Conclusive Summary: When the task is complete, your final response must provide a clear, well-structured, user-facing summary of what was accomplished and key findings. This summary is collected and shown to the user in task logs and notifications. Never output internal verification chatter, diagnostic test checklists, raw tool call traces, or scratchpad musings in this final summary.
 - Resilient Error Handling: If an action fails, explain what happened in plain terms, adapt your approach, and try alternative methods. Never repeat an identical failing call.
 
 Tool Usage & Headless Policies:
@@ -176,8 +179,13 @@ String headlessSystemPromptFor({
       '- Scratch directory: ${scratchDir.path}\n'
       '${locationSummary != null && locationSummary.isNotEmpty ? '- Current user location: $locationSummary\n' : ''}'
       '\nOutput & File Guidelines:\n'
-      '- Save your primary report or output file in the scratch directory (${scratchDir.path}) using the naming format: `task_${taskId}_<timestamp>.md`.\n'
-      '- Make sure any generated notes or data files are cleanly organized inside the scratch or working directory.\n'
+      '- Target Report File Base Path: `${scratchDir.path}/task-$taskId`\n'
+      '  * If you generate a report, document, or data output, write it directly to `${scratchDir.path}/task-$taskId.<ext>` via bash/shell commands.\n'
+      '  * If HTML, rich styling, charts, interactive elements, or tables are needed: MUST write directly to `${scratchDir.path}/task-$taskId.html` with clean inline CSS.\n'
+      '  * For text-first reports or documentation: write directly to `${scratchDir.path}/task-$taskId.md`.\n'
+      '  * NEVER invent random filenames: always use the exact prefix `${scratchDir.path}/task-$taskId` with your chosen extension.\n'
+      '- Final Turn Response (Summary):\n'
+      '  * Your final response text in this turn is collected as the task summary for the user and notification. Provide a clear, detailed, user-facing summary of your findings and what was accomplished.\n'
       '- NEVER write files directly into /storage/emulated/0/ or /sdcard/.';
 
   if (debug) {
