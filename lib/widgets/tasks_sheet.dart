@@ -1,9 +1,9 @@
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:drift/drift.dart' hide isNull, isNotNull, Column;
 import 'package:flutter/material.dart';
 
+import '../screens/task_file_preview_screen.dart';
 import '../services/database.dart';
 import '../services/task_scheduler_service.dart';
 import '../theme/app_colors.dart';
@@ -637,26 +637,31 @@ class _TaskLogsSheet extends StatelessWidget {
                               ),
                             ],
                             if (log.outputFilePath != null) ...[
-                              const SizedBox(height: 6),
+                              const SizedBox(height: 8),
                               InkWell(
                                 onTap: () => _viewReport(context, log.outputFilePath!),
-                                child: Row(
-                                  children: [
-                                    const Icon(Icons.description_outlined, color: kBubbleUser, size: 14),
-                                    const SizedBox(width: 4),
-                                    Expanded(
-                                      child: Text(
-                                        log.outputFilePath!,
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: const TextStyle(
-                                          color: kBubbleUser,
-                                          fontSize: 11,
-                                          decoration: TextDecoration.underline,
+                                borderRadius: BorderRadius.circular(6),
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(vertical: 3),
+                                  child: Row(
+                                    children: [
+                                      const Icon(Icons.description_outlined, color: Color(0xFF58A6FF), size: 14),
+                                      const SizedBox(width: 6),
+                                      Expanded(
+                                        child: Text(
+                                          log.outputFilePath!,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                            color: const Color(0xFF58A6FF),
+                                            fontSize: 11,
+                                            decoration: TextDecoration.underline,
+                                            decorationColor: const Color(0xFF58A6FF).withValues(alpha: 0.55),
+                                          ),
                                         ),
                                       ),
-                                    ),
-                                  ],
+                                    ],
+                                  ),
                                 ),
                               ),
                             ],
@@ -679,34 +684,7 @@ class _TaskLogsSheet extends StatelessWidget {
     return '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}:${dt.second.toString().padLeft(2, '0')}';
   }
 
-  void _viewReport(BuildContext context, String path) async {
-    final file = File(path);
-    String content;
-    try {
-      content = await file.readAsString();
-    } catch (e) {
-      content = 'Failed to read file: $e';
-    }
-
-    if (!context.mounted) return;
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: kInputBg,
-        title: const Text('Task Report', style: TextStyle(color: kText, fontSize: 16)),
-        content: SingleChildScrollView(
-          child: Text(
-            content,
-            style: const TextStyle(color: kText, fontSize: 12, fontFamily: 'monospace'),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Close'),
-          ),
-        ],
-      ),
-    );
+  void _viewReport(BuildContext context, String path) {
+    TaskFilePreviewScreen.show(context, filePath: path);
   }
 }

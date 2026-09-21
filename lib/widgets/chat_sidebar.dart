@@ -4,7 +4,7 @@ import '../theme/app_colors.dart';
 import '../types/conversation.dart';
 import 'options_modal_sheet.dart';
 import 'paging.dart';
-import 'tasks_sheet.dart';
+import '../screens/manage_tasks_screen.dart';
 
 export 'options_modal_sheet.dart' show SheetOption, SheetOptionType;
 
@@ -114,7 +114,11 @@ class ChatSidebar extends StatelessWidget {
                         if (onManageTasks != null) {
                           onManageTasks!();
                         } else {
-                          showTasksSheet(context);
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => const ManageTasksScreen(),
+                            ),
+                          );
                         }
                       },
                     ),

@@ -31,6 +31,40 @@ class TaskSchedulerService {
 
   static const MethodChannel _channel = MethodChannel('task_scheduler');
 
+  final Map<int, CancelToken> _runningTokens = {};
+
+  /// Checks if a task is currently executing in-process.
+  bool isTaskRunning(int taskId) => _runningTokens.containsKey(taskId);
+
+  /// Cancels an actively running task execution and marks it cancelled in the database.
+  Future<void> cancelRunningTask(int taskId) async {
+    final token = _runningTokens[taskId];
+    token?.cancel();
+
+    final nowMillis = DateTime.now().millisecondsSinceEpoch;
+    await (db.update(db.schedulerTasks)
+          ..where((t) => t.id.equals(taskId) & t.status.equals('running')))
+        .write(
+      SchedulerTasksCompanion(
+        status: const Value('cancelled'),
+        nextRunAt: const Value(null),
+        updatedAt: Value(nowMillis),
+      ),
+    );
+
+    await (db.update(db.schedulerTaskLogs)
+          ..where((l) =>
+              l.schedulerTaskId.equals(taskId) & l.status.equals('running')))
+        .write(
+      SchedulerTaskLogsCompanion(
+        status: const Value('cancelled'),
+        finishedAt: Value(nowMillis),
+        errorMessage: const Value('Cancelled by user'),
+        updatedAt: Value(nowMillis),
+      ),
+    );
+  }
+
   /// Attaches method call handler to receive `executeTask` and `rescheduleAll`
   /// triggers from native Android AlarmManager / WorkManager.
   void initialize() {
@@ -295,6 +329,7 @@ class TaskSchedulerService {
     }
 
     final effectiveCancelToken = cancelToken ?? CancelToken();
+    _runningTokens[taskId] = effectiveCancelToken;
     HeadlessRunResult result;
     var isTimeout = false;
 
@@ -325,10 +360,31 @@ class TaskSchedulerService {
         errorMessage: e.toString(),
       );
     } finally {
+      _runningTokens.remove(taskId);
       locallyCreatedClient?.close();
     }
 
     final finishMillis = DateTime.now().millisecondsSinceEpoch;
+
+    if (effectiveCancelToken.isCancelled && !isTimeout) {
+      await (db.update(db.schedulerTasks)..where((t) => t.id.equals(taskId))).write(
+        SchedulerTasksCompanion(
+          status: const Value('cancelled'),
+          nextRunAt: const Value(null),
+          updatedAt: Value(finishMillis),
+        ),
+      );
+      await (db.update(db.schedulerTaskLogs)..where((l) => l.id.equals(logId))).write(
+        SchedulerTaskLogsCompanion(
+          status: const Value('cancelled'),
+          finishedAt: Value(finishMillis),
+          errorMessage: const Value('Cancelled by user'),
+          updatedAt: Value(finishMillis),
+        ),
+      );
+      return false;
+    }
+
     final isSuccess = result.ok;
 
     // Extract one-line summary for logs and notification
