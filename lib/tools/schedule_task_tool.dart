@@ -238,17 +238,35 @@ Tool scheduleTaskTool({
           }
 
           int? newRepeatAfter = existing.repeatAfter;
-          if (args.containsKey('repeat_after')) {
+          final bool repeatChanged = args.containsKey('repeat_after');
+          if (repeatChanged) {
             newRepeatAfter = args['repeat_after'] as int?;
+          }
+
+          if (newType == 'one_off') {
+            newRepeatAfter = null;
+          }
+
+          if (newType == 'recurring' &&
+              (newRepeatAfter == null || newRepeatAfter <= 0)) {
+            return ToolCallResult.failure(
+              call.id,
+              'Action "edit" for recurring tasks requires a valid "repeat_after" interval.',
+            );
           }
 
           int newStartsAt = existing.startsAt;
           final editDelaySeconds = args['delay_seconds'] as int?;
+          bool timingChanged = false;
           if (editDelaySeconds != null && editDelaySeconds > 0) {
             newStartsAt = nowMillis + (editDelaySeconds * 1000);
+            timingChanged = true;
           } else if (args['starts_at'] != null) {
             final parsed = _parseTimestampMillis(args['starts_at']);
-            if (parsed != null) newStartsAt = parsed;
+            if (parsed != null) {
+              newStartsAt = parsed;
+              timingChanged = true;
+            }
           }
 
           String newPayloadJson = existing.payloadJson;
@@ -269,15 +287,75 @@ Tool scheduleTaskTool({
           }
 
           String newStatus = existing.status;
-          int? newNextRunAt = existing.nextRunAt;
+          bool statusChanged = false;
           if (args['status'] != null) {
             final st = (args['status'] as String).trim().toLowerCase();
             if (st == 'paused' || st == 'scheduled' || st == 'cancelled') {
               newStatus = st;
-              if (st == 'paused' || st == 'cancelled') {
-                newNextRunAt = null;
-              } else if (st == 'scheduled') {
-                newNextRunAt = newStartsAt > nowMillis ? newStartsAt : nowMillis + 60000;
+              statusChanged = true;
+            }
+          }
+
+          int? newNextRunAt = existing.nextRunAt;
+          if (newStatus == 'paused' || newStatus == 'cancelled') {
+            newNextRunAt = null;
+          } else if (newStatus == 'scheduled') {
+            if (timingChanged) {
+              if (newType == 'recurring') {
+                if (newStartsAt > nowMillis) {
+                  newNextRunAt = newStartsAt;
+                } else {
+                  final interval = (newRepeatAfter != null && newRepeatAfter > 0)
+                      ? newRepeatAfter
+                      : 60000;
+                  var target = newStartsAt + interval;
+                  while (target <= nowMillis) {
+                    target += interval;
+                  }
+                  newNextRunAt = target;
+                }
+              } else {
+                newNextRunAt = newStartsAt;
+              }
+            } else if (statusChanged && existing.status != 'scheduled') {
+              // Resuming task without explicit timing change
+              if (newStartsAt > nowMillis) {
+                newNextRunAt = newStartsAt;
+              } else if (newType == 'recurring') {
+                final interval = (newRepeatAfter != null && newRepeatAfter > 0)
+                    ? newRepeatAfter
+                    : 60000;
+                var target = newStartsAt + interval;
+                while (target <= nowMillis) {
+                  target += interval;
+                }
+                newNextRunAt = target;
+              } else {
+                newNextRunAt = nowMillis + 60000;
+              }
+            } else if (repeatChanged && newType == 'recurring') {
+              final interval = (newRepeatAfter != null && newRepeatAfter > 0)
+                  ? newRepeatAfter
+                  : 60000;
+              if (newNextRunAt == null || newNextRunAt <= nowMillis) {
+                final base = existing.lastRunAt ?? existing.startsAt;
+                var target = base + interval;
+                while (target <= nowMillis) {
+                  target += interval;
+                }
+                newNextRunAt = target;
+              }
+            } else if (newNextRunAt == null) {
+              if (newStartsAt > nowMillis) {
+                newNextRunAt = newStartsAt;
+              } else if (newType == 'recurring' && newRepeatAfter != null && newRepeatAfter > 0) {
+                var target = newStartsAt + newRepeatAfter;
+                while (target <= nowMillis) {
+                  target += newRepeatAfter;
+                }
+                newNextRunAt = target;
+              } else {
+                newNextRunAt = nowMillis + 60000;
               }
             }
           }
@@ -368,6 +446,13 @@ Tool scheduleTaskTool({
           final limit = (args['limit'] as int?) ?? 20;
           final offset = (args['offset'] as int?) ?? 0;
 
+          if (limit <= 0 || offset < 0) {
+            return ToolCallResult.failure(
+              call.id,
+              'Action "list" requires valid "limit" and "offset" arguments.',
+            );
+          }
+
           var query = database.select(database.schedulerTasks)
             ..orderBy([(t) => OrderingTerm.desc(t.createdAt)])
             ..limit(limit, offset: offset);
@@ -396,6 +481,13 @@ Tool scheduleTaskTool({
 
           final limit = (args['limit'] as int?) ?? 20;
           final offset = (args['offset'] as int?) ?? 0;
+
+          if (limit <= 0 || offset < 0) {
+            return ToolCallResult.failure(
+              call.id,
+              'Action "logs" requires valid "limit" and "offset" arguments.',
+            );
+          }
 
           final logsQuery = database.select(database.schedulerTaskLogs)
             ..where((l) => l.schedulerTaskId.equals(taskId))

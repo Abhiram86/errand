@@ -35,6 +35,7 @@ class TaskExecutionService : Service() {
         private const val TAG = "TaskExecutionService"
         private const val CHANNEL_ID = "scheduled_tasks_service"
         private const val NOTIFICATION_ID = 5823
+        private val MAIN_ENGINE_TIMEOUT_MS = 30_000L
 
         const val ACTION_EXECUTE_TASK = "com.errand.ACTION_EXECUTE_TASK"
         const val ACTION_RESCHEDULE_ALL = "com.errand.ACTION_RESCHEDULE_ALL"
@@ -151,27 +152,89 @@ class TaskExecutionService : Service() {
         }
     }
 
-    private fun dispatchToMainEngine(request: ServiceRequest, mainChannel: MethodChannel) {
-        val methodName = if (request.action == ACTION_EXECUTE_TASK) "executeTask" else "rescheduleAll"
-        val methodArgs = if (request.action == ACTION_EXECUTE_TASK) mapOf("taskId" to request.taskId) else null
+    private fun dispatchToMainEngine(
+        request: ServiceRequest,
+        mainChannel: MethodChannel
+    ) {
+        val methodName =
+            if (request.action == ACTION_EXECUTE_TASK) "executeTask"
+            else "rescheduleAll"
+
+        val methodArgs =
+            if (request.action == ACTION_EXECUTE_TASK) {
+                mapOf("taskId" to request.taskId)
+            } else {
+                null
+            }
 
         Log.d(TAG, "Dispatching $methodName to active MainActivity engine")
-        mainChannel.invokeMethod(methodName, methodArgs, object : MethodChannel.Result {
-            override fun success(result: Any?) {
-                Log.d(TAG, "$methodName completed on main engine: $result")
-                processNextRequest()
-            }
 
-            override fun error(code: String, message: String?, details: Any?) {
-                Log.e(TAG, "$methodName failed on main engine: $code: $message")
-                processNextRequest()
-            }
+        var completed = false
 
-            override fun notImplemented() {
-                Log.w(TAG, "$methodName not implemented on main engine, falling back to background engine")
-                dispatchToBackgroundEngine(request)
+        val timeoutRunnable = Runnable {
+            if (completed) return@Runnable
+
+            completed = true
+
+            Log.w(
+                TAG,
+                "$methodName timed out on main engine, falling back to background engine"
+            )
+
+            dispatchToBackgroundEngine(request)
+        }
+
+        mainHandler.postDelayed(timeoutRunnable, MAIN_ENGINE_TIMEOUT_MS)
+
+        mainChannel.invokeMethod(
+            methodName,
+            methodArgs,
+            object : MethodChannel.Result {
+
+                override fun success(result: Any?) {
+                    if (completed) return
+                    completed = true
+
+                    mainHandler.removeCallbacks(timeoutRunnable)
+
+                    Log.d(TAG, "$methodName completed on main engine: $result")
+                    processNextRequest()
+                }
+
+                override fun error(
+                    code: String,
+                    message: String?,
+                    details: Any?
+                ) {
+                    if (completed) return
+                    completed = true
+
+                    mainHandler.removeCallbacks(timeoutRunnable)
+
+                    Log.e(
+                        TAG,
+                        "$methodName failed on main engine: $code: $message"
+                    )
+
+                    processNextRequest()
+                }
+
+                override fun notImplemented() {
+                    if (completed) return
+                    completed = true
+
+                    mainHandler.removeCallbacks(timeoutRunnable)
+
+                    Log.w(
+                        TAG,
+                        "$methodName not implemented on main engine, " +
+                            "falling back to background engine"
+                    )
+
+                    dispatchToBackgroundEngine(request)
+                }
             }
-        })
+        )
     }
 
     private fun dispatchToBackgroundEngine(request: ServiceRequest) {
@@ -361,7 +424,9 @@ class TaskExecutionService : Service() {
                 wakeLock?.release()
             }
             wakeLock = null
-        } catch (_) {}
+        } catch (e: Exception) {
+            Log.e(TAG, "Error releasing wake lock", e)
+        }
         super.onDestroy()
     }
 

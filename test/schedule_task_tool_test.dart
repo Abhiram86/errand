@@ -218,6 +218,87 @@ void main() {
       expect(updated['next_run_at'], isNull);
     });
 
+    test('edit task updates next_run_at when status is not passed', () async {
+      final tool = scheduleTaskTool(db: db);
+
+      final createRes = await tool.handler(
+        const ToolCall(
+          id: 'c-1',
+          name: 'schedule_task',
+          arguments: {
+            'action': 'create',
+            'title': 'Active one_off',
+            'prompt': 'Prompt 1',
+            'schedule_type': 'one_off',
+            'delay_seconds': 60,
+          },
+        ),
+      );
+      final id = jsonDecode(createRes.output)['task']['id'];
+
+      final editRes = await tool.handler(
+        ToolCall(
+          id: 'e-1',
+          name: 'schedule_task',
+          arguments: {
+            'action': 'edit',
+            'id': id,
+            'delay_seconds': 600, // 10 minutes delay
+          },
+        ),
+      );
+
+      expect(editRes.ok, isTrue);
+      final updated = jsonDecode(editRes.output)['task'];
+      final nextRunAt = updated['next_run_at'] as int;
+      final startsAt = updated['starts_at'] as int;
+      expect(nextRunAt, equals(startsAt));
+      expect(nextRunAt, greaterThan(DateTime.now().millisecondsSinceEpoch + 500000));
+    });
+
+    test('edit recurring task with past start advances next_run_at by repeat_after interval', () async {
+      final tool = scheduleTaskTool(db: db);
+      final now = DateTime.now().millisecondsSinceEpoch;
+
+      final createRes = await tool.handler(
+        ToolCall(
+          id: 'c-rec',
+          name: 'schedule_task',
+          arguments: {
+            'action': 'create',
+            'title': 'Hourly news',
+            'prompt': 'Fetch news',
+            'schedule_type': 'recurring',
+            'starts_at': (now + 3600000).toString(),
+            'repeat_after': 3600000,
+          },
+        ),
+      );
+      final id = jsonDecode(createRes.output)['task']['id'];
+
+      // Edit with a past start_at (30 minutes ago) and 1 hour repeat
+      final pastTime = now - 1800000;
+      final editRes = await tool.handler(
+        ToolCall(
+          id: 'e-rec',
+          name: 'schedule_task',
+          arguments: {
+            'action': 'edit',
+            'id': id,
+            'starts_at': pastTime.toString(),
+            'repeat_after': 3600000,
+          },
+        ),
+      );
+
+      expect(editRes.ok, isTrue);
+      final updated = jsonDecode(editRes.output)['task'];
+      final nextRunAt = updated['next_run_at'] as int;
+      // nextRunAt should be pastTime + 3600000 = now + 1800000 (30 min in future)
+      expect(nextRunAt, equals(pastTime + 3600000));
+      expect(nextRunAt, greaterThan(now));
+    });
+
     test('delete task and cascade logs', () async {
       final tool = scheduleTaskTool(db: db);
 
