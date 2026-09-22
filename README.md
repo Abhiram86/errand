@@ -38,6 +38,7 @@ conversations are stored locally (Drift/SQLite) with no cloud sync.
     guidelines across sessions (`save`, `recall`, `update`, `delete`, `list`),
     with passive knowledge digests injected into the prompt and a management UI in Settings.
   - `websearch` / `webfetch` — Tavily search + Markdown extraction.
+  - `schedule_task` — background autonomous task scheduling (`create`, `edit`, `delete`, `get`, `list`, `logs`). Executes tasks headlessly via native Android `AlarmManager`, collecting HTML/Markdown reports in `.scratch/` and firing system notifications upon completion.
   - `intent` — 6 core Android actions (`open_file` via FileProvider,
     `open_url`, `open_app`, `settings`, raw `android_action` hatch, and `docs`
     for on-demand schema lookups across alarms, timers, calendar, and location/maps).
@@ -68,8 +69,12 @@ conversations are stored locally (Drift/SQLite) with no cloud sync.
   streaming summaries. Multi-line composer with an animated multi-color
   glowing border while the assistant is processing turns (zero idle battery
   overhead). Unified compact options modal sheet (75% screen height cap)
-  for chat actions, message editing, and message retry.
-- **Local persistence** — conversations/messages/attachments/memories in Drift (schema v5) with
+  for chat actions, message editing, and message retry. Assistant message tables
+  support cell truncation, horizontal scrolling, and quick copying.
+- **Manage Tasks dashboard** — dedicated full-screen task manager accessible from
+  the sidebar. Inspect active, completed, failed, and unread tasks with execution logs,
+  time filters, status controls, and in-app file previews.
+- **Local persistence** — conversations/messages/attachments/memories/scheduler_tasks in Drift (schema v7) with
   merge-based saves, pinned favourites, recency-ordered sidebar.
 - **In-app configuration** — API keys are entered in Settings (gear icon in
   the header), encrypted with AES-256-GCM, and stored in SQLite. Providers with

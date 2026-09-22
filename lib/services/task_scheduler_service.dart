@@ -431,36 +431,17 @@ class TaskSchedulerService {
 
     final isSuccess = result.ok;
 
-    // Check .scratch/ for task-$taskId.* report written by the agent
+    // The runner guarantees reportPath (save_report tool or final-answer
+    // fallback). Verify the file actually exists; prune older reports for
+    // this task so recurring runs don't fill scratch unboundedly.
     String? reportPath = result.reportPath;
-    if (reportPath == null) {
-      final scratch = scratchDirectory ?? Workspace.instance.scratchDir;
-      try {
-        if (scratch.existsSync()) {
-          final candidates = scratch
-              .listSync()
-              .whereType<File>()
-              .where((f) {
-                final name = f.uri.pathSegments.last;
-                return name.startsWith('task-$taskId.') ||
-                    name.startsWith('task_$taskId.') ||
-                    name == 'task-$taskId' ||
-                    name == 'task_$taskId';
-              })
-              .toList();
-          if (candidates.isNotEmpty) {
-            candidates.sort((a, b) {
-              final aIsHtml = a.path.toLowerCase().endsWith('.html');
-              final bIsHtml = b.path.toLowerCase().endsWith('.html');
-              if (aIsHtml && !bIsHtml) return -1;
-              if (!aIsHtml && bIsHtml) return 1;
-              return b.lastModifiedSync().compareTo(a.lastModifiedSync());
-            });
-            reportPath = candidates.first.path;
-          }
-        }
-      } catch (_) {}
-    }
+    final scratch = scratchDirectory ?? Workspace.instance.scratchDir;
+    try {
+      if (reportPath != null && !File(reportPath).existsSync()) {
+        reportPath = null;
+      }
+      _pruneOldReports(scratch, taskId, keep: 10, keepPath: reportPath);
+    } catch (_) {}
 
     // Extract one-line summary for logs and notification
     final summary = result.output.trim().split('\n').firstWhere(
@@ -572,5 +553,41 @@ class TaskSchedulerService {
     locallyCreatedClient?.close();
 
     return isSuccess;
+  }
+
+  /// Deletes older `task-<taskId>-*` reports in [scratch], keeping the newest
+  /// [keep] files so recurring tasks don't fill the disk unboundedly.
+  /// Never deletes the file at [keepPath] (the current run's report).
+  void _pruneOldReports(Directory scratch, int taskId,
+      {int keep = 10, String? keepPath}) {
+    try {
+      if (!scratch.existsSync()) return;
+      final prefix = 'task-$taskId-';
+      final reports = scratch
+          .listSync()
+          .whereType<File>()
+          .where((f) => f.uri.pathSegments.last.startsWith(prefix))
+          .toList();
+      reports.sort((a, b) {
+        DateTime aTime, bTime;
+        try {
+          aTime = a.lastModifiedSync();
+        } catch (_) {
+          aTime = DateTime.fromMillisecondsSinceEpoch(0);
+        }
+        try {
+          bTime = b.lastModifiedSync();
+        } catch (_) {
+          bTime = DateTime.fromMillisecondsSinceEpoch(0);
+        }
+        return bTime.compareTo(aTime);
+      });
+      for (final f in reports.skip(keep)) {
+        if (keepPath != null && f.path == keepPath) continue;
+        try {
+          f.deleteSync();
+        } catch (_) {}
+      }
+    } catch (_) {}
   }
 }

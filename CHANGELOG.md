@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.0
+
+- **Autonomous Background Tasks:** Schedule one-off and recurring agent tasks that run headlessly via native Android `AlarmManager` without keeping the app open.
+- **Manage Tasks Screen:** Full-screen dashboard to monitor tasks, inspect execution logs, filter by status, and preview output reports.
+- **Headless Report Collection:** Background agent writes reports directly to `.scratch/task-$taskId.*` (HTML dashboards or Markdown) with in-app preview and automatic relocation.
+- **Task Toast Service:** Global, decoupled toast notifications with dedicated icons and direct "View" actions across all screens.
+- **Exact Alarm & Notification Routing:** Native exact-alarm permission guidance and notification taps linking directly to unread task logs.
+- **Clamped Markdown Tables:** Assistant message tables with horizontal scrolling, cell truncation, and quick table copying.
+- **Per-Task Model Overrides:** Set custom models and providers per scheduled task with persistence across recurring runs.
+
 ## 0.6.4
 
 - Fixed OTA state after installing an update so the old install prompt does not return.

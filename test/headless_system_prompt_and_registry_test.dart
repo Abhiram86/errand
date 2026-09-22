@@ -5,6 +5,7 @@ import 'package:errand/agent/tool.dart';
 import 'package:errand/agent/tool_registry.dart';
 import 'package:errand/services/database.dart';
 import 'package:errand/services/memory_service.dart';
+import 'package:errand/tools/headless/report_tool.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -48,8 +49,9 @@ void main() {
       expect(prompt, contains('Current user location: San Francisco, CA'));
 
       // Output & Scratch policy
-      expect(prompt, contains('Target Report File Base Path: `${scratchDir.path}/task-42`'));
-      expect(prompt, contains('${scratchDir.path}/task-42.<ext>'));
+      expect(prompt, contains('call the `save_report` tool ONCE'));
+      expect(prompt, contains('Never write report files via bash'));
+      expect(prompt, contains('task-42-'));
       expect(prompt, contains('NEVER write files directly into /storage/emulated/0/ or /sdcard/'));
 
       // Intent policy (non-UI allowed, UI-popping prohibited)
@@ -110,6 +112,9 @@ void main() {
         currentTaskId: 101,
         db: db,
         memoryService: memoryService,
+        scratchDirectory: Directory('${tempDir.path}/workspace/.scratch'),
+        reportCollector: HeadlessReportCollector(),
+        runStartedAtMillis: 1700000000000,
       );
     });
 
@@ -134,6 +139,7 @@ void main() {
       expect(toolNames, contains('memory'));
       expect(toolNames, contains('browser'));
       expect(toolNames, contains('schedule_task'));
+      expect(toolNames, contains('save_report'));
 
       // Excluded tools
       expect(toolNames, isNot(contains('screen')));

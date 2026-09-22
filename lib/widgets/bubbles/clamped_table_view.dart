@@ -86,34 +86,41 @@ class _ClampedTableViewState extends State<ClampedTableView> {
     );
     if (maxCols == 0) return;
 
-    // 1. Plain text / TSV: Tab-delimited cells, newline-delimited rows.
-    // Excel, Apple Notes, Google Docs, Notion reliably paste TSV into tables.
-    // Newlines collapse to spaces (spreadsheet-friendly single-line cells).
-    final tsvLines = <String>[];
-    // 2. Rich HTML table with a single <thead> + single <tbody>.
-    // Newlines become <br/> for fidelity. Raw markdown is preserved as-is.
+    // 1. Markdown table (plain-text flavor): pastes as REAL tables in
+    //    Notion, Obsidian, GitHub and stays structured in text-only apps.
+    //    Pipes escaped, newlines become <br/>.
+    // 2. Rich HTML table (single thead/tbody) for Docs/Word/OneNote.
+    // NOTE: TSV was dropped — spreadsheet paste is the accepted tradeoff
+    // for notes/docs apps rendering real tables.
+    final mdLines = <String>[];
     final htmlBuffer = StringBuffer();
     htmlBuffer.write('<table border="1" cellpadding="4" cellspacing="0">');
 
     var truncated = false;
     var charBudget = _maxCopyChars;
 
-    void appendTsv(String line) {
-      if (truncated) return;
-      if (line.length > charBudget) {
-        tsvLines.add('${line.substring(0, charBudget)}…');
+    bool consumeBudget(int chars) {
+      if (chars > charBudget) {
         truncated = true;
-      } else {
-        tsvLines.add(line);
-        charBudget -= line.length + 1;
+        return false;
       }
+      charBudget -= chars;
+      return true;
     }
+
+    String mdCell(String v) =>
+        v.replaceAll('|', '\\|').replaceAll('\n', '<br/>');
 
     final headHtml = StringBuffer();
     final bodyHtml = StringBuffer();
     var bodyStarted = false;
+    // First row doubles as header when none is marked — a separator row
+    // is required for markdown tables to render.
+    final hasHeader = rows.any((row) => row.isHeader);
+    var headerSeparatorEmitted = false;
 
-    for (final row in rows) {
+    for (var rowIdx = 0; rowIdx < rows.length; rowIdx++) {
+      final row = rows[rowIdx];
       final cellValues = List.generate(maxCols, (colIdx) {
         if (colIdx < row.fields.length) {
           return row.fields[colIdx].data.trim();
@@ -121,55 +128,59 @@ class _ClampedTableViewState extends State<ClampedTableView> {
         return '';
       });
 
-      // TSV row
-      appendTsv(cellValues.map((v) => v.replaceAll('\t', ' ').replaceAll('\n', ' ')).join('\t'));
+      final isHeaderRow = row.isHeader || (!hasHeader && rowIdx == 0);
+      if (!isHeaderRow) bodyStarted = true;
 
-      // HTML row: header rows before the first body row go to <thead>;
-      // later header rows render as <th> inside <tbody> (valid HTML).
-      String htmlRow(String tag, StringBuffer target) {
-        final before = target.length;
-        target.write('<tr>');
-        for (final val in cellValues) {
-          final escaped = val
-              .replaceAll('&', '&amp;')
-              .replaceAll('<', '&lt;')
-              .replaceAll('>', '&gt;')
-              .replaceAll('"', '&quot;')
-              .replaceAll('\n', '<br/>');
-          target.write('<$tag>$escaped</$tag>');
-        }
-        target.write('</tr>');
-        return target.toString().substring(before);
-      }
+      // Markdown row (+ separator right after the header row).
+      final mdLine = '| ${cellValues.map(mdCell).join(' | ')} |';
+      final sepLine = isHeaderRow && !headerSeparatorEmitted
+          ? '|${List.filled(maxCols, ' --- ').join('|')}|'
+          : null;
 
-      if (row.isHeader && !bodyStarted) {
-        htmlRow('th', headHtml);
-      } else {
-        bodyStarted = true;
-        htmlRow(row.isHeader ? 'th' : 'td', bodyHtml);
+      // HTML row: pre-body headers go to <thead>; later header rows render
+      // as <th> inside <tbody> (valid HTML).
+      final tag = isHeaderRow ? 'th' : 'td';
+      final htmlTarget = (isHeaderRow && !bodyStarted) ? headHtml : bodyHtml;
+      final htmlCells = cellValues.map((val) {
+        final escaped = val
+            .replaceAll('&', '&amp;')
+            .replaceAll('<', '&lt;')
+            .replaceAll('>', '&gt;')
+            .replaceAll('"', '&quot;')
+            .replaceAll('\n', '<br/>');
+        return '<$tag>$escaped</$tag>';
+      }).join();
+      final htmlRowStr = '<tr>$htmlCells</tr>';
+
+      final cost = mdLine.length +
+          1 +
+          (sepLine != null ? sepLine.length + 1 : 0) +
+          htmlRowStr.length;
+      if (!consumeBudget(cost)) break;
+      mdLines.add(mdLine);
+      if (sepLine != null) {
+        mdLines.add(sepLine);
+        headerSeparatorEmitted = true;
       }
+      htmlTarget.write(htmlRowStr);
     }
 
     if (headHtml.isNotEmpty) htmlBuffer.write('<thead>$headHtml</thead>');
     if (bodyHtml.isNotEmpty) htmlBuffer.write('<tbody>$bodyHtml</tbody>');
     htmlBuffer.write('</table>');
 
-    var tsvText = tsvLines.join('\n');
-    var htmlText = htmlBuffer.toString();
-    if (htmlText.length > _maxCopyChars) {
-      htmlText = '${htmlText.substring(0, _maxCopyChars)}…';
-      truncated = true;
-    }
+    final mdText = mdLines.join('\n');
+    final htmlText = htmlBuffer.toString();
 
-    // Copy via native Android ClipData (supports HTML + text simultaneously).
+    // Copy via native Android ClipData (HTML + markdown text simultaneously).
     // Falls back to Flutter's Clipboard.setData if running elsewhere or if failed.
     bool richCopied = false;
     try {
-      richCopied = await IntentService().copyRichText(text: tsvText, html: htmlText);
+      richCopied = await IntentService().copyRichText(text: mdText, html: htmlText);
     } catch (_) {}
 
     if (!richCopied) {
-      await Clipboard.setData(ClipboardData(text: tsvText));
+      await Clipboard.setData(ClipboardData(text: mdText));
     }
 
     if (mounted) {
@@ -182,8 +193,8 @@ class _ClampedTableViewState extends State<ClampedTableView> {
             richCopied
                 ? (truncated
                     ? 'Table copied (truncated to clipboard size limit)'
-                    : 'Table copied to clipboard (ready for Notion, Notes & Docs)')
-                : 'Table copied as plain text',
+                    : 'Table copied (markdown + rich text — paste into Notes, Docs, Notion)')
+                : 'Table copied as markdown text',
           ),
           duration: const Duration(seconds: 2),
         ),

@@ -145,13 +145,8 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
                     fontWeight: FontWeight.w700,
                   ),
                 ),
-                actions: [
-                  IconButton(
-                    icon: const Icon(Icons.alarm_add_rounded, color: kBubbleUser, size: 22),
-                    tooltip: '+ Test task (10s)',
-                    onPressed: _createTestTask,
-                  ),
-                  const SizedBox(width: 4),
+                actions: const [
+                  SizedBox(width: 4),
                 ],
                 bottom: TabBar(
                   controller: _tabController,
@@ -794,41 +789,6 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
         ),
       ),
     );
-  }
-
-  Future<void> _createTestTask() async {
-    final messenger = ScaffoldMessenger.of(context);
-    final now = DateTime.now().millisecondsSinceEpoch;
-    final triggerAt = now + 10000;
-
-    final taskId = await _db.into(_db.schedulerTasks).insert(
-      SchedulerTasksCompanion.insert(
-        title: 'Test background run',
-        type: 'one_off',
-        status: 'scheduled',
-        payloadJson: jsonEncode({
-          'prompt':
-              'Confirm background run in markdown format with a bulleted list.',
-        }),
-        startsAt: triggerAt,
-        notify: const Value(true),
-        timezone: 'UTC',
-        createdAt: now,
-        updatedAt: now,
-      ),
-    );
-
-    await TaskSchedulerService.instance.scheduleTask(taskId);
-
-    if (mounted) {
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text('Test task #$taskId scheduled to fire in 10s!'),
-          backgroundColor: kBubbleUser,
-          duration: const Duration(seconds: 3),
-        ),
-      );
-    }
   }
 
   Future<void> _markLogSeen(int logId) async {

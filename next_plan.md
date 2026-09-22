@@ -1,6 +1,6 @@
 # Next Plan — Status & Roadmap
 
-> **Updated Sep 2026.** P0 through P5a (v0.5.5), v0.5.6, P5b (memory subsystem, schema v5), P6a (embedded browser agent tools, v0.6.0), v0.6.1 (background OTA updates, post-update release notes, model sorting by release date, dynamic provider defaults, unified options modal sheet, animated composer glow), v0.6.2 (default working directory to Documents/Errand, filesystem hygiene, scratch directory auto-creation), v0.6.3 (interactive bash safety modal, mid-stream LLM retry, Google OAuth user-agent sanitization, multi-window popups, overflow-free browser toolbar, and live model auto-selection on provider configuration), and v0.6.4 (hardened OTA update prompts, session-scoped dismissal, manual sidebar check, post-install cleanup, and error feedback) are all **SHIPPED**.
+> **Updated Sep 2026.** P0 through P5a (v0.5.5), v0.5.6, P5b (memory subsystem, schema v5), P6a (embedded browser agent tools, v0.6.0), v0.6.1 (background OTA updates, post-update release notes, model sorting by release date, dynamic provider defaults, unified options modal sheet, animated composer glow), v0.6.2 (default working directory to Documents/Errand, filesystem hygiene, scratch directory auto-creation), v0.6.3 (interactive bash safety modal, mid-stream LLM retry, Google OAuth user-agent sanitization, multi-window popups, overflow-free browser toolbar, and live model auto-selection on provider configuration), v0.6.4 (hardened OTA update prompts, session-scoped dismissal, manual sidebar check, post-install cleanup, and error feedback), and v0.7.0 (autonomous background task scheduler, schema v7, native AlarmManager, headless AgentRunner, TaskToastService, and ManageTasksScreen) are all **SHIPPED**.
 > **Active Milestone:** **P6b — Browser Rough Edges & Android PlatformView Optimizations**.
 
 ---
@@ -48,7 +48,7 @@ Goal: Give the agent access to user coordinates and reverse-geocoded address via
 
 ---
 
-### 🟡 P9 — Autonomous Scheduler & Headless Background Engine (ACTIVE)
+### ✅ P9 — Autonomous Scheduler & Headless Background Engine (SHIPPED in v0.7.0)
 
 Goal: Enable the model to schedule one-off and recurring tasks that execute autonomously in the background and dispatch native Android notifications, with full parity across Full and Lite flavors.
 
@@ -63,13 +63,13 @@ Goal: Enable the model to schedule one-off and recurring tasks that execute auto
   - MethodChannel in `MainActivity.kt` (`showNotification`, `cancelNotification`, `hasNotificationPermission`) with `BigTextStyle` and launch intent back to Errand.
   - Dart `NotificationService` wrapper.
 
-#### 2. Headless Agent Runner Execution Slices (IN PROGRESS)
+#### 2. Headless Agent Runner Execution Slices (SHIPPED)
 
 - **Slice 1: Tool Safety Guards for Headless Mode (COMPLETED)**
   - `bash`: `isHeadless: true`. Destructive operations needing confirmation (`rm -rf`, bulk deletions) fail fast with `headless_destructive_blocked`. Added bash arithmetic note (`echo \$((expr))`) in system prompt.
   - `schedule_task`: `isHeadless: true` and `currentTaskId`. Disallows `action: "create"` and `action: "delete"` with `headless_recursion_blocked`. Disallows editing other tasks outside `currentTaskId` with `headless_cross_task_edit_blocked`. Preserves `delay_seconds` alongside `starts_at` for relative time ease.
   - `memory`: `isHeadless: true`. Disallows background writes (`create`, `edit`) with `headless_memory_write_blocked`; allows introspection (`find`, `read`).
-  - Unit tests verifying all guards in `test/headless_tool_guards_test.dart` and `test/schedule_task_tool_test.dart` (28/28 tests passing).
+  - Unit tests verifying all guards in `test/headless_tool_guards_test.dart` and `test/schedule_task_tool_test.dart`.
 
 - **Slice 2: Headless Browser Service & Tool (COMPLETED)**
   - `HeadlessBrowserService`: Subclasses `BrowserService` using `HeadlessInAppWebView`.
@@ -78,33 +78,35 @@ Goal: Enable the model to schedule one-off and recurring tasks that execute auto
   - Completely detached from the Flutter chat widget tree (no UI popping or dock bar animations).
   - Clean `dispose()` and `disposeHeadlessView()` on turn completion.
   - `browserTool`: Updated to accept `isHeadless: true` and instantiate `HeadlessBrowserService` automatically.
-  - Unit tests verifying offscreen operation, screenshots, parity, and teardown in `test/headless_browser_test.dart` (9/9 tests passing).
 
 - **Slice 3: Headless System Prompt & ToolRegistry (COMPLETED)**
-  - `headlessSystemPromptFor(...)`: Tailored prompt instructing the model it is running headlessly as a background task. Injects active execution context (task ID, title, workspace, scratch directory, user location). Enforces intent policy (alarms, timers, calendar entries allowed; UI app launches disallowed), output delivery to `.scratch/` (`task_<id>_<timestamp>.md`), bash math advice (`echo \$((expr))`), and headless tool rules. Strictly excludes interactive screen automation prompts.
+  - `headlessSystemPromptFor(...)`: Tailored prompt instructing the model it is running headlessly as a background task. Injects active execution context (task ID, title, workspace, scratch directory, user location). Enforces intent policy (alarms, timers, calendar entries allowed; UI app launches disallowed), output delivery to `.scratch/` (`task-$taskId.<ext>`), bash math advice (`echo \$((expr))`), and headless tool rules. Strictly excludes interactive screen automation prompts.
   - `ToolRegistry.headless(...)`: Factory constructor registering the headless toolset (`read`, `bash`, `websearch`, `webfetch`, `intent`, `location`, `memory`, `browser`, `schedule_task`). Strictly excludes `screen`, `screen_act`, `act`, and `attached_files`. Passes `isHeadless: true` to `bash`, `memory`, `browser`, and `schedule_task`. Binds `currentTaskId` to enforce task edit isolation.
-  - Unit tests in `test/headless_system_prompt_and_registry_test.dart` (7/7 tests passing).
 
 - **Slice 4: Headless AgentRunner Integration & Lifecycle Hardening (COMPLETED)**
-  - `AgentRunner.runHeadless(...)`: Executes an isolated, headless background agent turn for a scheduled task. Injects `ToolRegistry.headless`, binds `currentTaskId`, uses `headlessSystemPromptFor`, runs `AgentLoop` on a single-turn `Conversation`, saves the output markdown report to `.scratch/task_<id>_<timestamp>.md`, logs report save failures via `debugPrint`, and guarantees `registry.dispose()` cleanup in `finally`.
-  - `TaskSchedulerService.executeTask(taskId, ...)`: Coordinates the full execution turn when an alarm or worker fires:
-    - **Allowlist Guard & Atomic Claim:** Restricts execution to `status: scheduled` (or `failed` for manual retry); uses conditional SQL update `WHERE id = ? AND status IN ('scheduled', 'failed')` to atomically transition to `running`, preventing double-fire races between AlarmManager and WorkManager. Rejects already `running`, `completed`, `paused`, and `cancelled` tasks.
+  - `AgentRunner.runHeadless(...)`: Executes an isolated, headless background agent turn for a scheduled task. Injects `ToolRegistry.headless`, binds `currentTaskId`, uses `headlessSystemPromptFor`, runs `AgentLoop` on a single-turn `Conversation`, saves the output report directly to `.scratch/task-$taskId.<ext>`, with automatic relocation fallback for rogue output files.
+  - `TaskSchedulerService.executeTask(taskId, ...)`: Coordinates the full execution turn when an alarm fires:
+    - **Allowlist Guard & Atomic Claim:** Restricts execution to `status: scheduled` (or `failed` for manual retry); uses conditional SQL update `WHERE id = ? AND status IN ('scheduled', 'failed')` to atomically transition to `running`, preventing double-fire races. Rejects already `running`, `completed`, `paused`, and `cancelled` tasks.
     - **Timeout & CancelToken:** Enforces execution timeout (`timeout`, default 10m) with `CancelToken` cancellation; logs `status: 'timeout'` on expiry.
     - **Resource Lifecycle:** Closes locally instantiated `LlmClient` instances in `finally` to prevent connection leaks.
     - **Resilient Recurring Retries:** Reschedules recurring tasks for `finishMillis + repeatAfter` on failure so transient glitches do not kill scheduled tasks, unless consecutive failures reach `retriesPerTurn`.
     - **Counter Reset:** Automatically resets `failures` to 0 upon successful execution.
     - **Bounded Notifications:** Safely clamps notification summary body to 250 characters before calling `NotificationService`.
     - **Recovery Sweep:** Provides `recoverStuckTasks()` to sweep and recover tasks left in `running` status after process kills or system crashes.
-  - Unit tests in `test/headless_agent_runner_test.dart` (12/12 tests passing; 74/74 total tests across all scheduler & headless suites).
 
-#### 3. Native Background Wake-Up & Task UI (UPCOMING)
-- **Native AlarmManager & WorkManager:**
-  - `AlarmManager` (`setExactAndAllowWhileIdle`): For exact wall-clock one-off alarms and tasks.
-  - `WorkManager`: For recurring background tasks surviving reboots.
-  - `BOOT_COMPLETED` receiver to reschedule active tasks on reboot.
-- **Dedicated Tasks Screen:**
-  - Full-screen UI (`TasksScreen` via `Navigator.push`), navigated from top of `ChatSidebar`. (NO nested bottom sheets).
-  - In-app markdown preview for task reports in `.scratch/`.
+#### 3. Native Background Wake-Up & Task UI (SHIPPED)
+- **Native AlarmManager Integration:**
+  - `TaskAlarmManager.kt`: Native scheduling via Android `AlarmManager.setExactAndAllowWhileIdle()` across Full and Lite flavors.
+  - `TaskExecutionService.kt`: Headless engine host service running background agent turns.
+  - `TaskBootReceiver.kt`: `BOOT_COMPLETED` receiver to automatically reschedule active tasks on phone reboot.
+  - Exact alarm permission guidance banner when exact scheduling is denied by OS.
+- **Dedicated Manage Tasks Screen:**
+  - Full-screen dashboard (`ManageTasksScreen` via `Navigator.push`), navigated from top of `ChatSidebar`.
+  - Filterable by active, completed, failed, and unread tabs with page-size limit dropdown.
+  - Inline model picker with persistence across recurring runs.
+  - `TaskFilePreviewScreen` for in-app HTML and Markdown rendering of task outputs.
+- **Task Toast Service:**
+  - Global `TaskToastService` broadcasting create/edit/delete events across screens without prop drilling.
 
 ---
 

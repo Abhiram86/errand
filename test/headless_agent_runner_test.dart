@@ -91,9 +91,26 @@ void main() {
       } catch (_) {}
     });
 
-    test('runHeadless executes turn and resolves output report from scratch', () async {
+    test('runHeadless saves report via save_report tool call', () async {
+      var calls = 0;
       mockLlm.onChat = (_) {
-        File('${scratchDir.path}/task-10.md').writeAsStringSync('# Disk Check\nStatus: OK');
+        calls++;
+        if (calls == 1) {
+          return const LlmMessage(
+            content: '',
+            toolCalls: [
+              ToolCall(
+                id: 'call-1',
+                name: 'save_report',
+                arguments: {
+                  'content': '# Disk Check\nStatus: OK',
+                  'name': 'summary',
+                  'type': 'md',
+                },
+              ),
+            ],
+          );
+        }
         return const LlmMessage(content: 'Task completed successfully with all findings.');
       };
 
@@ -115,11 +132,12 @@ void main() {
       expect(result.output, contains('Task completed successfully'));
       expect(result.reportPath, isNotNull);
 
-      // Verify report was written to scratch directory
+      // Verify report was written to scratch directory under task prefix
       final reportFile = File(result.reportPath!);
       expect(reportFile.existsSync(), isTrue);
       expect(reportFile.parent.path, equals(scratchDir.path));
-      expect(reportFile.path, contains('task-10.md'));
+      expect(reportFile.path, contains('task-10-'));
+      expect(reportFile.path.endsWith('-summary.md'), isTrue);
       expect(await reportFile.readAsString(), contains('Status: OK'));
     });
 
@@ -664,9 +682,23 @@ void main() {
       expect(notifBody.endsWith('...'), isTrue);
     });
 
-    test('runHeadless discovers .html file written by agent in scratch', () async {
+    test('runHeadless saves html report verbatim via save_report', () async {
+      const html = '<!DOCTYPE html><html><body><p>Dashboard</p></body></html>';
+      var calls = 0;
       mockLlm.onChat = (_) {
-        File('${scratchDir.path}/task-201.html').writeAsStringSync('<!DOCTYPE html><html><body><p>Dashboard</p></body></html>');
+        calls++;
+        if (calls == 1) {
+          return const LlmMessage(
+            content: '',
+            toolCalls: [
+              ToolCall(
+                id: 'call-1',
+                name: 'save_report',
+                arguments: {'content': html, 'type': 'html'},
+              ),
+            ],
+          );
+        }
         return const LlmMessage(content: 'Generated HTML dashboard successfully.');
       };
 
@@ -688,13 +720,37 @@ void main() {
       expect(result.reportPath!.endsWith('.html'), isTrue);
       final file = File(result.reportPath!);
       expect(file.existsSync(), isTrue);
-      expect(await file.readAsString(), contains('<!DOCTYPE html>'));
+      expect(await file.readAsString(), equals(html));
     });
 
-    test('runHeadless prioritizes .html report over .md report when agent wrote both', () async {
+    test('runHeadless last save_report call wins across turns', () async {
+      var calls = 0;
       mockLlm.onChat = (_) {
-        File('${scratchDir.path}/task-202.md').writeAsStringSync('# Summary');
-        File('${scratchDir.path}/task-202.html').writeAsStringSync('<!DOCTYPE html><html><body>Clean HTML</body></html>');
+        calls++;
+        if (calls == 1) {
+          return const LlmMessage(
+            content: '',
+            toolCalls: [
+              ToolCall(
+                id: 'call-1',
+                name: 'save_report',
+                arguments: {'content': '# Draft version', 'type': 'md'},
+              ),
+            ],
+          );
+        }
+        if (calls == 2) {
+          return const LlmMessage(
+            content: '',
+            toolCalls: [
+              ToolCall(
+                id: 'call-2',
+                name: 'save_report',
+                arguments: {'content': '# Final version', 'type': 'md'},
+              ),
+            ],
+          );
+        }
         return const LlmMessage(content: 'Dashboard generated');
       };
 
@@ -713,11 +769,11 @@ void main() {
 
       expect(result.ok, isTrue);
       expect(result.reportPath, isNotNull);
-      expect(result.reportPath!.endsWith('.html'), isTrue);
       final file = File(result.reportPath!);
       expect(file.existsSync(), isTrue);
       final savedContent = await file.readAsString();
-      expect(savedContent, contains('Clean HTML'));
+      expect(savedContent, contains('Final version'));
+      expect(savedContent, isNot(contains('Draft version')));
     });
 
     test('runHeadless passes clean user prompt without context pollution', () async {
@@ -743,9 +799,9 @@ void main() {
       expect(capturedPrompt, equals('Build website'));
     });
 
-    test('runHeadless relocates and normalizes rogue hello_world.html in workspace to scratch task-\$taskId', () async {
+    test('runHeadless ignores stray workspace files and falls back to final answer', () async {
       mockLlm.onChat = (_) {
-        // Simulate LLM writing hello_world.html directly to documents root (workspaceDir)
+        // Simulate stray file in workspace: new contract ignores it.
         File('${workspaceDir.path}/hello_world.html').writeAsStringSync('<h1>Hello World</h1>');
         return const LlmMessage(content: 'Created hello_world.html');
       };
@@ -764,12 +820,13 @@ void main() {
       );
 
       expect(result.ok, isTrue);
-      expect(result.reportPath, equals('${scratchDir.path}/task-301.html'));
+      expect(result.reportPath, contains('task-301-'));
+      expect(result.reportPath!.endsWith('.md'), isTrue);
       expect(File(result.reportPath!).existsSync(), isTrue);
-      expect(await File(result.reportPath!).readAsString(), contains('Hello World'));
+      expect(await File(result.reportPath!).readAsString(), contains('Created hello_world.html'));
 
-      // Verify rogue file in workspaceDir was cleaned up
-      expect(File('${workspaceDir.path}/hello_world.html').existsSync(), isFalse);
+      // Stray file is left untouched (save_report is the only blessed path).
+      expect(File('${workspaceDir.path}/hello_world.html').existsSync(), isTrue);
     });
 
     test('recurring task execution persists edited model and provider across turns', () async {

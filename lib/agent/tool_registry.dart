@@ -13,6 +13,7 @@ import '../tools/attached_files_tool.dart';
 import '../tools/bash_tool.dart';
 import '../tools/browser_tool.dart';
 import '../tools/file_tools.dart';
+import '../tools/headless/report_tool.dart';
 import '../tools/intent_tool.dart';
 import '../tools/location_tool.dart';
 import '../tools/memory_tool.dart';
@@ -20,6 +21,7 @@ import '../tools/schedule_task_tool.dart';
 import '../tools/screen_tool.dart';
 import '../tools/web_tools.dart';
 import '../types/tool.dart';
+import 'package:path/path.dart' as p;
 import 'tool.dart';
 
 /// Registry of available tools, keyed by name, plus a safe `execute` that
@@ -108,8 +110,12 @@ class ToolRegistry {
     LocationService? locationService,
     ErrandDatabase? db,
     TaskSchedulerService? schedulerService,
+    Directory? scratchDirectory,
+    HeadlessReportCollector? reportCollector,
+    int? runStartedAtMillis,
   }) {
     final directory = workingDirectory ?? WorkingDirectory(currentDir);
+    final scratch = scratchDirectory ?? Directory(p.join(currentDir.path, '.scratch'));
     return ToolRegistry([
       readTool(
         directory,
@@ -140,6 +146,14 @@ class ToolRegistry {
         isHeadless: true,
         currentTaskId: currentTaskId,
       ),
+      if (currentTaskId != null && reportCollector != null)
+        saveReportTool(
+          scratchDir: scratch,
+          taskId: currentTaskId,
+          startedAtMillis:
+              runStartedAtMillis ?? DateTime.now().millisecondsSinceEpoch,
+          collector: reportCollector,
+        ),
     ]);
   }
 

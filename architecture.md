@@ -1,6 +1,6 @@
 # Errand (Flutter) — Architecture Overview
 
-This document maps the current implementation: a streaming chat UI, an OpenAI-compatible agent loop with reasoning, file reading (+ media) + on-device bash shell + web + Android intent + embedded browser + memory + accessibility tools, structured document readers, Drift persistence (v5, memories), ToolOutputFileService output caching, Full vs. Lite build flavors with split ABIs, and Android shared-storage access. Everything except the LLM and Tavily runs on-device.
+This document maps the current implementation: a streaming chat UI, an OpenAI-compatible agent loop with reasoning, file reading (+ media) + on-device bash shell + web + Android intent + embedded browser + memory + autonomous task scheduler + accessibility tools, structured document readers, Drift persistence (v7, memories, scheduled tasks), ToolOutputFileService output caching, Full vs. Lite build flavors with split ABIs, and Android shared-storage access. Everything except the LLM and Tavily runs on-device.
 
 ## Big picture
 
@@ -24,7 +24,7 @@ LLM client (lib/llm/llm_client.dart)  ◀── HTTP/SSE ─┤ OpenRouter / HF 
      ▼                                             │
 tool registry (lib/agent/tool_registry.dart)
      │  defaults: read (+media), bash, websearch, webfetch,
-     │            intent, attached_files, memory, browser, plus screen + screen_act (Full flavor only)
+     │            intent, attached_files, memory, browser, schedule_task, plus screen + screen_act (Full flavor only)
      ├──────────┬──────────────┬─────────────┬─────────────┬─────────────┐
      ▼          ▼              ▼             ▼             ▼             ▼
  file tools   shell (bash)   web tools    intent tool   memory tool   browser tool
@@ -36,8 +36,8 @@ tool registry (lib/agent/tool_registry.dart)
    WorkingDirectory ──▶ dart:io     (channel "intent") (memories)  (InAppWebView)
    (root+current)      File/Dir      MainActivity.kt       │             │
           │                  │       (launch / BAL safe)   ▼             ▼
-          ▼                  │                     SQLite (Drift v5) BrowserWidget
-   document readers          │                     long-term recall  (dock/preview/
+          ▼                  │                     SQLite (Drift v7) BrowserWidget
+   document readers          │                     tasks/memories    (dock/preview/
      PDF · DOCX/XLSX/PPTX    │                                        full-screen)
      → LogicalDocument       │
        (paged, char-budgeted)│
@@ -48,8 +48,8 @@ a11y (P2) ──▶ ErrandAccessibilityService (channel "a11y", Full flavor only
              screen (read outline, globals) + screen_act (tap/type/scroll, Draft policy)
 
 persistence (lib/services/database.dart)
-  ErrandDatabase (drift, v5) — Conversations / ConversationMessages (+attachedUrisJson) /
-                               ConversationAttachments / Memories / AppSettings
+  ErrandDatabase (drift, v7) — Conversations / ConversationMessages (+attachedUrisJson) /
+                              ConversationAttachments / Memories / SchedulerTasks / SchedulerTaskLogs / AppSettings
   saveConversation (transaction, merge) · watchConversationSummaries · watchPinnedConversations
 
 model catalog (lib/services/model_catalog.dart → lib/models/model_option.dart)
@@ -384,6 +384,7 @@ Errand is structured into two Gradle product flavors (`android/app/build.gradle.
 - ✅ Done Sep 2026 (v0.6.2): Default working directory to `/storage/emulated/0/Documents/Errand/`, filesystem output hygiene in system prompt, and automatic `.scratch/` directory creation.
 - ✅ Done Sep 2026 (v0.6.3): Interactive bash safety confirmation modal (`Accept` / `Deny` / `Trust`), mid-stream LLM retry with on-reset buffer cleanup and UI indicator, Google OAuth user-agent sanitization & multi-window popups, compact overflow-free browser toolbar, and live model auto-selection on provider configuration.
 - ✅ Done Sep 2026 (v0.6.4): Hardened OTA update lifecycle (session-scoped dismissal, manual sidebar update check, post-install state reconciliation, download/install error toasts, and tag-verified release notes).
+- ✅ Done Sep 2026 (v0.7.0): Autonomous background task scheduler (schema v7: scheduler_task & scheduler_task_log, exact Android AlarmManager scheduling, headless AgentRunner execution loop, direct .scratch/ output report collection, TaskToastService, and ManageTasksScreen with status filters, pagination, and file previews).
 - Safe-edit tool (`write`/`edit_file` with diff preview + undo) — needs the write-policy decision originally blocking it.
 - Local retrieval (embeddings/FTS) over recent docs for context budgeting.
 - Evaluate SAF as an alternative to `MANAGE_EXTERNAL_STORAGE` for Play distribution.
