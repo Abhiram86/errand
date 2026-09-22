@@ -272,6 +272,32 @@ void main() {
       expect(trigger, lessThanOrEqualTo(after + 1000));
     });
 
+    test('concurrent rescheduleAllActiveTasks share a single run', () async {
+      final nowMillis = DateTime.now().millisecondsSinceEpoch;
+
+      await serviceDb.into(serviceDb.schedulerTasks).insert(
+        SchedulerTasksCompanion.insert(
+          title: 'Shared Task',
+          type: 'one_off',
+          status: 'scheduled',
+          payloadJson: '{}',
+          startsAt: nowMillis + 10000,
+          timezone: 'UTC',
+          createdAt: nowMillis,
+          updatedAt: nowMillis,
+        ),
+      );
+
+      final results = await Future.wait([
+        realService.rescheduleAllActiveTasks(),
+        realService.rescheduleAllActiveTasks(),
+      ]);
+
+      expect(results, equals([1, 1]));
+      final alarms = channelCalls.where((c) => c.method == 'scheduleAlarm').toList();
+      expect(alarms.length, equals(1));
+    });
+
     test('cancelTask invokes cancelAlarm method on task_scheduler channel', () async {
       await realService.cancelTask(42);
 

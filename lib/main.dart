@@ -9,6 +9,7 @@ import 'services/app_settings.dart';
 import 'services/task_scheduler_service.dart';
 import 'services/task_toast_service.dart';
 import 'theme/app_colors.dart';
+import 'utils/p10_profile.dart';
 
 export 'agent/system_prompt.dart' show systemPromptFor, kSystemPrompt;
 export 'screens/chat_screen.dart' show ChatScreen;
@@ -18,6 +19,9 @@ final GlobalKey<ScaffoldMessengerState> rootScaffoldMessengerKey =
     GlobalKey<ScaffoldMessengerState>();
 
 Future<void> main() async {
+  // DEBUG_LOG(P10): launch clock starts here; all marks are ms since this line.
+  P10Profile.start();
+  P10Profile.mark('main_entry');
   WidgetsFlutterBinding.ensureInitialized();
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
@@ -25,10 +29,13 @@ Future<void> main() async {
       statusBarIconBrightness: Brightness.light,
     ),
   );
+  P10Profile.mark('settings_load_start');
   await AppSettingsService.instance.ensureLoaded();
+  P10Profile.mark('settings_loaded');
   TaskSchedulerService.instance.initialize();
   TaskSchedulerService.instance.rescheduleAllActiveTasks();
   runApp(const ErrandApp());
+  WidgetsBinding.instance.addPostFrameCallback((_) => P10Profile.mark('first_frame'));
 }
 
 /// Dedicated headless background entrypoint for Android AlarmManager triggers.
@@ -67,6 +74,8 @@ class _ErrandAppState extends State<ErrandApp> {
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       final pending = await TaskSchedulerService.instance.getPendingNotificationClick();
       if (pending != null && mounted) {
+        // DEBUG_LOG(P10): cold notification tap reached Dart.
+        P10Profile.mark('cold_tap_pending_found');
         _navigateToUnreadTasks();
       }
     });
@@ -74,6 +83,8 @@ class _ErrandAppState extends State<ErrandApp> {
     // 2. Listen to live notification click events while app is running
     _notifSub = TaskSchedulerService.instance.notificationClicks.listen((_) {
       if (mounted) {
+        // DEBUG_LOG(P10): warm notification tap reached Dart.
+        P10Profile.mark('live_tap_received');
         _navigateToUnreadTasks();
       }
     });
@@ -140,6 +151,8 @@ class _ErrandAppState extends State<ErrandApp> {
   }
 
   void _navigateToUnreadTasks() {
+    // DEBUG_LOG(P10): route push issued; route first frame is marked in ManageTasksScreen.
+    P10Profile.mark('unread_route_push');
     appNavigatorKey.currentState?.push(
       MaterialPageRoute(
         builder: (_) => const ManageTasksScreen(initialTabIndex: 1),

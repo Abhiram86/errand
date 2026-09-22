@@ -12,6 +12,7 @@ import '../services/database.dart';
 import '../services/model_catalog.dart';
 import '../services/task_scheduler_service.dart';
 import '../theme/app_colors.dart';
+import '../utils/p10_profile.dart';
 import 'task_file_preview_screen.dart';
 
 /// Full-screen management page for scheduled tasks, logs, and autonomous background runs.
@@ -51,6 +52,9 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
   late final Stream<List<SchedulerTaskRow>> _tasksStream;
   late final Stream<List<SchedulerTaskLogRow>> _logsStream;
 
+  // DEBUG_LOG(P10): one-shot flag so first-useful-row is logged once per screen open.
+  bool _p10FirstRowLogged = false;
+
   /// 1s ticker so countdown labels ("Fires in Xs") stay live between stream events.
   Timer? _countdownTimer;
 
@@ -80,6 +84,8 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
     _countdownTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() {});
     });
+    // DEBUG_LOG(P10): first frame of the notification route.
+    WidgetsBinding.instance.addPostFrameCallback((_) => P10Profile.mark('manage_tasks_first_frame'));
   }
 
   @override
@@ -110,6 +116,14 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
           stream: _logsStream,
           builder: (context, logSnapshot) {
             final allLogs = logSnapshot.data ?? [];
+
+            // DEBUG_LOG(P10): first frame that actually has rows to show.
+            if (!_p10FirstRowLogged &&
+                (allTasks.isNotEmpty || allLogs.isNotEmpty)) {
+              _p10FirstRowLogged = true;
+              WidgetsBinding.instance.addPostFrameCallback(
+                  (_) => P10Profile.mark('first_useful_row'));
+            }
 
             // Group logs by task once per emission (O(T+L)) instead of
             // filtering per row in itemBuilder (O(T*L)).
@@ -1623,7 +1637,8 @@ class _EditTaskModelSheetState extends State<_EditTaskModelSheet> {
     super.dispose();
   }
 
-  Future<void> _loadModelsForProvider(String? providerId) async {
+  Future<void> _loadModelsForProvider(String? providerId,
+      {bool resetModelIfMissing = false}) async {
     if (providerId == null) return;
     final provider = _settings.providers.firstWhere(
       (p) => p.id == providerId,
@@ -1638,6 +1653,14 @@ class _EditTaskModelSheetState extends State<_EditTaskModelSheet> {
     setState(() {
       _models = fallbackList;
       _loadingModels = cached == null;
+      // Switching provider orphaned the selected model: follow the provider
+      // instead of persisting a model that doesn't belong to it.
+      if (resetModelIfMissing &&
+          _selectedModel.isNotEmpty &&
+          !fallbackList.any((m) => m.id == _selectedModel) &&
+          fallbackList.isNotEmpty) {
+        _selectedModel = fallbackList.first.id;
+      }
     });
 
     final hasKey = provider.hasKey ||
@@ -1660,6 +1683,12 @@ class _EditTaskModelSheetState extends State<_EditTaskModelSheet> {
           setState(() {
             _models = sorted;
             _loadingModels = false;
+            if (resetModelIfMissing &&
+                _selectedModel.isNotEmpty &&
+                !sorted.any((m) => m.id == _selectedModel) &&
+                sorted.isNotEmpty) {
+              _selectedModel = sorted.first.id;
+            }
           });
         }
       } catch (_) {
@@ -1813,7 +1842,7 @@ class _EditTaskModelSheetState extends State<_EditTaskModelSheet> {
                       _selectedProviderId = val;
                       _customModelMode = false;
                     });
-                    _loadModelsForProvider(val);
+                    _loadModelsForProvider(val, resetModelIfMissing: true);
                   }
                 },
               ),
@@ -1897,9 +1926,13 @@ class _EditTaskModelSheetState extends State<_EditTaskModelSheet> {
               ),
               child: DropdownButtonHideUnderline(
                 child: DropdownButton<String>(
-                  value: modelInList
-                      ? _selectedModel
-                      : (_models.isNotEmpty ? _models.first.id : null),
+                  // Display always equals the stored value: the extra item
+                  // below guarantees membership, so what you see is what saves.
+                  value: _selectedModel.isNotEmpty ? _selectedModel : null,
+                  hint: const Text(
+                    'Select model',
+                    style: TextStyle(color: kMuted, fontSize: 13),
+                  ),
                   dropdownColor: kInputBg,
                   icon: const Icon(Icons.arrow_drop_down_rounded, color: kMuted),
                   isExpanded: true,
@@ -1934,9 +1967,10 @@ class _EditTaskModelSheetState extends State<_EditTaskModelSheet> {
           ],
           const SizedBox(height: 20),
 
-          // Save button
+          // Save button (blocked while models load so a stale
+          // selection can never be persisted for the new provider)
           ElevatedButton(
-            onPressed: _saving ? null : _save,
+            onPressed: (_saving || _loadingModels) ? null : _save,
             style: ElevatedButton.styleFrom(
               backgroundColor: kBubbleUser,
               foregroundColor: Colors.white,

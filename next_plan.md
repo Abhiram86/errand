@@ -108,6 +108,71 @@ Goal: Enable the model to schedule one-off and recurring tasks that execute auto
 - **Task Toast Service:**
   - Global `TaskToastService` broadcasting create/edit/delete events across screens without prop drilling.
 
+### 🟡 P10: Scheduler launch performance and lazy notification navigation
+
+Goal: Make notification taps reach the unread task view quickly, without competing with app startup, settings loading, full scheduler rescheduling, or unbounded database reads.
+
+1. **Measure the three launch paths first:**
+   - Profile cold notification tap, warm notification tap, and normal app launch.
+   - Record time from notification tap to Flutter engine start, first app frame, notification route push, first route frame, and first useful task row.
+   - Validate on both small and large task/log histories.
+   - Use profile (never debug) builds on a mid-range device, and set numeric targets (e.g. cold tap-to-first-row under 2 seconds) so the success criteria below are testable.
+
+2. **Start the UI before nonessential startup work:**
+   - Move `runApp()` ahead of `AppSettingsService.ensureLoaded()` and `TaskSchedulerService.rescheduleAllActiveTasks()` in `lib/main.dart`.
+   - Keep `TaskSchedulerService.initialize()` (cheap channel-handler setup, also needed by the background engine path) before `runApp`; defer only the heavy settings load and reschedule.
+   - Render the app shell immediately and gate settings-dependent subtrees (theme, provider/model state) on a settings-ready future — the first frame must not assume settings are loaded.
+   - Run settings loading, provider/model hydration, stuck-task recovery, and alarm rescheduling after the first visible frame.
+   - Safe to defer: native alarms survive app-process death, so already-registered alarms cannot be lost while rescheduling waits. Still preserve reliable alarm recovery and never remove the boot receiver or native background execution path.
+
+3. **Make notification routing single-shot and lightweight:**
+   - Queue the native pending notification until the navigator is ready.
+   - Treat the pending-intent lookup and live notification stream as one event source so one tap cannot push duplicate `ManageTasksScreen` routes.
+   - Open directly into an unread-task loading state, then populate it as soon as the first query completes.
+
+4. **Load only unread data for the first notification frame:**
+   - Replace the initial unbounded task and log streams in `ManageTasksScreen` with a bounded query for the newest unread logs, ordered by `created_at` and limited to the first page.
+   - Join those logs with the required task fields instead of loading every task and filtering in Dart.
+   - Load more logs only when the user requests them.
+   - Query unread counts separately if needed, rather than deriving them from the full log table.
+
+5. **Lazy-load the other task tabs:**
+   - Build the Unread tab first because notification taps start there.
+   - Query Upcoming only when that tab is selected.
+   - Query All Tasks and historical logs only when the user selects that tab.
+   - Prefer one-shot queries with manual refresh over perpetual `watch()` streams on the lazy tabs; invalidate per tab using the existing `TaskToastService` broadcast (create/edit/delete events) instead of re-querying everything on every change.
+
+6. **Add indexes for the screen’s actual queries:**
+   - Bump `schemaVersion` 7→8 with an `onUpgrade` path; add migration-backed indexes for `scheduler_task(created_at DESC)` and `scheduler_task_log(created_at DESC)`.
+   - Add a compound index for `scheduler_task_log(notification_seen, created_at DESC)` to support the unread page query (`notification_seen` is int `0/1`).
+   - Follow the existing `CREATE INDEX IF NOT EXISTS` convention.
+   - Keep the existing execution indexes used by alarm lookup and per-task log retrieval.
+
+7. **Reduce rebuilds after the screen is visible:**
+   - Replace the full-screen one-second `setState()` timer with small countdown widgets that rebuild only the labels that need live timing.
+   - Tick at 1-second granularity only for sub-60-second horizons; use 15–30-second ticks beyond that.
+   - Avoid rebuilding the app bar, tab labels, filters, and all visible rows once per second.
+   - Decode task model metadata only for visible rows or when a row is opened for editing.
+
+8. **Optimize scheduler rescheduling separately:**
+   - Keep rescheduling off the notification critical path.
+   - Eliminate the redundant re-read: `scheduleTask(taskId)` re-fetches the row the reschedule query already holds — add a `scheduleTaskRow` overload taking the fetched row.
+   - Avoid the current per-task database read followed by a separate native method-channel call where possible.
+   - Consider one query that returns all scheduling data, followed by a native batch scheduling method if profiling shows startup contention with larger task sets.
+
+9. **Use background isolates only when profiling proves they are needed:**
+   - Do not move ordinary bounded database reads to an isolate by default.
+   - Consider an isolate only for CPU-heavy decryption, large JSON parsing, or other measured work that blocks the UI thread.
+   - Keep platform-channel calls and database ownership within the supported execution context.
+
+Success criteria:
+
+- The notification route begins rendering before settings loading and alarm rescheduling finish.
+- The first unread task row appears without loading the complete task and log history.
+- Warm notification taps do not push duplicate screens.
+- Cold notification taps feel close to normal app launch on the same device.
+- Profile builds show no sustained frame drops while the unread screen opens.
+
 ---
 
 ### ✅ P6c — Filesystem Hygiene, Interactive Safety & Browser OAuth (COMPLETED)
@@ -276,4 +341,3 @@ Goal: give Lite the automation Full gets from a11y, for any task that can be don
 - **Composer Focus Isolation:** Browser preview card collapses to the compact dock bar only when the chat composer is actively focused, keeping the preview expanded while typing inside web page inputs.
 - **Tool Hierarchy Alignment:** Streamlined tool selection policy: Intent $\to$ Browser $\to$ `screen_act` (accessibility).
 - **Native Action Renaming:** Renamed native accessibility action tool to `screen_act` for clear disambiguation from web browser actions.
-

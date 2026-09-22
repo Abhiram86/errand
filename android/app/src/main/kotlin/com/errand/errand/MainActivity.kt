@@ -73,6 +73,11 @@ class MainActivity : FlutterActivity() {
         val route = incomingIntent.getStringExtra("route")
         val openUnread = incomingIntent.getBooleanExtra("open_unread_tasks", false)
         if (taskId > 0 || route == "manage_tasks_unread" || openUnread) {
+            // DEBUG_LOG(P10): notification tap captured natively (cold via
+            // onCreate intent, warm via onNewIntent). Debug builds only.
+            val isDebuggable =
+                (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+            if (isDebuggable) Log.d("P10", "notification_tap taskId=$taskId route=$route")
             val data = mapOf(
                 "taskId" to taskId,
                 "route" to (route ?: "manage_tasks_unread"),

@@ -14,6 +14,7 @@ import '../services/database.dart';
 import '../services/notification_service.dart';
 import '../services/workspace.dart';
 import '../tools/file_tools.dart';
+import '../utils/p10_profile.dart';
 
 /// Service responsible for coordinating background task scheduling with
 /// native Android AlarmManager and WorkManager.
@@ -152,10 +153,27 @@ class TaskSchedulerService {
     } catch (_) {}
   }
 
+  /// In-flight reschedule guard: concurrent triggers (app start plus
+  /// MY_PACKAGE_REPLACED/boot) join the same run instead of double-scheduling.
+  Future<int>? _rescheduleInFlight;
+
   /// Re-registers all active tasks in 'scheduled' status with the native AlarmManager.
   ///
-  /// Called on device boot or app startup.
-  Future<int> rescheduleAllActiveTasks() async {
+  /// Called on device boot or app startup. Concurrent callers share one run.
+  Future<int> rescheduleAllActiveTasks() {
+    final existing = _rescheduleInFlight;
+    if (existing != null) return existing;
+    final future = _runRescheduleAllActiveTasks();
+    _rescheduleInFlight = future;
+    future.whenComplete(() {
+      if (identical(_rescheduleInFlight, future)) _rescheduleInFlight = null;
+    });
+    return future;
+  }
+
+  Future<int> _runRescheduleAllActiveTasks() async {
+    // DEBUG_LOG(P10): measures how much startup work competes with first frame.
+    P10Profile.mark('reschedule_start');
     await recoverStuckTasks();
 
     final scheduled = await (db.select(db.schedulerTasks)
@@ -165,6 +183,7 @@ class TaskSchedulerService {
     for (final task in scheduled) {
       await scheduleTask(task.id);
     }
+    P10Profile.mark('reschedule_done count=${scheduled.length}');
     return scheduled.length;
   }
 
