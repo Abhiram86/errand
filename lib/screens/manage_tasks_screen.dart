@@ -52,8 +52,8 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
   late final Stream<List<SchedulerTaskRow>> _tasksStream;
   late final Stream<List<SchedulerTaskLogRow>> _logsStream;
 
-  // DEBUG_LOG(P10): one-shot flag so first-useful-row is logged once per screen open.
   bool _p10FirstRowLogged = false;
+  late final int _p10ScreenId;
 
   /// 1s ticker so countdown labels ("Fires in Xs") stay live between stream events.
   Timer? _countdownTimer;
@@ -65,6 +65,7 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
   @override
   void initState() {
     super.initState();
+    _p10ScreenId = identityHashCode(this);
     WidgetsBinding.instance.addObserver(this);
     _db = widget.database ?? ErrandDatabase.instance;
     _tasksStream = (_db.select(_db.schedulerTasks)
@@ -84,8 +85,11 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
     _countdownTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() {});
     });
-    // DEBUG_LOG(P10): first frame of the notification route.
-    WidgetsBinding.instance.addPostFrameCallback((_) => P10Profile.mark('manage_tasks_first_frame'));
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => P10Profile.mark(
+        'manage_tasks_first_frame screen=$_p10ScreenId tab=${widget.initialTabIndex}',
+      ),
+    );
   }
 
   @override
@@ -117,12 +121,15 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
           builder: (context, logSnapshot) {
             final allLogs = logSnapshot.data ?? [];
 
-            // DEBUG_LOG(P10): first frame that actually has rows to show.
             if (!_p10FirstRowLogged &&
                 (allTasks.isNotEmpty || allLogs.isNotEmpty)) {
               _p10FirstRowLogged = true;
               WidgetsBinding.instance.addPostFrameCallback(
-                  (_) => P10Profile.mark('first_useful_row'));
+                (_) => P10Profile.mark(
+                  'first_useful_row screen=$_p10ScreenId '
+                  'tasks=${allTasks.length} logs=${allLogs.length}',
+                ),
+              );
             }
 
             // Group logs by task once per emission (O(T+L)) instead of
@@ -1993,4 +2000,3 @@ class _EditTaskModelSheetState extends State<_EditTaskModelSheet> {
     );
   }
 }
-

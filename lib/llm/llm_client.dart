@@ -648,11 +648,17 @@ class LlmClient {
       for (final raw in rawToolCalls) {
         if (raw is! Map<String, dynamic>) continue;
         final toolCall = raw;
-        final parsedIndex = (toolCall['index'] as num?)?.toInt();
+        final rawIndex = (toolCall['index'] as num?)?.toInt();
+        // OpenAI-compatible proxies should send a zero-based tool-call index,
+        // but some NVIDIA-compatible streams have emitted -1. Never let an
+        // invalid provider index become the active fallback index: downstream
+        // code treats tool-call indexes as list positions.
+        final parsedIndex = rawIndex != null && rawIndex >= 0 ? rawIndex : null;
+        final fallbackIndex = streamedToolCalls.isNotEmpty
+            ? lastToolCallIndex
+            : streamedToolCalls.length;
         final index = parsedIndex ??
-            (streamedToolCalls.isNotEmpty
-                ? lastToolCallIndex
-                : streamedToolCalls.length);
+            (fallbackIndex >= 0 ? fallbackIndex : streamedToolCalls.length);
         lastToolCallIndex = index;
         final accumulated = streamedToolCalls.putIfAbsent(
           index,
@@ -1003,4 +1009,3 @@ String _httpStatusMessage(int statusCode) {
       return statusCode >= 500 ? 'Server error' : 'Request failed';
   }
 }
-

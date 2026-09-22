@@ -75,10 +75,13 @@ class TaskSchedulerService {
 
   /// Retrieves any cold-launch notification click intent that started the app.
   Future<Map<String, dynamic>?> getPendingNotificationClick() async {
+    P10Profile.mark('pending_channel_start');
     try {
       final res = await _channel.invokeMapMethod<String, dynamic>('getPendingNotificationClick');
+      P10Profile.mark('pending_channel_done found=${res != null}');
       return res;
     } catch (_) {
+      P10Profile.mark('pending_channel_error');
       return null;
     }
   }
@@ -172,7 +175,6 @@ class TaskSchedulerService {
   }
 
   Future<int> _runRescheduleAllActiveTasks() async {
-    // DEBUG_LOG(P10): measures how much startup work competes with first frame.
     P10Profile.mark('reschedule_start');
     await recoverStuckTasks();
 

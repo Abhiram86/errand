@@ -52,6 +52,12 @@ class MainActivity : FlutterActivity() {
     private var pendingVoicePrompt: Boolean = false
     private var pendingTaskNotification: Map<String, Any>? = null
 
+    private fun logP10(message: String) {
+        if ((applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
+            Log.d("P10", message)
+        }
+    }
+
     private fun checkVoicePromptIntent(incomingIntent: Intent?) {
         if (incomingIntent == null) return
         val isVoiceAction = incomingIntent.action == VoiceWidgetProvider.ACTION_VOICE_PROMPT ||
@@ -73,11 +79,7 @@ class MainActivity : FlutterActivity() {
         val route = incomingIntent.getStringExtra("route")
         val openUnread = incomingIntent.getBooleanExtra("open_unread_tasks", false)
         if (taskId > 0 || route == "manage_tasks_unread" || openUnread) {
-            // DEBUG_LOG(P10): notification tap captured natively (cold via
-            // onCreate intent, warm via onNewIntent). Debug builds only.
-            val isDebuggable =
-                (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
-            if (isDebuggable) Log.d("P10", "notification_tap taskId=$taskId route=$route")
+            logP10("notification_tap taskId=$taskId route=$route")
             val data = mapOf(
                 "taskId" to taskId,
                 "route" to (route ?: "manage_tasks_unread"),
@@ -270,8 +272,13 @@ class MainActivity : FlutterActivity() {
                     }
                 }
                 "getPendingNotificationClick" -> {
+                    logP10("pending_lookup_native_start")
                     val pending = pendingTaskNotification
                     pendingTaskNotification = null
+                    logP10(
+                        "pending_lookup_native_done found=${pending != null} " +
+                            "taskId=${pending?.get("taskId")}"
+                    )
                     result.success(pending)
                 }
                 else -> result.notImplemented()

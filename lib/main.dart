@@ -19,7 +19,6 @@ final GlobalKey<ScaffoldMessengerState> rootScaffoldMessengerKey =
     GlobalKey<ScaffoldMessengerState>();
 
 Future<void> main() async {
-  // DEBUG_LOG(P10): launch clock starts here; all marks are ms since this line.
   P10Profile.start();
   P10Profile.mark('main_entry');
   WidgetsFlutterBinding.ensureInitialized();
@@ -41,26 +40,13 @@ Future<void> main() async {
 
 /// Runs startup work after Flutter has had a chance to paint the first frame.
 /// Notification navigation and the initial screen therefore do not wait for
-/// secrets, provider metadata, or alarm rescheduling.
+/// secrets or provider metadata. Alarm restoration is owned by the native
+/// boot/package-update receiver instead of running on every app launch.
 Future<void> _finishDeferredStartup() async {
-  P10Profile.mark('deferred_startup_start');
-
-  final settingsFuture = AppSettingsService.instance.ensureLoaded();
-  P10Profile.mark('settings_load_deferred');
-  final rescheduleFuture = TaskSchedulerService.instance
-      .rescheduleAllActiveTasks();
-
   try {
-    await settingsFuture;
-    P10Profile.mark('settings_loaded');
+    await AppSettingsService.instance.ensureLoaded();
   } catch (error, stackTrace) {
     debugPrint('[Startup] Settings load failed: $error\n$stackTrace');
-  }
-
-  try {
-    await rescheduleFuture;
-  } catch (error, stackTrace) {
-    debugPrint('[Startup] Task rescheduling failed: $error\n$stackTrace');
   }
 }
 
@@ -98,11 +84,11 @@ class _ErrandAppState extends State<ErrandApp> {
   void _handleNotificationRouting() {
     // 1. Check cold launch pending notification click
     WidgetsBinding.instance.addPostFrameCallback((_) async {
+      P10Profile.mark('cold_pending_lookup_start');
       final pending = await TaskSchedulerService.instance
           .getPendingNotificationClick();
+      P10Profile.mark('cold_pending_lookup_done found=${pending != null}');
       if (pending != null && mounted) {
-        // DEBUG_LOG(P10): cold notification tap reached Dart.
-        P10Profile.mark('cold_tap_pending_found');
         _navigateToUnreadTasks();
       }
     });
@@ -110,7 +96,6 @@ class _ErrandAppState extends State<ErrandApp> {
     // 2. Listen to live notification click events while app is running
     _notifSub = TaskSchedulerService.instance.notificationClicks.listen((_) {
       if (mounted) {
-        // DEBUG_LOG(P10): warm notification tap reached Dart.
         P10Profile.mark('live_tap_received');
         _navigateToUnreadTasks();
       }
@@ -178,7 +163,6 @@ class _ErrandAppState extends State<ErrandApp> {
   }
 
   void _navigateToUnreadTasks() {
-    // DEBUG_LOG(P10): route push issued; route first frame is marked in ManageTasksScreen.
     P10Profile.mark('unread_route_push');
     appNavigatorKey.currentState?.push(
       MaterialPageRoute(

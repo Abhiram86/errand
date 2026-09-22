@@ -263,6 +263,71 @@ void main() {
     expect(result.toolCalls.single.arguments, {'path': 'a.txt'});
   });
 
+  test('chatStream normalizes a negative provider tool-call index', () async {
+    final chunks = [
+      utf8.encode(
+        _sseEvent({
+          'choices': [
+            {
+              'delta': {
+                'tool_calls': [
+                  {
+                    'index': -1,
+                    'id': 'call_1',
+                    'function': {'name': 'read', 'arguments': '{"pa'},
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+      ),
+      utf8.encode(
+        _sseEvent({
+          'choices': [
+            {
+              'delta': {
+                'tool_calls': [
+                  {
+                    'index': 0,
+                    'function': {'arguments': 'th": "a.txt"}'},
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+      ),
+      utf8.encode('data: [DONE]\n\n'),
+    ];
+
+    final client = LlmClient(
+      config: const LlmConfig(
+        baseUrl: 'https://example.test/v1',
+        apiKey: 'test-key',
+        model: 'test-model',
+      ),
+      client: _StreamingClient((request) async {
+        return http.StreamedResponse(
+          Stream.fromIterable(chunks),
+          200,
+          headers: const {'content-type': 'text/event-stream'},
+        );
+      }),
+    );
+
+    final result = await client.chatStream(
+      messages: const [
+        {'role': 'user', 'content': 'read a.txt'},
+      ],
+      onTextDelta: (_) {},
+    );
+
+    expect(result.toolCalls, hasLength(1));
+    expect(result.toolCalls.single.id, 'call_1');
+    expect(result.toolCalls.single.arguments, {'path': 'a.txt'});
+  });
+
   test('chatStream surfaces string error payload as LlmException', () async {
     final chunks = [
       utf8.encode('data: {"error": "Upstream rate limit exceeded"}\n\n'),

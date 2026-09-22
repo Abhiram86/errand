@@ -1,11 +1,7 @@
 import 'package:flutter/foundation.dart';
 
-// DEBUG_LOG(P10): one-shot launch-profiling markers for P10 step 1
-// (notification-tap -> engine start -> first frame -> route push ->
-// first route frame -> first useful task row).
-// All output is active in debug AND profile builds (profiling needs it),
-// silent in release builds, so shipping this file is safe.
-// Grep for DEBUG_LOG to find and remove every marker when profiling is done.
+// Lightweight startup and notification profiling markers.
+// Output is active in debug and profile builds, and silent in release builds.
 //
 // Readout: `flutter run` console or
 // `adb logcat | grep -E "P10"` (Dart prints surface as `I/flutter [...] [P10] ...`;

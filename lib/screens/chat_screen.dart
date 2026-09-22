@@ -1969,7 +1969,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _finishStopped();
     } on RepeatedToolFailureException catch (e) {
       _failWorking(e.message);
-    } catch (e) {
+    } catch (e, stackTrace) {
+      debugPrint('[AgentError] unexpected_error: $e\n$stackTrace');
       // Transport/API failures (connection aborts, timeouts, HTTP 429/5xx)
       // are not the agent's fault — show a transient toast instead of adding
       // an error message to the conversation context.
@@ -2129,9 +2130,15 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           .toList(growable: false);
 
       final blocks = groupHistoryIntoBlocks(currentHistory);
-      final keepCount = tailBlockCount.clamp(1, blocks.length);
-      final compactedBlocks = blocks.sublist(0, blocks.length - keepCount);
-      final keptTailBlocks = blocks.sublist(blocks.length - keepCount);
+      // A compaction event can race with the UI replacing/removing the
+      // working message. If no history blocks remain, keeping one tail block
+      // would produce sublist(-1) and surface as RangeError(...: -1).
+      final keepCount = blocks.isEmpty
+          ? 0
+          : tailBlockCount.clamp(1, blocks.length);
+      final splitAt = blocks.length - keepCount;
+      final compactedBlocks = blocks.sublist(0, splitAt);
+      final keptTailBlocks = blocks.sublist(splitAt);
 
       tailTokens = estimateHistoryTokens([
         for (final block in keptTailBlocks) ...block,
