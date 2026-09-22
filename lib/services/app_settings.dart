@@ -49,12 +49,32 @@ final class AppSettingsService {
   String? _selectedModel;
   final Map<String, String> _selectedModelsByProvider = {};
   bool _cacheLoaded = false;
+  Future<void>? _loadInFlight;
 
   List<LlmProvider> _providers = [];
   String? _activeProviderId;
 
   /// Loads all secrets and providers into memory once; safe to call multiple times.
   Future<void> ensureLoaded() async {
+    if (_cacheLoaded) return;
+    final existing = _loadInFlight;
+    if (existing != null) {
+      await existing;
+      return;
+    }
+
+    final load = _loadFromStore();
+    _loadInFlight = load;
+    try {
+      await load;
+    } finally {
+      if (identical(_loadInFlight, load)) {
+        _loadInFlight = null;
+      }
+    }
+  }
+
+  Future<void> _loadFromStore() async {
     await _store.ensureKey();
     if (_cacheLoaded) return;
 
@@ -82,8 +102,12 @@ final class AppSettingsService {
   }
 
   bool _providerHasKey(LlmProvider p) {
-    if (p.hasKey) return true;
-    if (p.id == ProviderPresetType.openRouter.id && hasOpenRouterKey) return true;
+    if (p.hasKey) {
+      return true;
+    }
+    if (p.id == ProviderPresetType.openRouter.id && hasOpenRouterKey) {
+      return true;
+    }
     return false;
   }
 

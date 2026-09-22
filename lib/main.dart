@@ -29,13 +29,39 @@ Future<void> main() async {
       statusBarIconBrightness: Brightness.light,
     ),
   );
-  P10Profile.mark('settings_load_start');
-  await AppSettingsService.instance.ensureLoaded();
-  P10Profile.mark('settings_loaded');
   TaskSchedulerService.instance.initialize();
-  TaskSchedulerService.instance.rescheduleAllActiveTasks();
   runApp(const ErrandApp());
-  WidgetsBinding.instance.addPostFrameCallback((_) => P10Profile.mark('first_frame'));
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    P10Profile.mark('first_frame');
+    // Settings loading is also requested by ChatScreen during initialization.
+    // The service deduplicates that request with this deferred bootstrap call.
+    unawaited(_finishDeferredStartup());
+  });
+}
+
+/// Runs startup work after Flutter has had a chance to paint the first frame.
+/// Notification navigation and the initial screen therefore do not wait for
+/// secrets, provider metadata, or alarm rescheduling.
+Future<void> _finishDeferredStartup() async {
+  P10Profile.mark('deferred_startup_start');
+
+  final settingsFuture = AppSettingsService.instance.ensureLoaded();
+  P10Profile.mark('settings_load_deferred');
+  final rescheduleFuture = TaskSchedulerService.instance
+      .rescheduleAllActiveTasks();
+
+  try {
+    await settingsFuture;
+    P10Profile.mark('settings_loaded');
+  } catch (error, stackTrace) {
+    debugPrint('[Startup] Settings load failed: $error\n$stackTrace');
+  }
+
+  try {
+    await rescheduleFuture;
+  } catch (error, stackTrace) {
+    debugPrint('[Startup] Task rescheduling failed: $error\n$stackTrace');
+  }
 }
 
 /// Dedicated headless background entrypoint for Android AlarmManager triggers.
@@ -72,7 +98,8 @@ class _ErrandAppState extends State<ErrandApp> {
   void _handleNotificationRouting() {
     // 1. Check cold launch pending notification click
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      final pending = await TaskSchedulerService.instance.getPendingNotificationClick();
+      final pending = await TaskSchedulerService.instance
+          .getPendingNotificationClick();
       if (pending != null && mounted) {
         // DEBUG_LOG(P10): cold notification tap reached Dart.
         P10Profile.mark('cold_tap_pending_found');
