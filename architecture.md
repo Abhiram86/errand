@@ -399,6 +399,8 @@ Errand is structured into two Gradle product flavors (`android/app/build.gradle.
 - ✅ Done Sep 2026 (v0.6.3): Interactive bash safety confirmation modal (`Accept` / `Deny` / `Trust`), mid-stream LLM retry with on-reset buffer cleanup and UI indicator, Google OAuth user-agent sanitization & multi-window popups, compact overflow-free browser toolbar, and live model auto-selection on provider configuration.
 - ✅ Done Sep 2026 (v0.6.4): Hardened OTA update lifecycle (session-scoped dismissal, manual sidebar update check, post-install state reconciliation, download/install error toasts, and tag-verified release notes).
 - ✅ Done Sep 2026 (v0.7.0): Autonomous background task scheduler (schema v7: scheduler_task & scheduler_task_log, exact Android AlarmManager scheduling, headless AgentRunner execution loop, direct .scratch/ output report collection, TaskToastService, and ManageTasksScreen with status filters, pagination, and file previews).
+- ✅ Done Sep 2026 (v0.7.2): Scheduler correctness fixes (resume status synchronization, ghost notification cleanup, deletion race safeguards).
+- ✅ Done Sep 2026 (v0.7.3): Headless streaming runner with 5-attempt retry budget, drift-free anchor grid recurring scheduler, notify on fresh kill, schema v8 indexing, granular task countdowns, and component decomposition.
 - Safe-edit tool (`write`/`edit_file` with diff preview + undo) — needs the write-policy decision originally blocking it.
 - Local retrieval (embeddings/FTS) over recent docs for context budgeting.
 - Evaluate SAF as an alternative to `MANAGE_EXTERNAL_STORAGE` for Play distribution.

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.7.3
+
+- **Drift-Free Recurring Scheduling:** Recurring tasks now anchor to the fixed cadence grid (`start_at + N * repeat_after`) to completely eliminate schedule drift over time.
+- **Headless Streaming Runner:** Autonomous background runs now utilize streaming with a 5-attempt retry budget and forward-progress preservation on network glitches.
+- **Notify on Fresh Kill:** Background task cancellation and abrupt termination cleanly record final statuses without ghost notifications.
+- **Manage Tasks UI & Performance:** Borderless modern layout, schema v8 query indexes for instant tab loading, and granular sub-minute countdown timers.
+- **Architecture Modularization:** Decomposed monolithic task screens and tool definitions into maintainable, modular components (`lib/widgets/tasks/`, `model_picker_dialog.dart`, `browser_scripts.dart`, `intent_docs.dart`).
+
+## 0.7.2
+
+- **Scheduler Correctness & Safety:** Force scheduler stream refresh on app resume to prevent stale running statuses.
+- **Ghost Notification Prevention:** Deleting a task stops its in-flight run and cancels active notifications before removal.
+- **Safe Mid-Run Races:** Hardened cancellation handling and database error recovery during concurrent task execution.
+
 ## 0.7.0
 
 - **Autonomous Background Tasks:** Schedule one-off and recurring agent tasks that run headlessly via native Android `AlarmManager` without keeping the app open.

@@ -99,6 +99,7 @@ class ToolCallResult { final String id; final bool ok; final String output; fina
 18. ✅ **Intent Docs, Sequential Tool Grouping & Architecture Modularization (`v0.5.6`)** — Added on-demand intent documentation action (`action: 'docs'`) for alarms, timers, calendar, and location/maps; supported integer list extras (`MainActivity.kt`); grouped sequential tool executions into single collapsible bubbles with animated progress-to-completion states; prioritized keyed LLM providers; and decomposed `main.dart` into modular components.
 19. **P6 — Embedded Web Agent Tools (`v0.6.0`)**:
 20. ✅ **P9 — Autonomous Task Scheduler & Headless Background Engine (`v0.7.0`, schema v7)** — Background task execution via native Android `AlarmManager` without keeping the app open. Headless `AgentRunner` execution with tool safety guards and offscreen headless browser; direct output report collection in `.scratch/task-$taskId.*` with automatic relocation fallback; full-screen `ManageTasksScreen` with active, completed, failed, and unread tabs, log inspection, and `.scratch/` output preview; decoupled `TaskToastService` for instant action feedback.
+21. ✅ **Scheduler Hardening, Streaming Runner & Architecture Decomposition (`v0.7.3`, schema v8)** — Headless streaming execution with 5-attempt retry budget, drift-free anchor grid recurring scheduling, termination status cleanup, schema v8 database indexing, granular countdown timers, and modular component extractions.
 
 
 ## Cut-lines

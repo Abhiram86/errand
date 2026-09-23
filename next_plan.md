@@ -1,6 +1,6 @@
 # Next Plan — Status & Roadmap
 
-> **Updated Sep 2026.** P0 through P5a (v0.5.5), v0.5.6, P5b (memory subsystem, schema v5), P6a (embedded browser agent tools, v0.6.0), v0.6.1 (background OTA updates, post-update release notes, model sorting by release date, dynamic provider defaults, unified options modal sheet, animated composer glow), v0.6.2 (default working directory to Documents/Errand, filesystem hygiene, scratch directory auto-creation), v0.6.3 (interactive bash safety modal, mid-stream LLM retry, Google OAuth user-agent sanitization, multi-window popups, overflow-free browser toolbar, and live model auto-selection on provider configuration), v0.6.4 (hardened OTA update prompts, session-scoped dismissal, manual sidebar check, post-install cleanup, and error feedback), and v0.7.0 (autonomous background task scheduler, schema v7, native AlarmManager, headless AgentRunner, TaskToastService, and ManageTasksScreen) are all **SHIPPED**.
+> **Updated Sep 2026.** P0 through P5a (v0.5.5), v0.5.6, P5b (memory subsystem, schema v5), P6a (embedded browser agent tools, v0.6.0), v0.6.1 (background OTA updates, post-update release notes, model sorting by release date, dynamic provider defaults, unified options modal sheet, animated composer glow), v0.6.2 (default working directory to Documents/Errand, filesystem hygiene, scratch directory auto-creation), v0.6.3 (interactive bash safety modal, mid-stream LLM retry, Google OAuth user-agent sanitization, multi-window popups, overflow-free browser toolbar, and live model auto-selection on provider configuration), v0.6.4 (hardened OTA update prompts, session-scoped dismissal, manual sidebar check, post-install cleanup, and error feedback), v0.7.0 (autonomous background task scheduler, schema v7, native AlarmManager, headless AgentRunner, TaskToastService, and ManageTasksScreen), v0.7.2, and v0.7.3 (headless streaming runner, drift-free anchor grid recurring scheduler, notify on fresh kill, schema v8, borderless task management, component decomposition) are all **SHIPPED**.
 > **Active Milestone:** **P6b — Browser Rough Edges & Android PlatformView Optimizations**.
 
 ---
@@ -113,6 +113,10 @@ Goal: Enable the model to schedule one-off and recurring tasks that execute auto
 - **Per-task model/provider overrides** in the tool schema and payload, editable from the Manage Tasks sheet with settings-ready refresh.
 - **Tappable chat links** (`onLinkTap`): http(s) opens externally, `file://`/bare local paths resolve sandboxed into in-app md/html preview or the system viewer.
 - **Copy tables as Markdown+HTML**, compact unread banner, session-scoped storage footer, `AppProfile` debug/profile markers.
+
+#### 5. v0.7.2 & v0.7.3 releases (SHIPPED)
+- **v0.7.2:** Fixed stale task statuses via resume refresh, ghost notifications on task delete, cancel preservation during background runs, and atomic delete race safety.
+- **v0.7.3:** Headless streaming runner with 5-attempt retry budget, drift-free anchor grid recurring scheduler (`start_at + N * repeat_after`), notify on fresh kill, borderless modern Manage Tasks UI, schema v8 query indexing, granular sub-minute countdown timers, and architectural decomposition into modular components (`lib/widgets/tasks/`, `model_picker_dialog.dart`, `browser_scripts.dart`, `intent_docs.dart`).
 
 ### 🟡 P10: Scheduler launch performance and lazy notification navigation
 
