@@ -22,6 +22,11 @@ Future<void> main() async {
   P10Profile.start();
   P10Profile.mark('main_entry');
   WidgetsFlutterBinding.ensureInitialized();
+  final platformInitialRoute =
+      WidgetsBinding.instance.platformDispatcher.defaultRouteName;
+  final initialRoute = platformInitialRoute.isEmpty
+      ? '/'
+      : platformInitialRoute;
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,
@@ -29,7 +34,7 @@ Future<void> main() async {
     ),
   );
   TaskSchedulerService.instance.initialize();
-  runApp(const ErrandApp());
+  runApp(ErrandApp(initialRoute: initialRoute));
   WidgetsBinding.instance.addPostFrameCallback((_) {
     P10Profile.mark('first_frame');
     // Settings loading is also requested by ChatScreen during initialization.
@@ -64,7 +69,9 @@ void backgroundTaskMain() async {
 }
 
 class ErrandApp extends StatefulWidget {
-  const ErrandApp({super.key});
+  final String initialRoute;
+
+  const ErrandApp({super.key, required this.initialRoute});
 
   @override
   State<ErrandApp> createState() => _ErrandAppState();
@@ -73,12 +80,60 @@ class ErrandApp extends StatefulWidget {
 class _ErrandAppState extends State<ErrandApp> {
   StreamSubscription? _notifSub;
   StreamSubscription? _toastSub;
+  late bool _initialUnreadRouteActive;
+  late final bool _openedOnUnreadRoute;
+  int? _initialNotificationTaskId;
+  bool _notificationRouteOpened = false;
 
   @override
   void initState() {
     super.initState();
+    _openedOnUnreadRoute =
+        _routeName(widget.initialRoute) == _manageTasksUnreadRoute;
+    _initialUnreadRouteActive = _openedOnUnreadRoute;
+    _initialNotificationTaskId = _taskIdFromRoute(widget.initialRoute);
     _handleNotificationRouting();
     _handleTaskToasts();
+    _scheduleUnreadTaskToast();
+  }
+
+  void _scheduleUnreadTaskToast() {
+    // Let the first screen paint before touching the database or snackbar.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(
+        Future<void>.delayed(const Duration(milliseconds: 900), () async {
+          if (!mounted || _openedOnUnreadRoute || _notificationRouteOpened) {
+            return;
+          }
+
+          try {
+            final count = await TaskSchedulerService.instance
+                .unreadNotificationCount();
+            if (!mounted || count == 0) return;
+
+            final messenger = rootScaffoldMessengerKey.currentState;
+            if (messenger == null) return;
+            final noun = count == 1 ? 'task result' : 'task results';
+            messenger
+              ..hideCurrentSnackBar()
+              ..showSnackBar(
+                SnackBar(
+                  content: Text('$count unread $noun'),
+                  behavior: SnackBarBehavior.floating,
+                  duration: const Duration(seconds: 6),
+                  action: SnackBarAction(
+                    label: 'View',
+                    textColor: Colors.white,
+                    onPressed: _navigateToUnreadTasks,
+                  ),
+                ),
+              );
+          } catch (_) {
+            // Startup reminders are best-effort and must never delay app use.
+          }
+        }),
+      );
+    });
   }
 
   void _handleNotificationRouting() {
@@ -88,14 +143,26 @@ class _ErrandAppState extends State<ErrandApp> {
       final pending = await TaskSchedulerService.instance
           .getPendingNotificationClick();
       P10Profile.mark('cold_pending_lookup_done found=${pending != null}');
+      if (_initialUnreadRouteActive) {
+        _initialUnreadRouteActive = false;
+        return;
+      }
       if (pending != null && mounted) {
         _navigateToUnreadTasks();
       }
     });
 
     // 2. Listen to live notification click events while app is running
-    _notifSub = TaskSchedulerService.instance.notificationClicks.listen((_) {
+    _notifSub = TaskSchedulerService.instance.notificationClicks.listen((args) {
       if (mounted) {
+        final taskId = (args['taskId'] as num?)?.toInt();
+        if (_initialUnreadRouteActive) {
+          if (_initialNotificationTaskId == null ||
+              taskId == _initialNotificationTaskId) {
+            return;
+          }
+          _initialUnreadRouteActive = false;
+        }
         P10Profile.mark('live_tap_received');
         _navigateToUnreadTasks();
       }
@@ -163,12 +230,28 @@ class _ErrandAppState extends State<ErrandApp> {
   }
 
   void _navigateToUnreadTasks() {
+    _notificationRouteOpened = true;
+    rootScaffoldMessengerKey.currentState?.hideCurrentSnackBar();
     P10Profile.mark('unread_route_push');
     appNavigatorKey.currentState?.push(
-      MaterialPageRoute(
-        builder: (_) => const ManageTasksScreen(initialTabIndex: 1),
+      PageRouteBuilder(
+        transitionDuration: Duration.zero,
+        reverseTransitionDuration: Duration.zero,
+        pageBuilder: (_, _, _) => const ManageTasksScreen(initialTabIndex: 1),
       ),
     );
+  }
+
+  static const _manageTasksUnreadRoute = '/manage_tasks_unread';
+
+  String _routeName(String route) => route.split('?').first;
+
+  int? _taskIdFromRoute(String route) {
+    final uri = Uri.tryParse(route);
+    if (uri == null || _routeName(route) != _manageTasksUnreadRoute) {
+      return null;
+    }
+    return int.tryParse(uri.queryParameters['taskId'] ?? '');
   }
 
   @override
@@ -194,7 +277,19 @@ class _ErrandAppState extends State<ErrandApp> {
         ),
         useMaterial3: true,
       ),
-      home: const ChatScreen(),
+      initialRoute: widget.initialRoute,
+      onGenerateRoute: (settings) {
+        if (_routeName(settings.name ?? '/') == _manageTasksUnreadRoute) {
+          return MaterialPageRoute(
+            settings: settings,
+            builder: (_) => const ManageTasksScreen(initialTabIndex: 1),
+          );
+        }
+        return MaterialPageRoute(
+          settings: settings,
+          builder: (_) => const ChatScreen(),
+        );
+      },
     );
   }
 }

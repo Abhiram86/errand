@@ -51,6 +51,24 @@ class MainActivity : FlutterActivity() {
     private var widgetChannel: MethodChannel? = null
     private var pendingVoicePrompt: Boolean = false
     private var pendingTaskNotification: Map<String, Any>? = null
+    private var initialNotificationRoute = false
+
+    private fun taskNotificationInitialRoute(incomingIntent: Intent?): String? {
+        if (incomingIntent == null) return null
+        val taskId = incomingIntent.getIntExtra("task_id", -1)
+        val route = incomingIntent.getStringExtra("route")
+        val openUnread = incomingIntent.getBooleanExtra("open_unread_tasks", false)
+        if (taskId <= 0 && route != "manage_tasks_unread" && !openUnread) {
+            return null
+        }
+        return "/manage_tasks_unread?taskId=$taskId"
+    }
+
+    override fun getInitialRoute(): String {
+        val route = taskNotificationInitialRoute(intent)
+        initialNotificationRoute = route != null
+        return route ?: "/"
+    }
 
     private fun logP10(message: String) {
         if ((applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
@@ -284,7 +302,12 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
-        checkTaskNotificationIntent(intent)
+        if (initialNotificationRoute) {
+            logP10("notification_initial_route")
+            initialNotificationRoute = false
+        } else {
+            checkTaskNotificationIntent(intent)
+        }
 
         // ---- Storage channel (unchanged) ----
         MethodChannel(

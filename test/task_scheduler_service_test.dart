@@ -313,6 +313,37 @@ void main() {
       expect(channelCalls.any((c) => c.method == 'canScheduleExactAlarms'), isTrue);
     });
 
+    test('unreadNotificationCount counts only unseen execution logs', () async {
+      final nowMillis = DateTime.now().millisecondsSinceEpoch;
+      final taskId = await serviceDb.into(serviceDb.schedulerTasks).insert(
+        SchedulerTasksCompanion.insert(
+          title: 'Unread count task',
+          type: 'one_off',
+          status: 'completed',
+          payloadJson: '{}',
+          startsAt: nowMillis,
+          timezone: 'UTC',
+          createdAt: nowMillis,
+          updatedAt: nowMillis,
+        ),
+      );
+
+      for (final seen in [0, 0, 1]) {
+        await serviceDb.into(serviceDb.schedulerTaskLogs).insert(
+          SchedulerTaskLogsCompanion.insert(
+            schedulerTaskId: taskId,
+            scheduledFor: nowMillis,
+            status: 'success',
+            createdAt: nowMillis,
+            updatedAt: nowMillis,
+            notificationSeen: Value(seen),
+          ),
+        );
+      }
+
+      expect(await realService.unreadNotificationCount(), equals(2));
+    });
+
     test('rescheduleAllActiveTasks schedules all active tasks and recovers stuck ones', () async {
       final nowMillis = DateTime.now().millisecondsSinceEpoch;
 

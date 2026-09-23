@@ -2244,7 +2244,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       // whole buffer; capture the last completed line for table flush.
       final combined = _workingTail + delta;
       final lastNl = combined.lastIndexOf('\n');
-      final prevNl = combined.lastIndexOf('\n', lastNl - 1);
+      // When the delta starts with a newline, [lastNl] can be zero. Passing
+      // -1 as the start position to String.lastIndexOf throws RangeError.
+      final prevNl = lastNl > 0
+          ? combined.lastIndexOf('\n', lastNl - 1)
+          : -1;
       final completed = prevNl == -1
           ? combined.substring(0, lastNl)
           : combined.substring(prevNl + 1, lastNl);

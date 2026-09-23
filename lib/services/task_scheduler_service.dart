@@ -38,6 +38,17 @@ class TaskSchedulerService {
   /// Checks if a task is currently executing in-process.
   bool isTaskRunning(int taskId) => _runningTokens.containsKey(taskId);
 
+  /// Returns the number of execution logs that still have an unseen
+  /// completion notification.
+  Future<int> unreadNotificationCount() async {
+    final count = db.schedulerTaskLogs.id.count();
+    final row = await (db.selectOnly(db.schedulerTaskLogs)
+          ..addColumns([count])
+          ..where(db.schedulerTaskLogs.notificationSeen.equals(0)))
+        .getSingle();
+    return row.read(count) ?? 0;
+  }
+
   /// Cancels an actively running task execution and marks it cancelled in the database.
   Future<void> cancelRunningTask(int taskId) async {
     final token = _runningTokens[taskId];

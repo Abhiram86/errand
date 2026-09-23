@@ -143,7 +143,8 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
               if (t.status == 'running') return true;
               if (t.status != 'scheduled') return false;
               return true;
-            }).toList();
+            }).toList()
+              ..sort(_compareUpcomingTasks);
 
             final unreadLogs = allLogs.where((l) => l.notificationSeen == 0).toList();
 
@@ -311,6 +312,23 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
   // ---------------------------------------------------------------------------
   // Tab 1: Upcoming Tasks
   // ---------------------------------------------------------------------------
+
+  int _compareUpcomingTasks(SchedulerTaskRow a, SchedulerTaskRow b) {
+    // A running task is active now, so keep it ahead of future scheduled work.
+    if (a.status != b.status) {
+      if (a.status == 'running') return -1;
+      if (b.status == 'running') return 1;
+    }
+
+    final aNext = a.nextRunAt ?? a.startsAt;
+    final bNext = b.nextRunAt ?? b.startsAt;
+    final byNextRun = aNext.compareTo(bNext);
+    if (byNextRun != 0) return byNextRun;
+
+    // Stable tie-breakers keep rows from jumping when timestamps collide.
+    final byCreated = b.createdAt.compareTo(a.createdAt);
+    return byCreated != 0 ? byCreated : b.id.compareTo(a.id);
+  }
 
   /// Returns the cached model override for [task], decoding payloadJson
   /// at most once per task update.
