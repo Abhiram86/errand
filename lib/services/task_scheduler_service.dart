@@ -104,8 +104,18 @@ class TaskSchedulerService {
   /// Stream of notification clicks delivered while the app is active.
   Stream<Map<String, dynamic>> get notificationClicks => _notificationClicks.stream;
 
+  Future<Map<String, dynamic>?>? _pendingNotificationFuture;
+
   /// Retrieves any cold-launch notification click intent that started the app.
-  Future<Map<String, dynamic>?> getPendingNotificationClick() async {
+  ///
+  /// Reuses the in-flight lookup started early during [initialize] so cold
+  /// notification routing does not wait to initiate the channel IPC after
+  /// the first frame.
+  Future<Map<String, dynamic>?> getPendingNotificationClick() {
+    return _pendingNotificationFuture ??= _fetchPendingNotificationClick();
+  }
+
+  Future<Map<String, dynamic>?> _fetchPendingNotificationClick() async {
     AppProfile.mark('pending_channel_start');
     try {
       final res = await _channel.invokeMapMethod<String, dynamic>('getPendingNotificationClick');
@@ -117,9 +127,17 @@ class TaskSchedulerService {
     }
   }
 
+  /// Clears the cached pending notification future after consumption.
+  void clearPendingNotificationClick() {
+    _pendingNotificationFuture = null;
+  }
+
   /// Attaches method call handler to receive `executeTask` and `rescheduleAll`
   /// triggers from native Android AlarmManager / WorkManager.
   void initialize() {
+    // Start pending notification lookup non-blocking before runApp()
+    _pendingNotificationFuture ??= _fetchPendingNotificationClick();
+
     _channel.setMethodCallHandler((call) async {
       switch (call.method) {
         case 'executeTask':

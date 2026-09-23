@@ -193,7 +193,7 @@ final class ErrandDatabase extends _$ErrandDatabase {
       ErrandDatabase._(NativeDatabase.memory());
 
   @override
-  int get schemaVersion => 7;
+  int get schemaVersion => 8;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -204,6 +204,7 @@ final class ErrandDatabase extends _$ErrandDatabase {
       await m.createAll();
       await _createMessageIndexes(m);
       await _createSchedulerIndexes(m);
+      await _createSchedulerV8Indexes(m);
     },
     onUpgrade: (m, from, to) async {
       if (from < 2) {
@@ -238,6 +239,9 @@ final class ErrandDatabase extends _$ErrandDatabase {
         await m.createTable(schedulerTaskLogs);
         await _createSchedulerIndexes(m);
       }
+      if (from < 8) {
+        await _createSchedulerV8Indexes(m);
+      }
     },
   );
 
@@ -270,6 +274,22 @@ final class ErrandDatabase extends _$ErrandDatabase {
     await customStatement(
       'CREATE INDEX IF NOT EXISTS idx_scheduler_task_log_unseen '
       'ON scheduler_task_log (notification_seen)',
+    );
+  }
+
+  /// Indexes added in schema v8 for fast unread log queries and reverse chronological scans.
+  Future<void> _createSchedulerV8Indexes(Migrator m) async {
+    await customStatement(
+      'CREATE INDEX IF NOT EXISTS idx_scheduler_task_created '
+      'ON scheduler_task (created_at DESC)',
+    );
+    await customStatement(
+      'CREATE INDEX IF NOT EXISTS idx_scheduler_task_log_created '
+      'ON scheduler_task_log (created_at DESC)',
+    );
+    await customStatement(
+      'CREATE INDEX IF NOT EXISTS idx_scheduler_task_log_unseen_created '
+      'ON scheduler_task_log (notification_seen, created_at DESC)',
     );
   }
 

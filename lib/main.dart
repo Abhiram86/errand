@@ -137,6 +137,7 @@ class _ErrandAppState extends State<ErrandApp> {
         return;
       }
       if (pending != null && mounted) {
+        TaskSchedulerService.instance.clearPendingNotificationClick();
         _navigateToUnreadTasks();
       }
     });

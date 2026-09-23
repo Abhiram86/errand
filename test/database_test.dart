@@ -531,5 +531,16 @@ void main() {
       final afterDelete = await db.getMemoryById('mem_1');
       expect(afterDelete, isNull);
     });
+
+    test('schema v8 defines reverse-chronological and unseen indexes', () async {
+      expect(db.schemaVersion, equals(8));
+      final indexes = await db.customSelect(
+        "SELECT name FROM sqlite_master WHERE type = 'index'",
+      ).get();
+      final indexNames = indexes.map((row) => row.read<String>('name')).toSet();
+      expect(indexNames, contains('idx_scheduler_task_created'));
+      expect(indexNames, contains('idx_scheduler_task_log_created'));
+      expect(indexNames, contains('idx_scheduler_task_log_unseen_created'));
+    });
   });
 }

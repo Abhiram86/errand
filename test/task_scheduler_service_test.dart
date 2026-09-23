@@ -441,6 +441,38 @@ void main() {
       expect(rescheduleResult, isA<int>());
     });
 
+    test('getPendingNotificationClick memoizes and overlaps lookup, clear resets', () async {
+      int invokeCount = 0;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(const MethodChannel('task_scheduler'), (call) async {
+        if (call.method == 'getPendingNotificationClick') {
+          invokeCount++;
+          return {'taskId': 42, 'route': 'manage_tasks_unread'};
+        }
+        return true;
+      });
+
+      realService.clearPendingNotificationClick();
+      // initialize starts lookup non-blocking
+      realService.initialize();
+
+      // First call awaits the already in-flight lookup
+      final res1 = await realService.getPendingNotificationClick();
+      expect(res1, equals({'taskId': 42, 'route': 'manage_tasks_unread'}));
+      expect(invokeCount, equals(1));
+
+      // Second call reuses memoized future without another channel invoke
+      final res2 = await realService.getPendingNotificationClick();
+      expect(res2, equals({'taskId': 42, 'route': 'manage_tasks_unread'}));
+      expect(invokeCount, equals(1));
+
+      // Clear resets future
+      realService.clearPendingNotificationClick();
+      final res3 = await realService.getPendingNotificationClick();
+      expect(res3, equals({'taskId': 42, 'route': 'manage_tasks_unread'}));
+      expect(invokeCount, equals(2));
+    });
+
     test('pauseAllTasks transitions scheduled tasks to paused and cancels alarms', () async {
       final nowMillis = DateTime.now().millisecondsSinceEpoch;
       final t1 = await db.into(db.schedulerTasks).insert(

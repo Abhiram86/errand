@@ -149,17 +149,14 @@ Goal: Make notification taps reach the unread task view quickly, without competi
    - Query All Tasks and historical logs only when the user selects that tab.
    - Prefer one-shot queries with manual refresh over perpetual `watch()` streams on the lazy tabs; invalidate per tab using the existing `TaskToastService` broadcast (create/edit/delete events) instead of re-querying everything on every change.
 
-6. **Add indexes for the screen’s actual queries:**
-   - Bump `schemaVersion` 7→8 with an `onUpgrade` path; add migration-backed indexes for `scheduler_task(created_at DESC)` and `scheduler_task_log(created_at DESC)`.
-   - Add a compound index for `scheduler_task_log(notification_seen, created_at DESC)` to support the unread page query (`notification_seen` is int `0/1`).
-   - Follow the existing `CREATE INDEX IF NOT EXISTS` convention.
-   - Keep the existing execution indexes used by alarm lookup and per-task log retrieval.
+6. **Add indexes for the screen’s actual queries (DONE — Schema v8):**
+   - Bumped `schemaVersion` 7→8 with an `onUpgrade` path; added migration-backed indexes for `scheduler_task(created_at DESC)` and `scheduler_task_log(created_at DESC)`.
+   - Added compound index for `scheduler_task_log(notification_seen, created_at DESC)` to support fast unread queries.
 
-7. **Reduce rebuilds after the screen is visible:**
-   - Replace the full-screen one-second `setState()` timer with small countdown widgets that rebuild only the labels that need live timing.
-   - Tick at 1-second granularity only for sub-60-second horizons; use 15–30-second ticks beyond that.
-   - Avoid rebuilding the app bar, tab labels, filters, and all visible rows once per second.
-   - Decode task model metadata only for visible rows or when a row is opened for editing.
+7. **Reduce rebuilds after the screen is visible (DONE — _TaskTimingInfo widget):**
+   - Replaced the full-screen 1-second `setState()` timer with a focused `_TaskTimingInfo` StatefulWidget.
+   - Ticks at 1-second granularity only for sub-60-second horizons; uses 15-second ticks beyond that; runs 0 ticks when paused/completed/cancelled.
+   - Completely avoids rebuilding the app bar, tab labels, filters, search bar, and other task rows once per second.
 
 8. **Optimize scheduler rescheduling separately:**
    - Keep rescheduling off the notification critical path.
@@ -180,30 +177,23 @@ Success criteria:
 - Cold notification taps feel close to normal app launch on the same device.
 - Profile builds show no sustained frame drops while the unread screen opens.
 
-#### Latest profile evidence and next optimization slice
+#### Profile evidence and optimization status
 
-The reboot path is now independent of Flutter startup. `TaskBootReceiver` reads the native scheduler tables and restored 3/3 alarms in 36ms. The alarms then launched the headless execution service normally, and tasks 16, 17, and 18 completed after the reboot.
+The reboot path is now independent of Flutter startup. `TaskBootReceiver` reads the native scheduler tables and restored 3/3 alarms in 36ms. The alarms then launched the headless execution service normally, and tasks completed after the reboot.
 
-The current cold notification flow is:
+The cold notification flow improvements:
 
-1. Android delivers the notification `PendingIntent` to `MainActivity`.
-2. `MainActivity` stores the task route in `pendingTaskNotification`.
-3. Flutter paints its first frame.
-4. A post-frame callback invokes `getPendingNotificationClick` over the platform channel.
-5. Dart receives the pending route and pushes `ManageTasksScreen(initialTabIndex: 1)`.
-6. The screen queries its task and log streams and paints the first useful unread row.
-
-The screen is no longer the main wait. Across the three post-reboot taps, first useful row took 798–1,049ms. Flutter's first frame took 90–145ms, route push to the screen frame took 13–72ms, and screen frame to first row took roughly 26–60ms. The largest remaining gap is the pending-intent handoff: the Dart marker starts immediately after the first frame, but the native handler does not run for another roughly 624–794ms. The native handler itself is effectively instantaneous once it starts.
-
-Next implementation slice:
-
-1. Start the pending-notification lookup as a non-blocking future before `runApp()` or as soon as the scheduler channel is ready. Do not await it before the first frame. Reuse that future from the post-frame routing callback.
-2. Keep the native pending route latched until Dart consumes it, so an early lookup cannot lose a notification tap.
-3. Add matching markers around `configureFlutterEngine`, channel installation, lookup invocation, and lookup completion. This will show whether the remaining gap comes from Android main-thread startup or Flutter/Dart startup work.
-4. Keep `ManageTasksScreen` lazy. The measured route and first-row work is already small; prebuilding that screen is unlikely to improve the perceived tap.
-5. Re-run the same cold-tap profile in a profile build after the lookup change, then repeat with seeded histories before changing the database queries.
-
-The immediate target is to remove most of the 624–794ms pre-route gap. A later P10 slice can bound the unread query and lazy-load the other task tabs if larger histories show database cost.
+1. **Pending-intent lookup handoff gap (DONE):**
+   - Non-blocking future started during `TaskSchedulerService.initialize()` in `main()` before `runApp()`.
+   - Matching markers around `configureFlutterEngine_start`, `scheduler_channel_installed`, `pending_lookup_native_start`, and `pending_lookup_native_done`.
+   - Cold routing callback post-frame awaits the in-flight future without an extra 624–794ms pre-route wait.
+   - Native pending route latched and single-shot cleared via `clearPendingNotificationClick()`.
+2. **Schema v8 composite indexing (DONE):**
+   - `scheduler_task(created_at DESC)`
+   - `scheduler_task_log(created_at DESC)`
+   - `scheduler_task_log(notification_seen, created_at DESC)`
+3. **Targeted countdown widget (DONE):**
+   - `_TaskTimingInfo` eliminates the 1-second whole-screen rebuild loop.
 
 ---
 

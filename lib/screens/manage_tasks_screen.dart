@@ -66,9 +66,6 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
   bool _p10FirstRowLogged = false;
   late final int _p10ScreenId;
 
-  /// 1s ticker so countdown labels ("Fires in Xs") stay live between stream events.
-  Timer? _countdownTimer;
-
   /// Memoized per-task model overrides: task id -> (updatedAt, model).
   /// Avoids jsonDecode per row on every rebuild.
   final Map<int, ({int updatedAt, String? model})> _modelOverrideCache = {};
@@ -94,9 +91,6 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
           : 0,
     );
     _exactAlarmsFuture = TaskSchedulerService.instance.canScheduleExactAlarms();
-    _countdownTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted) setState(() {});
-    });
     unawaited(_loadStorageSummary());
     WidgetsBinding.instance.addPostFrameCallback(
       (_) => AppProfile.mark(
@@ -203,7 +197,6 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
     _taskSearchDebounce?.cancel();
     _taskSearchController.removeListener(_onTaskSearchChanged);
     _taskSearchController.dispose();
-    _countdownTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _tabController.dispose();
     super.dispose();
@@ -1318,7 +1311,7 @@ class _SpaceyTaskRowState extends State<_SpaceyTaskRow> {
           const SizedBox(height: 5),
 
           // Row 3: Timing Info
-          _buildTimingInfo(task),
+          _TaskTimingInfo(task: task),
           const SizedBox(height: 6),
 
           // Row 4: Stats + Action buttons
@@ -1397,56 +1390,6 @@ class _SpaceyTaskRowState extends State<_SpaceyTaskRow> {
           ),
         ],
       ),
-    );
-  }
-
-  Widget _buildTimingInfo(SchedulerTaskRow task) {
-    final now = DateTime.now().millisecondsSinceEpoch;
-    final nextRun = task.nextRunAt ?? task.startsAt;
-    final diff = nextRun - now;
-
-    String timingText;
-    if (task.status == 'running') {
-      timingText = 'Executing now...';
-    } else if (task.status == 'completed') {
-      timingText = 'Run completed';
-    } else if (task.status == 'paused') {
-      timingText = 'Paused (no alarms active)';
-    } else if (task.status == 'cancelled') {
-      timingText = 'Cancelled';
-    } else if (diff > 0) {
-      final secs = diff ~/ 1000;
-      if (secs < 60) {
-        timingText = 'Fires in ${secs}s';
-      } else if (secs < 3600) {
-        timingText = 'Fires in ${secs ~/ 60}m ${secs % 60}s';
-      } else {
-        final hours = secs ~/ 3600;
-        final mins = (secs % 3600) ~/ 60;
-        timingText = 'Fires in ${hours}h ${mins}m';
-      }
-    } else {
-      timingText = 'Scheduled time reached';
-    }
-
-    if (task.type == 'recurring' && task.repeatAfter != null) {
-      final intervalMin = task.repeatAfter! ~/ 60000;
-      timingText += ' • Repeats every ${intervalMin}m';
-    }
-
-    return Row(
-      children: [
-        Icon(Icons.schedule_rounded, color: kMuted.withValues(alpha: 0.8), size: 13),
-        const SizedBox(width: 5),
-        Expanded(
-          child: Text(
-            timingText,
-            style: const TextStyle(color: kMuted, fontSize: 12),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-        ),
-      ],
     );
   }
 
@@ -1539,6 +1482,129 @@ class _SpaceyTaskRowState extends State<_SpaceyTaskRow> {
         const SnackBar(content: Text('Task not found — already deleted')),
       );
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Granular Countdown Timing Widget (P10: Replaces screen-wide 1s rebuild ticker)
+// ---------------------------------------------------------------------------
+
+class _TaskTimingInfo extends StatefulWidget {
+  final SchedulerTaskRow task;
+
+  const _TaskTimingInfo({required this.task});
+
+  @override
+  State<_TaskTimingInfo> createState() => _TaskTimingInfoState();
+}
+
+class _TaskTimingInfoState extends State<_TaskTimingInfo> {
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _syncTimer();
+  }
+
+  @override
+  void didUpdateWidget(covariant _TaskTimingInfo oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.task.status != widget.task.status ||
+        oldWidget.task.nextRunAt != widget.task.nextRunAt ||
+        oldWidget.task.startsAt != widget.task.startsAt) {
+      _syncTimer();
+    }
+  }
+
+  void _syncTimer() {
+    _timer?.cancel();
+    _timer = null;
+
+    final task = widget.task;
+    if (task.status != 'scheduled') return;
+
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final nextRun = task.nextRunAt ?? task.startsAt;
+    final diff = nextRun - now;
+
+    if (diff <= 0) return;
+
+    // Use 1s ticks for sub-60s horizons; 15s ticks for anything further out.
+    final interval = diff <= 60000
+        ? const Duration(seconds: 1)
+        : const Duration(seconds: 15);
+
+    _timer = Timer.periodic(interval, (_) {
+      if (!mounted) return;
+      setState(() {});
+      final currentDiff = (widget.task.nextRunAt ?? widget.task.startsAt) -
+          DateTime.now().millisecondsSinceEpoch;
+      if (currentDiff <= 60000 && interval.inSeconds > 1) {
+        _syncTimer();
+      } else if (currentDiff <= 0) {
+        _timer?.cancel();
+        _timer = null;
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final task = widget.task;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final nextRun = task.nextRunAt ?? task.startsAt;
+    final diff = nextRun - now;
+
+    String timingText;
+    if (task.status == 'running') {
+      timingText = 'Executing now...';
+    } else if (task.status == 'completed') {
+      timingText = 'Run completed';
+    } else if (task.status == 'paused') {
+      timingText = 'Paused (no alarms active)';
+    } else if (task.status == 'cancelled') {
+      timingText = 'Cancelled';
+    } else if (diff > 0) {
+      final secs = diff ~/ 1000;
+      if (secs < 60) {
+        timingText = 'Fires in ${secs}s';
+      } else if (secs < 3600) {
+        timingText = 'Fires in ${secs ~/ 60}m ${secs % 60}s';
+      } else {
+        final hours = secs ~/ 3600;
+        final mins = (secs % 3600) ~/ 60;
+        timingText = 'Fires in ${hours}h ${mins}m';
+      }
+    } else {
+      timingText = 'Scheduled time reached';
+    }
+
+    if (task.type == 'recurring' && task.repeatAfter != null) {
+      final intervalMin = task.repeatAfter! ~/ 60000;
+      timingText += ' • Repeats every ${intervalMin}m';
+    }
+
+    return Row(
+      children: [
+        Icon(Icons.schedule_rounded, color: kMuted.withValues(alpha: 0.8), size: 13),
+        const SizedBox(width: 5),
+        Expanded(
+          child: Text(
+            timingText,
+            style: const TextStyle(color: kMuted, fontSize: 12),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      ],
+    );
   }
 }
 

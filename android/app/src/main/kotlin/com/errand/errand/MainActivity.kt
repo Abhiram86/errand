@@ -247,11 +247,13 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+        logP10("configureFlutterEngine_start")
         super.configureFlutterEngine(flutterEngine)
 
         // ---- Task Scheduler Channel (P9) ----
         val scheduler = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, SCHEDULER_CHANNEL)
         schedulerChannel = scheduler
+        logP10("scheduler_channel_installed")
         scheduler.setMethodCallHandler { call, result ->
             when (call.method) {
                 "scheduleAlarm" -> {

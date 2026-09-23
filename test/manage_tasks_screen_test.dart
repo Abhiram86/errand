@@ -237,4 +237,38 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     await tester.pump(const Duration(milliseconds: 50));
   });
+
+  testWidgets('ManageTasksScreen Upcoming tab shows focused countdown badge for near-term scheduled task', (tester) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+
+    await db.into(db.schedulerTasks).insert(
+      SchedulerTasksCompanion.insert(
+        title: 'Imminent Task',
+        type: 'one_off',
+        status: 'scheduled',
+        payloadJson: jsonEncode({'prompt': 'Check status'}),
+        startsAt: now + 45000,
+        nextRunAt: Value(now + 45000),
+        timezone: 'UTC',
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ManageTasksScreen(database: db, initialTabIndex: 0),
+      ),
+    );
+
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(find.text('Imminent Task'), findsOneWidget);
+    expect(find.textContaining('Fires in '), findsOneWidget);
+
+    // Clean up
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(milliseconds: 50));
+  });
 }
