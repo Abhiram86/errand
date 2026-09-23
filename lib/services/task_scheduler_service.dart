@@ -415,6 +415,9 @@ class TaskSchedulerService {
             apiKey: apiKey,
             model: model,
           ),
+          // Autonomous runs get a larger retry budget: no human is around
+          // to tap retry when a transient failure exhausts the budget.
+          maxAttempts: 5,
         );
         agentRunner = AgentRunner(
           llm: locallyCreatedClient,
@@ -619,6 +622,8 @@ class TaskSchedulerService {
     }
 
     if (task.notify) {
+      bool shown = false;
+      String skipReason = '';
       try {
         final notifTitle = isSuccess
             ? 'Task Completed: ${task.title}'
@@ -626,19 +631,35 @@ class TaskSchedulerService {
         final notifBody = summary.length > 250
             ? '${summary.substring(0, 247)}...'
             : summary;
-        await notificationService.showNotification(
+        shown = await notificationService.showNotification(
           id: taskId,
           title: notifTitle,
           body: notifBody,
           isSuccess: isSuccess,
         );
-        await (db.update(db.schedulerTaskLogs)..where((l) => l.id.equals(logId))).write(
-          SchedulerTaskLogsCompanion(
-            notificationSent: const Value(1),
-            updatedAt: Value(DateTime.now().millisecondsSinceEpoch),
-          ),
+        if (!shown) {
+          skipReason = 'suppressed (permission denied or channel missing)';
+        }
+      } catch (e) {
+        skipReason = 'threw: $e';
+      }
+      // Record honestly whether the shade actually got the notification --
+      // marking unsent rows as sent makes missing notifications undebuggable.
+      await (db.update(db.schedulerTaskLogs)..where((l) => l.id.equals(logId))).write(
+        SchedulerTaskLogsCompanion(
+          notificationSent: Value(shown ? 1 : 0),
+          updatedAt: Value(DateTime.now().millisecondsSinceEpoch),
+        ),
+      );
+      if (!shown) {
+        debugPrint(
+          '[TaskScheduler] Notification not shown for task $taskId: $skipReason',
         );
-      } catch (_) {}
+      }
+    } else {
+      debugPrint(
+        '[TaskScheduler] Notifications disabled for task $taskId; skipping.',
+      );
     }
 
     locallyCreatedClient?.close();

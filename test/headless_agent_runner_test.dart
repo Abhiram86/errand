@@ -41,6 +41,24 @@ class MockLlmClient extends LlmClient {
     }
     return const LlmMessage(content: 'Task completed successfully with all findings.');
   }
+
+  @override
+  Future<LlmMessage> chatStream({
+    required List<Map<String, dynamic>> messages,
+    List<Tool> tools = const [],
+    required void Function(String delta) onTextDelta,
+    void Function()? onReasoningDelta,
+    void Function()? onReset,
+    void Function(int attempt, String reason)? onRetry,
+    CancelToken? cancelToken,
+  }) async {
+    // Headless turns stream with a discard sink; mirror the chat behavior.
+    final result = await chat(messages: messages, tools: tools, cancelToken: cancelToken);
+    if (result.content != null && result.content!.isNotEmpty) {
+      onTextDelta(result.content!);
+    }
+    return result;
+  }
 }
 
 class MockNotificationService extends NotificationService {

@@ -878,6 +878,54 @@ void main() {
     expect(result.content, 'Recovered');
   });
 
+  test('chatStream honors custom maxAttempts for autonomous runs', () async {
+    var attempts = 0;
+    var resetCount = 0;
+
+    Stream<List<int>> createFailingStream() async* {
+      yield utf8.encode(_sseEvent({
+        'choices': [
+          {
+            'delta': {'content': 'Partial chunk'},
+          },
+        ],
+      }));
+      throw http.ClientException('Connection dropped');
+    }
+
+    final client = LlmClient(
+      config: const LlmConfig(
+        baseUrl: 'https://example.test/v1',
+        apiKey: 'test-key',
+        model: 'test-model',
+      ),
+      backoffDuration: (_) => Duration.zero,
+      maxAttempts: 5,
+      client: _StreamingClient((request) async {
+        attempts++;
+        return http.StreamedResponse(
+          createFailingStream(),
+          200,
+          headers: const {'content-type': 'text/event-stream'},
+        );
+      }),
+    );
+
+    await expectLater(
+      client.chatStream(
+        messages: const [
+          {'role': 'user', 'content': 'Hi'},
+        ],
+        onTextDelta: (_) {},
+        onReset: () => resetCount++,
+      ),
+      throwsA(isA<LlmException>()),
+    );
+
+    expect(attempts, 5);
+    expect(resetCount, 4);
+  });
+
   test('cleanErrorMessage formats JSON, HTML, and status codes cleanly', () {
     expect(
       cleanErrorMessage(

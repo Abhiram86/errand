@@ -1004,8 +1004,6 @@ class _SpaceyTaskRowState extends State<_SpaceyTaskRow> {
   Widget build(BuildContext context) {
     final task = widget.task;
     final statusColor = _getStatusColor(task.status);
-    final successes = widget.logs.where((l) => l.status == 'success').length;
-    final fails = widget.logs.where((l) => l.status == 'failed' || l.status == 'timeout').length;
 
     // Model override resolved + memoized by the parent list (see _modelFor).
     final overriddenModel = widget.modelOverride;
@@ -1133,7 +1131,7 @@ class _SpaceyTaskRowState extends State<_SpaceyTaskRow> {
             children: [
               Expanded(
                 child: Text(
-                  'Runs: ${task.totalRuns} • Success: $successes • Fails: $fails',
+                  'Runs: ${task.totalRuns}',
                   style: const TextStyle(color: kMuted, fontSize: 11),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -1572,6 +1570,52 @@ class _SpaceyLogItem extends StatelessWidget {
 // Task Logs Modal (Bottom sheet for task-specific logs)
 // ---------------------------------------------------------------------------
 
+class _LogStatChip extends StatelessWidget {
+  final String value;
+  final String label;
+  final Color color;
+
+  const _LogStatChip({
+    required this.value,
+    required this.label,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withValues(alpha: 0.3), width: 0.6),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            value,
+            style: TextStyle(
+              color: color,
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(width: 4),
+          Text(
+            label,
+            style: TextStyle(
+              color: color.withValues(alpha: 0.85),
+              fontSize: 11,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _TaskLogsModal extends StatelessWidget {
   final int taskId;
   final String taskTitle;
@@ -1645,26 +1689,69 @@ class _TaskLogsModal extends StatelessWidget {
                     );
                   }
 
-                  return ListView.separated(
-                    padding: const EdgeInsets.symmetric(vertical: 4),
-                    itemCount: logs.length,
-                    separatorBuilder: (_, _) => Divider(color: kBorder.withValues(alpha: 0.35), height: 1),
-                    itemBuilder: (context, index) {
-                      final log = logs[index];
-                      return _SpaceyLogItem(
-                        log: log,
-                        task: null,
-                        onMarkSeen: () async {
-                          final now = DateTime.now().millisecondsSinceEpoch;
-                          await (db.update(db.schedulerTaskLogs)..where((l) => l.id.equals(log.id))).write(
-                            SchedulerTaskLogsCompanion(
-                              notificationSeen: const Value(1),
-                              updatedAt: Value(now),
+                  final succeeded =
+                      logs.where((l) => l.status == 'success').length;
+                  final failed = logs
+                      .where((l) =>
+                          l.status == 'failed' || l.status == 'timeout')
+                      .length;
+
+                  return Column(
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+                        child: Row(
+                          children: [
+                            _LogStatChip(
+                              value: '${logs.length}',
+                              label: 'runs',
+                              color: kMuted,
                             ),
-                          );
-                        },
-                      );
-                    },
+                            const SizedBox(width: 8),
+                            _LogStatChip(
+                              value: '$succeeded',
+                              label: 'succeeded',
+                              color: Colors.greenAccent,
+                            ),
+                            const SizedBox(width: 8),
+                            _LogStatChip(
+                              value: '$failed',
+                              label: 'failed',
+                              color: kDanger,
+                            ),
+                          ],
+                        ),
+                      ),
+                      const Divider(color: kBorder, height: 1),
+                      Expanded(
+                        child: ListView.separated(
+                          padding: const EdgeInsets.symmetric(vertical: 4),
+                          itemCount: logs.length,
+                          separatorBuilder: (_, _) => Divider(
+                              color: kBorder.withValues(alpha: 0.35), height: 1),
+                          itemBuilder: (context, index) {
+                            final log = logs[index];
+                            return _SpaceyLogItem(
+                              log: log,
+                              task: null,
+                              onMarkSeen: () async {
+                                final now =
+                                    DateTime.now().millisecondsSinceEpoch;
+                                await (db.update(db.schedulerTaskLogs)
+                                      ..where((l) =>
+                                          l.id.equals(log.id)))
+                                    .write(
+                                  SchedulerTaskLogsCompanion(
+                                    notificationSeen: const Value(1),
+                                    updatedAt: Value(now),
+                                  ),
+                                );
+                              },
+                            );
+                          },
+                        ),
+                      ),
+                    ],
                   );
                 },
               ),

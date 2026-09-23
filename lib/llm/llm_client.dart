@@ -123,12 +123,20 @@ class LlmClient {
   /// shared usage) is reused as-is instead.
   final bool _ownsClient;
 
+  /// Maximum consecutive transport failures at the same progress frontier
+  /// before giving up. Autonomous headless runs use a larger budget (5)
+  /// because no human is around to tap retry.
+  final int maxAttempts;
+
   LlmClient({
     required this.config,
     http.Client? client,
     this.backoffDuration,
-  }) : _injectedClient = client,
-       _ownsClient = client == null;
+    this.maxAttempts = _defaultMaxAttempts,
+  })  : _injectedClient = client,
+        _ownsClient = client == null {
+    assert(maxAttempts >= 1, 'maxAttempts must be at least 1');
+  }
 
   /// Client for one call/attempt: fresh + abortable when we own the
   /// lifecycle, otherwise the injected instance.
@@ -138,7 +146,7 @@ class LlmClient {
   static const _timeout = Duration(seconds: 30);
   static const _streamTimeout = Duration(seconds: 60);
   static const _streamInactivityTimeout = Duration(seconds: 30);
-  static const _maxAttempts = 3;
+  static const _defaultMaxAttempts = 3;
   static const _maxTotalAttempts = 10;
 
   Uri _chatCompletionsUri() {
@@ -228,13 +236,13 @@ class LlmClient {
             .post(uri, headers: headers, body: body)
             .timeout(_timeout);
         final transient = res.statusCode == 429 || res.statusCode >= 500;
-        if (!transient || attempt >= _maxAttempts) return res;
+        if (!transient || attempt >= maxAttempts) return res;
         await _backoff(attempt, res.headers['retry-after'], cancelToken);
       } on LlmStoppedException {
         rethrow;
       } on TimeoutException {
         _rethrowIfCancelled(cancelToken);
-        if (attempt >= _maxAttempts) {
+        if (attempt >= maxAttempts) {
           throw LlmException(
             'Request timed out after ${_timeout.inSeconds}s',
             transport: true,
@@ -243,19 +251,19 @@ class LlmClient {
         await _backoff(attempt, null, cancelToken);
       } on SocketException catch (e) {
         _rethrowIfCancelled(cancelToken);
-        if (attempt >= _maxAttempts) {
+        if (attempt >= maxAttempts) {
           throw LlmException('Connection lost: ${e.message}', transport: true);
         }
         await _backoff(attempt, null, cancelToken);
       } on HttpException catch (e) {
         _rethrowIfCancelled(cancelToken);
-        if (attempt >= _maxAttempts) {
+        if (attempt >= maxAttempts) {
           throw LlmException('Connection lost: ${e.message}', transport: true);
         }
         await _backoff(attempt, null, cancelToken);
       } on http.ClientException catch (e) {
         _rethrowIfCancelled(cancelToken);
-        if (attempt >= _maxAttempts) {
+        if (attempt >= maxAttempts) {
           throw LlmException('Connection lost: ${e.message}', transport: true);
         }
         await _backoff(attempt, null, cancelToken);
@@ -307,7 +315,7 @@ class LlmClient {
   /// attempt has established a stream — so a cancel during redial keeps the
   /// already-streamed text instead of wiping it.
   ///
-  /// Retry budget: up to [_maxAttempts] *consecutive* transport failures at
+  /// Retry budget: up to [maxAttempts] *consecutive* transport failures at
   /// the same progress frontier. A failed attempt that got strictly further
   /// than any previous attempt (more streamed chars) resets the consecutive
   /// counter, so a recovered crash gets a fresh 3. [_maxTotalAttempts] caps
@@ -387,7 +395,7 @@ class LlmClient {
             transport: true,
           );
           recordFailure();
-          if (consecutiveFailures >= _maxAttempts) throw err;
+          if (consecutiveFailures >= maxAttempts) throw err;
           noteRetry(err.message);
           await _backoff(
             consecutiveFailures,
@@ -435,7 +443,7 @@ class LlmClient {
       } on TimeoutException {
         _rethrowIfCancelled(cancelToken);
         recordFailure();
-        if (consecutiveFailures >= _maxAttempts) {
+        if (consecutiveFailures >= maxAttempts) {
           throw LlmException(
             'Request timed out after ${_streamTimeout.inSeconds}s',
             transport: true,
@@ -446,7 +454,7 @@ class LlmClient {
       } on SocketException catch (e) {
         _rethrowIfCancelled(cancelToken);
         recordFailure();
-        if (consecutiveFailures >= _maxAttempts) {
+        if (consecutiveFailures >= maxAttempts) {
           throw LlmException('Connection lost: ${e.message}', transport: true);
         }
         noteRetry('Connection lost');
@@ -454,7 +462,7 @@ class LlmClient {
       } on HttpException catch (e) {
         _rethrowIfCancelled(cancelToken);
         recordFailure();
-        if (consecutiveFailures >= _maxAttempts) {
+        if (consecutiveFailures >= maxAttempts) {
           throw LlmException('Connection lost: ${e.message}', transport: true);
         }
         noteRetry('Connection lost');
@@ -462,7 +470,7 @@ class LlmClient {
       } on http.ClientException catch (e) {
         _rethrowIfCancelled(cancelToken);
         recordFailure();
-        if (consecutiveFailures >= _maxAttempts) {
+        if (consecutiveFailures >= maxAttempts) {
           throw LlmException('Connection lost: ${e.message}', transport: true);
         }
         noteRetry('Connection lost');
@@ -473,7 +481,7 @@ class LlmClient {
           rethrow;
         }
         recordFailure();
-        if (consecutiveFailures >= _maxAttempts) {
+        if (consecutiveFailures >= maxAttempts) {
           rethrow;
         }
         noteRetry(e.message);

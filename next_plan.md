@@ -207,6 +207,18 @@ The immediate target is to remove most of the 624–794ms pre-route gap. A later
 
 ---
 
+### 🟡 P11: Scheduler reliability & management follow-ups
+
+Goal: Close the remaining scheduler gaps — silent failures, rigid intervals, and management at scale.
+
+1. **Notify on fresh killed runs.** `recoverStuckTasks` timeout transitions are silent, so a run killed mid-flight (process death, not user cancel) never surfaces. Notify when `task.notify` is on, gated by recency (e.g. `scheduledFor` within the last few hours) so stale boot-time recoveries don't spam.
+2. **`daily_at` wall-clock scheduling (cron-lite).** Intervals drift; support `daily_at: "HH:MM"` so "every day at 7am" lands on the wall clock. Compute `nextRunAt` from wall time in the task's timezone; keep `repeat_after` for pure intervals.
+3. **Searchable model picker in the task sheet.** The provider model dropdown is unusable with 100+ OpenRouter entries. Replace with a searchable picker (reuse the chat `ModelPicker` patterns: search field, release-date sorting).
+4. **Task text search.** Filter chips don't scale past ~20 tasks; add a search field on the All Tasks tab (title match, debounced).
+5. **Pause-all / resume-all.** One action to silence every schedule (vacations, quiet periods) and one to restore, reusing the existing per-task pause/resume path.
+
+---
+
 ### ✅ P6c — Filesystem Hygiene, Interactive Safety & Browser OAuth (COMPLETED)
 
 Goal: Protect user storage from clutter, safeguard system integrity with session-bound interactive confirmation, and enable seamless browser authentication.

@@ -169,6 +169,10 @@ class AgentRunner {
     final baseUrl = effectiveBaseUrl ?? llm.config.baseUrl;
     final runStartMillis = DateTime.now().millisecondsSinceEpoch;
     final reportCollector = HeadlessReportCollector();
+    // Route headless turns through the streaming path even when nobody
+    // observes deltas: it carries the longer timeout, stall watchdog, and
+    // progress-based retries that the single-shot path lacks.
+    final textSink = onTextDelta ?? (_) {};
 
     final registry = ToolRegistry.headless(
       currentDir: workingDirectory.root,
@@ -221,7 +225,7 @@ class AgentRunner {
           ) !=
           false,
       onEvent: onEvent,
-      onTextDelta: onTextDelta,
+      onTextDelta: textSink,
       onReasoningDelta: onReasoningDelta,
       onReset: onReset,
       onRetry: onRetry,
