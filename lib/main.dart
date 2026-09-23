@@ -10,6 +10,7 @@ import 'services/task_scheduler_service.dart';
 import 'services/task_toast_service.dart';
 import 'theme/app_colors.dart';
 import 'utils/p10_profile.dart';
+import 'widgets/unread_task_banner.dart';
 
 export 'agent/system_prompt.dart' show systemPromptFor, kSystemPrompt;
 export 'screens/chat_screen.dart' show ChatScreen;
@@ -84,6 +85,8 @@ class _ErrandAppState extends State<ErrandApp> {
   late final bool _openedOnUnreadRoute;
   int? _initialNotificationTaskId;
   bool _notificationRouteOpened = false;
+  int _startupUnreadCount = 0;
+  bool _showStartupUnreadBanner = false;
 
   @override
   void initState() {
@@ -94,11 +97,11 @@ class _ErrandAppState extends State<ErrandApp> {
     _initialNotificationTaskId = _taskIdFromRoute(widget.initialRoute);
     _handleNotificationRouting();
     _handleTaskToasts();
-    _scheduleUnreadTaskToast();
+    _scheduleUnreadTaskBanner();
   }
 
-  void _scheduleUnreadTaskToast() {
-    // Let the first screen paint before touching the database or snackbar.
+  void _scheduleUnreadTaskBanner() {
+    // Let the first screen paint before touching the database or banner.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(
         Future<void>.delayed(const Duration(milliseconds: 900), () async {
@@ -110,24 +113,10 @@ class _ErrandAppState extends State<ErrandApp> {
             final count = await TaskSchedulerService.instance
                 .unreadNotificationCount();
             if (!mounted || count == 0) return;
-
-            final messenger = rootScaffoldMessengerKey.currentState;
-            if (messenger == null) return;
-            final noun = count == 1 ? 'task result' : 'task results';
-            messenger
-              ..hideCurrentSnackBar()
-              ..showSnackBar(
-                SnackBar(
-                  content: Text('$count unread $noun'),
-                  behavior: SnackBarBehavior.floating,
-                  duration: const Duration(seconds: 6),
-                  action: SnackBarAction(
-                    label: 'View',
-                    textColor: Colors.white,
-                    onPressed: _navigateToUnreadTasks,
-                  ),
-                ),
-              );
+            setState(() {
+              _startupUnreadCount = count;
+              _showStartupUnreadBanner = true;
+            });
           } catch (_) {
             // Startup reminders are best-effort and must never delay app use.
           }
@@ -231,6 +220,9 @@ class _ErrandAppState extends State<ErrandApp> {
 
   void _navigateToUnreadTasks() {
     _notificationRouteOpened = true;
+    if (mounted) {
+      setState(() => _showStartupUnreadBanner = false);
+    }
     rootScaffoldMessengerKey.currentState?.hideCurrentSnackBar();
     P10Profile.mark('unread_route_push');
     appNavigatorKey.currentState?.push(
@@ -261,6 +253,11 @@ class _ErrandAppState extends State<ErrandApp> {
     super.dispose();
   }
 
+  void _dismissStartupUnreadBanner() {
+    if (!mounted) return;
+    setState(() => _showStartupUnreadBanner = false);
+  }
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
@@ -268,6 +265,18 @@ class _ErrandAppState extends State<ErrandApp> {
       scaffoldMessengerKey: rootScaffoldMessengerKey,
       title: 'Errand',
       debugShowCheckedModeBanner: false,
+      builder: (context, child) => Stack(
+        fit: StackFit.expand,
+        children: [
+          child ?? const SizedBox.shrink(),
+          if (_showStartupUnreadBanner)
+            UnreadTaskBanner(
+              count: _startupUnreadCount,
+              onView: _navigateToUnreadTasks,
+              onDismiss: _dismissStartupUnreadBanner,
+            ),
+        ],
+      ),
       theme: ThemeData(
         brightness: Brightness.dark,
         scaffoldBackgroundColor: kDarkBg,
