@@ -168,6 +168,12 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed && mounted) {
+      // Background-isolate task writes are invisible to this isolate's drift
+      // watch() streams; force a re-emission so resumed screens can't show
+      // stale statuses.
+      try {
+        _db.markTablesUpdated([_db.schedulerTasks, _db.schedulerTaskLogs]);
+      } catch (_) {}
       setState(() {
         _exactAlarmsFuture = TaskSchedulerService.instance.canScheduleExactAlarms();
       });
@@ -1334,9 +1340,12 @@ class _SpaceyTaskRowState extends State<_SpaceyTaskRow> {
   }
 
   Future<void> _deleteTask(int taskId) async {
-    await TaskSchedulerService.instance.cancelTask(taskId);
-    final db = widget.db;
-    await (db.delete(db.schedulerTasks)..where((t) => t.id.equals(taskId))).go();
+    final deleted = await TaskSchedulerService.instance.deleteTask(taskId);
+    if (!deleted && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Task not found — already deleted')),
+      );
+    }
   }
 }
 

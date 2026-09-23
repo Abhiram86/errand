@@ -3,10 +3,14 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:drift/drift.dart' hide isNull, isNotNull;
+import 'package:errand/agent/agent_loop.dart';
 import 'package:errand/agent/agent_runner.dart';
 import 'package:errand/agent/tool.dart';
 import 'package:errand/llm/llm_client.dart';
+import 'package:errand/services/browser_service.dart';
 import 'package:errand/services/database.dart';
+import 'package:errand/services/location_service.dart';
+import 'package:errand/services/memory_service.dart';
 import 'package:errand/services/notification_service.dart';
 import 'package:errand/services/task_scheduler_service.dart';
 import 'package:errand/tools/file_tools.dart';
@@ -58,6 +62,45 @@ class MockNotificationService extends NotificationService {
       'isSuccess': isSuccess,
     });
     return true;
+  }
+}
+
+
+/// AgentRunner whose headless turn blocks until the test releases it,
+/// simulating a long run during which delete/cancel can land mid-flight.
+class _BlockingRunner extends AgentRunner {
+  final Completer<void> started;
+  final Completer<void> proceed;
+
+  _BlockingRunner({
+    required super.llm,
+    required super.workingDirectory,
+    required super.selectedModel,
+    required this.started,
+    required this.proceed,
+  });
+
+  @override
+  Future<HeadlessRunResult> runHeadless({
+    required int taskId,
+    required String prompt,
+    String? taskTitle,
+    Directory? scratchDirectory,
+    MemoryService? memoryService,
+    BrowserService? browserService,
+    LocationService? locationService,
+    ErrandDatabase? db,
+    TaskSchedulerService? schedulerService,
+    CancelToken? cancelToken,
+    AgentObserver? onEvent,
+    AgentTextObserver? onTextDelta,
+    AgentReasoningObserver? onReasoningDelta,
+    void Function()? onReset,
+    AgentRetryObserver? onRetry,
+  }) async {
+    started.complete();
+    await proceed.future;
+    return const HeadlessRunResult(ok: true, output: 'done');
   }
 }
 
@@ -881,6 +924,143 @@ void main() {
       final updatedPayload = jsonDecode(rescheduledTask.payloadJson) as Map<String, dynamic>;
       expect(updatedPayload['model'], equals('google/gemini-2.5-pro'));
       expect(updatedPayload['providerId'], equals('openrouter'));
+    });
+  });
+
+  group('executeTask mid-run guards', () {
+    late Directory midTempDir;
+    late Directory midWorkspaceDir;
+    late Directory midScratchDir;
+    late ErrandDatabase midDb;
+    late MockNotificationService midNotifications;
+    late MockLlmClient midLlm;
+    late WorkingDirectory midWorkingDirectory;
+
+    setUp(() async {
+      midTempDir = await Directory.systemTemp.createTemp('errand_midrun_test_');
+      midWorkspaceDir = Directory('${midTempDir.path}/workspace');
+      midScratchDir = Directory('${midTempDir.path}/workspace/.scratch');
+      await midWorkspaceDir.create(recursive: true);
+      await midScratchDir.create(recursive: true);
+
+      midDb = ErrandDatabase.inMemory();
+      midNotifications = MockNotificationService();
+      midLlm = MockLlmClient();
+      midWorkingDirectory = WorkingDirectory(midWorkspaceDir);
+    });
+
+    tearDown(() async {
+      await midDb.close();
+      try {
+        await midTempDir.delete(recursive: true);
+      } catch (_) {}
+    });
+
+    Future<int> insertScheduledTask() async {
+      final nowMillis = DateTime.now().millisecondsSinceEpoch;
+      return midDb.into(midDb.schedulerTasks).insert(
+        SchedulerTasksCompanion.insert(
+          title: 'Mid-run task',
+          type: 'one_off',
+          status: 'scheduled',
+          payloadJson: jsonEncode({'prompt': 'Do work'}),
+          startsAt: nowMillis,
+          nextRunAt: Value(nowMillis),
+          notify: const Value(true),
+          timezone: 'UTC',
+          createdAt: nowMillis,
+          updatedAt: nowMillis,
+        ),
+      );
+    }
+
+    TaskSchedulerService makeScheduler() => TaskSchedulerService(
+          database: midDb,
+          notificationService: midNotifications,
+        );
+
+    _BlockingRunner makeRunner(
+      Completer<void> started,
+      Completer<void> proceed,
+    ) =>
+        _BlockingRunner(
+          llm: midLlm,
+          workingDirectory: midWorkingDirectory,
+          selectedModel: 'mock-model',
+          started: started,
+          proceed: proceed,
+        );
+
+    test('stays silent when the task is deleted mid-run (no ghost notification)',
+        () async {
+      final scheduler = makeScheduler();
+      final started = Completer<void>();
+      final proceed = Completer<void>();
+      final runner = makeRunner(started, proceed);
+
+      final taskId = await insertScheduledTask();
+      final future = scheduler.executeTask(
+        taskId,
+        runner: runner,
+        scratchDirectory: midScratchDir,
+      );
+      await started.future;
+      // Simulate the user deleting the task while it runs.
+      expect(await scheduler.deleteTask(taskId), isTrue);
+      proceed.complete();
+
+      expect(await future, isFalse);
+      expect(midNotifications.notifications, isEmpty);
+      final gone = await (midDb.select(midDb.schedulerTasks)
+            ..where((t) => t.id.equals(taskId)))
+          .getSingleOrNull();
+      expect(gone, isNull);
+    });
+
+    test('honors cancel written by another isolate instead of overwriting',
+        () async {
+      final scheduler = makeScheduler();
+      final started = Completer<void>();
+      final proceed = Completer<void>();
+      final runner = makeRunner(started, proceed);
+
+      final taskId = await insertScheduledTask();
+      final future = scheduler.executeTask(
+        taskId,
+        runner: runner,
+        scratchDirectory: midScratchDir,
+      );
+      await started.future;
+      // Simulate a UI cancel landing in another isolate: token unknown here,
+      // only the row flips to cancelled.
+      final nowMillis = DateTime.now().millisecondsSinceEpoch;
+      await (midDb.update(midDb.schedulerTasks)
+            ..where((t) => t.id.equals(taskId)))
+          .write(
+        SchedulerTasksCompanion(
+          status: const Value('cancelled'),
+          nextRunAt: const Value(null),
+          updatedAt: Value(nowMillis),
+        ),
+      );
+      proceed.complete();
+
+      expect(await future, isFalse);
+      expect(midNotifications.notifications, isEmpty);
+      final task = await (midDb.select(midDb.schedulerTasks)
+            ..where((t) => t.id.equals(taskId)))
+          .getSingle();
+      expect(task.status, equals('cancelled'));
+    });
+
+    test('deleteTask removes the row and reports missing ids', () async {
+      final scheduler = makeScheduler();
+      final taskId = await insertScheduledTask();
+
+      expect(await scheduler.deleteTask(taskId), isTrue);
+      expect(await scheduler.deleteTask(taskId), isFalse);
+      final logs = await (midDb.select(midDb.schedulerTaskLogs)).get();
+      expect(logs, isEmpty);
     });
   });
 }

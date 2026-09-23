@@ -475,9 +475,18 @@ Tool scheduleTaskTool({
             return ToolCallResult.failure(call.id, 'Task with id $taskId not found.');
           }
 
-          await (database.delete(database.schedulerTasks)..where((t) => t.id.equals(taskId))).go();
-
-          await scheduler?.cancelTask(taskId);
+          // Centralized delete: stops in-flight runs, cancels the alarm and
+          // any posted notification, then removes the row (logs cascade).
+          // Falls back to direct delete only when no scheduler is wired
+          // (e.g. tests with an isolated database).
+          if (scheduler != null) {
+            final deleted = await scheduler.deleteTask(taskId);
+            if (!deleted) {
+              return ToolCallResult.failure(call.id, 'Task with id $taskId not found.');
+            }
+          } else {
+            await (database.delete(database.schedulerTasks)..where((t) => t.id.equals(taskId))).go();
+          }
           TaskToastService.instance.taskDeleted(taskId, existing.title);
 
           return ToolCallResult(

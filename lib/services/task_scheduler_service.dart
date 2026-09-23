@@ -38,6 +38,25 @@ class TaskSchedulerService {
   /// Checks if a task is currently executing in-process.
   bool isTaskRunning(int taskId) => _runningTokens.containsKey(taskId);
 
+  /// Deletes a task and everything tied to it: stops an in-flight run first
+   /// so it cannot complete-or-notify afterwards, then cancels the native
+   /// alarm and posted notification before removing the row (logs cascade).
+   /// Returns false when the task does not exist.
+   Future<bool> deleteTask(int taskId) async {
+     final existing = await (db.select(db.schedulerTasks)
+           ..where((t) => t.id.equals(taskId)))
+         .getSingleOrNull();
+     if (existing == null) return false;
+     await cancelRunningTask(taskId);
+     await cancelTask(taskId);
+     try {
+       await notificationService.cancelNotification(taskId);
+     } catch (_) {}
+     await (db.delete(db.schedulerTasks)..where((t) => t.id.equals(taskId)))
+         .go();
+     return true;
+   }
+
   /// Returns the number of execution logs that still have an unseen
   /// completion notification.
   Future<int> unreadNotificationCount() async {
@@ -315,16 +334,46 @@ class TaskSchedulerService {
     }
 
     final scheduledFor = task.nextRunAt ?? task.startsAt;
-    final logId = await db.into(db.schedulerTaskLogs).insert(
-      SchedulerTaskLogsCompanion.insert(
-        schedulerTaskId: taskId,
-        scheduledFor: scheduledFor,
-        startedAt: Value(nowMillis),
-        status: 'running',
-        createdAt: nowMillis,
-        updatedAt: nowMillis,
-      ),
-    );
+    // The task can be deleted between the claim above and this insert, which
+    // would violate the log FK. Distinguish that (quiet exit, nothing to
+    // show) from a transient DB failure (mark failed so it stays visible).
+    int logId;
+    try {
+      logId = await db.into(db.schedulerTaskLogs).insert(
+        SchedulerTaskLogsCompanion.insert(
+          schedulerTaskId: taskId,
+          scheduledFor: scheduledFor,
+          startedAt: Value(nowMillis),
+          status: 'running',
+          createdAt: nowMillis,
+          updatedAt: nowMillis,
+        ),
+      );
+    } catch (_) {
+      final stillThere = await (db.select(db.schedulerTasks)
+            ..where((t) => t.id.equals(taskId)))
+          .getSingleOrNull();
+      if (stillThere == null) return false;
+      final finishMillis = DateTime.now().millisecondsSinceEpoch;
+      await (db.update(db.schedulerTasks)..where((t) => t.id.equals(taskId))).write(
+        SchedulerTasksCompanion(
+          status: const Value('failed'),
+          failures: Value(task.failures + 1),
+          updatedAt: Value(finishMillis),
+        ),
+      );
+      if (task.notify) {
+        try {
+          await notificationService.showNotification(
+            id: taskId,
+            title: 'Task Failed: ${task.title}',
+            body: 'Could not start execution (database error).',
+            isSuccess: false,
+          );
+        } catch (_) {}
+      }
+      return false;
+    }
 
     Map<String, dynamic> payload;
     try {
@@ -442,7 +491,17 @@ class TaskSchedulerService {
 
     final finishMillis = DateTime.now().millisecondsSinceEpoch;
 
-    if (effectiveCancelToken.isCancelled && !isTimeout) {
+    // Re-read: the task may have been deleted or cancelled from another
+    // isolate while running (a UI cancel cannot reach this isolate's token).
+    // Deleted → stay silent (no row to update, no notification for a task
+    // the user removed). Cancelled → honor it instead of overwriting.
+    final freshTask = await (db.select(db.schedulerTasks)
+          ..where((t) => t.id.equals(taskId)))
+        .getSingleOrNull();
+    if (freshTask == null) return false;
+
+    if ((effectiveCancelToken.isCancelled && !isTimeout) ||
+        freshTask.status == 'cancelled') {
       await (db.update(db.schedulerTasks)..where((t) => t.id.equals(taskId))).write(
         SchedulerTasksCompanion(
           status: const Value('cancelled'),
