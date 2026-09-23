@@ -61,7 +61,10 @@ class MainActivity : FlutterActivity() {
         if (taskId <= 0 && route != "manage_tasks_unread" && !openUnread) {
             return null
         }
-        return "/manage_tasks_unread?taskId=$taskId"
+        // Omit taskId unless valid: Dart treats a missing param as null,
+        // while "-1" would skew the same-task tap dedup.
+        val query = if (taskId > 0) "?taskId=$taskId" else ""
+        return "/manage_tasks_unread$query"
     }
 
     override fun getInitialRoute(): String {

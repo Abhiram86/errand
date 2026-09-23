@@ -31,9 +31,12 @@ object TaskAlarmRestorer {
 
     data class Result(
         val taskCount: Int,
-        val alarmCount: Int,
+        val exactAlarmCount: Int,
+        val inexactAlarmCount: Int,
         val retryable: Boolean,
-    )
+    ) {
+        val alarmCount: Int get() = exactAlarmCount + inexactAlarmCount
+    }
 
     /**
      * Re-registers all rows that Drift considers schedulable.
@@ -44,16 +47,17 @@ object TaskAlarmRestorer {
      */
     fun restore(context: Context): Result {
         val startedAt = System.currentTimeMillis()
-        val databaseFile = File(context.getDir("flutter", Context.MODE_PRIVATE), DATABASE_FILE)
+        val databaseFile = resolveDatabaseFile(context)
 
-        if (!databaseFile.exists()) {
+        if (databaseFile == null) {
             Log.i(TAG, "No Drift database yet; skipping boot alarm restore")
-            return Result(taskCount = 0, alarmCount = 0, retryable = false)
+            return Result(taskCount = 0, exactAlarmCount = 0, inexactAlarmCount = 0, retryable = false)
         }
 
         var database: SQLiteDatabase? = null
         var taskCount = 0
-        var alarmCount = 0
+        var exactCount = 0
+        var inexactCount = 0
 
         return try {
             database = SQLiteDatabase.openDatabase(
@@ -81,7 +85,8 @@ object TaskAlarmRestorer {
                     if (taskId <= 0) continue
 
                     taskCount++
-                    val title = cursor.getString(titleIndex).ifBlank { "Scheduled Task" }
+                    val title = cursor.getString(titleIndex)?.ifBlank { "Scheduled Task" }
+                        ?: "Scheduled Task"
                     val storedTrigger = if (cursor.isNull(nextRunAtIndex)) {
                         cursor.getLong(startsAtIndex)
                     } else {
@@ -89,32 +94,67 @@ object TaskAlarmRestorer {
                     }
                     val triggerAt = maxOf(storedTrigger, System.currentTimeMillis() + 1_000L)
 
-                    // This also handles the exact-alarm permission fallback to
-                    // an inexact alarm. A false return means exact permission
-                    // was unavailable, not that no alarm was registered.
-                    TaskAlarmManager.scheduleExactAlarm(context, taskId, triggerAt, title)
-                    alarmCount++
+                    // A false return means exact permission was unavailable and
+                    // an inexact alarm was registered instead — not a failure.
+                    if (TaskAlarmManager.scheduleExactAlarm(context, taskId, triggerAt, title)) {
+                        exactCount++
+                    } else {
+                        inexactCount++
+                    }
                 }
             }
 
             val elapsed = System.currentTimeMillis() - startedAt
-            Log.i(TAG, "Restored $alarmCount/$taskCount alarms in ${elapsed}ms")
-            Log.i(P10_TAG, "boot_reschedule_done count=$taskCount alarms=$alarmCount duration_ms=$elapsed")
-            Result(taskCount, alarmCount, retryable = false)
+            Log.i(TAG, "Restored ${exactCount + inexactCount}/$taskCount alarms in ${elapsed}ms")
+            Log.i(P10_TAG, "boot_reschedule_done count=$taskCount exact=$exactCount inexact=$inexactCount duration_ms=$elapsed")
+            Result(taskCount, exactCount, inexactCount, retryable = false)
         } catch (error: SQLiteException) {
             val message = error.message.orEmpty()
             if (message.contains("no such table", ignoreCase = true)) {
                 Log.i(TAG, "Scheduler table is not initialized yet; skipping boot alarm restore")
-                Result(taskCount, alarmCount, retryable = false)
+                Result(taskCount, exactCount, inexactCount, retryable = false)
             } else {
                 Log.e(TAG, "SQLite failed during boot alarm restore; requesting retry", error)
-                Result(taskCount, alarmCount, retryable = true)
+                Result(taskCount, exactCount, inexactCount, retryable = true)
             }
         } catch (error: Exception) {
             Log.e(TAG, "Boot alarm restore failed; requesting retry", error)
-            Result(taskCount, alarmCount, retryable = true)
+            Result(taskCount, exactCount, inexactCount, retryable = true)
         } finally {
             database?.close()
+        }
+    }
+
+    /**
+     * Locates the Drift database without hardcoding path_provider internals.
+     * Checks the standard database directory first, then the Flutter documents
+     * directory where drift currently resolves it. Returns null when absent
+     * (fresh install — nothing to restore).
+     */
+    private fun resolveDatabaseFile(context: Context): File? {
+        val candidates = listOf(
+            context.getDatabasePath(DATABASE_FILE),
+            File(context.getDir("flutter", Context.MODE_PRIVATE), DATABASE_FILE),
+        )
+        return candidates.firstOrNull { it.exists() }
+    }
+
+    /** In-flight guard so overlapping boot broadcasts share one restore pass. */
+    private val restoreInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * Restores alarms unless another restore is already running, in which case
+     * the in-flight result is shared. Returns null when skipped.
+     */
+    fun restoreOnce(context: Context): Result? {
+        if (!restoreInFlight.compareAndSet(false, true)) {
+            Log.i(TAG, "Boot alarm restore already in flight; skipping duplicate")
+            return null
+        }
+        return try {
+            restore(context)
+        } finally {
+            restoreInFlight.set(false)
         }
     }
 

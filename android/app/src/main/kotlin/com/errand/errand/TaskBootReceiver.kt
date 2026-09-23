@@ -31,7 +31,8 @@ class TaskBootReceiver : BroadcastReceiver() {
             val pendingResult = goAsync()
             Thread({
                 try {
-                    val result = TaskAlarmRestorer.restore(context.applicationContext)
+                    val result = TaskAlarmRestorer.restoreOnce(context.applicationContext)
+                    if (result == null) return@Thread
                     if (result.retryable) {
                         TaskAlarmRestorer.scheduleRetry(context.applicationContext, action)
                     }

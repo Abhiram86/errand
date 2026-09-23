@@ -657,8 +657,7 @@ class LlmClient {
         final fallbackIndex = streamedToolCalls.isNotEmpty
             ? lastToolCallIndex
             : streamedToolCalls.length;
-        final index = parsedIndex ??
-            (fallbackIndex >= 0 ? fallbackIndex : streamedToolCalls.length);
+        final index = parsedIndex ?? fallbackIndex;
         lastToolCallIndex = index;
         final accumulated = streamedToolCalls.putIfAbsent(
           index,

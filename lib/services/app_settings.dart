@@ -102,12 +102,8 @@ final class AppSettingsService {
   }
 
   bool _providerHasKey(LlmProvider p) {
-    if (p.hasKey) {
-      return true;
-    }
-    if (p.id == ProviderPresetType.openRouter.id && hasOpenRouterKey) {
-      return true;
-    }
+    if (p.hasKey) return true;
+    if (p.id == ProviderPresetType.openRouter.id && hasOpenRouterKey) return true;
     return false;
   }
 

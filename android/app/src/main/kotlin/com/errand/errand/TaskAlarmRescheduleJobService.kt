@@ -28,10 +28,17 @@ class TaskAlarmRescheduleJobService : JobService() {
         Log.i("P10", "boot_reschedule_retry_start reason=$reason")
 
         worker = Thread({
-            val result = TaskAlarmRestorer.restore(applicationContext)
+            // Guarded: a receiver restore may already be running. Skip rather
+            // than duplicate — boot broadcasts routinely arrive in bursts.
+            val result = TaskAlarmRestorer.restoreOnce(applicationContext)
             if (!stopped) {
-                Log.i(TAG, "Retry job finished retryable=${result.retryable}")
-                jobFinished(params, result.retryable)
+                if (result == null) {
+                    Log.i(TAG, "Retry job skipped; restore already in flight")
+                    jobFinished(params, false)
+                } else {
+                    Log.i(TAG, "Retry job finished retryable=${result.retryable}")
+                    jobFinished(params, result.retryable)
+                }
             }
         }, "errand-alarm-restore-retry").also { it.start() }
 

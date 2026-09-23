@@ -29,10 +29,10 @@ class UnreadTaskBanner extends StatelessWidget {
           color: Colors.transparent,
           child: Container(
             margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-            padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
+            padding: const EdgeInsets.fromLTRB(10, 7, 4, 7),
             decoration: BoxDecoration(
               color: kInputBg,
-              borderRadius: BorderRadius.circular(14),
+              borderRadius: BorderRadius.circular(12),
               border: Border.all(color: kBorder, width: 1),
               boxShadow: [
                 BoxShadow(
@@ -46,66 +46,49 @@ class UnreadTaskBanner extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
                 Container(
-                  padding: const EdgeInsets.all(7),
+                  padding: const EdgeInsets.all(5),
                   decoration: BoxDecoration(
                     color: kBubbleAssistant,
-                    borderRadius: BorderRadius.circular(9),
+                    borderRadius: BorderRadius.circular(8),
                   ),
                   child: const Icon(
                     Icons.mark_email_unread_rounded,
-                    size: 18,
+                    size: 14,
                     color: kText,
                   ),
                 ),
-                const SizedBox(width: 10),
+                const SizedBox(width: 8),
                 Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        '$count unread $noun',
-                        style: const TextStyle(
-                          color: kText,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      const Text(
-                        'Review the latest task activity.',
-                        style: TextStyle(
-                          color: kMuted,
-                          fontSize: 12,
-                          height: 1.25,
-                        ),
-                      ),
-                    ],
+                  child: Text(
+                    '$count unread $noun \u2014 tap View to review',
+                    style: const TextStyle(
+                      color: kText,
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w600,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
-                const SizedBox(width: 8),
-                FilledButton(
+                TextButton(
                   onPressed: onView,
-                  style: FilledButton.styleFrom(
-                    backgroundColor: kBubbleUser,
-                    foregroundColor: kText,
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                    minimumSize: const Size(0, 34),
+                  style: TextButton.styleFrom(
+                    foregroundColor: kBubbleUser,
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    minimumSize: const Size(0, 30),
                     tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(9),
+                    textStyle: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
                     ),
                   ),
-                  child: const Text(
-                    'View',
-                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
-                  ),
+                  child: const Text('View'),
                 ),
                 IconButton(
                   onPressed: onDismiss,
                   icon: const Icon(
                     Icons.close_rounded,
-                    size: 17,
+                    size: 16,
                     color: kMuted,
                   ),
                   tooltip: 'Dismiss',

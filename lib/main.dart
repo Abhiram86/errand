@@ -72,7 +72,7 @@ void backgroundTaskMain() async {
 class ErrandApp extends StatefulWidget {
   final String initialRoute;
 
-  const ErrandApp({super.key, required this.initialRoute});
+  const ErrandApp({super.key, this.initialRoute = '/'});
 
   @override
   State<ErrandApp> createState() => _ErrandAppState();
@@ -204,13 +204,9 @@ class _ErrandAppState extends State<ErrandApp> {
                 ? SnackBarAction(
                     label: 'View',
                     textColor: Colors.white,
-                    onPressed: () {
-                      appNavigatorKey.currentState?.push(
-                        MaterialPageRoute(
-                          builder: (_) => const ManageTasksScreen(),
-                        ),
-                      );
-                    },
+                    // Route through the shared navigator so the unread-tab
+                    // dedup flags and banner dismissal stay consistent.
+                    onPressed: _navigateToUnreadTasks,
                   )
                 : null,
           ),
@@ -294,6 +290,7 @@ class _ErrandAppState extends State<ErrandApp> {
             builder: (_) => const ManageTasksScreen(initialTabIndex: 1),
           );
         }
+        debugPrint('[Startup] Unknown initial route "${settings.name}", showing chat.');
         return MaterialPageRoute(
           settings: settings,
           builder: (_) => const ChatScreen(),
