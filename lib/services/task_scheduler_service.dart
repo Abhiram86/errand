@@ -232,7 +232,11 @@ class TaskSchedulerService {
         if (task.type == 'recurring' &&
             task.repeatAfter != null &&
             task.repeatAfter! > 0) {
-          nextRun = nowMillis + task.repeatAfter!;
+          nextRun = calculateNextRunAt(
+            startsAt: task.startsAt,
+            repeatAfter: task.repeatAfter!,
+            nowMillis: nowMillis,
+          );
         } else {
           nextRun = nowMillis + 60000;
         }
@@ -306,14 +310,37 @@ class TaskSchedulerService {
     }
   }
 
+  /// Calculates the next execution timestamp for a recurring task anchored at [startsAt]
+  /// with interval [repeatAfter] in milliseconds (Strict Option A grid).
+  ///
+  /// Guarantees that the returned timestamp is strictly greater than [nowMillis]
+  /// and aligns exactly to `startsAt + n * repeatAfter`, eliminating execution drift.
+  static int calculateNextRunAt({
+    required int startsAt,
+    required int repeatAfter,
+    required int nowMillis,
+  }) {
+    if (repeatAfter <= 0) return nowMillis + 60000;
+    if (nowMillis < startsAt) return startsAt;
+    final elapsed = nowMillis - startsAt;
+    final n = (elapsed ~/ repeatAfter) + 1;
+    return startsAt + (n * repeatAfter);
+  }
+
   /// Sweeps tasks that were left in `running` status due to process crashes or kills.
   ///
   /// Tasks running longer than [maxRunningDuration] are considered abandoned.
+  /// If [task.notify] is true and the task was interrupted recently (within [freshKillWindow]),
+  /// dispatches a failure notification to alert the user of the killed run.
   Future<int> recoverStuckTasks({
     Duration maxRunningDuration = const Duration(minutes: 15),
+    Duration freshKillWindow = const Duration(hours: 4),
   }) async {
+    final nowMillis = DateTime.now().millisecondsSinceEpoch;
     final cutoff =
-        DateTime.now().millisecondsSinceEpoch - maxRunningDuration.inMilliseconds;
+        nowMillis - maxRunningDuration.inMilliseconds;
+    final freshCutoff = nowMillis - freshKillWindow.inMilliseconds;
+
     final stuckTasks = await (db.select(db.schedulerTasks)
           ..where((t) =>
               t.status.equals('running') &
@@ -321,16 +348,20 @@ class TaskSchedulerService {
         .get();
 
     for (final task in stuckTasks) {
-      final nowMillis = DateTime.now().millisecondsSinceEpoch;
       if (task.type == 'recurring' &&
           task.repeatAfter != null &&
           task.repeatAfter! > 0) {
+        final nextRun = calculateNextRunAt(
+          startsAt: task.startsAt,
+          repeatAfter: task.repeatAfter!,
+          nowMillis: nowMillis,
+        );
         await (db.update(db.schedulerTasks)
               ..where((t) => t.id.equals(task.id)))
             .write(
           SchedulerTasksCompanion(
             status: const Value('scheduled'),
-            nextRunAt: Value(nowMillis + task.repeatAfter!),
+            nextRunAt: Value(nextRun),
             updatedAt: Value(nowMillis),
           ),
         );
@@ -358,6 +389,21 @@ class TaskSchedulerService {
           updatedAt: Value(nowMillis),
         ),
       );
+
+      // Notify on fresh kill if notifications are enabled for the task.
+      // Stale boot recoveries beyond the freshKillWindow are recovered silently.
+      final isFreshKill = task.updatedAt >= freshCutoff ||
+          (task.lastRunAt != null && task.lastRunAt! >= freshCutoff);
+      if (task.notify && isFreshKill) {
+        try {
+          await notificationService.showNotification(
+            id: task.id,
+            title: 'Task Interrupted: ${task.title}',
+            body: 'Task execution was killed or interrupted by the system.',
+            isSuccess: false,
+          );
+        } catch (_) {}
+      }
     }
     return stuckTasks.length;
   }
@@ -627,7 +673,11 @@ class TaskSchedulerService {
 
     if (isSuccess) {
       if (task.type == 'recurring' && task.repeatAfter != null && task.repeatAfter! > 0) {
-        final nextRun = finishMillis + task.repeatAfter!;
+        final nextRun = calculateNextRunAt(
+          startsAt: task.startsAt,
+          repeatAfter: task.repeatAfter!,
+          nowMillis: finishMillis,
+        );
         await (db.update(db.schedulerTasks)..where((t) => t.id.equals(taskId))).write(
           SchedulerTasksCompanion(
             status: const Value('scheduled'),
@@ -665,7 +715,11 @@ class TaskSchedulerService {
           );
         } else {
           // Reschedule for next regular interval so transient network glitches do not kill recurring tasks
-          final nextRun = finishMillis + task.repeatAfter!;
+          final nextRun = calculateNextRunAt(
+            startsAt: task.startsAt,
+            repeatAfter: task.repeatAfter!,
+            nowMillis: finishMillis,
+          );
           await (db.update(db.schedulerTasks)..where((t) => t.id.equals(taskId))).write(
             SchedulerTasksCompanion(
               status: const Value('scheduled'),

@@ -5,10 +5,33 @@ import 'package:drift/drift.dart' show Value;
 import 'package:errand/agent/agent_runner.dart';
 import 'package:errand/agent/tool.dart';
 import 'package:errand/services/database.dart';
+import 'package:errand/services/notification_service.dart';
 import 'package:errand/services/task_scheduler_service.dart';
 import 'package:errand/tools/schedule_task_tool.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+class MockNotificationService extends NotificationService {
+  final List<Map<String, dynamic>> shownNotifications = [];
+
+  @override
+  Future<bool> showNotification({
+    required int id,
+    required String title,
+    required String body,
+    String channelId = 'scheduled_tasks',
+    String channelName = 'Scheduled Tasks',
+    bool? isSuccess,
+  }) async {
+    shownNotifications.add({
+      'id': id,
+      'title': title,
+      'body': body,
+      'isSuccess': isSuccess,
+    });
+    return true;
+  }
+}
 
 class TrackingSchedulerService extends TaskSchedulerService {
   final List<int> scheduledTasks = [];
@@ -516,6 +539,186 @@ void main() {
     test('pauseAllTasks and resumeAllTasks return 0 when no tasks match', () async {
       expect(await scheduler.pauseAllTasks(), equals(0));
       expect(await scheduler.resumeAllTasks(), equals(0));
+    });
+
+    test('calculateNextRunAt strict grid Option A arithmetic', () {
+      const startsAt = 1000000;
+      const repeatAfter = 3600000; // 1 hour
+
+      // Before start time
+      expect(
+        TaskSchedulerService.calculateNextRunAt(
+          startsAt: startsAt,
+          repeatAfter: repeatAfter,
+          nowMillis: startsAt - 500,
+        ),
+        equals(startsAt),
+      );
+
+      // Exactly at start time
+      expect(
+        TaskSchedulerService.calculateNextRunAt(
+          startsAt: startsAt,
+          repeatAfter: repeatAfter,
+          nowMillis: startsAt,
+        ),
+        equals(startsAt + repeatAfter),
+      );
+
+      // Normal execution duration (e.g. 45s after start) does not drift next run
+      expect(
+        TaskSchedulerService.calculateNextRunAt(
+          startsAt: startsAt,
+          repeatAfter: repeatAfter,
+          nowMillis: startsAt + 45000,
+        ),
+        equals(startsAt + repeatAfter),
+      );
+
+      // Mid-cycle run (e.g. 30m after start) still snaps to next 1h slot
+      expect(
+        TaskSchedulerService.calculateNextRunAt(
+          startsAt: startsAt,
+          repeatAfter: repeatAfter,
+          nowMillis: startsAt + 1800000,
+        ),
+        equals(startsAt + repeatAfter),
+      );
+
+      // Option A strict grid: run triggered right before next slot (e.g. 55m after start)
+      // still targets the upcoming 1h slot
+      expect(
+        TaskSchedulerService.calculateNextRunAt(
+          startsAt: startsAt,
+          repeatAfter: repeatAfter,
+          nowMillis: startsAt + 3300000,
+        ),
+        equals(startsAt + repeatAfter),
+      );
+
+      // Multiple intervals passed (e.g. device off for 3.5 hours)
+      expect(
+        TaskSchedulerService.calculateNextRunAt(
+          startsAt: startsAt,
+          repeatAfter: repeatAfter,
+          nowMillis: startsAt + (3.5 * repeatAfter).toInt(),
+        ),
+        equals(startsAt + 4 * repeatAfter),
+      );
+    });
+
+    test('recoverStuckTasks notifies on fresh kill and reschedules recurring task without drift', () async {
+      final mockNotifs = MockNotificationService();
+      final stuckDb = ErrandDatabase.inMemory();
+      final stuckScheduler = TrackingSchedulerService(
+        database: stuckDb,
+        notificationService: mockNotifs,
+      );
+
+      final now = DateTime.now().millisecondsSinceEpoch;
+
+      // Task 1: Stuck recurring task with notify = true, killed 20 mins ago (fresh kill)
+      final t1 = await stuckDb.into(stuckDb.schedulerTasks).insert(
+        SchedulerTasksCompanion.insert(
+          title: 'Fresh Kill Recurring Task',
+          type: 'recurring',
+          status: 'running',
+          payloadJson: '{}',
+          startsAt: now - 3600000, // 1h ago
+          repeatAfter: const Value(3600000), // 1h interval
+          timezone: 'UTC',
+          notify: const Value(true),
+          createdAt: now - 3600000,
+          updatedAt: now - 1200000, // 20m ago (> 15m cutoff, but < 4h freshCutoff)
+        ),
+      );
+
+      await stuckDb.into(stuckDb.schedulerTaskLogs).insert(
+        SchedulerTaskLogsCompanion.insert(
+          schedulerTaskId: t1,
+          scheduledFor: now - 3600000,
+          status: 'running',
+          createdAt: now - 3600000,
+          updatedAt: now - 1200000,
+        ),
+      );
+
+      // Task 2: Stale stuck task killed 10 hours ago (beyond 4h freshKillWindow)
+      final t2 = await stuckDb.into(stuckDb.schedulerTasks).insert(
+        SchedulerTasksCompanion.insert(
+          title: 'Stale Kill Task',
+          type: 'one_off',
+          status: 'running',
+          payloadJson: '{}',
+          startsAt: now - 36000000, // 10h ago
+          timezone: 'UTC',
+          notify: const Value(true),
+          createdAt: now - 36000000,
+          updatedAt: now - 36000000, // 10h ago
+        ),
+      );
+
+      await stuckDb.into(stuckDb.schedulerTaskLogs).insert(
+        SchedulerTaskLogsCompanion.insert(
+          schedulerTaskId: t2,
+          scheduledFor: now - 36000000,
+          status: 'running',
+          createdAt: now - 36000000,
+          updatedAt: now - 36000000,
+        ),
+      );
+
+      // Task 3: Stuck task with notify = false
+      final t3 = await stuckDb.into(stuckDb.schedulerTasks).insert(
+        SchedulerTasksCompanion.insert(
+          title: 'Silent Stuck Task',
+          type: 'one_off',
+          status: 'running',
+          payloadJson: '{}',
+          startsAt: now - 1800000, // 30m ago
+          timezone: 'UTC',
+          notify: const Value(false),
+          createdAt: now - 1800000,
+          updatedAt: now - 1800000,
+        ),
+      );
+
+      await stuckDb.into(stuckDb.schedulerTaskLogs).insert(
+        SchedulerTaskLogsCompanion.insert(
+          schedulerTaskId: t3,
+          scheduledFor: now - 1800000,
+          status: 'running',
+          createdAt: now - 1800000,
+          updatedAt: now - 1800000,
+        ),
+      );
+
+      final recovered = await stuckScheduler.recoverStuckTasks();
+      expect(recovered, equals(3));
+
+      // Notification should ONLY be dispatched for t1 (fresh kill + notify: true)
+      expect(mockNotifs.shownNotifications.length, equals(1));
+      final notif = mockNotifs.shownNotifications.first;
+      expect(notif['id'], equals(t1));
+      expect(notif['title'], contains('Fresh Kill Recurring Task'));
+      expect(notif['title'], contains('Interrupted'));
+      expect(notif['isSuccess'], isFalse);
+
+      // Check t1 row was rescheduled to scheduled on the grid
+      final row1 = await (stuckDb.select(stuckDb.schedulerTasks)..where((t) => t.id.equals(t1))).getSingle();
+      expect(row1.status, equals('scheduled'));
+      expect(row1.nextRunAt, greaterThan(now));
+      // Anchor alignment: nextRunAt must equal startsAt + n * repeatAfter
+      expect((row1.nextRunAt! - (now - 3600000)) % 3600000, equals(0));
+
+      // Logs for all 3 must be transitioned to 'timeout'
+      final logs = await (stuckDb.select(stuckDb.schedulerTaskLogs)).get();
+      for (final log in logs) {
+        expect(log.status, equals('timeout'));
+        expect(log.errorMessage, contains('interrupted or killed'));
+      }
+
+      await stuckDb.close();
     });
   });
 }

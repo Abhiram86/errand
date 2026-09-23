@@ -207,12 +207,12 @@ The immediate target is to remove most of the 624–794ms pre-route gap. A later
 
 ---
 
-### 🟡 P11: Scheduler reliability & management follow-ups
+### ✅ P11: Scheduler reliability & management follow-ups (COMPLETED)
 
 Goal: Close the remaining scheduler gaps — silent failures, rigid intervals, and management at scale.
 
-1. **Notify on fresh killed runs.** `recoverStuckTasks` timeout transitions are silent, so a run killed mid-flight (process death, not user cancel) never surfaces. Notify when `task.notify` is on, gated by recency (e.g. `scheduledFor` within the last few hours) so stale boot-time recoveries don't spam.
-2. **`daily_at` wall-clock scheduling (cron-lite).** Intervals drift; support `daily_at: "HH:MM"` so "every day at 7am" lands on the wall clock. Compute `nextRunAt` from wall time in the task's timezone; keep `repeat_after` for pure intervals.
+1. **Notify on fresh killed runs (COMPLETED).** `recoverStuckTasks` timeout transitions now inspect `task.notify` and recency (`freshKillWindow` default 4 hours). Dispatches a failure notification on fresh kills while recovering older stale tasks silently.
+2. **Anchor-based interval scheduling (Option A strict grid, COMPLETED).** Replaced fixed-delay drift (`finishMillis + repeatAfter`) with anchored periodic grid calculation: `calculateNextRunAt(startsAt: startsAt, repeatAfter: repeatAfter, nowMillis: nowMillis)`. Eliminates interval drift across repeated runs and keeps manual triggers snapped to schedule.
 3. **Searchable model picker in the task sheet (COMPLETED).** Replaced static dropdown in `_EditTaskModelSheet` with `showModelPickerDialog` (reusing chat `ModelPicker` dialog, search filtering, and release-date sorting).
 4. **Task text search (COMPLETED).** Debounced title & ID search input field on the All Tasks tab in `ManageTasksScreen` with active-filter combination and empty state messaging.
 5. **Pause-all / resume-all (COMPLETED).** `pauseAllTasks()` and `resumeAllTasks()` on `TaskSchedulerService` with native alarm cancel/schedule, AppBar popup menu on `ManageTasksScreen`, `TaskToastService` broadcasts, and tool actions in `schedule_task`.

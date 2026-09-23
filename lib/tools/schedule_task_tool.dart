@@ -413,21 +413,21 @@ Tool scheduleTaskTool({
                   : 60000;
               if (newNextRunAt == null || newNextRunAt <= nowMillis) {
                 final base = existing.lastRunAt ?? existing.startsAt;
-                var target = base + interval;
-                while (target <= nowMillis) {
-                  target += interval;
-                }
-                newNextRunAt = target;
+                newNextRunAt = TaskSchedulerService.calculateNextRunAt(
+                  startsAt: base,
+                  repeatAfter: interval,
+                  nowMillis: nowMillis,
+                );
               }
             } else if (newNextRunAt == null) {
               if (newStartsAt > nowMillis) {
                 newNextRunAt = newStartsAt;
               } else if (newType == 'recurring' && newRepeatAfter != null && newRepeatAfter > 0) {
-                var target = newStartsAt + newRepeatAfter;
-                while (target <= nowMillis) {
-                  target += newRepeatAfter;
-                }
-                newNextRunAt = target;
+                newNextRunAt = TaskSchedulerService.calculateNextRunAt(
+                  startsAt: newStartsAt,
+                  repeatAfter: newRepeatAfter,
+                  nowMillis: nowMillis,
+                );
               } else {
                 newNextRunAt = nowMillis + 60000;
               }
