@@ -21,6 +21,17 @@ Errand connects to AI models through your own API keys (OpenRouter by default, a
 - **Memory** — remembers your preferences across conversations; inspect or delete everything in Settings
 - **Manage Tasks dashboard** — active, completed, failed, and unread runs with logs, file previews, and per-task model overrides
 
+## How background tasks work
+
+1. You ask ("remind me in 45 minutes", "every morning, brief me on tech news") and the agent creates a scheduled task — optionally pinned to a specific model or provider, overridable later per task.
+2. At fire time Android wakes a background engine (no UI involved) that runs the task headlessly and saves a Markdown/HTML report.
+3. You get a system notification; the Manage Tasks dashboard keeps every run, log, and report with previews.
+
+## Chat extras
+
+- **Tappable links** — web links open externally; `file://` links the agent drops for artifacts you asked it to create open in the in-app preview (Markdown/HTML) or your preferred viewer, sandboxed to your workspace.
+- **Table copy** — assistant tables copy as Markdown *and* rich HTML, so they paste as real tables into Notes, Docs, and Notion.
+
 ## Two flavors: Full vs. Lite
 
 |  | **Full** (`com.errand.errand`) | **Lite** (`com.errand.errand.lite`) |

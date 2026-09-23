@@ -108,6 +108,12 @@ Goal: Enable the model to schedule one-off and recurring tasks that execute auto
 - **Task Toast Service:**
   - Global `TaskToastService` broadcasting create/edit/delete events across screens without prop drilling.
 
+#### 4. v0.7.1 hardening (SHIPPED)
+- **Runner-owned reports:** headless-only `save_report` tool + per-run `HeadlessReportCollector`; model supplies content, handler owns the sandboxed `task-<id>-<startedAt>[-<name>].<ext>` path (allowlist, 500KB cap, last-call-wins); final-answer fallback + keep-newest-10 pruning replace the old filesystem scavenging.
+- **Per-task model/provider overrides** in the tool schema and payload, editable from the Manage Tasks sheet with settings-ready refresh.
+- **Tappable chat links** (`onLinkTap`): http(s) opens externally, `file://`/bare local paths resolve sandboxed into in-app md/html preview or the system viewer.
+- **Copy tables as Markdown+HTML**, compact unread banner, session-scoped storage footer, `AppProfile` debug/profile markers.
+
 ### 🟡 P10: Scheduler launch performance and lazy notification navigation
 
 Goal: Make notification taps reach the unread task view quickly, without competing with app startup, settings loading, full scheduler rescheduling, or unbounded database reads.
@@ -118,14 +124,15 @@ Goal: Make notification taps reach the unread task view quickly, without competi
    - Validate on both small and large task/log histories.
    - Use profile (never debug) builds on a mid-range device, and set numeric targets (e.g. cold tap-to-first-row under 2 seconds) so the success criteria below are testable.
 
-2. **Start the UI before nonessential startup work:**
+2. **Start the UI before nonessential startup work (DONE — deferred bootstrap after first frame):**
+   - `runApp()` now runs before `AppSettingsService.ensureLoaded()`; stuck-task recovery and alarm rescheduling were later dropped from app launch entirely (native boot/package-update receiver owns restoration).
    - Move `runApp()` ahead of `AppSettingsService.ensureLoaded()` and `TaskSchedulerService.rescheduleAllActiveTasks()` in `lib/main.dart`.
    - Keep `TaskSchedulerService.initialize()` (cheap channel-handler setup, also needed by the background engine path) before `runApp`; defer only the heavy settings load and reschedule.
    - Render the app shell immediately and gate settings-dependent subtrees (theme, provider/model state) on a settings-ready future — the first frame must not assume settings are loaded.
    - Run settings loading, provider/model hydration, stuck-task recovery, and alarm rescheduling after the first visible frame.
    - Safe to defer: native alarms survive app-process death, so already-registered alarms cannot be lost while rescheduling waits. Still preserve reliable alarm recovery and never remove the boot receiver or native background execution path.
 
-3. **Make notification routing single-shot and lightweight:**
+3. **Make notification routing single-shot and lightweight (DONE — platform initial-route deep link `/manage_tasks_unread?taskId=` with same-task dedup flags):**
    - Queue the native pending notification until the navigator is ready.
    - Treat the pending-intent lookup and live notification stream as one event source so one tap cannot push duplicate `ManageTasksScreen` routes.
    - Open directly into an unread-task loading state, then populate it as soon as the first query completes.
