@@ -54,9 +54,10 @@ void main() {
       expect(prompt, contains('task-42-'));
       expect(prompt, contains('NEVER write files directly into /storage/emulated/0/ or /sdcard/'));
 
-      // Intent policy (non-UI allowed, UI-popping prohibited)
+      // Intent policy (broadcasts allowed, activity launches prohibited)
       expect(prompt, contains('Non-UI / Background Intents (ALLOWED)'));
-      expect(prompt, contains('UI-Popping Intents (PROHIBITED)'));
+      expect(prompt, contains('Activity-Launching Intents (PROHIBITED)'));
+      expect(prompt, contains('schedule_task'));
       expect(prompt, contains('action:"open_app"'));
 
       // Browser offscreen

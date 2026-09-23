@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:drift/drift.dart' hide isNull, isNotNull, Column;
 import 'package:flutter/material.dart';
@@ -11,8 +12,9 @@ import '../services/app_settings.dart';
 import '../services/database.dart';
 import '../services/model_catalog.dart';
 import '../services/task_scheduler_service.dart';
+import '../services/workspace.dart';
 import '../theme/app_colors.dart';
-import '../utils/p10_profile.dart';
+import '../utils/app_profile.dart';
 import 'task_file_preview_screen.dart';
 
 /// Full-screen management page for scheduled tasks, logs, and autonomous background runs.
@@ -52,6 +54,11 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
   late final Stream<List<SchedulerTaskRow>> _tasksStream;
   late final Stream<List<SchedulerTaskLogRow>> _logsStream;
 
+  /// Session-scoped storage footer: dismissed with the cross, shown again on
+  /// every fresh app start (state resets with the screen).
+  bool _showStorageFooter = true;
+  String? _storageSummary;
+
   bool _p10FirstRowLogged = false;
   late final int _p10ScreenId;
 
@@ -85,9 +92,75 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
     _countdownTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() {});
     });
+    unawaited(_loadStorageSummary());
     WidgetsBinding.instance.addPostFrameCallback(
-      (_) => P10Profile.mark(
+      (_) => AppProfile.mark(
         'manage_tasks_first_frame screen=$_p10ScreenId tab=${widget.initialTabIndex}',
+      ),
+    );
+  }
+
+  /// Sums scratch report files once per screen open. Best-effort and silent.
+  Future<void> _loadStorageSummary() async {
+    try {
+      final scratch = Workspace.instance.scratchDir;
+      if (!scratch.existsSync()) return;
+      var bytes = 0;
+      var count = 0;
+      for (final entry in scratch.listSync()) {
+        if (entry is File) {
+          try {
+            bytes += entry.lengthSync();
+            count++;
+          } catch (_) {}
+        }
+      }
+      if (!mounted) return;
+      setState(() {
+        _storageSummary =
+            'Scratch ${_formatBytes(bytes)} · $count ${count == 1 ? 'file' : 'files'}';
+      });
+    } catch (_) {}
+  }
+
+  static String _formatBytes(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+
+  Widget _buildStorageFooter() {
+    final summary = _storageSummary;
+    if (!_showStorageFooter || summary == null) {
+      return const SizedBox.shrink();
+    }
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+      decoration: const BoxDecoration(
+        border: Border(top: BorderSide(color: kBorder, width: 0.5)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.storage_rounded, color: kMuted, size: 13),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              summary,
+              style: const TextStyle(color: kMuted, fontSize: 11.5),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          InkWell(
+            onTap: () => setState(() => _showStorageFooter = false),
+            borderRadius: BorderRadius.circular(12),
+            child: const Padding(
+              padding: EdgeInsets.all(4),
+              child: Icon(Icons.close_rounded, color: kMuted, size: 14),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -125,7 +198,7 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
                 (allTasks.isNotEmpty || allLogs.isNotEmpty)) {
               _p10FirstRowLogged = true;
               WidgetsBinding.instance.addPostFrameCallback(
-                (_) => P10Profile.mark(
+                (_) => AppProfile.mark(
                   'first_useful_row screen=$_p10ScreenId '
                   'tasks=${allTasks.length} logs=${allLogs.length}',
                 ),
@@ -216,6 +289,7 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
                       ],
                     ),
                   ),
+                  _buildStorageFooter(),
                 ],
               ),
             );
@@ -1621,12 +1695,49 @@ class _EditTaskModelSheetState extends State<_EditTaskModelSheet> {
   bool _customModelMode = false;
   late final TextEditingController _customModelController;
   bool _saving = false;
+  // Set once the user picks anything; guards the settings-ready refresh
+  // below from clobbering an in-progress choice.
+  bool _userTouchedSelection = false;
 
   @override
   void initState() {
     super.initState();
     _settings = AppSettingsService.instance;
 
+    _resolveInitialSelection();
+    _customModelController = TextEditingController(text: _selectedModel);
+    _customModelController.addListener(_markSelectionTouched);
+
+    _loadModelsForProvider(_selectedProviderId);
+
+    // Cold-tap path can open this sheet before settings finish loading,
+    // leaving provider/model resolved from empty defaults. Re-resolve once
+    // settings are ready unless the user already chose something.
+    unawaited(AppSettingsService.instance.ensureLoaded().then((_) {
+      if (!mounted || _userTouchedSelection) return;
+      final prevProvider = _selectedProviderId;
+      final prevModel = _selectedModel;
+      _resolveInitialSelection();
+      if (_selectedProviderId == prevProvider &&
+          _selectedModel == prevModel) {
+        return;
+      }
+      _customModelController.text = _selectedModel;
+      if (!mounted) return;
+      setState(() {});
+      if (_selectedProviderId != prevProvider) {
+        _loadModelsForProvider(_selectedProviderId);
+      }
+    }).catchError((_) {}));
+  }
+
+  void _markSelectionTouched() {
+    _userTouchedSelection = true;
+  }
+
+  /// Resolves provider/model from task payload with global fallbacks.
+  /// No setState: callers handle notifying (initState runs pre-build).
+  void _resolveInitialSelection() {
     String initialModel = '';
     String? initialProvider;
     try {
@@ -1651,9 +1762,6 @@ class _EditTaskModelSheetState extends State<_EditTaskModelSheet> {
               : _settings.activeProviderId);
     }
     _selectedProviderId = resolvedProvider;
-    _customModelController = TextEditingController(text: initialModel);
-
-    _loadModelsForProvider(_selectedProviderId);
   }
 
   @override
@@ -1866,6 +1974,7 @@ class _EditTaskModelSheetState extends State<_EditTaskModelSheet> {
                     setState(() {
                       _selectedProviderId = val;
                       _customModelMode = false;
+                      _userTouchedSelection = true;
                     });
                     _loadModelsForProvider(val, resetModelIfMissing: true);
                   }
@@ -1896,6 +2005,7 @@ class _EditTaskModelSheetState extends State<_EditTaskModelSheet> {
                 onTap: () {
                   setState(() {
                     _customModelMode = !_customModelMode;
+                    _userTouchedSelection = true;
                     if (_customModelMode) {
                       _customModelController.text = _selectedModel;
                     }
@@ -1984,7 +2094,12 @@ class _EditTaskModelSheetState extends State<_EditTaskModelSheet> {
                     }),
                   ],
                   onChanged: (val) {
-                    if (val != null) setState(() => _selectedModel = val);
+                    if (val != null) {
+                      setState(() {
+                        _selectedModel = val;
+                        _userTouchedSelection = true;
+                      });
+                    }
                   },
                 ),
               ),

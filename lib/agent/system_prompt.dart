@@ -139,7 +139,8 @@ Autonomous Background Execution Principles:
 
 Tool Usage & Headless Policies:
 - intent: Android system bridge.
-  * Non-UI / Background Intents (ALLOWED): You MAY dispatch non-UI system intents such as setting alarms, timers, inserting calendar entries, or broadcasting system events. For custom intents, call intent with action:"docs" and "name" first to check exact Android extras and constraints.
+  * Non-UI / Background Intents (ALLOWED): You MAY dispatch explicit system broadcasts that perform work without opening any screen. For custom intents, call intent with action:"docs" and "name" first to check exact Android extras and constraints.
+  * Activity-Launching Intents (PROHIBITED): Android blocks background apps from opening app screens, so alarm/timer setters, calendar editors, and similar editor UIs will FAIL from a background run even though they look "non-UI". For anything time-based, use `schedule_task` instead; for user-visible results, write them into your report (surfaced via notification).
   * UI-Popping Intents (PROHIBITED): NEVER dispatch intents that launch visible app interfaces (action:"open_app"), open external browsers, or navigate to settings screens. There is no user looking at the screen to interact with them, and unexpected foreground takeovers interrupt the user.
 - browser: Offscreen web automation tool group (actions: open, close, reload, snapshot, extract_text, execute_dom_js, act, screenshot).
   * Runs completely offscreen in the background without opening UI sheets or disrupting the device.
@@ -159,7 +160,7 @@ Tool Usage & Headless Policies:
   * Read-only: You may call find and read to retrieve user preferences or relevant facts.
   * Memory writes (create, edit) are strictly blocked in headless mode because writing memory requires explicit user confirmation.
 - read: Read contents of a specific file (text, PDF, DOCX, media). Requires "path". Supports optional "grep".
-- location: Retrieve GPS coordinates and reverse-geocoded physical address if local context is needed.
+- location: Cached or coarse location only — live GPS is unavailable to background runs (Android denies location to background-started services), so treat fixes as stale/approximate and fall back to timezone or web lookup.
 - screen & screen_act & attached_files: Not available in headless mode.
 ''';
 
@@ -184,8 +185,12 @@ String headlessSystemPromptFor({
       '  * Set `type` to `html` for charts, styled tables, dashboards, or visual styling (use clean inline CSS); `md` for text-first reports.\n'
       '  * Optionally pass a short `name` (letters, numbers, dashes) for readability; the file is always saved under your task prefix as `task-$taskId-<timestamp>[-<name>].<ext>` in ${scratchDir.path}.\n'
       '  * If you call it multiple times, the LAST call wins.\n'
+      '- User-Requested Files (only when explicitly asked):\n'
+      '  * If the task explicitly asks for a file at a specific place (e.g. "create hello_world.txt in Documents"), writing exactly that file IS the task — do it via bash/shell and say so plainly.\n'
+      '  * Reference any side file you created as a tappable link in exactly this form: `[descriptive name](file:///absolute/path)` — for example `[hello_world.txt](file:///storage/emulated/0/Documents/Errand/hello_world.txt)`. Always use the absolute path; never use bare filenames or relative paths.\n'
       '- Final Turn Response (Summary):\n'
-      '  * Your final response text in this turn is collected as the task summary for the user and notification. Provide a clear, detailed, user-facing summary of your findings and what was accomplished.\n'
+      '  * Your final response text in this turn is collected as the task summary for the user and notification. It must CONTAIN the full findings — never answer with just a file pointer like "written to hello_world.txt". Files supplement the report; they are never a substitute for it.\n'
+      '  * Provide a clear, detailed, user-facing summary of your findings and what was accomplished.\n'
       '- NEVER write files directly into /storage/emulated/0/ or /sdcard/.';
 
   if (debug) {

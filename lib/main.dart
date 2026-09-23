@@ -9,7 +9,7 @@ import 'services/app_settings.dart';
 import 'services/task_scheduler_service.dart';
 import 'services/task_toast_service.dart';
 import 'theme/app_colors.dart';
-import 'utils/p10_profile.dart';
+import 'utils/app_profile.dart';
 import 'widgets/unread_task_banner.dart';
 
 export 'agent/system_prompt.dart' show systemPromptFor, kSystemPrompt;
@@ -20,8 +20,8 @@ final GlobalKey<ScaffoldMessengerState> rootScaffoldMessengerKey =
     GlobalKey<ScaffoldMessengerState>();
 
 Future<void> main() async {
-  P10Profile.start();
-  P10Profile.mark('main_entry');
+  AppProfile.start();
+  AppProfile.mark('main_entry');
   WidgetsFlutterBinding.ensureInitialized();
   final platformInitialRoute =
       WidgetsBinding.instance.platformDispatcher.defaultRouteName;
@@ -37,7 +37,7 @@ Future<void> main() async {
   TaskSchedulerService.instance.initialize();
   runApp(ErrandApp(initialRoute: initialRoute));
   WidgetsBinding.instance.addPostFrameCallback((_) {
-    P10Profile.mark('first_frame');
+    AppProfile.mark('first_frame');
     // Settings loading is also requested by ChatScreen during initialization.
     // The service deduplicates that request with this deferred bootstrap call.
     unawaited(_finishDeferredStartup());
@@ -128,10 +128,10 @@ class _ErrandAppState extends State<ErrandApp> {
   void _handleNotificationRouting() {
     // 1. Check cold launch pending notification click
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      P10Profile.mark('cold_pending_lookup_start');
+      AppProfile.mark('cold_pending_lookup_start');
       final pending = await TaskSchedulerService.instance
           .getPendingNotificationClick();
-      P10Profile.mark('cold_pending_lookup_done found=${pending != null}');
+      AppProfile.mark('cold_pending_lookup_done found=${pending != null}');
       if (_initialUnreadRouteActive) {
         _initialUnreadRouteActive = false;
         return;
@@ -152,7 +152,7 @@ class _ErrandAppState extends State<ErrandApp> {
           }
           _initialUnreadRouteActive = false;
         }
-        P10Profile.mark('live_tap_received');
+        AppProfile.mark('live_tap_received');
         _navigateToUnreadTasks();
       }
     });
@@ -220,7 +220,7 @@ class _ErrandAppState extends State<ErrandApp> {
       setState(() => _showStartupUnreadBanner = false);
     }
     rootScaffoldMessengerKey.currentState?.hideCurrentSnackBar();
-    P10Profile.mark('unread_route_push');
+    AppProfile.mark('unread_route_push');
     appNavigatorKey.currentState?.push(
       PageRouteBuilder(
         transitionDuration: Duration.zero,

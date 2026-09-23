@@ -20,7 +20,8 @@ Tool intentTool({
     name: 'intent',
     description: isHeadless
         ? 'Interacts with external Android system services and intents in background headless mode. '
-            'Non-UI background intents (alarms, timers, calendar entries, system broadcasts) and docs are supported. '
+            'Only explicit non-UI system broadcasts and docs are supported. '
+            'Anything that opens an app screen (alarms, timers, calendar editors, open_app, settings, open_file, open_url) is blocked: Android forbids background activity launches. '
             'Interactive UI actions (open_app, settings, open_file, open_url) are disabled in background mode.'
         : 'Interacts with external Android apps, files, URLs, settings, and Android intents. '
             'Supports opening local files (images, audio, videos, PDFs), opening URLs or URI schemes '

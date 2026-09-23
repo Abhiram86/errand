@@ -1,10 +1,37 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:path/path.dart' as p;
 
 import '../../theme/app_colors.dart';
 import '../../types/message.dart';
+
+/// Resolves a chat `file://` link to an absolute path sandboxed under
+/// [allowedRoots] (e.g. working dir, scratch). Returns null for non-file
+/// URLs, escapes, or missing files — callers treat null as "do nothing".
+String? resolveChatFileLink(String url, List<String> allowedRoots) {
+  final uri = Uri.tryParse(url.trim());
+  if (uri == null || uri.scheme != 'file') return null;
+  String filePath;
+  try {
+    filePath = p.normalize(uri.toFilePath());
+  } catch (_) {
+    return null;
+  }
+  final contained = allowedRoots.any((root) {
+    final normalizedRoot = p.normalize(root);
+    return filePath == normalizedRoot || p.isWithin(normalizedRoot, filePath);
+  });
+  if (!contained) return null;
+  try {
+    if (!File(filePath).existsSync()) return null;
+  } catch (_) {
+    return null;
+  }
+  return filePath;
+}
 
 const kMaxToolHeaderChars = 96;
 const kMaxToolOutputChars = 4000;

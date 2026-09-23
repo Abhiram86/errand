@@ -14,7 +14,7 @@ import '../services/database.dart';
 import '../services/notification_service.dart';
 import '../services/workspace.dart';
 import '../tools/file_tools.dart';
-import '../utils/p10_profile.dart';
+import '../utils/app_profile.dart';
 
 /// Service responsible for coordinating background task scheduling with
 /// native Android AlarmManager and WorkManager.
@@ -86,13 +86,13 @@ class TaskSchedulerService {
 
   /// Retrieves any cold-launch notification click intent that started the app.
   Future<Map<String, dynamic>?> getPendingNotificationClick() async {
-    P10Profile.mark('pending_channel_start');
+    AppProfile.mark('pending_channel_start');
     try {
       final res = await _channel.invokeMapMethod<String, dynamic>('getPendingNotificationClick');
-      P10Profile.mark('pending_channel_done found=${res != null}');
+      AppProfile.mark('pending_channel_done found=${res != null}');
       return res;
     } catch (_) {
-      P10Profile.mark('pending_channel_error');
+      AppProfile.mark('pending_channel_error');
       return null;
     }
   }
@@ -186,7 +186,7 @@ class TaskSchedulerService {
   }
 
   Future<int> _runRescheduleAllActiveTasks() async {
-    P10Profile.mark('reschedule_start');
+    AppProfile.mark('reschedule_start');
     await recoverStuckTasks();
 
     final scheduled = await (db.select(db.schedulerTasks)
@@ -196,7 +196,7 @@ class TaskSchedulerService {
     for (final task in scheduled) {
       await scheduleTask(task.id);
     }
-    P10Profile.mark('reschedule_done count=${scheduled.length}');
+    AppProfile.mark('reschedule_done count=${scheduled.length}');
     return scheduled.length;
   }
 
