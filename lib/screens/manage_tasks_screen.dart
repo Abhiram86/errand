@@ -15,6 +15,7 @@ import '../services/task_scheduler_service.dart';
 import '../services/workspace.dart';
 import '../theme/app_colors.dart';
 import '../utils/app_profile.dart';
+import '../widgets/model_picker.dart';
 import 'task_file_preview_screen.dart';
 
 /// Full-screen management page for scheduled tasks, logs, and autonomous background runs.
@@ -49,6 +50,9 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
   String _allStatusFilter = 'all'; // 'all', 'active', 'paused', 'completed', 'failed', 'cancelled'
   String _allTypeFilter = 'all'; // 'all', 'recurring', 'one_off'
   int _taskLimit = 25; // 25, 50, 100, 0 (all)
+  final TextEditingController _taskSearchController = TextEditingController();
+  String _taskSearchQuery = '';
+  Timer? _taskSearchDebounce;
 
   late Future<bool> _exactAlarmsFuture;
   late final Stream<List<SchedulerTaskRow>> _tasksStream;
@@ -74,6 +78,7 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
     super.initState();
     _p10ScreenId = identityHashCode(this);
     WidgetsBinding.instance.addObserver(this);
+    _taskSearchController.addListener(_onTaskSearchChanged);
     _db = widget.database ?? ErrandDatabase.instance;
     _tasksStream = (_db.select(_db.schedulerTasks)
           ..orderBy([(t) => OrderingTerm.desc(t.createdAt)]))
@@ -180,8 +185,24 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
     }
   }
 
+  void _onTaskSearchChanged() {
+    _taskSearchDebounce?.cancel();
+    _taskSearchDebounce = Timer(const Duration(milliseconds: 200), () {
+      if (!mounted) return;
+      final q = _taskSearchController.text.trim().toLowerCase();
+      if (q != _taskSearchQuery) {
+        setState(() {
+          _taskSearchQuery = q;
+        });
+      }
+    });
+  }
+
   @override
   void dispose() {
+    _taskSearchDebounce?.cancel();
+    _taskSearchController.removeListener(_onTaskSearchChanged);
+    _taskSearchController.dispose();
     _countdownTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _tabController.dispose();
@@ -246,8 +267,78 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
                     fontWeight: FontWeight.w700,
                   ),
                 ),
-                actions: const [
-                  SizedBox(width: 4),
+                actions: [
+                  PopupMenuButton<String>(
+                    icon: const Icon(Icons.more_vert_rounded, color: kText),
+                    color: kInputBg,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      side: const BorderSide(color: kBorder, width: 0.8),
+                    ),
+                    tooltip: 'More actions',
+                    onSelected: (action) async {
+                      if (action == 'pause_all') {
+                        await _pauseAll(allTasks);
+                      } else if (action == 'resume_all') {
+                        await _resumeAll(allTasks);
+                      }
+                    },
+                    itemBuilder: (context) {
+                      final scheduledCount =
+                          allTasks.where((t) => t.status == 'scheduled').length;
+                      final pausedCount =
+                          allTasks.where((t) => t.status == 'paused').length;
+                      return [
+                        PopupMenuItem(
+                          value: 'pause_all',
+                          enabled: scheduledCount > 0,
+                          child: Row(
+                            children: [
+                              const Icon(Icons.pause_circle_outline_rounded,
+                                  color: kMuted, size: 20),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Text(
+                                  'Pause all schedules ($scheduledCount)',
+                                  style: TextStyle(
+                                    color: scheduledCount > 0
+                                        ? kText
+                                        : kMuted.withValues(alpha: 0.5),
+                                    fontSize: 13,
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        PopupMenuItem(
+                          value: 'resume_all',
+                          enabled: pausedCount > 0,
+                          child: Row(
+                            children: [
+                              const Icon(Icons.play_circle_outline_rounded,
+                                  color: kMuted, size: 20),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Text(
+                                  'Resume all schedules ($pausedCount)',
+                                  style: TextStyle(
+                                    color: pausedCount > 0
+                                        ? kText
+                                        : kMuted.withValues(alpha: 0.5),
+                                    fontSize: 13,
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ];
+                    },
+                  ),
+                  const SizedBox(width: 4),
                 ],
                 bottom: TabBar(
                   controller: _tabController,
@@ -356,7 +447,6 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
             decoration: BoxDecoration(
               color: Colors.amber.withValues(alpha: 0.12),
               borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: Colors.amber.withValues(alpha: 0.35)),
             ),
             child: Row(
               children: [
@@ -387,6 +477,38 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
         return const SizedBox.shrink();
       },
     );
+  }
+
+  Future<void> _pauseAll(List<SchedulerTaskRow> allTasks) async {
+    final count = await TaskSchedulerService.instance.pauseAllTasks();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            count > 0
+                ? 'Paused $count scheduled task${count == 1 ? '' : 's'}'
+                : 'No scheduled tasks to pause',
+          ),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  Future<void> _resumeAll(List<SchedulerTaskRow> allTasks) async {
+    final count = await TaskSchedulerService.instance.resumeAllTasks();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            count > 0
+                ? 'Resumed $count paused task${count == 1 ? '' : 's'}'
+                : 'No paused tasks to resume',
+          ),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -532,11 +654,32 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
       if (_unreadScopeFilter == 'unread' && l.notificationSeen != 0) {
         return false;
       }
+      if (_unreadScopeFilter == 'failed' && l.status != 'failed' && l.status != 'timeout') {
+        return false;
+      }
+      if (_unreadScopeFilter == 'success' && l.status != 'success') {
+        return false;
+      }
       return true;
     }).toList();
 
     final unreadCount = allLogs.where((l) => l.notificationSeen == 0).length;
+    final failedCount = allLogs.where((l) => l.status == 'failed' || l.status == 'timeout').length;
+    final successCount = allLogs.where((l) => l.status == 'success').length;
     final displayedLogs = _logLimit > 0 ? filtered.take(_logLimit).toList() : filtered;
+
+    String emptyTitle = 'No task logs';
+    String emptySubtitle = 'No execution logs recorded yet.';
+    if (_unreadScopeFilter == 'unread') {
+      emptyTitle = 'All caught up!';
+      emptySubtitle = 'No unread execution logs. Switch filters to review past runs.';
+    } else if (_unreadScopeFilter == 'failed') {
+      emptyTitle = 'No failed runs';
+      emptySubtitle = 'All recorded runs completed without errors.';
+    } else if (_unreadScopeFilter == 'success') {
+      emptyTitle = 'No successful runs';
+      emptySubtitle = 'No successful task runs recorded yet.';
+    }
 
     return Column(
       children: [
@@ -572,16 +715,31 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
                 _logLimit = 25;
               }),
             ),
+            if (failedCount > 0)
+              _buildChoiceChip(
+                label: 'Failed ($failedCount)',
+                selected: _unreadScopeFilter == 'failed',
+                onSelected: () => setState(() {
+                  _unreadScopeFilter = 'failed';
+                  _logLimit = 25;
+                }),
+              ),
+            _buildChoiceChip(
+              label: 'Success ($successCount)',
+              selected: _unreadScopeFilter == 'success',
+              onSelected: () => setState(() {
+                _unreadScopeFilter = 'success';
+                _logLimit = 25;
+              }),
+            ),
           ],
         ),
         Expanded(
           child: filtered.isEmpty
               ? _buildEmptyState(
                   icon: Icons.mark_email_read_rounded,
-                  title: _unreadScopeFilter == 'unread' ? 'All caught up!' : 'No task logs',
-                  subtitle: _unreadScopeFilter == 'unread'
-                      ? 'No unread execution logs. Switch to "All logs" to review past runs.'
-                      : 'No execution logs recorded yet.',
+                  title: emptyTitle,
+                  subtitle: emptySubtitle,
                 )
               : ListView.separated(
                   padding: const EdgeInsets.symmetric(vertical: 4),
@@ -627,6 +785,11 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
     Map<int, List<SchedulerTaskLogRow>> logsByTask,
   ) {
     final filtered = tasks.where((t) {
+      if (_taskSearchQuery.isNotEmpty) {
+        final matchesTitle = t.title.toLowerCase().contains(_taskSearchQuery);
+        final matchesId = t.id.toString() == _taskSearchQuery;
+        if (!matchesTitle && !matchesId) return false;
+      }
       if (_allStatusFilter == 'active') {
         if (t.status != 'scheduled' && t.status != 'running') return false;
       } else if (_allStatusFilter != 'all' && t.status != _allStatusFilter) {
@@ -643,6 +806,42 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
 
     return Column(
       children: [
+        Container(
+          margin: const EdgeInsets.fromLTRB(16, 6, 16, 2),
+          decoration: BoxDecoration(
+            color: kInputBg.withValues(alpha: 0.45),
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: TextField(
+            controller: _taskSearchController,
+            style: const TextStyle(color: kText, fontSize: 13),
+            cursorColor: kBubbleUser,
+            decoration: InputDecoration(
+              isDense: true,
+              hintText: 'Search tasks by title or ID...',
+              hintStyle: TextStyle(color: kMuted.withValues(alpha: 0.65), fontSize: 13),
+              prefixIcon: Icon(Icons.search_rounded, color: kMuted.withValues(alpha: 0.65), size: 18),
+              prefixIconConstraints: const BoxConstraints(minWidth: 38, minHeight: 34),
+              suffixIcon: _taskSearchController.text.isNotEmpty
+                  ? IconButton(
+                      icon: const Icon(Icons.clear_rounded, color: kMuted, size: 16),
+                      splashRadius: 14,
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                      onPressed: () {
+                        _taskSearchController.clear();
+                        setState(() => _taskSearchQuery = '');
+                      },
+                    )
+                  : null,
+              filled: false,
+              border: InputBorder.none,
+              enabledBorder: InputBorder.none,
+              focusedBorder: InputBorder.none,
+              contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            ),
+          ),
+        ),
         _buildFilterBar(
           leading: _buildLimitSelector(
             currentLimit: _taskLimit,
@@ -713,9 +912,11 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
               ? _buildEmptyState(
                   icon: Icons.checklist_rounded,
                   title: 'No tasks found',
-                  subtitle: tasks.isEmpty
-                      ? 'No tasks created yet. Ask Errand to schedule something or tap the clock icon.'
-                      : 'No tasks match the active filters.',
+                  subtitle: _taskSearchQuery.isNotEmpty
+                      ? 'No tasks match "$_taskSearchQuery".'
+                      : (tasks.isEmpty
+                          ? 'No tasks created yet. Ask Errand to schedule something or tap the clock icon.'
+                          : 'No tasks match the active filters.'),
                 )
               : ListView.separated(
                   padding: const EdgeInsets.symmetric(vertical: 4),
@@ -765,17 +966,17 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
   }) {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
       decoration: BoxDecoration(
-        color: kInputBg.withValues(alpha: 0.4),
-        border: const Border(bottom: BorderSide(color: kBorder, width: 0.5)),
+        color: Colors.transparent,
+        border: Border(bottom: BorderSide(color: kBorder.withValues(alpha: 0.25), width: 0.5)),
       ),
       child: Row(
         children: [
           if (leading != null) ...[
             leading,
             const SizedBox(width: 8),
-            Container(width: 1, height: 18, color: kBorder.withValues(alpha: 0.5)),
+            Container(width: 1, height: 14, color: kBorder.withValues(alpha: 0.25)),
             const SizedBox(width: 8),
           ],
           Expanded(
@@ -789,7 +990,7 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
           ),
           if (trailing != null) ...[
             const SizedBox(width: 8),
-            Container(width: 1, height: 18, color: kBorder.withValues(alpha: 0.5)),
+            Container(width: 1, height: 14, color: kBorder.withValues(alpha: 0.25)),
             const SizedBox(width: 8),
             trailing,
           ],
@@ -807,22 +1008,18 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
       padding: const EdgeInsets.only(right: 6),
       child: InkWell(
         onTap: onSelected,
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(12),
         child: AnimatedContainer(
-          duration: const Duration(milliseconds: 160),
-          padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+          duration: const Duration(milliseconds: 140),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4.5),
           decoration: BoxDecoration(
-            color: selected ? kBubbleUser.withValues(alpha: 0.22) : Colors.transparent,
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(
-              color: selected ? kBubbleUser.withValues(alpha: 0.6) : kBorder.withValues(alpha: 0.6),
-              width: 1,
-            ),
+            color: selected ? kBubbleUser.withValues(alpha: 0.18) : Colors.transparent,
+            borderRadius: BorderRadius.circular(12),
           ),
           child: Text(
             label,
             style: TextStyle(
-              color: selected ? kText : kMuted,
+              color: selected ? kText : kMuted.withValues(alpha: 0.8),
               fontSize: 11,
               fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
             ),
@@ -857,9 +1054,8 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
           decoration: BoxDecoration(
-            color: Colors.transparent,
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: kBorder.withValues(alpha: 0.6), width: 1),
+            color: kInputBg.withValues(alpha: 0.35),
+            borderRadius: BorderRadius.circular(12),
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
@@ -1069,9 +1265,8 @@ class _SpaceyTaskRowState extends State<_SpaceyTaskRow> {
                     constraints: const BoxConstraints(maxWidth: 110),
                     padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
                     decoration: BoxDecoration(
-                      color: kBubbleUser.withValues(alpha: 0.15),
+                      color: kBubbleUser.withValues(alpha: 0.12),
                       borderRadius: BorderRadius.circular(5),
-                      border: Border.all(color: kBubbleUser.withValues(alpha: 0.35), width: 0.6),
                     ),
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
@@ -1394,7 +1589,6 @@ class _SpaceyLogItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isSuccess = log.status == 'success';
     final isUnread = log.notificationSeen == 0;
     final title = task?.title ?? 'Task #${log.schedulerTaskId}';
 
@@ -1407,36 +1601,15 @@ class _SpaceyLogItem extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Top: status icon + status + timestamp + unread dot
+            // Top: status indicator + timestamp + unread dot
             Row(
               children: [
-                Icon(
-                  isSuccess
-                      ? Icons.check_circle_rounded
-                      : (log.status == 'running'
-                          ? Icons.sync_rounded
-                          : Icons.error_outline_rounded),
-                  color: isSuccess
-                      ? Colors.greenAccent
-                      : (log.status == 'running' ? Colors.amberAccent : kDanger),
-                  size: 15,
-                ),
-                const SizedBox(width: 6),
-                Text(
-                  log.status.toUpperCase(),
-                  style: TextStyle(
-                    color: isSuccess
-                        ? Colors.greenAccent
-                        : (log.status == 'running' ? Colors.amberAccent : kDanger),
-                    fontSize: 10,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
+                _buildStatusIndicator(log.status),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
                     _formatTime(log.startedAt ?? log.createdAt),
-                    style: const TextStyle(color: kMuted, fontSize: 11),
+                    style: TextStyle(color: kMuted.withValues(alpha: 0.7), fontSize: 11),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -1555,6 +1728,67 @@ class _SpaceyLogItem extends StatelessWidget {
     );
   }
 
+  Widget _buildStatusIndicator(String status) {
+    final Color color;
+    final String label;
+    switch (status) {
+      case 'success':
+        color = const Color(0xFF4ADE80);
+        label = 'SUCCESS';
+        break;
+      case 'running':
+        color = Colors.amberAccent;
+        label = 'RUNNING';
+        break;
+      case 'timeout':
+        color = const Color(0xFFFB923C);
+        label = 'TIMEOUT';
+        break;
+      case 'cancelled':
+        color = kMuted;
+        label = 'CANCELLED';
+        break;
+      case 'failed':
+      default:
+        color = const Color(0xFFF87171);
+        label = 'FAILED';
+        break;
+    }
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 6,
+          height: 6,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: color,
+            boxShadow: status == 'running'
+                ? [
+                    BoxShadow(
+                      color: color.withValues(alpha: 0.55),
+                      blurRadius: 5,
+                      spreadRadius: 1,
+                    ),
+                  ]
+                : null,
+          ),
+        ),
+        const SizedBox(width: 5),
+        Text(
+          label,
+          style: TextStyle(
+            color: color,
+            fontSize: 10,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 0.4,
+          ),
+        ),
+      ],
+    );
+  }
+
   String _formatTime(int millis) {
     final dt = DateTime.fromMillisecondsSinceEpoch(millis);
     final now = DateTime.now();
@@ -1584,28 +1818,36 @@ class _LogStatChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
       decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: color.withValues(alpha: 0.3), width: 0.6),
+        color: color.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(12),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
+          Container(
+            width: 5,
+            height: 5,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: color,
+            ),
+          ),
+          const SizedBox(width: 5),
           Text(
             value,
             style: TextStyle(
               color: color,
-              fontSize: 13,
+              fontSize: 11,
               fontWeight: FontWeight.w700,
             ),
           ),
-          const SizedBox(width: 4),
+          const SizedBox(width: 3),
           Text(
             label,
             style: TextStyle(
-              color: color.withValues(alpha: 0.85),
+              color: color.withValues(alpha: 0.8),
               fontSize: 11,
               fontWeight: FontWeight.w500,
             ),
@@ -1988,14 +2230,21 @@ class _EditTaskModelSheetState extends State<_EditTaskModelSheet> {
     }
   }
 
+  String get _selectedModelDisplayName {
+    if (_selectedModel.isEmpty) return 'Select model (tap to search)';
+    final match = _models.where((m) => m.id == _selectedModel).firstOrNull;
+    if (match != null && match.name.isNotEmpty && match.name != match.id) {
+      return '${match.name} (${match.id})';
+    }
+    return _selectedModel;
+  }
+
   @override
   Widget build(BuildContext context) {
     final providers = _settings.providers;
     final activeProviderId = providers.any((p) => p.id == _selectedProviderId)
         ? _selectedProviderId
         : (providers.isNotEmpty ? providers.first.id : null);
-
-    final modelInList = _models.any((m) => m.id == _selectedModel);
 
     return Padding(
       padding: EdgeInsets.only(
@@ -2046,9 +2295,8 @@ class _EditTaskModelSheetState extends State<_EditTaskModelSheet> {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12),
             decoration: BoxDecoration(
-              color: kDarkBg,
+              color: kInputBg.withValues(alpha: 0.5),
               borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: kBorder, width: 0.8),
             ),
             child: DropdownButtonHideUnderline(
               child: DropdownButton<String>(
@@ -2131,72 +2379,65 @@ class _EditTaskModelSheetState extends State<_EditTaskModelSheet> {
                 hintText: 'e.g. google/gemini-2.5-flash',
                 hintStyle: TextStyle(color: kMuted.withValues(alpha: 0.5), fontSize: 13),
                 filled: true,
-                fillColor: kDarkBg,
+                fillColor: kInputBg.withValues(alpha: 0.5),
                 contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  borderSide: const BorderSide(color: kBorder, width: 0.8),
-                ),
-                enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  borderSide: const BorderSide(color: kBorder, width: 0.8),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  borderSide: const BorderSide(color: kBubbleUser, width: 1.2),
-                ),
+                border: InputBorder.none,
+                enabledBorder: InputBorder.none,
+                focusedBorder: InputBorder.none,
               ),
             ),
           ] else ...[
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              decoration: BoxDecoration(
-                color: kDarkBg,
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: kBorder, width: 0.8),
-              ),
-              child: DropdownButtonHideUnderline(
-                child: DropdownButton<String>(
-                  // Display always equals the stored value: the extra item
-                  // below guarantees membership, so what you see is what saves.
-                  value: _selectedModel.isNotEmpty ? _selectedModel : null,
-                  hint: const Text(
-                    'Select model',
-                    style: TextStyle(color: kMuted, fontSize: 13),
-                  ),
-                  dropdownColor: kInputBg,
-                  icon: const Icon(Icons.arrow_drop_down_rounded, color: kMuted),
-                  isExpanded: true,
-                  menuMaxHeight: 320,
-                  items: [
-                    if (!modelInList && _selectedModel.isNotEmpty)
-                      DropdownMenuItem<String>(
-                        value: _selectedModel,
-                        child: Text(
-                          _selectedModel,
-                          style: const TextStyle(color: kText, fontSize: 13),
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                    ..._models.map((m) {
-                      return DropdownMenuItem<String>(
-                        value: m.id,
-                        child: Text(
-                          m.name.isNotEmpty && m.name != m.id ? '${m.name} (${m.id})' : m.id,
-                          style: const TextStyle(color: kText, fontSize: 13),
-                          overflow: TextOverflow.ellipsis,
-                        ),
+            InkWell(
+              onTap: _loadingModels
+                  ? null
+                  : () async {
+                      final provider = _settings.providers.firstWhere(
+                        (p) => p.id == _selectedProviderId,
+                        orElse: () => _settings.activeProvider,
                       );
-                    }),
+                      final picked = await showModelPickerDialog(
+                        context,
+                        options: _models,
+                        selectedModel: _selectedModel,
+                        providerName: provider.name,
+                        activeProvider: provider,
+                      );
+                      if (picked != null && mounted) {
+                        setState(() {
+                          _selectedModel = picked;
+                          _userTouchedSelection = true;
+                        });
+                      }
+                    },
+              borderRadius: BorderRadius.circular(10),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                decoration: BoxDecoration(
+                  color: kInputBg.withValues(alpha: 0.5),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        _selectedModelDisplayName,
+                        style: TextStyle(
+                          color: _selectedModel.isNotEmpty ? kText : kMuted,
+                          fontSize: 13,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    if (_loadingModels)
+                      const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 1.5, color: kMuted),
+                      )
+                    else
+                      const Icon(Icons.search_rounded, color: kMuted, size: 18),
                   ],
-                  onChanged: (val) {
-                    if (val != null) {
-                      setState(() {
-                        _selectedModel = val;
-                        _userTouchedSelection = true;
-                      });
-                    }
-                  },
                 ),
               ),
             ),

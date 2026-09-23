@@ -80,19 +80,16 @@ class ModelPicker extends StatelessWidget {
     BuildContext context,
     List<ModelOption> options,
   ) async {
-    final model = await showDialog<String>(
-      context: context,
-      barrierColor: Colors.black.withValues(alpha: 0.68),
-      builder: (dialogContext) => _ModelPickerDialog(
-        options: options,
-        selectedModel: selectedModel,
-        providerName: providerName ?? activeProvider?.name,
-        providers: providers,
-        activeProvider: activeProvider,
-        onProviderChanged: onProviderChanged,
-        onManageProviders: onManageProviders,
-        onRefresh: onRefresh,
-      ),
+    final model = await showModelPickerDialog(
+      context,
+      options: options,
+      selectedModel: selectedModel,
+      providerName: providerName ?? activeProvider?.name,
+      providers: providers,
+      activeProvider: activeProvider,
+      onProviderChanged: onProviderChanged,
+      onManageProviders: onManageProviders,
+      onRefresh: onRefresh,
     );
     if (model != null && model != selectedModel) onChanged(model);
   }
@@ -107,6 +104,35 @@ class ModelPicker extends StatelessWidget {
       provider: providerName ?? activeProvider?.name ?? 'Configured model',
     );
   }
+}
+
+/// Displays a searchable dialog to select an LLM model, with release-date sorting,
+/// live catalog loading, and optional provider switching.
+Future<String?> showModelPickerDialog(
+  BuildContext context, {
+  required List<ModelOption> options,
+  required String selectedModel,
+  String? providerName,
+  List<LlmProvider>? providers,
+  LlmProvider? activeProvider,
+  Future<List<ModelOption>> Function(LlmProvider)? onProviderChanged,
+  VoidCallback? onManageProviders,
+  Future<void> Function()? onRefresh,
+}) {
+  return showDialog<String>(
+    context: context,
+    barrierColor: Colors.black.withValues(alpha: 0.68),
+    builder: (dialogContext) => _ModelPickerDialog(
+      options: options,
+      selectedModel: selectedModel,
+      providerName: providerName ?? activeProvider?.name,
+      providers: providers,
+      activeProvider: activeProvider,
+      onProviderChanged: onProviderChanged,
+      onManageProviders: onManageProviders,
+      onRefresh: onRefresh,
+    ),
+  );
 }
 
 class _ScrollingModelName extends StatefulWidget {

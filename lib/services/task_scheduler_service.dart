@@ -12,6 +12,7 @@ import '../models/llm_provider.dart';
 import '../services/app_settings.dart';
 import '../services/database.dart';
 import '../services/notification_service.dart';
+import '../services/task_toast_service.dart';
 import '../services/workspace.dart';
 import '../tools/file_tools.dart';
 import '../utils/app_profile.dart';
@@ -184,6 +185,72 @@ class TaskSchedulerService {
         'taskId': taskId,
       });
     } catch (_) {}
+  }
+
+  /// Pauses all currently active ('scheduled') tasks and cancels their native alarms.
+  ///
+  /// Returns the number of tasks that were paused.
+  Future<int> pauseAllTasks() async {
+    final nowMillis = DateTime.now().millisecondsSinceEpoch;
+    final activeTasks = await (db.select(db.schedulerTasks)
+          ..where((t) => t.status.equals('scheduled')))
+        .get();
+
+    if (activeTasks.isEmpty) return 0;
+
+    await (db.update(db.schedulerTasks)
+          ..where((t) => t.status.equals('scheduled')))
+        .write(
+      SchedulerTasksCompanion(
+        status: const Value('paused'),
+        updatedAt: Value(nowMillis),
+      ),
+    );
+
+    for (final task in activeTasks) {
+      await cancelTask(task.id);
+    }
+
+    TaskToastService.instance.allTasksPaused(activeTasks.length);
+    return activeTasks.length;
+  }
+
+  /// Resumes all 'paused' tasks, recalculates nextRunAt if elapsed, and schedules alarms.
+  ///
+  /// Returns the number of tasks that were resumed.
+  Future<int> resumeAllTasks() async {
+    final nowMillis = DateTime.now().millisecondsSinceEpoch;
+    final pausedTasks = await (db.select(db.schedulerTasks)
+          ..where((t) => t.status.equals('paused')))
+        .get();
+
+    if (pausedTasks.isEmpty) return 0;
+
+    for (final task in pausedTasks) {
+      int? nextRun = task.nextRunAt ?? task.startsAt;
+      if (nextRun <= nowMillis) {
+        if (task.type == 'recurring' &&
+            task.repeatAfter != null &&
+            task.repeatAfter! > 0) {
+          nextRun = nowMillis + task.repeatAfter!;
+        } else {
+          nextRun = nowMillis + 60000;
+        }
+      }
+
+      await (db.update(db.schedulerTasks)..where((t) => t.id.equals(task.id)))
+          .write(
+        SchedulerTasksCompanion(
+          status: const Value('scheduled'),
+          nextRunAt: Value(nextRun),
+          updatedAt: Value(nowMillis),
+        ),
+      );
+      await scheduleTask(task.id);
+    }
+
+    TaskToastService.instance.allTasksResumed(pausedTasks.length);
+    return pausedTasks.length;
   }
 
   /// In-flight reschedule guard: concurrent triggers (app start plus

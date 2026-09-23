@@ -57,4 +57,22 @@ class TaskToastService {
       ),
     );
   }
+
+  void allTasksPaused(int count) {
+    _controller.add(
+      TaskToastEvent(
+        message: 'Paused $count task${count == 1 ? '' : 's'}',
+        type: TaskToastType.edit,
+      ),
+    );
+  }
+
+  void allTasksResumed(int count) {
+    _controller.add(
+      TaskToastEvent(
+        message: 'Resumed $count task${count == 1 ? '' : 's'}',
+        type: TaskToastType.edit,
+      ),
+    );
+  }
 }

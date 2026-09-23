@@ -3,15 +3,18 @@ import 'dart:convert';
 import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:errand/agent/tool.dart';
 import 'package:errand/services/database.dart';
+import 'package:errand/services/task_scheduler_service.dart';
 import 'package:errand/services/task_toast_service.dart';
 import 'package:errand/tools/schedule_task_tool.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   late ErrandDatabase db;
+  late TaskSchedulerService scheduler;
 
   setUp(() {
     db = ErrandDatabase.inMemory();
+    scheduler = TaskSchedulerService(database: db);
   });
 
   tearDown(() async {
@@ -611,6 +614,84 @@ void main() {
       expect(result.ok, isTrue);
       final data = jsonDecode(result.output) as Map<String, dynamic>;
       expect(data['task']['notify'], isTrue);
+    });
+
+    test('pause_all and resume_all actions pause and resume tasks via scheduler', () async {
+      final tool = scheduleTaskTool(db: db, schedulerService: scheduler);
+
+      await tool.handler(
+        const ToolCall(
+          id: 'c-1',
+          name: 'schedule_task',
+          arguments: {
+            'action': 'create',
+            'title': 'Task 1',
+            'prompt': 'Run test',
+            'schedule_type': 'one_off',
+          },
+        ),
+      );
+      await tool.handler(
+        const ToolCall(
+          id: 'c-2',
+          name: 'schedule_task',
+          arguments: {
+            'action': 'create',
+            'title': 'Task 2',
+            'prompt': 'Run test 2',
+            'schedule_type': 'recurring',
+            'repeat_after': 3600000,
+          },
+        ),
+      );
+
+      final pauseRes = await tool.handler(
+        const ToolCall(
+          id: 'p-all',
+          name: 'schedule_task',
+          arguments: {'action': 'pause_all'},
+        ),
+      );
+      expect(pauseRes.ok, isTrue);
+      final pauseData = jsonDecode(pauseRes.output);
+      expect(pauseData['status'], equals('paused_all'));
+      expect(pauseData['count'], equals(2));
+
+      final resumeRes = await tool.handler(
+        const ToolCall(
+          id: 'r-all',
+          name: 'schedule_task',
+          arguments: {'action': 'resume_all'},
+        ),
+      );
+      expect(resumeRes.ok, isTrue);
+      final resumeData = jsonDecode(resumeRes.output);
+      expect(resumeData['status'], equals('resumed_all'));
+      expect(resumeData['count'], equals(2));
+    });
+
+    test('headless mode blocks pause_all and resume_all', () async {
+      final headlessTool = scheduleTaskTool(db: db, isHeadless: true);
+
+      final pauseRes = await headlessTool.handler(
+        const ToolCall(
+          id: 'p-1',
+          name: 'schedule_task',
+          arguments: {'action': 'pause_all'},
+        ),
+      );
+      expect(pauseRes.ok, isFalse);
+      expect(pauseRes.error?.type, equals('headless_recursion_blocked'));
+
+      final resumeRes = await headlessTool.handler(
+        const ToolCall(
+          id: 'r-1',
+          name: 'schedule_task',
+          arguments: {'action': 'resume_all'},
+        ),
+      );
+      expect(resumeRes.ok, isFalse);
+      expect(resumeRes.error?.type, equals('headless_recursion_blocked'));
     });
   });
 }

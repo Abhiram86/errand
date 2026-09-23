@@ -417,5 +417,105 @@ void main() {
       final rescheduleResult = codec.decodeEnvelope(replyData!);
       expect(rescheduleResult, isA<int>());
     });
+
+    test('pauseAllTasks transitions scheduled tasks to paused and cancels alarms', () async {
+      final nowMillis = DateTime.now().millisecondsSinceEpoch;
+      final t1 = await db.into(db.schedulerTasks).insert(
+        SchedulerTasksCompanion.insert(
+          title: 'Task 1',
+          type: 'recurring',
+          status: 'scheduled',
+          payloadJson: '{}',
+          startsAt: nowMillis + 10000,
+          repeatAfter: const Value(3600000),
+          timezone: 'UTC',
+          createdAt: nowMillis,
+          updatedAt: nowMillis,
+        ),
+      );
+      final t2 = await db.into(db.schedulerTasks).insert(
+        SchedulerTasksCompanion.insert(
+          title: 'Task 2',
+          type: 'one_off',
+          status: 'scheduled',
+          payloadJson: '{}',
+          startsAt: nowMillis + 20000,
+          timezone: 'UTC',
+          createdAt: nowMillis,
+          updatedAt: nowMillis,
+        ),
+      );
+      final tCompleted = await db.into(db.schedulerTasks).insert(
+        SchedulerTasksCompanion.insert(
+          title: 'Completed Task',
+          type: 'one_off',
+          status: 'completed',
+          payloadJson: '{}',
+          startsAt: nowMillis - 10000,
+          timezone: 'UTC',
+          createdAt: nowMillis,
+          updatedAt: nowMillis,
+        ),
+      );
+
+      final count = await scheduler.pauseAllTasks();
+      expect(count, equals(2));
+      expect(scheduler.cancelledTasks, containsAll([t1, t2]));
+
+      final row1 = await (db.select(db.schedulerTasks)..where((t) => t.id.equals(t1))).getSingle();
+      expect(row1.status, equals('paused'));
+
+      final row2 = await (db.select(db.schedulerTasks)..where((t) => t.id.equals(t2))).getSingle();
+      expect(row2.status, equals('paused'));
+
+      final rowComp = await (db.select(db.schedulerTasks)..where((t) => t.id.equals(tCompleted))).getSingle();
+      expect(rowComp.status, equals('completed'));
+    });
+
+    test('resumeAllTasks transitions paused tasks to scheduled and schedules alarms', () async {
+      final nowMillis = DateTime.now().millisecondsSinceEpoch;
+      final t1 = await db.into(db.schedulerTasks).insert(
+        SchedulerTasksCompanion.insert(
+          title: 'Paused Recurring Task',
+          type: 'recurring',
+          status: 'paused',
+          payloadJson: '{}',
+          startsAt: nowMillis - 50000,
+          repeatAfter: const Value(3600000),
+          timezone: 'UTC',
+          createdAt: nowMillis,
+          updatedAt: nowMillis,
+        ),
+      );
+      final t2 = await db.into(db.schedulerTasks).insert(
+        SchedulerTasksCompanion.insert(
+          title: 'Paused One-Off Task',
+          type: 'one_off',
+          status: 'paused',
+          payloadJson: '{}',
+          startsAt: nowMillis + 30000,
+          timezone: 'UTC',
+          createdAt: nowMillis,
+          updatedAt: nowMillis,
+        ),
+      );
+
+      final count = await scheduler.resumeAllTasks();
+      expect(count, equals(2));
+      expect(scheduler.scheduledTasks, containsAll([t1, t2]));
+
+      final row1 = await (db.select(db.schedulerTasks)..where((t) => t.id.equals(t1))).getSingle();
+      expect(row1.status, equals('scheduled'));
+      expect(row1.nextRunAt, greaterThan(nowMillis));
+
+      final row2 = await (db.select(db.schedulerTasks)..where((t) => t.id.equals(t2))).getSingle();
+      expect(row2.status, equals('scheduled'));
+      expect(row2.nextRunAt, equals(nowMillis + 30000));
+    });
+
+    test('pauseAllTasks and resumeAllTasks return 0 when no tasks match', () async {
+      expect(await scheduler.pauseAllTasks(), equals(0));
+      expect(await scheduler.resumeAllTasks(), equals(0));
+    });
   });
 }

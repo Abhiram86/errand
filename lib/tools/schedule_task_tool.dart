@@ -26,7 +26,9 @@ Tool scheduleTaskTool({
         'delete (remove a task and its run logs), '
         'get (retrieve task details by id), '
         'list (list tasks with optional status_filter, limit, offset), '
-        'logs (view execution history logs for a task). '
+        'logs (view execution history logs for a task), '
+        'pause_all (pause all active scheduled tasks), '
+        'resume_all (resume all paused tasks). '
         'For one-off tasks, specify starts_at (ISO 8601 string or epoch millis) or delay_seconds (e.g. 300 for 5m). '
         'For recurring tasks, specify repeat_after interval in millis (e.g. 900000 for 15m, 3600000 for 1h). '
         'The task will execute headlessly in the background, run agent tools, and save output to the scratch directory.',
@@ -35,8 +37,8 @@ Tool scheduleTaskTool({
       'properties': {
         'action': {
           'type': 'string',
-          'enum': ['create', 'edit', 'delete', 'get', 'list', 'logs'],
-          'description': 'Discriminator action: create, edit, delete, get, list, logs.',
+          'enum': ['create', 'edit', 'delete', 'get', 'list', 'logs', 'pause_all', 'resume_all'],
+          'description': 'Discriminator action: create, edit, delete, get, list, logs, pause_all, resume_all.',
         },
         'id': {
           'type': 'string',
@@ -114,7 +116,11 @@ Tool scheduleTaskTool({
       final args = call.arguments;
       final action = _parseStringArg(args['action'] ?? args['type'])?.trim().toLowerCase() ?? '';
 
-      if (isHeadless && (action == 'create' || action == 'delete')) {
+      if (isHeadless &&
+          (action == 'create' ||
+              action == 'delete' ||
+              action == 'pause_all' ||
+              action == 'resume_all')) {
         return ToolCallResult.failure(
           call.id,
           'Action "$action" is disabled in background scheduled tasks to prevent recursive scheduling loops.',
@@ -588,10 +594,34 @@ Tool scheduleTaskTool({
             }),
           );
 
+        case 'pause_all':
+          final count = await (scheduler?.pauseAllTasks() ?? Future.value(0));
+          return ToolCallResult(
+            id: call.id,
+            ok: true,
+            output: jsonEncode({
+              'status': 'paused_all',
+              'count': count,
+              'message': 'Paused $count scheduled task${count == 1 ? '' : 's'}.',
+            }),
+          );
+
+        case 'resume_all':
+          final count = await (scheduler?.resumeAllTasks() ?? Future.value(0));
+          return ToolCallResult(
+            id: call.id,
+            ok: true,
+            output: jsonEncode({
+              'status': 'resumed_all',
+              'count': count,
+              'message': 'Resumed $count paused task${count == 1 ? '' : 's'}.',
+            }),
+          );
+
         default:
           return ToolCallResult.failure(
             call.id,
-            'Unknown action: "$action". Expected one of: "create", "edit", "delete", "get", "list", "logs".',
+            'Unknown action: "$action". Expected one of: "create", "edit", "delete", "get", "list", "logs", "pause_all", "resume_all".',
           );
       }
     },
