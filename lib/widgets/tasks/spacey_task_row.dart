@@ -154,6 +154,9 @@ class _SpaceyTaskRowState extends State<SpaceyTaskRow> {
           const SizedBox(height: 6),
 
           // Row 4: Stats + Action buttons
+          // Actions are gated by status: terminal states (completed/failed/
+          // cancelled) expose no pause or re-run; paused/cancelled expose no
+          // run (the allowlist would reject it); pause toggles scheduled only.
           Row(
             children: [
               Expanded(
@@ -166,7 +169,7 @@ class _SpaceyTaskRowState extends State<SpaceyTaskRow> {
               ),
               const SizedBox(width: 8),
 
-              // Cancel button if running
+              // Cancel button if running (Skip for recurring: series survives)
               if (_isRunning) ...[
                 OutlinedButton.icon(
                   style: OutlinedButton.styleFrom(
@@ -177,30 +180,38 @@ class _SpaceyTaskRowState extends State<SpaceyTaskRow> {
                     tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
                   ),
-                  onPressed: () => _cancelExecution(task.id),
+                  onPressed: () => _cancelExecution(task),
                   icon: const SizedBox(
                     width: 10,
                     height: 10,
                     child: CircularProgressIndicator(strokeWidth: 1.5, color: kDanger),
                   ),
-                  label: const Text('Cancel', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600)),
+                  label: Text(
+                    task.type == 'recurring' ? 'Skip' : 'Cancel',
+                    style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
+                  ),
                 ),
               ] else ...[
-                TaskActionButton(
-                  icon: Icons.play_arrow_rounded,
-                  tooltip: 'Run Now (test trigger)',
-                  color: Colors.greenAccent,
-                  onTap: () => _runNow(context, task.id),
-                ),
-                const SizedBox(width: 3),
-                TaskActionButton(
-                  icon: task.status == 'paused'
-                      ? Icons.play_circle_outline_rounded
-                      : Icons.pause_circle_outline_rounded,
-                  tooltip: task.status == 'paused' ? 'Resume Task' : 'Pause Task',
-                  color: kMuted,
-                  onTap: () => _togglePause(task),
-                ),
+                if (task.status == 'scheduled' ||
+                    task.status == 'failed' ||
+                    task.status == 'completed') ...[
+                  TaskActionButton(
+                    icon: Icons.play_arrow_rounded,
+                    tooltip: 'Run Now (test trigger)',
+                    color: Colors.greenAccent,
+                    onTap: () => _runNow(context, task.id),
+                  ),
+                  const SizedBox(width: 3),
+                ],
+                if (task.status == 'scheduled' || task.status == 'paused')
+                  TaskActionButton(
+                    icon: task.status == 'paused'
+                        ? Icons.play_circle_outline_rounded
+                        : Icons.pause_circle_outline_rounded,
+                    tooltip: task.status == 'paused' ? 'Resume Task' : 'Pause Task',
+                    color: kMuted,
+                    onTap: () => _togglePause(task),
+                  ),
               ],
               if (widget.onEditModel != null) ...[
                 const SizedBox(width: 3),
@@ -281,13 +292,22 @@ class _SpaceyTaskRowState extends State<SpaceyTaskRow> {
     }
   }
 
-  Future<void> _cancelExecution(int taskId) async {
-    await TaskSchedulerService.instance.cancelRunningTask(taskId);
+  Future<void> _cancelExecution(SchedulerTaskRow task) async {
+    final isSeries = task.type == 'recurring';
+    if (isSeries) {
+      await TaskSchedulerService.instance.skipCurrentRun(task.id);
+    } else {
+      await TaskSchedulerService.instance.cancelRunningTask(task.id);
+    }
     if (mounted) {
       setState(() => _executing = false);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Task #$taskId cancelled'),
+          content: Text(
+            isSeries
+                ? 'Task #${task.id} run skipped — series continues'
+                : 'Task #${task.id} cancelled',
+          ),
           duration: const Duration(seconds: 2),
           backgroundColor: kDanger,
         ),

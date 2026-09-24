@@ -322,6 +322,116 @@ void main() {
       expect(alarms.length, equals(1));
     });
 
+    test('skipCurrentRun reschedules recurring series without killing it', () async {
+      final nowMillis = DateTime.now().millisecondsSinceEpoch;
+      const interval = 3600000;
+      final taskId = await serviceDb.into(serviceDb.schedulerTasks).insert(
+        SchedulerTasksCompanion.insert(
+          title: 'Hourly task',
+          type: 'recurring',
+          status: 'running',
+          payloadJson: '{}',
+          startsAt: nowMillis - interval,
+          nextRunAt: Value(nowMillis - 1000),
+          repeatAfter: const Value(interval),
+          timezone: 'UTC',
+          createdAt: nowMillis - interval,
+          updatedAt: nowMillis,
+        ),
+      );
+      await serviceDb.into(serviceDb.schedulerTaskLogs).insert(
+        SchedulerTaskLogsCompanion.insert(
+          schedulerTaskId: taskId,
+          scheduledFor: nowMillis - 1000,
+          status: 'running',
+          createdAt: nowMillis,
+          updatedAt: nowMillis,
+        ),
+      );
+
+      expect(await realService.skipCurrentRun(taskId), isTrue);
+
+      final task = await (serviceDb.select(serviceDb.schedulerTasks)
+            ..where((t) => t.id.equals(taskId)))
+          .getSingle();
+      expect(task.status, equals('scheduled'));
+      expect(task.nextRunAt, isNotNull);
+      expect(task.nextRunAt!, greaterThan(nowMillis));
+      expect(
+        channelCalls.any((c) =>
+            c.method == 'scheduleAlarm' &&
+            (c.arguments as Map)['taskId'] == taskId),
+        isTrue,
+      );
+      final logs = await (serviceDb.select(serviceDb.schedulerTaskLogs)
+            ..where((l) => l.schedulerTaskId.equals(taskId)))
+          .get();
+      expect(logs.single.status, equals('cancelled'));
+    });
+
+    test('skipCurrentRun falls back to cancel for one_off and missing tasks', () async {
+      final nowMillis = DateTime.now().millisecondsSinceEpoch;
+      final taskId = await serviceDb.into(serviceDb.schedulerTasks).insert(
+        SchedulerTasksCompanion.insert(
+          title: 'One-off task',
+          type: 'one_off',
+          status: 'running',
+          payloadJson: '{}',
+          startsAt: nowMillis,
+          timezone: 'UTC',
+          createdAt: nowMillis,
+          updatedAt: nowMillis,
+        ),
+      );
+
+      expect(await realService.skipCurrentRun(taskId), isTrue);
+      final task = await (serviceDb.select(serviceDb.schedulerTasks)
+            ..where((t) => t.id.equals(taskId)))
+          .getSingle();
+      expect(task.status, equals('cancelled'));
+
+      expect(await realService.skipCurrentRun(999999), isFalse);
+    });
+
+    test('skipCurrentRun ignores terminal and paused states', () async {
+      final nowMillis = DateTime.now().millisecondsSinceEpoch;
+      Future<int> insertWithStatus(String status) =>
+          serviceDb.into(serviceDb.schedulerTasks).insert(
+            SchedulerTasksCompanion.insert(
+              title: 'Skip guard task',
+              type: 'recurring',
+              status: status,
+              payloadJson: '{}',
+              startsAt: nowMillis,
+              nextRunAt: Value(nowMillis + 3600000),
+              repeatAfter: const Value(3600000),
+              timezone: 'UTC',
+              createdAt: nowMillis,
+              updatedAt: nowMillis,
+            ),
+          );
+
+      final completedId = await insertWithStatus('completed');
+      expect(await realService.skipCurrentRun(completedId), isFalse);
+      final completedRow = await (serviceDb.select(serviceDb.schedulerTasks)
+            ..where((t) => t.id.equals(completedId)))
+          .getSingle();
+      expect(completedRow.status, equals('completed'));
+
+      final pausedId = await insertWithStatus('paused');
+      expect(await realService.skipCurrentRun(pausedId), isTrue);
+      final pausedRow = await (serviceDb.select(serviceDb.schedulerTasks)
+            ..where((t) => t.id.equals(pausedId)))
+          .getSingle();
+      expect(pausedRow.status, equals('paused'));
+      expect(
+        channelCalls.any((c) =>
+            c.method == 'scheduleAlarm' &&
+            (c.arguments as Map)['taskId'] == pausedId),
+        isFalse,
+      );
+    });
+
     test('cancelTask invokes cancelAlarm method on task_scheduler channel', () async {
       await realService.cancelTask(42);
 

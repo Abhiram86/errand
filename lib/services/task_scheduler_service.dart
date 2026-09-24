@@ -141,6 +141,65 @@ class TaskSchedulerService {
     );
   }
 
+  /// Skips the current run of a recurring task without killing the series:
+  /// aborts in-flight work, recomputes the next grid slot, and re-arms the
+  /// alarm. Non-recurring tasks fall back to [cancelRunningTask] (for a
+  /// one-off, skipping the run and cancelling the task are the same thing).
+  /// Returns false when the task does not exist.
+  Future<bool> skipCurrentRun(int taskId) async {
+    final task = await (db.select(db.schedulerTasks)
+          ..where((t) => t.id.equals(taskId)))
+        .getSingleOrNull();
+    if (task == null) return false;
+    // Only live series can skip: terminal states have nothing in flight,
+    // and a paused series must stay paused (no re-arm).
+    if (task.status == 'completed' ||
+        task.status == 'failed' ||
+        task.status == 'cancelled') {
+      return false;
+    }
+    if (task.status == 'paused') {
+      _runningTokens[taskId]?.cancel();
+      return true;
+    }
+    if (task.type != 'recurring' ||
+        task.repeatAfter == null ||
+        task.repeatAfter! <= 0) {
+      await cancelRunningTask(taskId);
+      return true;
+    }
+
+    _runningTokens[taskId]?.cancel();
+
+    final nowMillis = DateTime.now().millisecondsSinceEpoch;
+    final nextRun = calculateNextRunAt(
+      startsAt: task.startsAt,
+      repeatAfter: task.repeatAfter!,
+      nowMillis: nowMillis,
+    );
+    await (db.update(db.schedulerTasks)..where((t) => t.id.equals(taskId)))
+        .write(
+      SchedulerTasksCompanion(
+        status: const Value('scheduled'),
+        nextRunAt: Value(nextRun),
+        updatedAt: Value(nowMillis),
+      ),
+    );
+    await (db.update(db.schedulerTaskLogs)
+          ..where((l) =>
+              l.schedulerTaskId.equals(taskId) & l.status.equals('running')))
+        .write(
+      SchedulerTaskLogsCompanion(
+        status: const Value('cancelled'),
+        finishedAt: Value(nowMillis),
+        errorMessage: const Value('Run skipped by user — series continues'),
+        updatedAt: Value(nowMillis),
+      ),
+    );
+    await scheduleTask(taskId);
+    return true;
+  }
+
   final StreamController<Map<String, dynamic>> _notificationClicks =
       StreamController<Map<String, dynamic>>.broadcast();
 
@@ -745,21 +804,25 @@ class TaskSchedulerService {
 
     if ((effectiveCancelToken.isCancelled && !isTimeout) ||
         freshTask.status == 'cancelled') {
-      await (db.update(db.schedulerTasks)..where((t) => t.id.equals(taskId))).write(
-        SchedulerTasksCompanion(
-          status: const Value('cancelled'),
-          nextRunAt: const Value(null),
-          updatedAt: Value(finishMillis),
-        ),
-      );
-      await (db.update(db.schedulerTaskLogs)..where((l) => l.id.equals(logId))).write(
-        SchedulerTaskLogsCompanion(
-          status: const Value('cancelled'),
-          finishedAt: Value(finishMillis),
-          errorMessage: const Value('Cancelled by user'),
-          updatedAt: Value(finishMillis),
-        ),
-      );
+      // Never overwrite a status someone else already moved to (e.g.
+      // skipCurrentRun rescheduled the series while this run aborted).
+      if (freshTask.status == 'running') {
+        await (db.update(db.schedulerTasks)..where((t) => t.id.equals(taskId))).write(
+          SchedulerTasksCompanion(
+            status: const Value('cancelled'),
+            nextRunAt: const Value(null),
+            updatedAt: Value(finishMillis),
+          ),
+        );
+        await (db.update(db.schedulerTaskLogs)..where((l) => l.id.equals(logId))).write(
+          SchedulerTaskLogsCompanion(
+            status: const Value('cancelled'),
+            finishedAt: Value(finishMillis),
+            errorMessage: const Value('Cancelled by user'),
+            updatedAt: Value(finishMillis),
+          ),
+        );
+      }
       return false;
     }
 
