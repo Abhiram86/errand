@@ -273,4 +273,51 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     await tester.pump(const Duration(milliseconds: 50));
   });
+
+  test('bounded log window caps rows while COUNT stays exact (P12.3)', () async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final taskId = await db.into(db.schedulerTasks).insert(
+      SchedulerTasksCompanion.insert(
+        title: 'Log flood task',
+        type: 'one_off',
+        status: 'scheduled',
+        payloadJson: '{}',
+        startsAt: now + 60000,
+        nextRunAt: Value(now + 60000),
+        timezone: 'UTC',
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
+
+    // 30 unread logs: well under the 400 window, but exercises the same
+    // pattern — limited watch for rows, COUNT(*) for the badge.
+    for (var i = 0; i < 30; i++) {
+      await db.into(db.schedulerTaskLogs).insert(
+        SchedulerTaskLogsCompanion.insert(
+          schedulerTaskId: taskId,
+          scheduledFor: now - i * 1000,
+          status: 'success',
+          notificationSeen: const Value(0),
+          notificationSent: const Value(1),
+          createdAt: now - i * 1000,
+          updatedAt: now - i * 1000,
+        ),
+      );
+    }
+
+    final windowed = await (db.select(db.schedulerTaskLogs)
+          ..orderBy([(l) => OrderingTerm.desc(l.createdAt)])
+          ..limit(25))
+        .get();
+    expect(windowed, hasLength(25));
+
+    final countRow = await db
+        .customSelect(
+          "SELECT COUNT(*) AS c FROM scheduler_task_log WHERE notification_seen = 0 AND notification_sent = 1 AND status != 'running'",
+          readsFrom: {db.schedulerTaskLogs},
+        )
+        .getSingle();
+    expect(countRow.read<int>('c'), equals(30));
+  });
 }

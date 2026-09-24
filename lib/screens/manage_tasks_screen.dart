@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:drift/drift.dart' hide isNull, isNotNull, Column;
 import 'package:flutter/material.dart';
 import '../services/database.dart';
 import '../services/task_scheduler_service.dart';
+import '../services/task_toast_service.dart';
 import '../services/workspace.dart';
 import '../theme/app_colors.dart';
 import '../utils/app_profile.dart';
@@ -49,8 +51,16 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
   Timer? _taskSearchDebounce;
 
   late Future<bool> _exactAlarmsFuture;
+  // P12.3: bounded watches, not full-table. Tasks stay small (tens), logs
+  // can grow unbounded — both capped at the DB layer so a 10k-log history
+  // never materializes into RAM. UI "Load more" paginates within the window;
+  // tab badges come from COUNT(*) queries below, correct past the cap.
+  static const int _maxWatchedTasks = 400;
+  static const int _maxWatchedLogs = 400;
   late final Stream<List<SchedulerTaskRow>> _tasksStream;
   late final Stream<List<SchedulerTaskLogRow>> _logsStream;
+  late final Stream<int> _unreadCountStream;
+  StreamSubscription<TaskToastEvent>? _toastSub;
 
   /// Session-scoped storage footer: dismissed with the cross, shown again on
   /// every fresh app start (state resets with the screen).
@@ -69,11 +79,32 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
     _taskSearchController.addListener(_onTaskSearchChanged);
     _db = widget.database ?? ErrandDatabase.instance;
     _tasksStream = (_db.select(_db.schedulerTasks)
-          ..orderBy([(t) => OrderingTerm.desc(t.createdAt)]))
+          ..orderBy([(t) => OrderingTerm.desc(t.createdAt)])
+          ..limit(_maxWatchedTasks))
         .watch();
     _logsStream = (_db.select(_db.schedulerTaskLogs)
-          ..orderBy([(l) => OrderingTerm.desc(l.createdAt)]))
+          ..orderBy([(l) => OrderingTerm.desc(l.createdAt)])
+          ..limit(_maxWatchedLogs))
         .watch();
+    // Separate COUNT(*) so the Unread badge stays exact even when the log
+    // window caps the loaded rows. Backed by idx_scheduler_task_log_unseen_created.
+    _unreadCountStream = _db
+        .customSelect(
+          "SELECT COUNT(*) AS c FROM scheduler_task_log WHERE notification_seen = 0 AND notification_sent = 1 AND status != 'running'",
+          readsFrom: {_db.schedulerTaskLogs},
+        )
+        .watchSingle()
+        .map((row) => row.read<int>('c'));
+    // Per-tab invalidation without re-querying everything: toast broadcasts
+    // (create/edit/delete from any isolate's write path) force a re-emission
+    // of the bounded watches. Resume + running-poll below cover background
+    // isolates that bypass the toast bus.
+    _toastSub = TaskToastService.instance.stream.listen((_) {
+      if (!mounted) return;
+      try {
+        _db.markTablesUpdated([_db.schedulerTasks, _db.schedulerTaskLogs]);
+      } catch (_) {}
+    });
     _tabController = TabController(
       length: 3,
       vsync: this,
@@ -91,21 +122,32 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
   }
 
   /// Sums scratch report files once per screen open. Best-effort and silent.
+  /// P12.3: runs off the UI isolate — the old listSync()/lengthSync() blocked
+  /// the first frame on disk IO.
   Future<void> _loadStorageSummary() async {
     try {
-      final scratch = Workspace.instance.scratchDir;
-      if (!scratch.existsSync()) return;
-      var bytes = 0;
-      var count = 0;
-      for (final entry in scratch.listSync()) {
-        if (entry is File) {
-          try {
-            bytes += entry.lengthSync();
-            count++;
-          } catch (_) {}
-        }
-      }
+      final scratchPath = Workspace.instance.scratchDir.path;
+      final result = await Isolate.run(() {
+        var bytes = 0;
+        var count = 0;
+        try {
+          final dir = Directory(scratchPath);
+          if (!dir.existsSync()) return [0, 0];
+          for (final entry in dir.listSync()) {
+            if (entry is File) {
+              try {
+                bytes += entry.lengthSync();
+                count++;
+              } catch (_) {}
+            }
+          }
+        } catch (_) {}
+        return [bytes, count];
+      });
       if (!mounted) return;
+      final bytes = result[0];
+      final count = result[1];
+      if (count == 0) return;
       setState(() {
         _storageSummary =
             'Scratch ${_formatBytes(bytes)} · $count ${count == 1 ? 'file' : 'files'}';
@@ -204,6 +246,7 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
 
   @override
   void dispose() {
+    _toastSub?.cancel();
     _runningTasksPollTimer?.cancel();
     _taskSearchDebounce?.cancel();
     _taskSearchController.removeListener(_onTaskSearchChanged);
@@ -238,11 +281,19 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
             }
 
             // Group logs by task once per emission (O(T+L)) instead of
-            // filtering per row in itemBuilder (O(T*L)).
+            // filtering per row in itemBuilder (O(T*L)). allLogs is already
+            // DB-bounded (latest N), so this never materializes full history.
             final logsByTask = <int, List<SchedulerTaskLogRow>>{};
             for (final log in allLogs) {
               (logsByTask[log.schedulerTaskId] ??= []).add(log);
             }
+            // Task-only tabs need just the latest log per task (row icon
+            // tint); passing full histories there kept every log alive per
+            // row. Unread tab below keeps using the full bounded window.
+            final latestLogByTask = <int, List<SchedulerTaskLogRow>>{};
+            logsByTask.forEach((taskId, logs) {
+              if (logs.isNotEmpty) latestLogByTask[taskId] = [logs.first];
+            });
 
             final upcomingTasks = allTasks.where((t) {
               if (t.status == 'running') return true;
@@ -251,14 +302,24 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
             }).toList()
               ..sort(_compareUpcomingTasks);
 
-            final unreadLogs = allLogs
-                .where((l) =>
-                    l.notificationSeen == 0 &&
-                    l.notificationSent == 1 &&
-                    l.status != 'running')
-                .toList();
+            return StreamBuilder<int>(
+              stream: _unreadCountStream,
+              initialData: allLogs
+                  .where((l) =>
+                      l.notificationSeen == 0 &&
+                      l.notificationSent == 1 &&
+                      l.status != 'running')
+                  .length,
+              builder: (context, unreadSnapshot) {
+                final unreadCount = unreadSnapshot.data ??
+                    allLogs
+                        .where((l) =>
+                            l.notificationSeen == 0 &&
+                            l.notificationSent == 1 &&
+                            l.status != 'running')
+                        .length;
 
-            return Scaffold(
+                return Scaffold(
               backgroundColor: kDarkBg,
               appBar: AppBar(
                 backgroundColor: kInputBg,
@@ -370,8 +431,8 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
                         Tab(
                           child: _buildTabLabel(
                             title: 'Unread',
-                            count: unreadLogs.length,
-                            highlight: unreadLogs.isNotEmpty,
+                            count: unreadCount,
+                            highlight: unreadCount > 0,
                           ),
                         ),
                         Tab(
@@ -390,15 +451,18 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
                     child: TabBarView(
                       controller: _tabController,
                       children: [
-                        _buildUpcomingTab(upcomingTasks, logsByTask),
-                        _buildUnreadTab(allLogs, allTasks),
-                        _buildAllTasksTab(allTasks, logsByTask),
+                        _buildUpcomingTab(upcomingTasks, latestLogByTask),
+                        _buildUnreadTab(allLogs, allTasks,
+                            exactUnreadCount: unreadCount),
+                        _buildAllTasksTab(allTasks, latestLogByTask),
                       ],
                     ),
                   ),
                   _buildStorageFooter(),
                 ],
               ),
+            );
+              },
             );
           },
         );
@@ -613,7 +677,11 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
   // Tab 2: Unread (Task Logs)
   // ---------------------------------------------------------------------------
 
-  Widget _buildUnreadTab(List<SchedulerTaskLogRow> allLogs, List<SchedulerTaskRow> tasks) {
+  Widget _buildUnreadTab(
+    List<SchedulerTaskLogRow> allLogs,
+    List<SchedulerTaskRow> tasks, {
+    int? exactUnreadCount,
+  }) {
     final taskMap = {for (final t in tasks) t.id: t};
 
     final filtered = allLogs.where((l) {
@@ -630,12 +698,15 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
       return true;
     }).toList();
 
-    final unreadCount = allLogs
-        .where((l) =>
-            l.notificationSeen == 0 &&
-            l.notificationSent == 1 &&
-            l.status != 'running')
-        .length;
+    // Exact badge from COUNT(*); window-derived counts below cover only the
+    // loaded page and are labeled as such by the Load-more row.
+    final unreadCount = exactUnreadCount ??
+        allLogs
+            .where((l) =>
+                l.notificationSeen == 0 &&
+                l.notificationSent == 1 &&
+                l.status != 'running')
+            .length;
     final failedCount = allLogs.where((l) => l.status == 'failed' || l.status == 'timeout').length;
     final successCount = allLogs.where((l) => l.status == 'success').length;
     final displayedLogs = _logLimit > 0 ? filtered.take(_logLimit).toList() : filtered;
