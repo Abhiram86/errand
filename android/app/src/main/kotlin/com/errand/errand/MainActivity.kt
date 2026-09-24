@@ -126,6 +126,11 @@ class MainActivity : FlutterActivity() {
     private val LOCATION_PERMISSION_CODE = 9002
     private var locationPermissionResult: MethodChannel.Result? = null
 
+    // Dedicated code: the notification permission request must not reuse
+    // LOCATION_PERMISSION_CODE, or its grant/deny would resolve a pending
+    // location result with the wrong answer.
+    private val NOTIFICATION_PERMISSION_CODE = 9003
+
     private fun putExtraValue(intent: Intent, key: String, value: Any?) {
         when (value) {
             null -> return
@@ -231,6 +236,8 @@ class MainActivity : FlutterActivity() {
             locationPermissionResult?.success(granted)
             locationPermissionResult = null
         }
+        // NOTIFICATION_PERMISSION_CODE is intentionally unhandled: that
+        // request is fire-and-forget with no pending result to complete.
     }
 
     override fun onDestroy() {
@@ -692,7 +699,7 @@ class MainActivity : FlutterActivity() {
                         ActivityCompat.requestPermissions(
                             this,
                             arrayOf(Manifest.permission.POST_NOTIFICATIONS),
-                            9002
+                            NOTIFICATION_PERMISSION_CODE
                         )
                     }
                     result.success(null)

@@ -56,6 +56,7 @@ class TrackingSchedulerService extends TaskSchedulerService {
   @override
   Future<bool> executeTask(
     int taskId, {
+    bool allowCompleted = false,
     AgentRunner? runner,
     Directory? scratchDirectory,
     Duration timeout = const Duration(minutes: 10),
@@ -360,11 +361,134 @@ void main() {
             createdAt: nowMillis,
             updatedAt: nowMillis,
             notificationSeen: Value(seen),
+            notificationSent: const Value(1),
           ),
         );
       }
 
       expect(await realService.unreadNotificationCount(), equals(2));
+    });
+
+    test('unreadNotificationCount excludes running and unsent notifications (P12.2 regression)', () async {
+      final nowMillis = DateTime.now().millisecondsSinceEpoch;
+      final taskId = await serviceDb.into(serviceDb.schedulerTasks).insert(
+        SchedulerTasksCompanion.insert(
+          title: 'Unread filter task',
+          type: 'one_off',
+          status: 'running',
+          payloadJson: '{}',
+          startsAt: nowMillis,
+          timezone: 'UTC',
+          createdAt: nowMillis,
+          updatedAt: nowMillis,
+        ),
+      );
+
+      // 1. Running log with notificationSeen = 0, notificationSent = 0
+      await serviceDb.into(serviceDb.schedulerTaskLogs).insert(
+        SchedulerTaskLogsCompanion.insert(
+          schedulerTaskId: taskId,
+          scheduledFor: nowMillis,
+          status: 'running',
+          createdAt: nowMillis,
+          updatedAt: nowMillis,
+          notificationSeen: const Value(0),
+          notificationSent: const Value(0),
+        ),
+      );
+
+      // 2. Completed log with notify: false (notificationSent = 0, notificationSeen = 1)
+      await serviceDb.into(serviceDb.schedulerTaskLogs).insert(
+        SchedulerTaskLogsCompanion.insert(
+          schedulerTaskId: taskId,
+          scheduledFor: nowMillis,
+          status: 'success',
+          createdAt: nowMillis,
+          updatedAt: nowMillis,
+          notificationSeen: const Value(1),
+          notificationSent: const Value(0),
+        ),
+      );
+
+      // 3. Completed log where notification failed to post (notificationSent = 0, notificationSeen = 0)
+      await serviceDb.into(serviceDb.schedulerTaskLogs).insert(
+        SchedulerTaskLogsCompanion.insert(
+          schedulerTaskId: taskId,
+          scheduledFor: nowMillis,
+          status: 'success',
+          createdAt: nowMillis,
+          updatedAt: nowMillis,
+          notificationSeen: const Value(0),
+          notificationSent: const Value(0),
+        ),
+      );
+
+      // 4. Properly notified unseen terminal log
+      await serviceDb.into(serviceDb.schedulerTaskLogs).insert(
+        SchedulerTaskLogsCompanion.insert(
+          schedulerTaskId: taskId,
+          scheduledFor: nowMillis,
+          status: 'failed',
+          createdAt: nowMillis,
+          updatedAt: nowMillis,
+          notificationSeen: const Value(0),
+          notificationSent: const Value(1),
+        ),
+      );
+
+      // Only #4 should be counted
+      expect(await realService.unreadNotificationCount(), equals(1));
+    });
+
+    test('markNotificationTapped marks only terminal logs, never running ones', () async {
+      final nowMillis = DateTime.now().millisecondsSinceEpoch;
+      final taskId = await serviceDb.into(serviceDb.schedulerTasks).insert(
+        SchedulerTasksCompanion.insert(
+          title: 'Tap filter task',
+          type: 'one_off',
+          status: 'scheduled',
+          payloadJson: '{}',
+          startsAt: nowMillis,
+          timezone: 'UTC',
+          createdAt: nowMillis,
+          updatedAt: nowMillis,
+        ),
+      );
+
+      final runningLogId = await serviceDb.into(serviceDb.schedulerTaskLogs).insert(
+        SchedulerTaskLogsCompanion.insert(
+          schedulerTaskId: taskId,
+          scheduledFor: nowMillis,
+          status: 'running',
+          createdAt: nowMillis,
+          updatedAt: nowMillis,
+          notificationSeen: const Value(0),
+          notificationSent: const Value(0),
+        ),
+      );
+      final terminalLogId = await serviceDb.into(serviceDb.schedulerTaskLogs).insert(
+        SchedulerTaskLogsCompanion.insert(
+          schedulerTaskId: taskId,
+          scheduledFor: nowMillis,
+          status: 'success',
+          createdAt: nowMillis,
+          updatedAt: nowMillis,
+          notificationSeen: const Value(0),
+          notificationSent: const Value(1),
+        ),
+      );
+
+      await realService.markNotificationTapped(taskId);
+
+      final runningLog = await (serviceDb.select(serviceDb.schedulerTaskLogs)
+            ..where((l) => l.id.equals(runningLogId)))
+          .getSingle();
+      final terminalLog = await (serviceDb.select(serviceDb.schedulerTaskLogs)
+            ..where((l) => l.id.equals(terminalLogId)))
+          .getSingle();
+      expect(runningLog.notificationSeen, equals(0));
+      expect(terminalLog.notificationSeen, equals(1));
+      expect(await realService.unreadNotificationCount(), equals(0));
     });
 
     test('rescheduleAllActiveTasks schedules all active tasks and recovers stuck ones', () async {

@@ -15,11 +15,13 @@ import '../widgets/tasks/tasks_widgets.dart';
 class ManageTasksScreen extends StatefulWidget {
   final ErrandDatabase? database;
   final int initialTabIndex;
+  final String? initialLogFilter;
 
   const ManageTasksScreen({
     super.key,
     this.database,
     this.initialTabIndex = 0,
+    this.initialLogFilter,
   });
 
   @override
@@ -36,7 +38,7 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
   int _upcomingLimit = 50;
 
   // Filters for Unread Tab
-  String _unreadScopeFilter = 'unread'; // 'unread', 'all'
+  late String _unreadScopeFilter;
   int _logLimit = 25; // 25, 50, 100, 0 (all)
 
   // Filters for All Tasks Tab
@@ -66,6 +68,7 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
   @override
   void initState() {
     super.initState();
+    _unreadScopeFilter = widget.initialLogFilter ?? 'unread';
     _p10ScreenId = identityHashCode(this);
     WidgetsBinding.instance.addObserver(this);
     _taskSearchController.addListener(_onTaskSearchChanged);
@@ -185,8 +188,28 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
     });
   }
 
+  Timer? _runningTasksPollTimer;
+
+  void _syncRunningTasksPolling(List<SchedulerTaskRow> tasks) {
+    final hasRunning = tasks.any((t) => t.status == 'running');
+    if (hasRunning) {
+      if (_runningTasksPollTimer == null || !_runningTasksPollTimer!.isActive) {
+        _runningTasksPollTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+          if (!mounted) return;
+          try {
+            _db.markTablesUpdated([_db.schedulerTasks, _db.schedulerTaskLogs]);
+          } catch (_) {}
+        });
+      }
+    } else {
+      _runningTasksPollTimer?.cancel();
+      _runningTasksPollTimer = null;
+    }
+  }
+
   @override
   void dispose() {
+    _runningTasksPollTimer?.cancel();
     _taskSearchDebounce?.cancel();
     _taskSearchController.removeListener(_onTaskSearchChanged);
     _taskSearchController.dispose();
@@ -201,6 +224,7 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
       stream: _tasksStream,
       builder: (context, taskSnapshot) {
         final allTasks = taskSnapshot.data ?? [];
+        _syncRunningTasksPolling(allTasks);
 
         return StreamBuilder<List<SchedulerTaskLogRow>>(
           stream: _logsStream,
@@ -232,7 +256,12 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
             }).toList()
               ..sort(_compareUpcomingTasks);
 
-            final unreadLogs = allLogs.where((l) => l.notificationSeen == 0).toList();
+            final unreadLogs = allLogs
+                .where((l) =>
+                    l.notificationSeen == 0 &&
+                    l.notificationSent == 1 &&
+                    l.status != 'running')
+                .toList();
 
             return Scaffold(
               backgroundColor: kDarkBg,
@@ -466,35 +495,11 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
   }
 
   Future<void> _pauseAll(List<SchedulerTaskRow> allTasks) async {
-    final count = await TaskSchedulerService.instance.pauseAllTasks();
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            count > 0
-                ? 'Paused $count scheduled task${count == 1 ? '' : 's'}'
-                : 'No scheduled tasks to pause',
-          ),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-    }
+    await TaskSchedulerService.instance.pauseAllTasks();
   }
 
   Future<void> _resumeAll(List<SchedulerTaskRow> allTasks) async {
-    final count = await TaskSchedulerService.instance.resumeAllTasks();
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            count > 0
-                ? 'Resumed $count paused task${count == 1 ? '' : 's'}'
-                : 'No paused tasks to resume',
-          ),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-    }
+    await TaskSchedulerService.instance.resumeAllTasks();
   }
 
   // ---------------------------------------------------------------------------
@@ -637,7 +642,8 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
     final taskMap = {for (final t in tasks) t.id: t};
 
     final filtered = allLogs.where((l) {
-      if (_unreadScopeFilter == 'unread' && l.notificationSeen != 0) {
+      if (_unreadScopeFilter == 'unread' &&
+          (l.notificationSeen != 0 || l.notificationSent != 1 || l.status == 'running')) {
         return false;
       }
       if (_unreadScopeFilter == 'failed' && l.status != 'failed' && l.status != 'timeout') {
@@ -649,7 +655,12 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
       return true;
     }).toList();
 
-    final unreadCount = allLogs.where((l) => l.notificationSeen == 0).length;
+    final unreadCount = allLogs
+        .where((l) =>
+            l.notificationSeen == 0 &&
+            l.notificationSent == 1 &&
+            l.status != 'running')
+        .length;
     final failedCount = allLogs.where((l) => l.status == 'failed' || l.status == 'timeout').length;
     final successCount = allLogs.where((l) => l.status == 'success').length;
     final displayedLogs = _logLimit > 0 ? filtered.take(_logLimit).toList() : filtered;

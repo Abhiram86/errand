@@ -1,5 +1,6 @@
 package com.errand.errand
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -7,18 +8,25 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.location.Geocoder
+import android.location.Location
+import android.location.LocationManager
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
 import android.util.Log
+import androidx.core.content.ContextCompat
 import io.flutter.FlutterInjector
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.engine.dart.DartExecutor
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugins.GeneratedPluginRegistrant
 import java.util.ArrayDeque
+import java.util.Locale
 
 /**
  * Foreground service that guarantees process survival and CPU wake-lock while background
@@ -39,6 +47,7 @@ class TaskExecutionService : Service() {
         private const val NOTIFICATION_ID = 2_000_000_007
         private val MAIN_ENGINE_TIMEOUT_MS = 30_000L
         private val BACKGROUND_ENGINE_TIMEOUT_MS = 12 * 60 * 1000L
+        private const val TASK_WAKELOCK_TIMEOUT_MS = (10 * 60 * 1000L) + 60_000L // 10 min task timeout + 60s margin = 11 minutes
 
         const val ACTION_EXECUTE_TASK = "com.errand.ACTION_EXECUTE_TASK"
         const val ACTION_RESCHEDULE_ALL = "com.errand.ACTION_RESCHEDULE_ALL"
@@ -105,7 +114,6 @@ class TaskExecutionService : Service() {
             "errand:TaskExecutionWakeLock"
         ).apply {
             setReferenceCounted(false)
-            acquire(15 * 60 * 1000L) // 15-minute safety timeout
         }
     }
 
@@ -154,6 +162,27 @@ class TaskExecutionService : Service() {
 
             isProcessing = true
             val request = requestQueue.removeFirst()
+
+            // Renew wake lock for this specific task. A re-acquire on an
+            // already-held non-reference-counted lock does not reliably
+            // extend its timeout, so release first when held.
+            try {
+                val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+                if (wakeLock == null) {
+                    wakeLock = powerManager.newWakeLock(
+                        PowerManager.PARTIAL_WAKE_LOCK,
+                        "errand:TaskExecutionWakeLock"
+                    ).apply {
+                        setReferenceCounted(false)
+                    }
+                }
+                try {
+                    if (wakeLock?.isHeld == true) wakeLock?.release()
+                } catch (_: Exception) {}
+                wakeLock?.acquire(TASK_WAKELOCK_TIMEOUT_MS)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error acquiring wake lock for queued task", e)
+            }
 
             // Update foreground notification with current task title
             val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -444,6 +473,267 @@ class TaskExecutionService : Service() {
                     result.success(NotificationHelper.hasPermission(applicationContext))
                 }
                 else -> result.notImplemented()
+            }
+        }
+
+        setupLocationChannel(engine)
+        setupIntentChannel(engine)
+    }
+
+    private fun setupLocationChannel(engine: FlutterEngine) {
+        val channel = MethodChannel(engine.dartExecutor.binaryMessenger, "location")
+        channel.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "hasPermission" -> {
+                    val fine = ContextCompat.checkSelfPermission(
+                        this, Manifest.permission.ACCESS_FINE_LOCATION
+                    ) == PackageManager.PERMISSION_GRANTED
+                    val coarse = ContextCompat.checkSelfPermission(
+                        this, Manifest.permission.ACCESS_COARSE_LOCATION
+                    ) == PackageManager.PERMISSION_GRANTED
+                    result.success(fine || coarse)
+                }
+                "requestPermission" -> {
+                    // Headless background service cannot show interactive permission dialogs
+                    result.success(false)
+                }
+                "getLocation" -> {
+                    val fine = ContextCompat.checkSelfPermission(
+                        this, Manifest.permission.ACCESS_FINE_LOCATION
+                    ) == PackageManager.PERMISSION_GRANTED
+                    val coarse = ContextCompat.checkSelfPermission(
+                        this, Manifest.permission.ACCESS_COARSE_LOCATION
+                    ) == PackageManager.PERMISSION_GRANTED
+
+                    if (!fine && !coarse) {
+                        result.error("PERMISSION_DENIED", "Location permission is not granted.", null)
+                        return@setMethodCallHandler
+                    }
+
+                    val lm = getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+                    if (lm == null) {
+                        result.error("LOCATION_UNAVAILABLE", "LocationManager service is unavailable", null)
+                        return@setMethodCallHandler
+                    }
+
+                    var bestLocation: Location? = null
+                    try {
+                        val gpsLoc = lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+                        if (gpsLoc != null) bestLocation = gpsLoc
+                    } catch (_: SecurityException) {}
+                    try {
+                        val netLoc = lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+                        if (netLoc != null) {
+                            if (bestLocation == null || netLoc.time > bestLocation.time ||
+                                (netLoc.hasAccuracy() && bestLocation.hasAccuracy() && netLoc.accuracy < bestLocation.accuracy)) {
+                                bestLocation = netLoc
+                            }
+                        }
+                    } catch (_: SecurityException) {}
+
+                    val location = bestLocation
+                    if (location == null) {
+                        result.error("LOCATION_UNAVAILABLE", "No cached location fix available.", null)
+                        return@setMethodCallHandler
+                    }
+
+                    // Geocoder does network I/O: bound it so a hung lookup
+                    // cannot leak a thread or stall the result forever.
+                    val geocodeExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+                    try {
+                        val geocodeFuture = geocodeExecutor.submit<Map<String, Any?>> {
+                            reverseGeocode(location)
+                        }
+                        val addressMap = try {
+                            geocodeFuture.get(8, java.util.concurrent.TimeUnit.SECONDS)
+                        } catch (_: Exception) {
+                            geocodeFuture.cancel(true)
+                            emptyMap<String, Any?>()
+                        }
+                        val data = mapOf(
+                            "latitude" to location.latitude,
+                            "longitude" to location.longitude,
+                            "accuracy" to location.accuracy.toDouble(),
+                            "altitude" to location.altitude,
+                            "speed" to location.speed.toDouble(),
+                            "bearing" to location.bearing.toDouble(),
+                            "timestamp" to location.time,
+                            "provider" to (location.provider ?: "unknown"),
+                            "address" to addressMap
+                        )
+                        mainHandler.post {
+                            try {
+                                result.success(data)
+                            } catch (_: Exception) {}
+                        }
+                    } finally {
+                        geocodeExecutor.shutdownNow()
+                    }
+                }
+                else -> result.notImplemented()
+            }
+        }
+    }
+
+    private fun setupIntentChannel(engine: FlutterEngine) {
+        val channel = MethodChannel(engine.dartExecutor.binaryMessenger, "intent")
+        channel.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "launch" -> {
+                    try {
+                        val action = call.argument<String>("action") ?: ""
+                        val androidAction = call.argument<String>("androidAction")
+                        val data = call.argument<String>("data")
+                        val pkg = call.argument<String>("package")
+                        val type = call.argument<String>("type")
+                        val extras = call.argument<Map<String, Any?>>("extras")
+
+                        val isBroadcast = (androidAction != null && !isActivityAction(androidAction))
+
+                        if (!isBroadcast) {
+                            result.error(
+                                "BAL_BLOCKED",
+                                "Activity launch ($action / $androidAction) is prohibited from headless background execution (Android BAL restrictions). Only explicit broadcasts and cached location are allowed.",
+                                null
+                            )
+                            return@setMethodCallHandler
+                        }
+
+                        val intent = Intent(androidAction ?: Intent.ACTION_DEFAULT).apply {
+                            val uri = data?.let { Uri.parse(it) }
+                            if (uri != null && type != null) {
+                                setDataAndType(uri, type)
+                            } else if (uri != null) {
+                                this.data = uri
+                            } else if (type != null) {
+                                this.type = type
+                            }
+                            pkg?.let { this.`package` = it }
+                            extras?.forEach { (k, v) -> putExtraValue(this, k, v) }
+                        }
+
+                        sendBroadcast(intent)
+                        result.success("broadcast_sent")
+                    } catch (e: Exception) {
+                        result.error("INTENT_ERR", e.message, null)
+                    }
+                }
+                "canResolve" -> {
+                    try {
+                        val action = call.argument<String>("action") ?: Intent.ACTION_VIEW
+                        val data = call.argument<String>("data")
+                        val pkg = call.argument<String>("package")
+                        val type = call.argument<String>("type")
+
+                        val intent = Intent(action).apply {
+                            val uri = data?.let { Uri.parse(it) }
+                            if (uri != null && type != null) {
+                                setDataAndType(uri, type)
+                            } else if (uri != null) {
+                                this.data = uri
+                            } else if (type != null) {
+                                this.type = type
+                            }
+                            pkg?.let { this.`package` = it }
+                        }
+                        val resolved = packageManager.queryBroadcastReceivers(intent, 0).isNotEmpty() ||
+                            intent.resolveActivity(packageManager) != null
+                        result.success(resolved)
+                    } catch (e: Exception) {
+                        result.success(false)
+                    }
+                }
+                "getInstalledApps" -> {
+                    try {
+                        val launcherIntent = Intent(Intent.ACTION_MAIN).apply {
+                            addCategory(Intent.CATEGORY_LAUNCHER)
+                        }
+                        val resolveInfos = packageManager.queryIntentActivities(launcherIntent, 0)
+                        val apps = resolveInfos.mapNotNull { ri ->
+                            val p = ri.activityInfo?.packageName ?: return@mapNotNull null
+                            val l = try {
+                                ri.loadLabel(packageManager)?.toString() ?: p
+                            } catch (_: Exception) {
+                                p
+                            }
+                            mapOf("package" to p, "label" to l)
+                        }.distinctBy { it["package"] }
+                        result.success(apps)
+                    } catch (e: Exception) {
+                        result.error("APPS_ERR", e.message, null)
+                    }
+                }
+                else -> result.notImplemented()
+            }
+        }
+    }
+
+    private fun isActivityAction(action: String): Boolean {
+        return action.startsWith("android.settings.") ||
+            action == Intent.ACTION_VIEW ||
+            action == Intent.ACTION_MAIN ||
+            action == Intent.ACTION_DIAL ||
+            action == Intent.ACTION_CALL ||
+            action == Intent.ACTION_SEND ||
+            action == Intent.ACTION_SENDTO ||
+            action == Intent.ACTION_WEB_SEARCH ||
+            action.startsWith("android.intent.action.SET_") ||
+            action.startsWith("android.intent.action.SHOW_") ||
+            action.startsWith("android.intent.action.DISMISS_") ||
+            action.startsWith("android.intent.action.SNOOZE_") ||
+            action == Intent.ACTION_INSERT ||
+            action == Intent.ACTION_EDIT ||
+            action.startsWith("android.media.action.")
+    }
+
+    private fun reverseGeocode(location: Location): Map<String, Any?> {
+        val geocoder = Geocoder(this, Locale.getDefault())
+        return try {
+            @Suppress("DEPRECATION")
+            val addresses = geocoder.getFromLocation(location.latitude, location.longitude, 1)
+            if (!addresses.isNullOrEmpty()) {
+                val addr = addresses[0]
+                mapOf(
+                    "city" to (addr.locality ?: addr.subAdminArea ?: ""),
+                    "state" to (addr.adminArea ?: ""),
+                    "country" to (addr.countryName ?: ""),
+                    "countryCode" to (addr.countryCode ?: ""),
+                    "postalCode" to (addr.postalCode ?: ""),
+                    "street" to (addr.thoroughfare ?: ""),
+                    "formatted" to (if (addr.maxAddressLineIndex >= 0) addr.getAddressLine(0) else "")
+                )
+            } else {
+                emptyMap()
+            }
+        } catch (e: Exception) {
+            mapOf("error" to (e.message ?: "Geocoding failed"))
+        }
+    }
+
+    private fun putExtraValue(intent: Intent, key: String, value: Any?) {
+        when (value) {
+            null -> return
+            is Boolean -> intent.putExtra(key, value)
+            is Byte -> intent.putExtra(key, value)
+            is Short -> intent.putExtra(key, value)
+            is Int -> intent.putExtra(key, value)
+            is Long -> intent.putExtra(key, value)
+            is Float -> intent.putExtra(key, value)
+            is Double -> intent.putExtra(key, value)
+            is String -> intent.putExtra(key, value)
+            is CharSequence -> intent.putExtra(key, value)
+            is List<*> -> {
+                if (value.all { it is String }) {
+                    intent.putStringArrayListExtra(
+                        key,
+                        ArrayList(value.filterIsInstance<String>())
+                    )
+                } else if (value.all { it is Number }) {
+                    intent.putIntegerArrayListExtra(
+                        key,
+                        ArrayList(value.filterIsInstance<Number>().map { it.toInt() })
+                    )
+                }
             }
         }
     }

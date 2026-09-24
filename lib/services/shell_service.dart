@@ -193,6 +193,15 @@ class ShellSafetyCheck {
       );
     }
 
+    // Treat unanalyzable variable expansion in executable/command position as untrusted.
+    if (words.first.startsWith(r'$') ||
+        RegExp(r'^\$\{[^}]+\}').hasMatch(words.first)) {
+      return const ShellSafetyCheck(
+        ShellSafetyLevel.needsConfirmation,
+        'Command uses dynamic variable expansion in executable position and cannot be statically verified',
+      );
+    }
+
     // Common command wrappers.
     const wrappers = {
       'sudo',
@@ -220,6 +229,33 @@ class ShellSafetyCheck {
         ShellSafetyLevel.blocked,
         'Privilege escalation is not allowed',
         'su/sudo',
+      );
+    }
+
+    if (executable == 'env') {
+      var idx = 1;
+      while (idx < words.length) {
+        final w = words[idx];
+        if (w == '-i' || w == '--ignore-environment' || w == '-') {
+          idx++;
+        } else if (w == '-u' || w == '--unset') {
+          idx += 2;
+        } else if (w.startsWith('-u') || w.startsWith('--unset=')) {
+          idx++;
+        } else if (w.startsWith('-')) {
+          idx++;
+        } else if (_isAssignment(w)) {
+          idx++;
+        } else {
+          break;
+        }
+      }
+      if (idx < words.length) {
+        return _analyzeCommand(words.sublist(idx).join(' '));
+      }
+      return const ShellSafetyCheck(
+        ShellSafetyLevel.safe,
+        'Environment print only',
       );
     }
 

@@ -95,6 +95,9 @@ class _ErrandAppState extends State<ErrandApp> {
         _routeName(widget.initialRoute) == _manageTasksUnreadRoute;
     _initialUnreadRouteActive = _openedOnUnreadRoute;
     _initialNotificationTaskId = _taskIdFromRoute(widget.initialRoute);
+    if (_initialNotificationTaskId != null && _initialNotificationTaskId! > 0) {
+      unawaited(TaskSchedulerService.instance.markNotificationTapped(_initialNotificationTaskId!));
+    }
     _handleNotificationRouting();
     _handleTaskToasts();
     _scheduleUnreadTaskBanner();
@@ -137,6 +140,10 @@ class _ErrandAppState extends State<ErrandApp> {
         return;
       }
       if (pending != null && mounted) {
+        final taskId = (pending['taskId'] as num?)?.toInt();
+        if (taskId != null && taskId > 0) {
+          unawaited(TaskSchedulerService.instance.markNotificationTapped(taskId));
+        }
         TaskSchedulerService.instance.clearPendingNotificationClick();
         _navigateToUnreadTasks();
       }
@@ -146,6 +153,9 @@ class _ErrandAppState extends State<ErrandApp> {
     _notifSub = TaskSchedulerService.instance.notificationClicks.listen((args) {
       if (mounted) {
         final taskId = (args['taskId'] as num?)?.toInt();
+        if (taskId != null && taskId > 0) {
+          unawaited(TaskSchedulerService.instance.markNotificationTapped(taskId));
+        }
         if (_initialUnreadRouteActive) {
           if (_initialNotificationTaskId == null ||
               taskId == _initialNotificationTaskId) {
@@ -205,9 +215,7 @@ class _ErrandAppState extends State<ErrandApp> {
                 ? SnackBarAction(
                     label: 'View',
                     textColor: Colors.white,
-                    // Route through the shared navigator so the unread-tab
-                    // dedup flags and banner dismissal stay consistent.
-                    onPressed: _navigateToUnreadTasks,
+                    onPressed: _navigateToUpcomingTasks,
                   )
                 : null,
           ),
@@ -215,7 +223,19 @@ class _ErrandAppState extends State<ErrandApp> {
     });
   }
 
-  void _navigateToUnreadTasks() {
+  void _navigateToUpcomingTasks() {
+    rootScaffoldMessengerKey.currentState?.hideCurrentSnackBar();
+    AppProfile.mark('upcoming_route_push');
+    appNavigatorKey.currentState?.push(
+      PageRouteBuilder(
+        transitionDuration: Duration.zero,
+        reverseTransitionDuration: Duration.zero,
+        pageBuilder: (_, _, _) => const ManageTasksScreen(initialTabIndex: 0),
+      ),
+    );
+  }
+
+  void _navigateToUnreadTasks({String initialLogFilter = 'all'}) {
     _notificationRouteOpened = true;
     if (mounted) {
       setState(() => _showStartupUnreadBanner = false);
@@ -226,7 +246,10 @@ class _ErrandAppState extends State<ErrandApp> {
       PageRouteBuilder(
         transitionDuration: Duration.zero,
         reverseTransitionDuration: Duration.zero,
-        pageBuilder: (_, _, _) => const ManageTasksScreen(initialTabIndex: 1),
+        pageBuilder: (_, _, _) => ManageTasksScreen(
+          initialTabIndex: 1,
+          initialLogFilter: initialLogFilter,
+        ),
       ),
     );
   }
@@ -288,7 +311,10 @@ class _ErrandAppState extends State<ErrandApp> {
         if (_routeName(settings.name ?? '/') == _manageTasksUnreadRoute) {
           return MaterialPageRoute(
             settings: settings,
-            builder: (_) => const ManageTasksScreen(initialTabIndex: 1),
+            builder: (_) => const ManageTasksScreen(
+              initialTabIndex: 1,
+              initialLogFilter: 'all',
+            ),
           );
         }
         debugPrint('[Startup] Unknown initial route "${settings.name}", showing chat.');

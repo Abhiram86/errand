@@ -217,6 +217,20 @@ class AgentRunner {
             LocationService.instance.lastKnown?.toCoarseSummary(),
       ),
       cancelToken: token,
+      isCancelled: db != null
+          ? () async {
+              try {
+                final row = await (db.selectOnly(db.schedulerTasks)
+                      ..addColumns([db.schedulerTasks.status])
+                      ..where(db.schedulerTasks.id.equals(taskId)))
+                    .getSingleOrNull();
+                final status = row?.read(db.schedulerTasks.status);
+                return status == 'cancelled';
+              } catch (_) {
+                return false;
+              }
+            }
+          : null,
       supportsInput: (modality) =>
           ModelCatalogService.supportsInput(
             selectedModel,

@@ -1,13 +1,13 @@
 # Next Plan — Status & Roadmap
 
-> **Updated Sep 2026.** P0 through P5a (v0.5.5), v0.5.6, P5b (memory subsystem, schema v5), P6a (embedded browser agent tools, v0.6.0), v0.6.1 (background OTA updates, post-update release notes, model sorting by release date, dynamic provider defaults, unified options modal sheet, animated composer glow), v0.6.2 (default working directory to Documents/Errand, filesystem hygiene, scratch directory auto-creation), v0.6.3 (interactive bash safety modal, mid-stream LLM retry, Google OAuth user-agent sanitization, multi-window popups, overflow-free browser toolbar, and live model auto-selection on provider configuration), v0.6.4 (hardened OTA update prompts, session-scoped dismissal, manual sidebar check, post-install cleanup, and error feedback), v0.7.0 (autonomous background task scheduler, schema v7, native AlarmManager, headless AgentRunner, TaskToastService, and ManageTasksScreen), v0.7.2, and v0.7.3 (headless streaming runner, drift-free anchor grid recurring scheduler, notify on fresh kill, schema v8, borderless task management, component decomposition) are all **SHIPPED**.
-> **Active Milestone:** **P6b — Browser Rough Edges & Android PlatformView Optimizations**.
+> **Updated Sep 2026.** P0 through P11 are shipped. The current codebase is schema v8. `flutter analyze` reports no Dart issues, all 569 tests pass, and Android lint currently fails with four API-level errors plus non-blocking warnings.
+> **Active Milestone:** **P12 — Reliability, lifecycle, security, and performance hardening**. P6b browser PlatformView work remains queued behind P12.
 
 ---
 
 ## 🧭 Active & Upcoming Roadmap
 
-### 🟡 P6b — Browser Rough Edges & Android PlatformView Optimizations (ACTIVE)
+### 🟡 P6b — Browser Rough Edges & Android PlatformView Optimizations (QUEUED)
 
 Goal: Smooth out transitions, eliminate PlatformView reparenting, and decouple Android window insets from embedded web rendering.
 
@@ -213,9 +213,86 @@ Goal: Close the remaining scheduler gaps — silent failures, rigid intervals, a
 
 ---
 
+### P12: Reliability, lifecycle, security, and performance hardening (ACTIVE)
+
+Goal: Remove the confirmed correctness and memory-safety gaps found in the September 2026 codebase review, ordered by severity. P12 is a stabilization milestone. It must preserve the shipped P0-P11 behavior while making safety checks fail closed, lifecycle operations deterministic, background execution observable/cancellable across isolates, and large-data paths bounded.
+
+#### Review baseline
+
+- `flutter analyze`: no issues.
+- `flutter test`: 569 tests passed.
+- `./gradlew :app:lintLiteDebug :app:lintFullDebug`: reported with four Android `NewApi` errors and 40 warnings (consistent with the three unguarded API-26 calls below; lint not re-run locally).
+- No source files were changed by the review.
+
+#### P12.1 Background-engine transports (highest severity)
+
+Headless background runs cannot use the `intent`/`location` channels: `setupEngineChannels` wires only `task_scheduler` + `app_info`, so calls fail with `MissingPluginException`. This silently breaks the autonomous flows P9 promised, and undercuts the "explicit broadcasts allowed" headless policy.
+
+1. **Wire transports or shrink the registry.** Either register `intent` (non-UI subset) and `location` (cached fix) on the background engine, or remove tools from the headless registry when their transport cannot run there.
+2. **Add cross-isolate cancellation.** Cancellation today is the in-process `_runningTokens` map; the DB `cancelled` status is only re-read after the run finishes. Forward cancellation to the owning isolate and add a durable DB check mid-run (per turn/tool call).
+3. **Refresh progress beyond resume.** The `resumed` invalidation hook exists; add a bounded visible-screen polling fallback or task-change events so open screens cannot go stale.
+4. **Renew the wake lock per queued task.** Today a single 15-minute lock covers the whole queue, so a second queued 10-minute task runs with ~1 minute of lock left. Refresh before each item, release when the queue empties.
+
+#### P12.2 Shell policy and headless execution correctness
+
+1. **Fail closed on proven bypasses (P0).** Executed and confirmed: `$VAR` in command position (`X="rm -rf /sdcard"; $X`) and the `env` prefix (`env rm -rf /sdcard`) both return `safe`. Treat unanalyzable expansions as untrusted. `eval`/`source`/`sh -c`/substitutions/`find -exec` are already handled; aliases need nothing (non-interactive shell never expands them). Add regressions for the two confirmed vectors.
+2. **Serialize same-batch `save_report`.** Classify it stateful so concurrent calls in one batch run in order; last-wins is only proven across sequential turns.
+3. **Correct unread semantics.** Count only terminal logs whose notification was actually sent; exclude `running` rows and `notify: false` logs; mark notification taps consistently.
+
+#### P12.3 Scheduler UI and database performance
+
+- Replace full-table watches with bounded SQL queries and cursor pagination.
+- Match the sidebar Dart sort to the database `(updatedAt, id)` cursor: `_sortedConversations` re-sorts by `updatedAt` alone, so timestamp ties can jump rows or skip them across pages.
+- Query counts separately and avoid loading all logs for task-only tabs.
+- Move synchronous scratch scanning off the UI isolate.
+- (Done, dropped from scope: sidebar ordering already is an `(updatedAt, id)` cursor with matching pagination.)
+
+#### P12.4 Browser and widget lifecycle
+
+- Dispatch one browser click instead of both a synthetic event and `el.click()`.
+- Complete or fail pending load waiters when navigation closes or stops (today they hang to the 15s timeout).
+- Fix headless browser disposal so it cannot notify a disposed `ChangeNotifier`.
+- Make busy-route back navigation cancel or finalize the active turn safely.
+- Check `mounted` after async work in task preview widgets and close short-lived HTTP clients.
+
+#### P12.5 Conversation persistence
+
+- Serialize or coalesce overlapping saves (`_persistNow` fires `unawaited` with no mutex). Saves are otherwise already debounced (600ms) with identity-based merge — no rescan/rewrite problem exists.
+- Bind pending persistence to one conversation and flush it before switching or disposal.
+- Gate config-dependent actions on explicit settings readiness.
+
+#### P12.6 OTA, API guards, and flavor tests (small, grouped)
+
+- Require exact APK length, add total/inactivity timeouts, and validate a release hash or signature when available. (Partial-file cleanup already exists.)
+- Guard three API-26 calls for minSdk 24: `startForegroundService` (AgentForegroundService, crash if reached), `getHintText` (narrow: Full + a11y + old device), `setColorized` (caught → silent notification failure, not crash).
+- Fix the notification permission request code: it reuses `LOCATION_PERMISSION_CODE` (`9002`), so a notification grant/deny can resolve a pending location result with the wrong answer. Use a dedicated code with an explicit (ignored) branch.
+- Lite boundary is defined (manifest strip + runtime omission + README contract); add a test locking it.
+- Add CI for Flutter analysis, tests, and both Android lint variants.
+
+#### P12.7 Bounded memory and untrusted input (backlog-grade)
+
+- Add aggregate per-turn byte budgets for media, screenshots, and `contentParts` (today only a 20MB per-file cap).
+- Replace count-only document caching with a byte-bounded true LRU and in-flight parse deduplication.
+- Bound the zero-key `webfetch` fallback with a raw response cap and inactivity timeout. (Tavily path and fallback timeouts/caps already exist — verify, don't rebuild.)
+- Sandbox generated HTML report previews.
+
+#### P12 acceptance criteria
+
+- Background headless runs can use every registered headless tool's transport, and cancellation reaches the owning isolate mid-run.
+- Destructive commands cannot bypass safety through `$VAR` command position or `env` prefix (proven vectors have regressions).
+- `save_report` calls in one batch execute in order; unread counts reflect terminal, actually-notified runs.
+- Task UI refreshes after background-isolate writes without loading unbounded result sets.
+- Browser clicks fire once, pending waits resolve on close/stop, and headless disposal is safe.
+- Overlapping saves are serialized; APK downloads time out and reject mismatched files.
+- Android lint reports zero errors for Full and Lite; Lite test locks the permission boundary.
+
+---
+
 ### ✅ P6c — Filesystem Hygiene, Interactive Safety & Browser OAuth (COMPLETED)
 
 Goal: Protect user storage from clutter, safeguard system integrity with session-bound interactive confirmation, and enable seamless browser authentication.
+
+P12 narrows the static command parser concern below to the two executed bypasses (`$VAR` in command position, `env` prefix); `eval`/`source`/`sh -c`/substitutions/`find -exec` are already handled and aliases never expand in non-interactive shells. The current shipped classifier is bypassable through exactly those two vectors, so the policy is not yet considered hardened.
 
 1. **Storage & Working Directory Hygiene:** (SHIPPED in v0.6.2)
    - Default all agent-created files and text outputs to `/storage/emulated/0/Documents/Errand/` instead of cluttering storage root (`/storage/emulated/0/`).

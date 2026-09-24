@@ -1,6 +1,8 @@
 # Errand (Flutter) — Architecture Overview
 
-This document maps the current implementation: a streaming chat UI, an OpenAI-compatible agent loop with reasoning, file reading (+ media) + on-device bash shell + web + Android intent + embedded browser + memory + autonomous task scheduler + accessibility tools, structured document readers, Drift persistence (v7, memories, scheduled tasks), ToolOutputFileService output caching, Full vs. Lite build flavors with split ABIs, and Android shared-storage access. Everything except the LLM and Tavily runs on-device.
+This document maps the current implementation: a streaming chat UI, an OpenAI-compatible agent loop with reasoning, file reading (including media) + on-device bash shell + web + Android intent + embedded browser + memory + autonomous task scheduler + accessibility tools, structured document readers, Drift persistence (schema v8, memories, scheduled tasks), `ToolOutputFileService` output caching, Full vs. Lite build flavors with split ABIs, and Android shared-storage access. Conversation state and tool execution run on-device. Network services include the configured LLM, Tavily when configured, `models.dev` metadata, web fetches, and GitHub release checks.
+
+This document describes shipped behavior, not only the intended design. Known correctness, lifecycle, security, and performance gaps are summarized in [Known P12 reliability gaps](#known-p12-reliability-gaps) and tracked in detail in `next_plan.md` § P12.
 
 ## Big picture
 
@@ -36,7 +38,7 @@ tool registry (lib/agent/tool_registry.dart)
    WorkingDirectory ──▶ dart:io     (channel "intent") (memories)  (InAppWebView)
    (root+current)      File/Dir      MainActivity.kt       │             │
           │                  │       (launch / BAL safe)   ▼             ▼
-          ▼                  │                     SQLite (Drift v7) BrowserWidget
+          ▼                  │                     SQLite (Drift v8) BrowserWidget
    document readers          │                     tasks/memories    (dock/preview/
      PDF · DOCX/XLSX/PPTX    │                                        full-screen)
      → LogicalDocument       │
@@ -84,7 +86,7 @@ ChatScreen keeps `List<String> _pendingAttachments` (`lib/main.dart`) as the **s
 
 - **`tool.dart`** defines the LLM-facing `Tool` schema (`name`, `description`, `parameters`, `handler`) and parsed `ToolCall` (`id`, `name`, `arguments`). `ToolCall.toJson()` serializes arguments as a JSON string as required by OpenAI-compatible APIs. `requiresValidation` is internal metadata for future mutation tools; `onDispose`/`dispose()` releases tool-held resources (e.g. cached open documents).
 - **`tool_registry.dart`** registers the current tools and safely executes a call, converting handler exceptions into `ToolCallResult.failure`. `ToolRegistry.defaults({currentDir, workingDirectory, supportsInput, getAttachedFiles, hasTavilyKey, enableA11yTools = true, shellService, getCancelToken})` contains `read` + `bash` + `websearch` + `webfetch` + `intent` + `attached_files`, and conditionally includes `screen` + `act` when `enableA11yTools` is true (Full flavor). In the Lite flavor, `ErrandAccessibilityService` is removed from `AndroidManifest.xml` and `A11yService.isSupportedSync` evaluates to false, omitting accessibility tools dynamically without branching code. `bash` executes on-device shell commands and synchronizes `workingDirectory.current` (superseding the retired `workspaceTool`). `supportsInput` (from `ModelCatalogService.supportsInput`) lets `read` fail honestly when the current model lacks `image`/`audio`/`video` support; `getAttachedFiles` lets `read` resolve file-picker cache paths outside the workspace and lets `attached_files` list the conversation inventory. `getCancelToken` wires the active turn's stop button into child process cancellation. `dispose()` fans out to every tool.
-- **`ToolRegistry.headless({...})`** builds the background-run toolset: `read`, `bash`, `websearch`, `webfetch`, `intent`, `location`, `memory`, `browser`, `schedule_task`, plus `save_report` — and strictly excludes `screen`, `screen_act`, `act`, and `attached_files`. Passes `isHeadless: true` to `bash` (destructive ops fail fast), `memory` (writes blocked, `find`/`read` allowed), `browser` (offscreen `HeadlessBrowserService`), `schedule_task` (create/delete blocked; edits restricted to `currentTaskId`), and `intent` (only explicit non-UI broadcasts; activity launches blocked).
+- **`ToolRegistry.headless({...})`** builds the background-run toolset: `read`, `bash`, `websearch`, `webfetch`, `intent`, `location`, `memory`, `browser`, `schedule_task`, plus `save_report` — and strictly excludes `screen`, `screen_act`, `act`, and `attached_files`. Passes `isHeadless: true` to `bash` (destructive ops fail fast), `memory` (writes blocked, `find`/`read` allowed), `browser` (offscreen `HeadlessBrowserService`), `schedule_task` (create/delete blocked; edits restricted to `currentTaskId`), and `intent` (only explicit non-UI broadcasts; activity launches blocked). Current limitation: `TaskExecutionService` installs only the `task_scheduler` and `app_info` channels in the background engine, so the registered headless `intent` and `location` tools do not yet have matching native handlers there. The current native intent transport also launches activities rather than sending broadcasts. These gaps are tracked in P12.
 - **`agent_loop.dart`** exposes `run(Conversation)`. It builds the LLM message array (`system` + `_toLlmHistory`), injects the live system prompt each turn, and drives streaming (`chatStream`) or non-streaming (`chat`) via `LlmClient`.
   - `UserMessage.attachedUris` is rendered in `_toLlmHistory` as `text + "\n\n[Attached files:\n1. basename — uri]"` (no extra tool call needed for discovery).
   - An `AssistantMessage` immediately followed by `ToolMessage`s is merged into the synthesized assistant `tool_calls` message (carrying its text + first reasoning block); standalone consecutive `ToolMessage`s are reconstructed the same way. Either shape avoids back-to-back `assistant` roles, which strict providers reject.
@@ -125,7 +127,7 @@ Keys are configured in-app (header gear icon → Settings sheet, Global tab) and
   - Interacts with Android's Toybox/Toolbox toolchain (`ls`, `cat`, `grep`, `find`, `sed`, `awk`, `cut`, `sort`, `uniq`, `wc`, `tr`, `head`, `tail`, `mkdir`, `cp`, `mv`, `rm`, `tar`, `gzip`, `df`, `du`, `ps`).
   - Directory sync: Automatically synchronizes `workingDirectory.current` on `cd` commands or `working_directory` arguments so subsequent tool calls (and system prompt builds) see the updated directory.
   - Execution safeguards: 30s default timeout per command, live cancellation abort wired to the chat UI stop button, and 512 KB stdout/stderr memory buffer guards.
-  - Draft safety policy: Strictly blocks fork bombs, `su`/root escalation, and device reboots; requires explicit user confirmation flag `confirm_destructive: true` for bulk deletions and `rm -rf`.
+  - Draft safety policy: blocks a known list of fork bombs, privilege escalation, device reboots, block-device writes, and system-path deletion/mutation. Destructive commands require explicit confirmation in the UI and fail closed in headless mode. The current static analyzer does not understand shell variables or every wrapper such as `env`; commands such as `x=rm; $x -rf …` can currently be classified safe. P12 replaces or hardens this parser and adds bypass regressions.
   - Output spill: Results exceeding 6,000 characters automatically cache to disk via `ToolOutputFileService`.
 
 - **`workspace` (`legacy_workspace_tool.dart:legacyWorkspaceTool`) [RETIRED / LEGACY]** — former directory router multiplexing `legacyListTool`/`legacyFindTool`/`legacyCdTool` (+ `pwd`). Retired from default `ToolRegistry.defaults` in favor of `bash`. Kept in the codebase with `legacy_` prefixes for backwards compatibility with persisted conversation history and unit test suites.
@@ -362,18 +364,42 @@ the universal context-protection layer for data-heavy tools:
 - **`attached_files` tool** (`lib/tools/attached_files_tool.dart`) — lists the conversation's global inventory (`Conversation.attachedFileUris`) so the model can discover history without guessing.
 - **Staging vs history**: `ChatScreen._pendingAttachments` (in-memory, shown as pre-send card) → on send snapshotted into `UserMessage.attachedUris` (`ConversationMessages.attachedUrisJson`, v4) + appended to `ConversationAttachments` (global). `_toLlmHistory` renders `UserMessage.attachedUris` as the `[Attached files: …]` text list; `estimateLlmMessageTokens` sums `List` part payloads directly (flat vision/audio/video tile rates when opaque) for the budget guard.
 
+## Known P12 reliability gaps
+
+The following are confirmed in the current code and are the implementation target for `next_plan.md` § P12:
+
+1. **Shell policy bypass:** command variables and wrappers such as `env` can hide destructive commands from `ShellSafetyCheck`; headless execution inherits the misclassification.
+2. **Android 24/25 compatibility:** `startForegroundService`, `AccessibilityNodeInfo.getHintText`, and `Notification.Builder.setColorized` are called without API-26 guards. Android lint currently fails with four errors.
+3. **Headless channel contract:** the background engine does not register the registered `intent` or `location` channels, and the native intent path launches activities instead of sending broadcasts.
+4. **Cross-isolate cancellation and refresh:** cancel/delete cannot reach a `CancelToken` owned by the background engine, and main-isolate Drift watches do not automatically receive later writes from that engine.
+5. **Active-route disposal:** Android back can dispose `ChatScreen` during a busy turn without cancelling the loop, tools, or pending confirmation; the final answer can be lost.
+6. **Startup readiness:** chat actions can run before the asynchronous settings/provider hydration completes; load failures on the unawaited chat config future are not surfaced.
+7. **Aggregate memory limits:** media and screenshots have per-file limits but no aggregate byte/request budget; structured-document caching is count-based and same-file concurrent reads can parse repeatedly.
+8. **Task management queries:** `ManageTasksScreen` loads all task and log rows and paginates in Dart; synchronous scratch scanning can block its first frame.
+9. **Conversation write amplification:** every persistence pass scans all message identities and rewrites the loaded window; a single debounce timer can be lost or retargeted by conversation switching, and lifecycle transitions can overlap writes.
+10. **Unbounded web input:** the zero-key `webfetch` fallback buffers and parses the full HTTP body before applying its output cap.
+11. **Browser correctness:** DOM clicks can fire twice; a pending load is not completed by `close()`; asynchronous headless disposal can notify a disposed `ChangeNotifier`.
+12. **Untrusted HTML report preview:** task HTML is loaded in a JavaScript-capable WebView without a documented navigation/script sandbox.
+13. **Scheduler semantics:** the 15-minute service wake lock may expire during a longer queue; unread counts include running and `notify: false` logs; `save_report` can run concurrently and race its collector/filename.
+14. **Sidebar pagination:** UI sorting omits the database's `id` tie-breaker, so equal `updatedAt` values can skip rows.
+15. **OTA download validation:** APK verification accepts oversized responses and the stream has no total/inactivity timeout.
+16. **Android permission correlation (fixed):** the notification permission request reused the location request code (`9002`), so its result could resolve a pending location future. Now uses a dedicated code with an explicit no-op branch.
+17. **Widget/resource cleanup:** `TaskFilePreviewScreen` can call `setState` after disposal, and several short-lived `ModelCatalogService`/`ModelsDevService` HTTP clients lack deterministic close paths.
+
+These are tracked as implementation work, not hidden assumptions. P12 acceptance tests should preserve the existing 569 passing tests while adding regression coverage for every item.
+
+---
+
 ## Build flavors & release packaging
 
 Errand is structured into two Gradle product flavors (`android/app/build.gradle.kts`):
 
 - **Full (`com.errand.errand`)**:
-  - Full feature set including OS automation.
-  - Manifest includes `ErrandAccessibilityService` bound via `BIND_ACCESSIBILITY_SERVICE` to power the `screen` and `act` accessibility tools.
-  - Declares system permissions for broad automation (`MANAGE_EXTERNAL_STORAGE`, `RECORD_AUDIO`, `SET_ALARM`, `SCHEDULE_EXACT_ALARM`, `ACCESS_NETWORK_STATE`, `ACCESS_WIFI_STATE`, `WAKE_LOCK`, `VIBRATE`, `FOREGROUND_SERVICE_DATA_SYNC`, `POST_NOTIFICATIONS`, `SYSTEM_ALERT_WINDOW`).
+  - Includes `ErrandAccessibilityService`, contacts/calendar permissions, overlay/battery-exemption permissions, and the base feature set.
+  - Current Android lint fails because several native calls require API 26 while the effective `minSdk` is 24. P12 adds guards and makes lint pass for both flavors.
 - **Lite (`com.errand.errand.lite`)**:
-  - Lean, privacy-focused build without accessibility service or sensitive automation permissions.
-  - Manifest overlay (`android/app/src/lite/AndroidManifest.xml`) strips the service declaration via `<service android:name=".ErrandAccessibilityService" tools:node="remove" />`.
-  - **Dynamic runtime detection**: Kotlin's `"isSupported"` method checks `packageManager.queryIntentServices(...)` for the accessibility service within Errand's package. When stripped in Lite, it returns `false`, causing Dart's `A11yService.isSupportedSync` to evaluate to false. `ToolRegistry.defaults(enableA11yTools: false)` then cleanly omits `screen` and `act` without needing Dart compile-time branches or flavor forks.
+  - Removes `ErrandAccessibilityService` through `android/app/src/lite/AndroidManifest.xml`, and runtime support detection omits `screen`/`screen_act`.
+  - It is not a permission-minimal build today. The merged manifest still inherits `MANAGE_EXTERNAL_STORAGE`, `RECORD_AUDIO`, location, `QUERY_ALL_PACKAGES`, and `REQUEST_INSTALL_PACKAGES` from the base manifest. Only contacts/calendar, overlay, and battery-exemption permissions are Full-only. P12 will decide and document the intended privacy boundary before changing the manifest.
 - **Split ABI Releases**:
   - Builds are published using split per ABI (`arm64-v8a`, `armeabi-v7a`, `x86_64`), producing 6 lean APKs (3 Full + 3 Lite) with architecture-specific native binaries.
 
@@ -382,14 +408,14 @@ Errand is structured into two Gradle product flavors (`android/app/build.gradle.
 - ✅ Done Sep 2026: mid-stream retry with progress-based budget reset, `onReset` buffer cleanup, `onRetry` UI indicator, and stream-inactivity watchdog (`_streamInactivityTimeout`).
 - ✅ Done Sep 2026: headless `save_report` tool with `HeadlessReportCollector` (runner-owned reports, sandboxed timestamped filenames, last-call-wins, final-answer fallback, keep-10 pruning).
 - ✅ Done Sep 2026: per-model dynamic budget + pre/mid-step auto-compaction (was: entry-only truncation, `maxTurns` 18, full compaction TODO) — see `context_budget.dart: ContextBudget`.
-- ✅ Done Sep 2026: Office/PDF streaming hardening (`_StreamingOpenXmlPackage` guards, lazy `PooledPdfDocument` pages, `structuredDocuments` LRU + stat invalidation).
+- ✅ Done Sep 2026: Office/PDF safety guards and lazy PDF page extraction. P12 still replaces insertion-order document caching with a byte-bounded true LRU and deduplicates same-file concurrent parses.
 - ✅ Done Sep 2026: Large tool output file-caching (`ToolOutputFileService` + 10-min TTL + 2k/2k preview + `read` tool cache resolution).
 - ✅ Done Sep 2026: Accessibility outline viewport partitioning (visible vs off-screen separation, upfront ref mapping, interactive line prioritization, jitter compression).
 - ✅ Done Sep 2026: On-device shell execution tool (`bashTool` + `ShellService`, `/system/bin/sh`, Toybox/Toolbox, timeouts, live cancellation, Draft confirmation policy for destructive mutations) fully superseding the legacy `workspace` tool.
 - ✅ Done Sep 2026: Android custom intent normalization (core actions, typed extra preservation for primitives, string lists & integer lists, null-skipping, `logIntent` boundary debugging, BAL safety).
 - ✅ Done Sep 2026: Tool UX refinements (`ToolMessageBubble` one-tap collapse via `ExpansibleController`, debug full tool-call copying, friendly action headers, and `ToolGroupBubble` sequential tool call grouping with animated morphing).
 - ✅ Done Sep 2026: Intent on-demand documentation tool (`action: 'docs'`) with verified specifications for `alarm`, `calendar`, `timer`, and `location`/`maps`.
-- ✅ Done Sep 2026: Architectural modularization decomposing `lib/main.dart` from 2,570 lines to 41 lines.
+- ✅ Done Sep 2026: Architectural modularization moved app/chat ownership out of the old monolithic entrypoint. The current `lib/main.dart` is 302 lines and now owns startup routing, notification handoff, root keys, and the headless entrypoint.
 - ✅ Done Sep 2026: Full vs. Lite build flavors with dynamic accessibility service stripping and split-per-ABI release packaging.
 - ✅ Done Sep 2026 (v0.6.1): In-app background OTA update system with flavor/ABI matching, atomic download verification, 2-day TTL cache, and post-update first launch release notes sheet (`UpdateService`).
 - ✅ Done Sep 2026 (v0.6.1): Dynamic provider defaulting and model sorting by release date via `models.dev` catalog.
@@ -398,9 +424,10 @@ Errand is structured into two Gradle product flavors (`android/app/build.gradle.
 - ✅ Done Sep 2026 (v0.6.2): Default working directory to `/storage/emulated/0/Documents/Errand/`, filesystem output hygiene in system prompt, and automatic `.scratch/` directory creation.
 - ✅ Done Sep 2026 (v0.6.3): Interactive bash safety confirmation modal (`Accept` / `Deny` / `Trust`), mid-stream LLM retry with on-reset buffer cleanup and UI indicator, Google OAuth user-agent sanitization & multi-window popups, compact overflow-free browser toolbar, and live model auto-selection on provider configuration.
 - ✅ Done Sep 2026 (v0.6.4): Hardened OTA update lifecycle (session-scoped dismissal, manual sidebar update check, post-install state reconciliation, download/install error toasts, and tag-verified release notes).
-- ✅ Done Sep 2026 (v0.7.0): Autonomous background task scheduler (schema v7: scheduler_task & scheduler_task_log, exact Android AlarmManager scheduling, headless AgentRunner execution loop, direct .scratch/ output report collection, TaskToastService, and ManageTasksScreen with status filters, pagination, and file previews).
+- ✅ Done Sep 2026 (v0.7.0): Autonomous background task scheduler (schema v7 tables, now migrated to schema v8; exact Android AlarmManager scheduling, headless AgentRunner execution, `.scratch` report collection, TaskToastService, and ManageTasksScreen with status filters, in-memory display limits, and file previews).
 - ✅ Done Sep 2026 (v0.7.2): Scheduler correctness fixes (resume status synchronization, ghost notification cleanup, deletion race safeguards).
 - ✅ Done Sep 2026 (v0.7.3): Headless streaming runner with 5-attempt retry budget, drift-free anchor grid recurring scheduler, notify on fresh kill, schema v8 indexing, granular task countdowns, and component decomposition.
+- P12 reliability/lifecycle/performance hardening: shell policy, Android API guards, headless channels, cross-isolate cancel/refresh, aggregate memory caps, task query pagination, persistence serialization, browser/report sandboxing, scheduler edge cases, OTA validation, and lifecycle cleanup. See `next_plan.md` § P12.
 - Safe-edit tool (`write`/`edit_file` with diff preview + undo) — needs the write-policy decision originally blocking it.
 - Local retrieval (embeddings/FTS) over recent docs for context budgeting.
 - Evaluate SAF as an alternative to `MANAGE_EXTERNAL_STORAGE` for Play distribution.

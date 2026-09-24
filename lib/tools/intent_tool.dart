@@ -122,10 +122,17 @@ Tool intentTool({
               androidAction == 'android.intent.action.WEB_SEARCH' ||
               androidAction == 'android.intent.action.SHOW_ALARMS' ||
               androidAction == 'android.intent.action.SHOW_TIMERS' ||
+              androidAction == 'android.intent.action.SET_ALARM' ||
+              androidAction == 'android.intent.action.SET_TIMER' ||
+              androidAction == 'android.intent.action.DISMISS_ALARM' ||
+              androidAction == 'android.intent.action.DISMISS_TIMER' ||
+              androidAction == 'android.intent.action.SNOOZE_ALARM' ||
+              androidAction == 'android.intent.action.INSERT' ||
+              androidAction == 'android.intent.action.EDIT' ||
               androidAction.startsWith('android.media.action.')) {
             return ToolCallResult.failure(
               call.id,
-              'Android intent action "$androidAction" opens an interactive UI window and is blocked in background scheduled tasks.',
+              'Android intent action "$androidAction" opens an interactive UI window or activity and is blocked in background scheduled tasks (Android BAL restrictions). Only explicit broadcasts are allowed.',
               type: 'headless_ui_intent_blocked',
             );
           }

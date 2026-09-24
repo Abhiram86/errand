@@ -38,6 +38,29 @@ class _SpaceyTaskRowState extends State<SpaceyTaskRow> {
   Widget build(BuildContext context) {
     final task = widget.task;
     final statusColor = _getStatusColor(task.status);
+    final isRecurring = task.type == 'recurring';
+
+    // Logs action button color based on last execution status
+    Color logsIconColor = kMuted;
+    String logsTooltip = 'View Logs & Output';
+    if (task.totalRuns > 0 || widget.logs.isNotEmpty) {
+      final lastLog = widget.logs.cast<SchedulerTaskLogRow?>().firstWhere(
+            (l) => l != null && l.status != 'running',
+            orElse: () => null,
+          );
+      if (lastLog != null) {
+        if (lastLog.status == 'success') {
+          logsIconColor = Colors.greenAccent;
+          logsTooltip = 'View Logs & Output (Last run succeeded)';
+        } else if (lastLog.status == 'failed') {
+          logsIconColor = kDanger;
+          logsTooltip = 'View Logs & Output (Last run failed)';
+        } else if (lastLog.status == 'timeout') {
+          logsIconColor = Colors.orangeAccent;
+          logsTooltip = 'View Logs & Output (Last run timed out)';
+        }
+      }
+    }
 
     // Model override resolved + memoized by the parent list (see _modelFor).
     final overriddenModel = widget.modelOverride;
@@ -78,21 +101,30 @@ class _SpaceyTaskRowState extends State<SpaceyTaskRow> {
                 ),
               ),
               const SizedBox(width: 8),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                decoration: BoxDecoration(
-                  color: kBorder.withValues(alpha: 0.5),
-                  borderRadius: BorderRadius.circular(5),
-                ),
-                child: Text(
-                  task.type == 'recurring' ? 'RECURRING' : 'ONE-OFF',
-                  style: const TextStyle(
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Icon(
+                    isRecurring ? Icons.repeat_rounded : Icons.bolt_rounded,
+                    size: 11,
                     color: kMuted,
-                    fontSize: 9,
-                    fontWeight: FontWeight.w600,
-                    letterSpacing: 0.2,
                   ),
-                ),
+                  const SizedBox(width: 3.5),
+                  Padding(
+                    padding: const EdgeInsets.only(top: 1.0),
+                    child: Text(
+                      isRecurring ? 'RECURRING' : 'ONE-OFF',
+                      style: const TextStyle(
+                        color: kMuted,
+                        fontSize: 9.5,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: 0.2,
+                        height: 1.0,
+                      ),
+                    ),
+                  ),
+                ],
               ),
               if (overriddenModel != null) ...[
                 const SizedBox(width: 6),
@@ -220,8 +252,8 @@ class _SpaceyTaskRowState extends State<SpaceyTaskRow> {
               const SizedBox(width: 3),
               TaskActionButton(
                 icon: Icons.receipt_long_rounded,
-                tooltip: 'View Logs & Output',
-                color: kMuted,
+                tooltip: logsTooltip,
+                color: logsIconColor,
                 onTap: widget.onViewLogs,
               ),
               const SizedBox(width: 3),
@@ -258,7 +290,10 @@ class _SpaceyTaskRowState extends State<SpaceyTaskRow> {
   Future<void> _runNow(BuildContext context, int taskId) async {
     setState(() => _executing = true);
     try {
-      final success = await TaskSchedulerService.instance.executeTask(taskId);
+      final success = await TaskSchedulerService.instance.executeTask(
+        taskId,
+        allowCompleted: true,
+      );
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(

@@ -99,6 +99,7 @@ class AgentLoop {
     int? maxConsecutiveSameToolErrors,
     this.systemPromptBuilder,
     this.cancelToken,
+    this.isCancelled,
     this.supportsInput,
     this.onEvent,
     this.onTextDelta,
@@ -114,6 +115,8 @@ class AgentLoop {
         compactionTimeout = compactionTimeout ?? defaultCompactionTimeout,
         maxConsecutiveSameToolErrors =
             maxConsecutiveSameToolErrors ?? defaultMaxConsecutiveSameToolErrors;
+
+  final Future<bool> Function()? isCancelled;
 
   Future<String> run(Conversation conversation) async {
     // OPT-07: individual tool results are head-clamped at the boundary.
@@ -134,6 +137,10 @@ class AgentLoop {
 
     for (var turn = 0; turn < maxTurnCount; turn++) {
       if (cancelToken?.isCancelled ?? false) throw const LlmStoppedException();
+      if (isCancelled != null && await isCancelled!()) {
+        cancelToken?.cancel();
+        throw const LlmStoppedException();
+      }
       final systemPromptBuilder = this.systemPromptBuilder;
       if (systemPromptBuilder != null) {
         if (messages.isNotEmpty && messages[0]['role'] == 'system') {
@@ -175,6 +182,11 @@ class AgentLoop {
         String? abortReason;
         for (var i = 0; i < message.toolCalls.length; i++) {
           final call = message.toolCalls[i];
+          if (cancelToken?.isCancelled ?? false) throw const LlmStoppedException();
+          if (isCancelled != null && await isCancelled!()) {
+            cancelToken?.cancel();
+            throw const LlmStoppedException();
+          }
           // Fail-fast gates DEPENDENT (stateful) followers only: one failure
           // says nothing about stateless siblings (open 3 URLs, first 404s),
           // so they still run. The 'skipped' type keeps these markers
@@ -199,6 +211,11 @@ class AgentLoop {
           }
         }
       } else {
+        if (cancelToken?.isCancelled ?? false) throw const LlmStoppedException();
+        if (isCancelled != null && await isCancelled!()) {
+          cancelToken?.cancel();
+          throw const LlmStoppedException();
+        }
         results.addAll(
           await Future.wait(
             message.toolCalls.map((call) => _registry.execute(call)),
@@ -282,6 +299,7 @@ class AgentLoop {
     if (call.name == 'act' || call.name == 'screen_act') return true;
     if (call.name == 'intent') return true;
     if (call.name == 'bash') return true;
+    if (call.name == 'save_report') return true;
     if (call.name == 'workspace' && call.arguments['action'] == 'cd') return true;
     if (call.name == 'screen' && call.arguments['action'] == 'global') return true;
     if (call.name == 'browser' ||

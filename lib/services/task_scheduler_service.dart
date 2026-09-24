@@ -12,7 +12,6 @@ import '../models/llm_provider.dart';
 import '../services/app_settings.dart';
 import '../services/database.dart';
 import '../services/notification_service.dart';
-import '../services/task_toast_service.dart';
 import '../services/workspace.dart';
 import '../tools/file_tools.dart';
 import '../utils/app_profile.dart';
@@ -64,9 +63,39 @@ class TaskSchedulerService {
     final count = db.schedulerTaskLogs.id.count();
     final row = await (db.selectOnly(db.schedulerTaskLogs)
           ..addColumns([count])
-          ..where(db.schedulerTaskLogs.notificationSeen.equals(0)))
+          ..where(db.schedulerTaskLogs.notificationSeen.equals(0) &
+              db.schedulerTaskLogs.notificationSent.equals(1) &
+              db.schedulerTaskLogs.status.isIn(const [
+                'success',
+                'failed',
+                'timeout',
+                'cancelled',
+              ])))
         .getSingle();
     return row.read(count) ?? 0;
+  }
+
+  /// Marks unseen terminal logs for [taskId] as seen when its notification is tapped.
+  /// Running rows are excluded: a tap that lands mid-run must not consume
+  /// the completion's unread state.
+  Future<void> markNotificationTapped(int taskId) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await (db.update(db.schedulerTaskLogs)
+          ..where((l) =>
+              l.schedulerTaskId.equals(taskId) &
+              l.notificationSeen.equals(0) &
+              l.status.isIn(const [
+                'success',
+                'failed',
+                'timeout',
+                'cancelled',
+              ])))
+        .write(
+      SchedulerTaskLogsCompanion(
+        notificationSeen: const Value(1),
+        updatedAt: Value(now),
+      ),
+    );
   }
 
   /// Cancels an actively running task execution and marks it cancelled in the database.
@@ -229,7 +258,6 @@ class TaskSchedulerService {
       await cancelTask(task.id);
     }
 
-    TaskToastService.instance.allTasksPaused(activeTasks.length);
     return activeTasks.length;
   }
 
@@ -271,7 +299,6 @@ class TaskSchedulerService {
       await scheduleTask(task.id);
     }
 
-    TaskToastService.instance.allTasksResumed(pausedTasks.length);
     return pausedTasks.length;
   }
 
@@ -432,26 +459,32 @@ class TaskSchedulerService {
   /// updates database state and execution logs, and dispatches a system notification if enabled.
   Future<bool> executeTask(
     int taskId, {
+    bool allowCompleted = false,
     AgentRunner? runner,
     Directory? scratchDirectory,
     Duration timeout = const Duration(minutes: 10),
     CancelToken? cancelToken,
   }) async {
     // 1. Allowlist guard: only scheduled tasks (or failed tasks for retry) can be executed.
-    // Rejects already running tasks, paused, cancelled, and completed tasks.
+    // Rejects already running tasks, paused, and cancelled tasks.
+    // Completed tasks are rejected unless allowCompleted is true (e.g. manual UI trigger).
     final task = await (db.select(db.schedulerTasks)..where((t) => t.id.equals(taskId)))
         .getSingleOrNull();
-    if (task == null || (task.status != 'scheduled' && task.status != 'failed')) {
+    final allowedStatuses = allowCompleted
+        ? const ['scheduled', 'failed', 'completed']
+        : const ['scheduled', 'failed'];
+    if (task == null || !allowedStatuses.contains(task.status)) {
       return false;
     }
 
     final nowMillis = DateTime.now().millisecondsSinceEpoch;
 
-    // 2. Atomic claim: transition from 'scheduled' or 'failed' to 'running'.
+    // 2. Atomic claim: transition from allowed statuses to 'running'.
     // Prevents double-execution if AlarmManager and WorkManager fire concurrently.
     final claimedRows = await (db.update(db.schedulerTasks)
           ..where((t) =>
-              t.id.equals(taskId) & t.status.isIn(const ['scheduled', 'failed'])))
+              t.id.equals(taskId) &
+              t.status.isIn(allowedStatuses)))
         .write(
       SchedulerTasksCompanion(
         status: const Value('running'),
@@ -798,6 +831,15 @@ class TaskSchedulerService {
     } else {
       debugPrint(
         '[TaskScheduler] Notifications disabled for task $taskId; skipping.',
+      );
+      // Silent runs have notify: false and no notification is posted.
+      // Mark notificationSeen: 1 so they do not pollute the unread tab or badge count.
+      await (db.update(db.schedulerTaskLogs)..where((l) => l.id.equals(logId))).write(
+        SchedulerTaskLogsCompanion(
+          notificationSent: const Value(0),
+          notificationSeen: const Value(1),
+          updatedAt: Value(DateTime.now().millisecondsSinceEpoch),
+        ),
       );
     }
 

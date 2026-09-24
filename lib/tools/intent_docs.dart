@@ -4,6 +4,7 @@ import "package:errand/types/tool.dart";
 /// Default verified definitions and schemas for action: "docs".
 const Map<String, String> kDefaultIntentDocs = {
   'alarm': '''### Android Alarm & Timer Intent Specification (`android.provider.AlarmClock`)
+(Note: Interactive only. In headless background runs, activity intents like SET_ALARM BAL-fail on Android 10+. Use schedule_task for background scheduling.)
 
 1. CREATE / SCHEDULE ALARM:
 - action: "intent"
@@ -80,6 +81,7 @@ const Map<String, String> kDefaultIntentDocs = {
 - Behavior: Opens the specified event in the Calendar app.''',
 
   'timer': '''### Android Countdown Timer Intent Specification (`android.provider.AlarmClock`)
+(Note: Interactive only. In headless background runs, activity intents like SET_TIMER BAL-fail on Android 10+. Use schedule_task for background scheduling.)
 
 1. START COUNTDOWN TIMER:
 - action: "intent"

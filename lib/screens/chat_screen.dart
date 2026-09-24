@@ -1297,7 +1297,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       for (final conversation in [..._conversations, ..._olderConversations])
         if (conversation.id != null && seen.add(conversation.id!)) conversation,
     ];
-    unique.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    unique.sort((a, b) {
+      // Match the database (updatedAt, id) cursor so paged rows line up
+      // instead of jumping or skipping on timestamp ties.
+      final byUpdated = b.updatedAt.compareTo(a.updatedAt);
+      if (byUpdated != 0) return byUpdated;
+      return b.id!.compareTo(a.id!);
+    });
     _cachedSortedConversations = unique;
     _sortedConversationsDirty = false;
     return unique;

@@ -152,6 +152,53 @@ void main() {
         expect(check.isBlocked, isFalse);
       }
     });
+
+    test('fails closed on variable expansion in command position (P12.2 regression)', () {
+      final varExpansionCommands = [
+        r'$X',
+        r'${X}',
+        r'X="rm -rf /sdcard"; $X',
+        r'CMD="reboot"; $CMD',
+        r'FOO=1 $DYNAMIC_COMMAND',
+      ];
+
+      for (final cmd in varExpansionCommands) {
+        final check = ShellSafetyCheck.analyze(cmd);
+        expect(check.needsConfirmation, isTrue,
+            reason: 'Variable in command position "$cmd" must fail closed and require confirmation');
+        expect(check.isSafe, isFalse);
+      }
+    });
+
+    test('analyzes env wrapper and unwraps target commands (P12.2 regression)', () {
+      final destructiveEnvCommands = [
+        'env rm -rf /sdcard',
+        'env FOO=bar rm -rf /storage/emulated/0/Download/old',
+        'env -i rm -rf /data',
+        'env -u PATH rm -f /storage/emulated/0/*.bak',
+      ];
+
+      for (final cmd in destructiveEnvCommands) {
+        final check = ShellSafetyCheck.analyze(cmd);
+        expect(check.isSafe, isFalse,
+            reason: 'Destructive env command "$cmd" must not be considered safe');
+        expect(check.needsConfirmation || check.isBlocked, isTrue,
+            reason: 'Destructive env command "$cmd" should require confirmation or be blocked');
+      }
+
+      final safeEnvCommands = [
+        'env',
+        'env VAR=1',
+        'env echo "hello"',
+        'env -i ls -la',
+      ];
+
+      for (final cmd in safeEnvCommands) {
+        final check = ShellSafetyCheck.analyze(cmd);
+        expect(check.isSafe, isTrue,
+            reason: 'Safe env command "$cmd" should be considered safe');
+      }
+    });
   });
 
   group('ShellService', () {
