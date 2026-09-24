@@ -18,6 +18,20 @@ import '../utils/app_profile.dart';
 
 /// Service responsible for coordinating background task scheduling with
 /// native Android AlarmManager and WorkManager.
+/// Result of [TaskSchedulerService.computeEditTransition]: the status,
+// next run time, and stored interval a settings edit should persist.
+class TaskEditTransition {
+  final String status;
+  final int? nextRunAt;
+  final int? repeatAfter;
+
+  const TaskEditTransition({
+    required this.status,
+    required this.nextRunAt,
+    required this.repeatAfter,
+  });
+}
+
 class TaskSchedulerService {
   static final TaskSchedulerService instance = TaskSchedulerService();
 
@@ -353,6 +367,68 @@ class TaskSchedulerService {
     } catch (_) {
       return false;
     }
+  }
+
+  /// Outcome of editing a task's schedule type/interval in settings sheets.
+  /// Outcome of editing a task's schedule type/interval in settings sheets.
+  /// Pure and unit-tested: the sheet must apply exactly this, so status and
+  /// alarm transitions can't drift between UI and logic.
+  /// - Switching to (or reconfiguring) recurring recomputes a future grid slot.
+  /// - Terminal states (`failed`/`cancelled`/`completed`) auto-resurrect to
+  ///   `scheduled` whenever the result is runnable; `paused`/`running` are
+  ///   never touched.
+  /// - One-off keeps a future `nextRunAt`, anchors a past one to now + 60s.
+  static TaskEditTransition computeEditTransition({
+    required String oldType,
+    required String oldStatus,
+    required int? oldNextRunAt,
+    required int? oldRepeatAfter,
+    required String newType,
+    required int newRepeatAfter,
+    required int startsAt,
+    required int nowMillis,
+  }) {
+    final typeChanged = oldType != newType;
+    int? nextRun = oldNextRunAt;
+    String newStatus = oldStatus;
+    int? outRepeatAfter;
+    if (newType == 'recurring') {
+      outRepeatAfter = newRepeatAfter;
+      final intervalChanged = oldRepeatAfter != newRepeatAfter;
+      if (typeChanged ||
+          intervalChanged ||
+          nextRun == null ||
+          nextRun <= nowMillis) {
+        nextRun = calculateNextRunAt(
+          startsAt: startsAt,
+          repeatAfter: newRepeatAfter,
+          nowMillis: nowMillis,
+        );
+      }
+      if (newStatus == 'failed' ||
+          newStatus == 'cancelled' ||
+          newStatus == 'completed') {
+        newStatus = 'scheduled';
+      }
+    } else {
+      outRepeatAfter = null;
+      if (typeChanged) {
+        if (nextRun != null && nextRun <= nowMillis) {
+          nextRun = nowMillis + 60000;
+        }
+        if ((newStatus == 'failed' ||
+                newStatus == 'cancelled' ||
+                newStatus == 'completed') &&
+            nextRun != null) {
+          newStatus = 'scheduled';
+        }
+      }
+    }
+    return TaskEditTransition(
+      status: newStatus,
+      nextRunAt: nextRun,
+      repeatAfter: outRepeatAfter,
+    );
   }
 
   /// Calculates the next execution timestamp for a recurring task anchored at [startsAt]

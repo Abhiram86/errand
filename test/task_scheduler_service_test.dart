@@ -877,4 +877,115 @@ void main() {
       await stuckDb.close();
     });
   });
+
+  group('computeEditTransition (settings sheet transitions)', () {
+    const hour = 3600000;
+    const now = 1700000000000;
+    const startsAt = 1699000000000;
+
+    test('failed one_off switched to recurring resurrects as scheduled', () {
+      final t = TaskSchedulerService.computeEditTransition(
+        oldType: 'one_off',
+        oldStatus: 'failed',
+        oldNextRunAt: null,
+        oldRepeatAfter: null,
+        newType: 'recurring',
+        newRepeatAfter: hour,
+        startsAt: startsAt,
+        nowMillis: now,
+      );
+      expect(t.status, equals('scheduled'));
+      expect(t.repeatAfter, equals(hour));
+      expect(t.nextRunAt, isNotNull);
+      expect(t.nextRunAt!, greaterThan(now));
+      expect((t.nextRunAt! - startsAt) % hour, equals(0));
+    });
+
+    test('cancelled recurring switched to one_off resurrects when a run time exists', () {
+      final t = TaskSchedulerService.computeEditTransition(
+        oldType: 'recurring',
+        oldStatus: 'cancelled',
+        oldNextRunAt: now - 5000,
+        oldRepeatAfter: hour,
+        newType: 'one_off',
+        newRepeatAfter: hour,
+        startsAt: startsAt,
+        nowMillis: now,
+      );
+      expect(t.status, equals('scheduled'));
+      expect(t.repeatAfter, isNull);
+      expect(t.nextRunAt, equals(now + 60000));
+    });
+
+    test('paused tasks are never resurrected or rescheduled', () {
+      final t = TaskSchedulerService.computeEditTransition(
+        oldType: 'one_off',
+        oldStatus: 'paused',
+        oldNextRunAt: now + hour,
+        oldRepeatAfter: null,
+        newType: 'recurring',
+        newRepeatAfter: hour,
+        startsAt: startsAt,
+        nowMillis: now,
+      );
+      expect(t.status, equals('paused'));
+      expect(t.nextRunAt, greaterThan(now));
+    });
+
+    test('metadata-only edit on scheduled recurring keeps run time and status', () {
+      final futureRun = TaskSchedulerService.calculateNextRunAt(
+        startsAt: startsAt,
+        repeatAfter: hour,
+        nowMillis: now,
+      );
+      final t = TaskSchedulerService.computeEditTransition(
+        oldType: 'recurring',
+        oldStatus: 'scheduled',
+        oldNextRunAt: futureRun,
+        oldRepeatAfter: hour,
+        newType: 'recurring',
+        newRepeatAfter: hour,
+        startsAt: startsAt,
+        nowMillis: now,
+      );
+      expect(t.status, equals('scheduled'));
+      expect(t.nextRunAt, equals(futureRun));
+      expect(t.repeatAfter, equals(hour));
+    });
+
+    test('interval change recomputes the grid slot', () {
+      final oldRun = TaskSchedulerService.calculateNextRunAt(
+        startsAt: startsAt,
+        repeatAfter: hour,
+        nowMillis: now,
+      );
+      final t = TaskSchedulerService.computeEditTransition(
+        oldType: 'recurring',
+        oldStatus: 'scheduled',
+        oldNextRunAt: oldRun,
+        oldRepeatAfter: hour,
+        newType: 'recurring',
+        newRepeatAfter: 2 * hour,
+        startsAt: startsAt,
+        nowMillis: now,
+      );
+      expect(t.status, equals('scheduled'));
+      expect(t.nextRunAt, greaterThan(now));
+      expect((t.nextRunAt! - startsAt) % (2 * hour), equals(0));
+    });
+
+    test('running tasks keep their status', () {
+      final t = TaskSchedulerService.computeEditTransition(
+        oldType: 'recurring',
+        oldStatus: 'running',
+        oldNextRunAt: now + hour,
+        oldRepeatAfter: hour,
+        newType: 'recurring',
+        newRepeatAfter: hour,
+        startsAt: startsAt,
+        nowMillis: now,
+      );
+      expect(t.status, equals('running'));
+    });
+  });
 }

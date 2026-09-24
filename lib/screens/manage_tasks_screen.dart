@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:drift/drift.dart' hide isNull, isNotNull, Column;
@@ -60,10 +59,6 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
 
   bool _p10FirstRowLogged = false;
   late final int _p10ScreenId;
-
-  /// Memoized per-task model overrides: task id -> (updatedAt, model).
-  /// Avoids jsonDecode per row on every rebuild.
-  final Map<int, ({int updatedAt, String? model})> _modelOverrideCache = {};
 
   @override
   void initState() {
@@ -523,25 +518,6 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
     return byCreated != 0 ? byCreated : b.id.compareTo(a.id);
   }
 
-  /// Returns the cached model override for [task], decoding payloadJson
-  /// at most once per task update.
-  String? _modelFor(SchedulerTaskRow task) {
-    final cached = _modelOverrideCache[task.id];
-    if (cached != null && cached.updatedAt == task.updatedAt) {
-      return cached.model;
-    }
-    String? model;
-    try {
-      final payload = jsonDecode(task.payloadJson) as Map<String, dynamic>;
-      final m = (payload['model'] as String?)?.trim();
-      if (m != null && m.isNotEmpty) model = m;
-    } catch (_) {}
-    _modelOverrideCache[task.id] = (updatedAt: task.updatedAt, model: model);
-    // Bound cache growth: drop entries for tasks no longer present.
-    if (_modelOverrideCache.length > 500) _modelOverrideCache.clear();
-    return model;
-  }
-
   Widget _buildUpcomingTab(
     List<SchedulerTaskRow> tasks,
     Map<int, List<SchedulerTaskLogRow>> logsByTask,
@@ -622,7 +598,6 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
                     return SpaceyTaskRow(
                       task: task,
                       logs: logsByTask[task.id] ?? const [],
-                      modelOverride: _modelFor(task),
                       db: _db,
                       onViewLogs: () => _openTaskLogs(task),
                       onEditModel: () => _openEditModelModal(task),
@@ -940,7 +915,6 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
                     return SpaceyTaskRow(
                       task: task,
                       logs: logsByTask[task.id] ?? const [],
-                      modelOverride: _modelFor(task),
                       db: _db,
                       onViewLogs: () => _openTaskLogs(task),
                       onEditModel: () => _openEditModelModal(task),
@@ -1150,14 +1124,6 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
       builder: (context) => EditTaskModelSheet(
         task: task,
         db: _db,
-        onSaved: (newModel) {
-          setState(() {
-            _modelOverrideCache[task.id] = (
-              updatedAt: DateTime.now().millisecondsSinceEpoch,
-              model: newModel,
-            );
-          });
-        },
       ),
     );
   }

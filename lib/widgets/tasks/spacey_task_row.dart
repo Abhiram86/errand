@@ -10,7 +10,6 @@ import 'task_timing_info.dart';
 class SpaceyTaskRow extends StatefulWidget {
   final SchedulerTaskRow task;
   final List<SchedulerTaskLogRow> logs;
-  final String? modelOverride;
   final ErrandDatabase db;
   final VoidCallback onViewLogs;
   final VoidCallback? onEditModel;
@@ -19,7 +18,6 @@ class SpaceyTaskRow extends StatefulWidget {
     super.key,
     required this.task,
     required this.logs,
-    this.modelOverride,
     required this.db,
     required this.onViewLogs,
     this.onEditModel,
@@ -62,8 +60,6 @@ class _SpaceyTaskRowState extends State<SpaceyTaskRow> {
       }
     }
 
-    // Model override resolved + memoized by the parent list (see _modelFor).
-    final overriddenModel = widget.modelOverride;
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -126,40 +122,6 @@ class _SpaceyTaskRowState extends State<SpaceyTaskRow> {
                   ),
                 ],
               ),
-              if (overriddenModel != null) ...[
-                const SizedBox(width: 6),
-                InkWell(
-                  onTap: widget.onEditModel,
-                  borderRadius: BorderRadius.circular(5),
-                  child: Container(
-                    constraints: const BoxConstraints(maxWidth: 110),
-                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                    decoration: BoxDecoration(
-                      color: kBubbleUser.withValues(alpha: 0.12),
-                      borderRadius: BorderRadius.circular(5),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Icon(Icons.psychology_rounded, size: 10, color: kBubbleUser),
-                        const SizedBox(width: 3),
-                        Flexible(
-                          child: Text(
-                            overriddenModel,
-                            style: const TextStyle(
-                              color: kBubbleUser,
-                              fontSize: 9.5,
-                              fontWeight: FontWeight.w600,
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
               const Spacer(),
               Text(
                 '#${task.id}',
@@ -244,7 +206,7 @@ class _SpaceyTaskRowState extends State<SpaceyTaskRow> {
                 const SizedBox(width: 3),
                 TaskActionButton(
                   icon: Icons.tune_rounded,
-                  tooltip: 'Edit Model & Provider',
+                  tooltip: 'Edit Task Settings',
                   color: kMuted,
                   onTap: widget.onEditModel,
                 ),
