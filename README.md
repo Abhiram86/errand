@@ -1,8 +1,6 @@
 # Errand
 
-<p align="center">
-  <img src="demo/errand_demo.gif" alt="Errand demo" width="320">
-</p>
+https://github.com/user-attachments/assets/948c64c5-5780-4e50-b54c-d71bbbb92788
 
 <p align="center">
   <b>An on-device AI agent for Android.</b><br>
