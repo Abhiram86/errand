@@ -72,7 +72,7 @@ On Android, grant all-files access when prompted so the agent can reach your wor
 ## For developers
 
 ```bash
-flutter test          # full suite (550+ tests)
+flutter test          # full suite (615+ tests)
 flutter analyze       # lint
 flutter run --flavor Full   # or Lite
 ```

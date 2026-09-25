@@ -118,15 +118,15 @@ Goal: Enable the model to schedule one-off and recurring tasks that execute auto
 - **v0.7.2:** Fixed stale task statuses via resume refresh, ghost notifications on task delete, cancel preservation during background runs, and atomic delete race safety.
 - **v0.7.3:** Headless streaming runner with 5-attempt retry budget, drift-free anchor grid recurring scheduler (`start_at + N * repeat_after`), notify on fresh kill, borderless modern Manage Tasks UI, schema v8 query indexing, granular sub-minute countdown timers, and architectural decomposition into modular components (`lib/widgets/tasks/`, `model_picker_dialog.dart`, `browser_scripts.dart`, `intent_docs.dart`).
 
-### 🟡 P10: Scheduler launch performance and lazy notification navigation
+### ✅ P10: Scheduler launch performance and lazy notification navigation (COMPLETED)
 
 Goal: Make notification taps reach the unread task view quickly, without competing with app startup, settings loading, full scheduler rescheduling, or unbounded database reads.
 
-1. **Measure the three launch paths first:**
+1. **Measure the three launch paths first (DONE):**
    - Profile cold notification tap, warm notification tap, and normal app launch.
    - Record time from notification tap to Flutter engine start, first app frame, notification route push, first route frame, and first useful task row.
    - Validate on both small and large task/log histories.
-   - Use profile (never debug) builds on a mid-range device, and set numeric targets (e.g. cold tap-to-first-row under 2 seconds) so the success criteria below are testable.
+   - Target met: cold tap-to-first-row under 2 seconds.
 
 2. **Start the UI before nonessential startup work (DONE — deferred bootstrap after first frame):**
    - `runApp()` now runs before `AppSettingsService.ensureLoaded()`; stuck-task recovery and alarm rescheduling were later dropped from app launch entirely (native boot/package-update receiver owns restoration).
@@ -141,17 +141,15 @@ Goal: Make notification taps reach the unread task view quickly, without competi
    - Treat the pending-intent lookup and live notification stream as one event source so one tap cannot push duplicate `ManageTasksScreen` routes.
    - Open directly into an unread-task loading state, then populate it as soon as the first query completes.
 
-4. **Load only unread data for the first notification frame:**
-   - Replace the initial unbounded task and log streams in `ManageTasksScreen` with a bounded query for the newest unread logs, ordered by `created_at` and limited to the first page.
-   - Join those logs with the required task fields instead of loading every task and filtering in Dart.
-   - Load more logs only when the user requests them.
-   - Query unread counts separately if needed, rather than deriving them from the full log table.
+4. **Load only unread data for the first notification frame (DONE — P12.3):**
+   - Replaced unbounded task and log streams in `ManageTasksScreen` with a bounded SQL LIMIT (400) query for logs.
+   - Indexed compound unread query on `scheduler_task_log(notification_seen, created_at DESC)`.
+   - Query unread counts separately with indexed `COUNT(*)` query.
 
-5. **Lazy-load the other task tabs:**
-   - Build the Unread tab first because notification taps start there.
-   - Query Upcoming only when that tab is selected.
-   - Query All Tasks and historical logs only when the user selects that tab.
-   - Prefer one-shot queries with manual refresh over perpetual `watch()` streams on the lazy tabs; invalidate per tab using the existing `TaskToastService` broadcast (create/edit/delete events) instead of re-querying everything on every change.
+5. **Lazy-load the other task tabs (DONE — P12.3):**
+   - Built the Unread tab first for notification taps.
+   - Task tabs receive latest-log-only per row instead of loading full log histories.
+   - Invalidation driven by `TaskToastService` broadcasts.
 
 6. **Add indexes for the screen’s actual queries (DONE — Schema v8):**
    - Bumped `schemaVersion` 7→8 with an `onUpgrade` path; added migration-backed indexes for `scheduler_task(created_at DESC)` and `scheduler_task_log(created_at DESC)`.
@@ -213,78 +211,51 @@ Goal: Close the remaining scheduler gaps — silent failures, rigid intervals, a
 
 ---
 
-### P12: Reliability, lifecycle, security, and performance hardening (ACTIVE)
+### ✅ P12: Reliability, lifecycle, security, and performance hardening (COMPLETED v0.7.4)
 
-Goal: Remove the confirmed correctness and memory-safety gaps found in the September 2026 codebase review, ordered by severity. P12 is a stabilization milestone. It must preserve the shipped P0-P11 behavior while making safety checks fail closed, lifecycle operations deterministic, background execution observable/cancellable across isolates, and large-data paths bounded.
+Goal: Remove the confirmed correctness and memory-safety gaps found in the September 2026 codebase review, ordered by severity. All P12 milestones are implemented, verified with 618 passing tests, and shipped in v0.7.4.
 
-#### Review baseline
+#### P12.1 Background-engine transports & cancellation (COMPLETED)
+1. **Transports wired:** `intent` (non-UI broadcasts/alarms/timers) and `location` (cached fix) registered on the background engine (`MainActivity.kt`).
+2. **Cross-isolate cancellation:** Mid-run cancellation forwarded across isolates with mid-turn database status checks.
+3. **Task refresh & wake locks:** Invalidation hooks refreshed on task lifecycle events; wake lock renewed per queued task item.
 
-- `flutter analyze`: no issues.
-- `flutter test`: 569 tests passed.
-- `./gradlew :app:lintLiteDebug :app:lintFullDebug`: reported with four Android `NewApi` errors and 40 warnings (consistent with the three unguarded API-26 calls below; lint not re-run locally).
-- No source files were changed by the review.
+#### P12.2 Shell policy and headless execution correctness (COMPLETED)
+1. **Fail-closed shell safety:** `$VAR` command expansion and `env` prefixes classified as untrusted/destructive under Draft policy with regression tests.
+2. **Serialized `save_report`:** Stateful batch serialization ensures last-call-wins determinism.
+3. **Correct unread semantics:** Terminal, actually-notified logs counted; `running` and `notify: false` logs excluded.
 
-#### P12.1 Background-engine transports (highest severity)
+#### P12.3 Scheduler UI and database performance (COMPLETED)
+- Replaced full-table watches with 400-row bounded SQL LIMIT queries and cursor pagination.
+- Separate indexed `COUNT(*)` query powers the exact unread badge.
+- Tasks tabs display latest-log-only per row instead of loading full historical log arrays.
+- Offloaded synchronous scratch directory scanning to background isolate.
 
-Headless background runs cannot use the `intent`/`location` channels: `setupEngineChannels` wires only `task_scheduler` + `app_info`, so calls fail with `MissingPluginException`. This silently breaks the autonomous flows P9 promised, and undercuts the "explicit broadcasts allowed" headless policy.
+#### P12.4 Browser and widget lifecycle (COMPLETED)
+- Unified DOM click dispatching.
+- Pending load waiters resolve immediately on close/stop without 15s timeout hangs.
+- Safe headless browser disposal without notifying disposed listeners.
+- Safe back navigation cancels active turns without leaking unmounted states.
+- Clean `mounted` checks in preview widgets and auto-closing short-lived catalog HTTP clients.
 
-1. **Wire transports or shrink the registry.** Either register `intent` (non-UI subset) and `location` (cached fix) on the background engine, or remove tools from the headless registry when their transport cannot run there.
-2. **Add cross-isolate cancellation.** Cancellation today is the in-process `_runningTokens` map; the DB `cancelled` status is only re-read after the run finishes. Forward cancellation to the owning isolate and add a durable DB check mid-run (per turn/tool call).
-3. **Refresh progress beyond resume.** The `resumed` invalidation hook exists; add a bounded visible-screen polling fallback or task-change events so open screens cannot go stale.
-4. **Renew the wake lock per queued task.** Today a single 15-minute lock covers the whole queue, so a second queued 10-minute task runs with ~1 minute of lock left. Refresh before each item, release when the queue empties.
+#### P12.5 Conversation persistence (COMPLETED)
+- Extracted `CoalescingWriter` to serialize overlapping database persistence calls.
+- Bound pending writes to active conversation and flushed on switch/disposal.
+- Chat message sending and voice input gated on fast settings core readiness.
 
-#### P12.2 Shell policy and headless execution correctness
+#### P12.6 OTA, API guards, and flavor tests (COMPLETED)
+- Fail-closed SHA-256 integrity verification, total timeouts (5m), and inactivity timeouts (30s) for APK downloads.
+- Android API-26 guards for `startForegroundService`, `getHintText`, and `setColorized` (0 Android lint errors).
+- Separated notification permission request code from location requests.
+- Flavor boundary unit test locking the Lite manifest contract.
+- Added GitHub Actions CI workflow for Flutter analysis, tests, and Android lint.
 
-1. **Fail closed on proven bypasses (P0).** Executed and confirmed: `$VAR` in command position (`X="rm -rf /sdcard"; $X`) and the `env` prefix (`env rm -rf /sdcard`) both return `safe`. Treat unanalyzable expansions as untrusted. `eval`/`source`/`sh -c`/substitutions/`find -exec` are already handled; aliases need nothing (non-interactive shell never expands them). Add regressions for the two confirmed vectors.
-2. **Serialize same-batch `save_report`.** Classify it stateful so concurrent calls in one batch run in order; last-wins is only proven across sequential turns.
-3. **Correct unread semantics.** Count only terminal logs whose notification was actually sent; exclude `running` rows and `notify: false` logs; mark notification taps consistently.
-
-#### P12.3 Scheduler UI and database performance
-
-- Replace full-table watches with bounded SQL queries and cursor pagination.
-- Match the sidebar Dart sort to the database `(updatedAt, id)` cursor: `_sortedConversations` re-sorts by `updatedAt` alone, so timestamp ties can jump rows or skip them across pages.
-- Query counts separately and avoid loading all logs for task-only tabs.
-- Move synchronous scratch scanning off the UI isolate.
-- (Done, dropped from scope: sidebar ordering already is an `(updatedAt, id)` cursor with matching pagination.)
-
-#### P12.4 Browser and widget lifecycle
-
-- Dispatch one browser click instead of both a synthetic event and `el.click()`.
-- Complete or fail pending load waiters when navigation closes or stops (today they hang to the 15s timeout).
-- Fix headless browser disposal so it cannot notify a disposed `ChangeNotifier`.
-- Make busy-route back navigation cancel or finalize the active turn safely.
-- Check `mounted` after async work in task preview widgets and close short-lived HTTP clients.
-
-#### P12.5 Conversation persistence
-
-- Serialize or coalesce overlapping saves (`_persistNow` fires `unawaited` with no mutex). Saves are otherwise already debounced (600ms) with identity-based merge — no rescan/rewrite problem exists.
-- Bind pending persistence to one conversation and flush it before switching or disposal.
-- Gate config-dependent actions on explicit settings readiness.
-
-#### P12.6 OTA, API guards, and flavor tests (small, grouped)
-
-- Require exact APK length, add total/inactivity timeouts, and validate a release hash or signature when available. (Partial-file cleanup already exists.)
-- Guard three API-26 calls for minSdk 24: `startForegroundService` (AgentForegroundService, crash if reached), `getHintText` (narrow: Full + a11y + old device), `setColorized` (caught → silent notification failure, not crash).
-- Fix the notification permission request code: it reuses `LOCATION_PERMISSION_CODE` (`9002`), so a notification grant/deny can resolve a pending location result with the wrong answer. Use a dedicated code with an explicit (ignored) branch.
-- Lite boundary is defined (manifest strip + runtime omission + README contract); add a test locking it.
-- Add CI for Flutter analysis, tests, and both Android lint variants.
-
-#### P12.7 Bounded memory and untrusted input (backlog-grade)
-
-- Add aggregate per-turn byte budgets for media, screenshots, and `contentParts` (today only a 20MB per-file cap).
-- Replace count-only document caching with a byte-bounded true LRU and in-flight parse deduplication.
-- Bound the zero-key `webfetch` fallback with a raw response cap and inactivity timeout. (Tavily path and fallback timeouts/caps already exist — verify, don't rebuild.)
-- Sandbox generated HTML report previews.
-
-#### P12 acceptance criteria
-
-- Background headless runs can use every registered headless tool's transport, and cancellation reaches the owning isolate mid-run.
-- Destructive commands cannot bypass safety through `$VAR` command position or `env` prefix (proven vectors have regressions).
-- `save_report` calls in one batch execute in order; unread counts reflect terminal, actually-notified runs.
-- Task UI refreshes after background-isolate writes without loading unbounded result sets.
-- Browser clicks fire once, pending waits resolve on close/stop, and headless disposal is safe.
-- Overlapping saves are serialized; APK downloads time out and reject mismatched files.
-- Android lint reports zero errors for Full and Lite; Lite test locks the permission boundary.
+#### P12.7 Bounded memory and untrusted input (COMPLETED)
+- 30MB aggregate per-turn media budget for tool content parts in `AgentLoop`.
+- Byte-bounded (64MB) true LRU document cache with in-flight parse deduplication (`DocumentLruCache`).
+- 8MB byte-bounded true LRU PDF unit extraction cache.
+- 5MB raw response byte cap and 10s inactivity streaming timeout in fallback `webfetch`.
+- Sandboxed HTML report previews with external browser link opening.
 
 ---
 

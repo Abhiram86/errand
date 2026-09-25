@@ -2,7 +2,7 @@
 
 This document maps the current implementation: a streaming chat UI, an OpenAI-compatible agent loop with reasoning, file reading (including media) + on-device bash shell + web + Android intent + embedded browser + memory + autonomous task scheduler + accessibility tools, structured document readers, Drift persistence (schema v8, memories, scheduled tasks), `ToolOutputFileService` output caching, Full vs. Lite build flavors with split ABIs, and Android shared-storage access. Conversation state and tool execution run on-device. Network services include the configured LLM, Tavily when configured, `models.dev` metadata, web fetches, and GitHub release checks.
 
-This document describes shipped behavior, not only the intended design. Known correctness, lifecycle, security, and performance gaps are summarized in [Known P12 reliability gaps](#known-p12-reliability-gaps) and tracked in detail in `next_plan.md` § P12.
+This document describes shipped behavior, not only the intended design. Reliability, lifecycle, security, and performance hardenings across the system were shipped in v0.7.4 (P12) and tracked in `next_plan.md` § P12.
 
 ## Big picture
 
@@ -364,29 +364,29 @@ the universal context-protection layer for data-heavy tools:
 - **`attached_files` tool** (`lib/tools/attached_files_tool.dart`) — lists the conversation's global inventory (`Conversation.attachedFileUris`) so the model can discover history without guessing.
 - **Staging vs history**: `ChatScreen._pendingAttachments` (in-memory, shown as pre-send card) → on send snapshotted into `UserMessage.attachedUris` (`ConversationMessages.attachedUrisJson`, v4) + appended to `ConversationAttachments` (global). `_toLlmHistory` renders `UserMessage.attachedUris` as the `[Attached files: …]` text list; `estimateLlmMessageTokens` sums `List` part payloads directly (flat vision/audio/video tile rates when opaque) for the budget guard.
 
-## Known P12 reliability gaps
+## P12 Reliability Hardening (Shipped in v0.7.4)
 
-The following are confirmed in the current code and are the implementation target for `next_plan.md` § P12:
+The confirmed correctness and memory-safety gaps from the September 2026 codebase review were resolved and verified across P12.1–P12.7:
 
-1. **Shell policy bypass:** command variables and wrappers such as `env` can hide destructive commands from `ShellSafetyCheck`; headless execution inherits the misclassification.
-2. **Android 24/25 compatibility:** `startForegroundService`, `AccessibilityNodeInfo.getHintText`, and `Notification.Builder.setColorized` are called without API-26 guards. Android lint currently fails with four errors.
-3. **Headless channel contract:** the background engine does not register the registered `intent` or `location` channels, and the native intent path launches activities instead of sending broadcasts.
-4. **Cross-isolate cancellation and refresh:** cancel/delete cannot reach a `CancelToken` owned by the background engine, and main-isolate Drift watches do not automatically receive later writes from that engine.
-5. **Active-route disposal:** Android back can dispose `ChatScreen` during a busy turn without cancelling the loop, tools, or pending confirmation; the final answer can be lost.
-6. **Startup readiness:** chat actions can run before the asynchronous settings/provider hydration completes; load failures on the unawaited chat config future are not surfaced.
-7. **Aggregate memory limits:** media and screenshots have per-file limits but no aggregate byte/request budget; structured-document caching is count-based and same-file concurrent reads can parse repeatedly.
-8. **Task management queries:** `ManageTasksScreen` loads all task and log rows and paginates in Dart; synchronous scratch scanning can block its first frame.
-9. **Conversation write amplification:** every persistence pass scans all message identities and rewrites the loaded window; a single debounce timer can be lost or retargeted by conversation switching, and lifecycle transitions can overlap writes.
-10. **Unbounded web input:** the zero-key `webfetch` fallback buffers and parses the full HTTP body before applying its output cap.
-11. **Browser correctness:** DOM clicks can fire twice; a pending load is not completed by `close()`; asynchronous headless disposal can notify a disposed `ChangeNotifier`.
-12. **Untrusted HTML report preview:** task HTML is loaded in a JavaScript-capable WebView without a documented navigation/script sandbox.
-13. **Scheduler semantics:** the 15-minute service wake lock may expire during a longer queue; unread counts include running and `notify: false` logs; `save_report` can run concurrently and race its collector/filename.
-14. **Sidebar pagination:** UI sorting omits the database's `id` tie-breaker, so equal `updatedAt` values can skip rows.
-15. **OTA download validation:** APK verification accepts oversized responses and the stream has no total/inactivity timeout.
-16. **Android permission correlation (fixed):** the notification permission request reused the location request code (`9002`), so its result could resolve a pending location future. Now uses a dedicated code with an explicit no-op branch.
-17. **Widget/resource cleanup:** `TaskFilePreviewScreen` can call `setState` after disposal, and several short-lived `ModelCatalogService`/`ModelsDevService` HTTP clients lack deterministic close paths.
+1. **Shell policy bypass:** Closed unanalyzable variable expansion (`$VAR`) and command wrappers (`env`) with fail-closed classification; verified with regression tests.
+2. **Android 24/25 compatibility:** Guarded `startForegroundService`, `AccessibilityNodeInfo.getHintText`, and `Notification.Builder.setColorized` behind API-26 checks. Android lint passes with 0 errors across Full and Lite debug builds.
+3. **Headless channel contract:** Headless background engine registers `intent` (background subset: broadcasts, alarms, timers) and `location` channels.
+4. **Cross-isolate cancellation and refresh:** Cancellations reach active background runs via durable database polling mid-turn; UI refreshes on task events.
+5. **Active-route disposal:** Android back safely stops active generations and tears down controllers before route pops.
+6. **Startup readiness:** Chat and voice inputs gate on fast settings core readiness without waiting for network model catalog refreshes.
+7. **Aggregate memory limits:** Enforced 30MB aggregate per-turn media budget on content parts; replaced count-based document cache with 64MB byte-bounded true LRU and in-flight parse deduplication; 8MB byte-bounded PDF cache.
+8. **Task management queries:** Bounded SQL LIMIT queries (400 rows) with cursor pagination; exact unread `COUNT(*)`; asynchronous scratch directory scanning off the UI isolate.
+9. **Conversation write serialization:** `CoalescingWriter` collapses overlapping persistence calls into single serialized writes, preventing write amplification or lost debounce timers.
+10. **Bounded web input:** Streaming raw response cap (5MB) with a 10s chunk inactivity timeout on fallback webfetch.
+11. **Browser correctness:** Unified click dispatching; load waiters resolve immediately on close/stop without 15s timeout; safe headless disposal.
+12. **Sandboxed HTML report preview:** Preview WebView runs with `allowFileAccess: false`, `domStorageEnabled: false`, no popups, and external `http(s)` link opening.
+13. **Scheduler semantics:** 15-minute wake-lock renewed per queued task; unread counts exclude non-notified logs; `save_report` serialized within same-batch calls.
+14. **Sidebar pagination:** Consistent `(updatedAt, id)` ordering across database queries and UI display.
+15. **OTA download validation:** Exact length validation, fail-closed SHA-256 integrity verification, and streaming timeouts.
+16. **Android permission correlation:** Notification permission requests use dedicated request code, isolated from location requests.
+17. **Widget/resource cleanup:** Verified `mounted` guards and short-lived HTTP client auto-disposal.
 
-These are tracked as implementation work, not hidden assumptions. P12 acceptance tests should preserve the existing 569 passing tests while adding regression coverage for every item.
+All 17 areas are backed with automated regression tests, preserving 618 passing tests.
 
 ---
 
@@ -427,7 +427,7 @@ Errand is structured into two Gradle product flavors (`android/app/build.gradle.
 - ✅ Done Sep 2026 (v0.7.0): Autonomous background task scheduler (schema v7 tables, now migrated to schema v8; exact Android AlarmManager scheduling, headless AgentRunner execution, `.scratch` report collection, TaskToastService, and ManageTasksScreen with status filters, in-memory display limits, and file previews).
 - ✅ Done Sep 2026 (v0.7.2): Scheduler correctness fixes (resume status synchronization, ghost notification cleanup, deletion race safeguards).
 - ✅ Done Sep 2026 (v0.7.3): Headless streaming runner with 5-attempt retry budget, drift-free anchor grid recurring scheduler, notify on fresh kill, schema v8 indexing, granular task countdowns, and component decomposition.
-- P12 reliability/lifecycle/performance hardening: shell policy, Android API guards, headless channels, cross-isolate cancel/refresh, aggregate memory caps, task query pagination, persistence serialization, browser/report sandboxing, scheduler edge cases, OTA validation, and lifecycle cleanup. See `next_plan.md` § P12.
+- ✅ Done Sep 2026 (v0.7.4): P12 reliability, lifecycle, security, and performance hardening: shell policy fail-closed, Android API guards (0 lint errors), headless engine transports (intent/location), cross-isolate mid-run cancellation, aggregate per-turn media budgets (30MB), true LRU document cache (64MB) and PDF unit cache (8MB), task query SQL pagination (400 rows) & COUNT(*) unread queries, conversation persistence serialization via CoalescingWriter, browser lifecycle and HTTP error snapshots, OTA SHA-256 validation, and sandboxed HTML preview. See `next_plan.md` § P12.
 - Safe-edit tool (`write`/`edit_file` with diff preview + undo) — needs the write-policy decision originally blocking it.
 - Local retrieval (embeddings/FTS) over recent docs for context budgeting.
 - Evaluate SAF as an alternative to `MANAGE_EXTERNAL_STORAGE` for Play distribution.

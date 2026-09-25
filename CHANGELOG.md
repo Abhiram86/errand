@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.4
+
+- **Background Engine Transports & Cancellation (P12.1):** Headless background engine now handles native non-UI intents and location queries; mid-run cross-isolate cancellation terminates runs promptly via durable database polling; per-task wake-lock renewals prevent timeout during queued batches.
+- **Shell Safety & Headless Correctness (P12.2):** Closed static shell bypass vectors for `$VAR` command positions and `env` prefixes with fail-closed safety categorization; serialized same-batch `save_report` executions; corrected unread counts to terminal, actually-notified runs only.
+- **Scheduler UI & Query Bounds (P12.3):** Replaced unbounded database watches with 400-row SQL LIMIT queries; unread badge powered by exact `COUNT(*)` query; task tabs receive latest-log-only per row; synchronous scratch scanning offloaded to a background isolate.
+- **Browser Lifecycle & Robust Navigation (P12.4):** Deduplicated DOM click dispatching; load waiters complete immediately on close/stop without 15-second hangs; safe back navigation on active turns; safe headless disposal without notifying disposed change listeners.
+- **Fast Startup & Persistence Serialization (P12.5):** Extracted `CoalescingWriter` to serialize overlapping conversation persistence; message sends and voice input gate on fast settings core without waiting for live model catalog sync.
+- **OTA Verification, API Guards & CI (P12.6):** Added SHA-256 integrity validation and streaming timeouts for APK downloads; guarded Android API-26 calls (`startForegroundService`, `getHintText`, `setColorized`) for API 24/25 compatibility; separated notification permission request codes; added Lite flavor boundary tests and GitHub Actions CI.
+- **Bounded Memory & Untrusted Input (P12.7):** 30MB aggregate per-turn media budget on content parts; byte-bounded (64MB) true LRU document cache with in-flight parse deduplication; byte-bounded (8MB) PDF unit cache; streaming raw byte cap (5MB) & inactivity timeout for webfetch; sandboxed HTML report previews with external browser link opening.
+
 ## 0.7.3
 
 - **Drift-Free Recurring Scheduling:** Recurring tasks now anchor to the fixed cadence grid (`start_at + N * repeat_after`) to completely eliminate schedule drift over time.
