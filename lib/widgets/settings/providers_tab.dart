@@ -148,18 +148,16 @@ class ProvidersTab extends StatelessWidget {
                         ? (provider.apiKey ?? settings.openRouterKey ?? '')
                         : (provider.apiKey ?? '');
                     unawaited(
-                      ModelCatalogService()
-                          .load(
-                            baseUrl: provider.baseUrl.isNotEmpty
-                                ? provider.baseUrl
-                                : provider.defaultBaseUrl,
-                            apiKey: apiKey,
-                            defaultProvider: provider.name,
-                            isOpenRouter: provider.id ==
-                                    ProviderPresetType.openRouter.id ||
-                                provider.baseUrl.contains('openrouter.ai'),
-                          )
-                          .catchError((_) => <ModelOption>[]),
+                      ModelCatalogService.fetchAndClose(
+                        baseUrl: provider.baseUrl.isNotEmpty
+                            ? provider.baseUrl
+                            : provider.defaultBaseUrl,
+                        apiKey: apiKey,
+                        defaultProvider: provider.name,
+                        isOpenRouter: provider.id ==
+                                ProviderPresetType.openRouter.id ||
+                            provider.baseUrl.contains('openrouter.ai'),
+                      ).catchError((_) => <ModelOption>[]),
                     );
                   }
                 },

@@ -109,7 +109,7 @@ class _ProviderFormDialogState extends State<ProviderFormDialog> {
     if (apiKey.isNotEmpty) {
       ModelCatalogService.clearCache(baseUrl: baseUrl);
       unawaited(
-        ModelCatalogService().load(
+        ModelCatalogService.fetchAndClose(
           baseUrl: baseUrl,
           apiKey: apiKey,
           defaultProvider: name,

@@ -587,5 +587,93 @@ void main() {
       service.setCurrentUserAgent('Custom/1.0');
       expect(service.currentUserAgent, equals('Custom/1.0'));
     });
+
+    test('act(action: click) script dispatches single click action (P12.4)', () async {
+      await service.open('https://example.com');
+      fakeController.jsResult = '{"ok": true, "tag": "button", "text": "Submit"}';
+
+      await service.act(action: 'click', selector: '#submit');
+
+      final clickScript = fakeController.executedScripts.last;
+      // Mouse events should only prime pointerdown/mousedown/pointerup/mouseup
+      expect(clickScript, contains("['pointerdown', 'mousedown', 'pointerup', 'mouseup']"));
+      // The click event should only be dispatched if el.click is not a function
+      expect(clickScript, contains("if (typeof el.click === 'function') {\n      el.click();\n    } else {"));
+    });
+
+    test('stopLoading completes pending load waiters immediately (P12.4)', () async {
+      // No controllerOverride: drives the real load-wait path (loadUrl
+      // returns, no onLoadStop ever arrives) instead of the 8s
+      // controller-initialization wait.
+      final hangingService = BrowserService();
+      final hangingFake = FakeBrowserController();
+      hangingService.setController(hangingFake);
+      final openFuture = hangingService.open(
+        'https://hang.example.com',
+        timeout: const Duration(seconds: 15),
+      );
+      // open()'s sync prefix already set loading state before first await.
+      expect(hangingService.isLoading, isTrue);
+
+      await hangingService.stopLoading();
+      expect(hangingFake.stopped, isTrue);
+
+      final page = await openFuture.timeout(const Duration(seconds: 2));
+      expect(page.status, contains('Navigation stopped'));
+      expect(hangingService.isLoading, isFalse);
+      hangingService.dispose();
+    });
+
+    test('close completes pending load waiters immediately (P12.4)', () async {
+      final hangingService = BrowserService();
+      hangingService.setController(fakeController);
+      final openFuture = hangingService.open(
+        'https://hang.example.com',
+        timeout: const Duration(seconds: 15),
+      );
+      expect(hangingService.isLoading, isTrue);
+
+      await hangingService.close();
+
+      final page = await openFuture.timeout(const Duration(seconds: 2));
+      expect(page.status, contains('Browser closed'));
+      expect(hangingService.isLoading, isFalse);
+      expect(hangingService.isOpen, isFalse);
+      hangingService.dispose();
+    });
+
+    test('superseded navigation keeps its own waiter instead of inheriting the new one (P12.4)', () async {
+      final service = BrowserService();
+      service.setController(fakeController);
+      final first = service.open(
+        'https://first.example.com',
+        timeout: const Duration(seconds: 15),
+      );
+      expect(service.isLoading, isTrue);
+
+      // Supersede before the first navigation resolves; the second owns the
+      // new wait and is settled via dispose below.
+      final second = service.open(
+        'https://second.example.com',
+        timeout: const Duration(seconds: 15),
+      );
+      final firstPage = await first.timeout(const Duration(seconds: 2));
+      expect(firstPage.status, equals('superseded'));
+
+      service.dispose();
+      final secondPage = await second.timeout(const Duration(seconds: 2));
+      expect(secondPage.status, equals('disposed'));
+    });
+
+    test('dispose suppresses notifyListeners and resolves waiters without throwing (P12.4)', () {
+      final testService = BrowserService();
+      expect(testService.isDisposed, isFalse);
+
+      testService.dispose();
+      expect(testService.isDisposed, isTrue);
+
+      // notifyListeners should be safely ignored instead of throwing FlutterError
+      expect(() => testService.notifyListeners(), returnsNormally);
+    });
   });
 }

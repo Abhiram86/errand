@@ -147,12 +147,37 @@ class BrowserService extends ChangeNotifier {
   int _navigationGeneration = 0;
 
   final BrowserController? _controllerOverride;
+  bool _disposed = false;
+  bool get isDisposed => _disposed;
 
   BrowserService({BrowserController? controllerOverride})
       : _controllerOverride = controllerOverride {
     if (controllerOverride != null) {
       _controller = controllerOverride;
     }
+  }
+
+  @override
+  void notifyListeners() {
+    if (!_disposed) {
+      super.notifyListeners();
+    }
+  }
+
+  void _failOrCompletePendingLoad([String? reason]) {
+    if (_loadCompleter != null && !_loadCompleter!.isCompleted) {
+      if (reason != null && _lastError == null) {
+        _lastError = reason;
+      }
+      _loadCompleter!.complete();
+    }
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    _failOrCompletePendingLoad('Browser disposed');
+    super.dispose();
   }
 
   static final BrowserService instance = BrowserService();
@@ -382,6 +407,7 @@ class BrowserService extends ChangeNotifier {
     }
 
     final generation = ++_navigationGeneration;
+    _failOrCompletePendingLoad('Navigation superseded');
     _isOpen = true;
     _currentUrl = targetUrl;
     _targetLoadingUrl = targetUrl;
@@ -390,6 +416,11 @@ class BrowserService extends ChangeNotifier {
     _isLoading = true;
     _progress = 10;
     _loadCompleter = Completer<void>();
+    // Capture locally: a superseding navigation reassigns the field, and this
+    // waiter must stay on its own completer (completed by
+    // _failOrCompletePendingLoad before the swap) instead of drifting onto
+    // the new navigation's waiter.
+    final loadCompleter = _loadCompleter!;
     notifyListeners();
 
     // If controller is not yet ready, wait for it with timeout
@@ -418,7 +449,7 @@ class BrowserService extends ChangeNotifier {
       bool timedOut = false;
       try {
         await _controller!.loadUrl(targetUrl);
-        await _loadCompleter!.future.timeout(timeout);
+        await loadCompleter.future.timeout(timeout);
       } on TimeoutException {
         timedOut = true;
         _lastError ??= 'Navigation timed out after ${timeout.inSeconds}s';
@@ -431,6 +462,17 @@ class BrowserService extends ChangeNotifier {
           url: _currentUrl ?? targetUrl,
           title: _currentTitle ?? '',
           status: 'superseded',
+        );
+      }
+
+      // Never touch the controller after dispose: a pending open() released
+      // by dispose()'s waiter resolution must bail instead of issuing
+      // post-load native calls on a dead view.
+      if (_disposed) {
+        return BrowserPageInfo(
+          url: _currentUrl ?? targetUrl,
+          title: _currentTitle ?? '',
+          status: 'disposed',
         );
       }
 
@@ -503,6 +545,8 @@ class BrowserService extends ChangeNotifier {
   /// Closes the browser sheet and optionally resets the page.
   Future<void> close({bool clear = false}) async {
     _isOpen = false;
+    _isLoading = false;
+    _failOrCompletePendingLoad('Browser closed');
     if (_controller != null) {
       try {
         await _controller!.stopLoading();
@@ -528,11 +572,15 @@ class BrowserService extends ChangeNotifier {
     _ensureOpenAndReady();
 
     final generation = ++_navigationGeneration;
+    _failOrCompletePendingLoad('Navigation superseded');
     _isLoading = true;
     _progress = 10;
     _lastError = null;
     _currentTitle = null;
     _loadCompleter = Completer<void>();
+    // Same local-capture rule as open(): never await the field across a
+    // potential superseding navigation.
+    final reloadCompleter = _loadCompleter!;
     notifyListeners();
 
     try {
@@ -545,7 +593,7 @@ class BrowserService extends ChangeNotifier {
       bool timedOut = false;
       try {
         await _controller!.reload();
-        await _loadCompleter!.future.timeout(timeout);
+        await reloadCompleter.future.timeout(timeout);
       } on TimeoutException {
         timedOut = true;
         _lastError ??= 'Reload timed out after ${timeout.inSeconds}s';
@@ -562,6 +610,15 @@ class BrowserService extends ChangeNotifier {
         url: _currentUrl ?? '',
         title: _currentTitle ?? '',
         status: 'superseded',
+      );
+    }
+
+    // Same post-dispose bail as open().
+    if (_disposed) {
+      return BrowserPageInfo(
+        url: _currentUrl ?? '',
+        title: _currentTitle ?? '',
+        status: 'disposed',
       );
     }
 
@@ -610,6 +667,7 @@ class BrowserService extends ChangeNotifier {
     if (_controller != null) {
       await _controller!.stopLoading();
       _isLoading = false;
+      _failOrCompletePendingLoad('Navigation stopped');
       notifyListeners();
     }
   }
@@ -971,7 +1029,7 @@ class BrowserService extends ChangeNotifier {
     const tag = el.tagName.toLowerCase();
     const isCheckable = el instanceof HTMLInputElement && (el.type === 'checkbox' || el.type === 'radio');
 
-    const mouseEvents = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
+    const mouseEvents = ['pointerdown', 'mousedown', 'pointerup', 'mouseup'];
     for (const evtName of mouseEvents) {
       try {
         const evt = new MouseEvent(evtName, {
@@ -985,6 +1043,16 @@ class BrowserService extends ChangeNotifier {
     }
     if (typeof el.click === 'function') {
       el.click();
+    } else {
+      try {
+        const evt = new MouseEvent('click', {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+          buttons: 1
+        });
+        el.dispatchEvent(evt);
+      } catch (_) {}
     }
 
     let checked = undefined;

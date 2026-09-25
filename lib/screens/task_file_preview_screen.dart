@@ -54,6 +54,7 @@ class _TaskFilePreviewScreenState extends State<TaskFilePreviewScreen> {
     try {
       final file = File(widget.filePath);
       if (!await file.exists()) {
+        if (!mounted) return;
         setState(() {
           _error = 'File not found: ${widget.filePath}';
           _loading = false;
@@ -62,11 +63,13 @@ class _TaskFilePreviewScreenState extends State<TaskFilePreviewScreen> {
       }
 
       final content = await file.readAsString();
+      if (!mounted) return;
       setState(() {
         _content = content;
         _loading = false;
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _error = 'Failed to read file: $e';
         _loading = false;

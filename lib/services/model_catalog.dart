@@ -60,6 +60,31 @@ class ModelCatalogService {
     return request.whenComplete(() => _inFlight.remove(cacheKey));
   }
 
+  /// One-shot fetch that automatically closes the ephemeral HTTP client.
+  static Future<List<ModelOption>> fetchAndClose({
+    required String baseUrl,
+    required String apiKey,
+    String? defaultProvider,
+    bool? isOpenRouter,
+    bool forceRefresh = false,
+    http.Client? client,
+  }) async {
+    final service = ModelCatalogService(client: client);
+    try {
+      return await service.load(
+        baseUrl: baseUrl,
+        apiKey: apiKey,
+        defaultProvider: defaultProvider,
+        isOpenRouter: isOpenRouter,
+        forceRefresh: forceRefresh,
+      );
+    } finally {
+      if (client == null) {
+        service.close();
+      }
+    }
+  }
+
   /// Clears in-memory catalog cache (for all or a specific base URL).
   /// Without [apiKey] both auth and anon entries for the URL are dropped.
   static void clearCache({String? baseUrl, String? apiKey}) {

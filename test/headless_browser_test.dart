@@ -239,5 +239,17 @@ void main() {
       expect(result.output, equals('Browser closed.'));
       expect(headlessService.isOpen, isFalse);
     });
+
+    test('dispose and disposeHeadlessView run cleanly without throwing post-disposal errors (P12.4)', () async {
+      final freshService = HeadlessBrowserService(controllerOverride: fakeController);
+      expect(freshService.isDisposed, isFalse);
+
+      freshService.dispose();
+      expect(freshService.isDisposed, isTrue);
+
+      // Subsequent async or manual calls should be safe
+      await expectLater(freshService.disposeHeadlessView(), completes);
+      expect(() => freshService.setController(null), returnsNormally);
+    });
   });
 }

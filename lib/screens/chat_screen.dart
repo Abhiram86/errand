@@ -840,6 +840,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    if (_busy) {
+      _stopGeneration();
+    }
     WidgetsBinding.instance.removeObserver(this);
     _composerFocusNode.removeListener(_onComposerFocusChange);
     _composerFocusNode.dispose();
@@ -2576,10 +2579,19 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     final isComposerFocused = _composerFocusNode.hasFocus;
 
     return PopScope(
-      canPop: !_sidebarOpen,
+      canPop: !_sidebarOpen && !_busy,
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop && _sidebarOpen) {
+        if (didPop) {
+          if (_busy) _stopGeneration();
+          return;
+        }
+        if (_sidebarOpen) {
           _closeSidebar();
+          return;
+        }
+        if (_busy) {
+          _stopGeneration();
+          _showToast('Stopped generation');
         }
       },
       child: Scaffold(

@@ -184,7 +184,7 @@ class _EditTaskModelSheetState extends State<EditTaskModelSheet> {
           ? (provider.apiKey ?? _settings.openRouterKey ?? '')
           : (provider.apiKey ?? '');
       try {
-        final fetched = await ModelCatalogService().load(
+        final fetched = await ModelCatalogService.fetchAndClose(
           baseUrl: provider.baseUrl.isNotEmpty ? provider.baseUrl : provider.defaultBaseUrl,
           apiKey: apiKey,
           defaultProvider: provider.name,

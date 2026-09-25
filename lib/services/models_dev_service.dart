@@ -77,8 +77,16 @@ class ModelsDevService {
   /// Preloads the catalog in the background if not yet loaded.
   static void preload({http.Client? client}) {
     if (_hasLoaded || _inFlight != null) return;
-    unawaited(ModelsDevService(client: client).load().catchError((_) {}));
+    final service = ModelsDevService(client: client);
+    unawaited(service.load().catchError((_) {}).whenComplete(() {
+      if (client == null) {
+        service.close();
+      }
+    }));
   }
+
+  /// Closes the underlying HTTP client.
+  void close() => _client.close();
 
   /// Clears the models.dev memory cache (primarily used for testing).
   static void clearCache() {

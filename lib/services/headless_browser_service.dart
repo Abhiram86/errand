@@ -140,18 +140,25 @@ class HeadlessBrowserService extends BrowserService {
 
   /// Explicitly terminates and disposes the native offscreen web view.
   Future<void> disposeHeadlessView() async {
-    if (_headlessWebView != null) {
+    final view = _headlessWebView;
+    _headlessWebView = null;
+    if (view != null) {
       try {
-        await _headlessWebView!.dispose();
+        await view.dispose();
       } catch (_) {}
-      _headlessWebView = null;
     }
-    setController(null);
+    if (!isDisposed) {
+      setController(null);
+    }
   }
 
   @override
   void dispose() {
-    unawaited(disposeHeadlessView());
+    final view = _headlessWebView;
+    _headlessWebView = null;
+    if (view != null) {
+      unawaited(view.dispose().catchError((_) {}));
+    }
     super.dispose();
   }
 }

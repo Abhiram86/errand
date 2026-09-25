@@ -256,7 +256,7 @@ class _ModelPickerDialogState extends State<ModelPickerDialog> {
           ? (provider.apiKey ?? AppSettingsService.instance.openRouterKey ?? '')
           : (provider.apiKey ?? '');
       try {
-        final models = await ModelCatalogService().load(
+        final models = await ModelCatalogService.fetchAndClose(
           baseUrl: provider.baseUrl.isNotEmpty ? provider.baseUrl : provider.defaultBaseUrl,
           apiKey: apiKey,
           defaultProvider: provider.name,
@@ -328,7 +328,7 @@ class _ModelPickerDialogState extends State<ModelPickerDialog> {
               ? (provider.apiKey ?? AppSettingsService.instance.openRouterKey ?? '')
               : (provider.apiKey ?? '');
           try {
-            cached = await ModelCatalogService().load(
+            cached = await ModelCatalogService.fetchAndClose(
               baseUrl: provider.baseUrl.isNotEmpty ? provider.baseUrl : provider.defaultBaseUrl,
               apiKey: apiKey,
               defaultProvider: provider.name,
