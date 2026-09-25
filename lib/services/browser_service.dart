@@ -220,6 +220,8 @@ class BrowserService extends ChangeNotifier {
   bool get canGoForward => _canGoForward;
   bool get hasController => _controller != null;
   String? get lastError => _lastError;
+  int? _lastHttpStatusCode;
+  int? get lastHttpStatusCode => _lastHttpStatusCode;
   String? get targetLoadingUrl => _targetLoadingUrl;
   int get navigationGeneration => _navigationGeneration;
   BrowserController? get controllerOverride => _controllerOverride;
@@ -258,10 +260,27 @@ class BrowserService extends ChangeNotifier {
 
     _isLoading = true;
     _progress = 0;
+    _lastHttpStatusCode = null;
     if (cleanUrl != null && cleanUrl.isNotEmpty) {
       _currentUrl = cleanUrl;
     }
     notifyListeners();
+  }
+
+  void onHttpError(String? url, int? statusCode, {bool isForMainFrame = true}) {
+    if (!isForMainFrame) return;
+    _lastHttpStatusCode = statusCode;
+    // We intentionally do not abort _loadCompleter or set _lastError here.
+    // HTTP error status codes (4xx, 5xx) still deliver an HTML body, and
+    // Chromium invokes onLoadStop once DOM parsing is done. Only genuine
+    // transport/connection failures (handled in onLoadError) abort navigation.
+  }
+
+  /// Suffix marking a completed load that served an HTTP error page, so the
+  /// agent can distinguish it from a clean load without parsing content.
+  String get _httpStatusSuffix {
+    final code = _lastHttpStatusCode;
+    return (code != null && code >= 400) ? ' (HTTP $code)' : '';
   }
 
   void onLoadStop(String? url) {
@@ -413,6 +432,7 @@ class BrowserService extends ChangeNotifier {
     _targetLoadingUrl = targetUrl;
     _currentTitle = null;
     _lastError = null;
+    _lastHttpStatusCode = null;
     _isLoading = true;
     _progress = 10;
     _loadCompleter = Completer<void>();
@@ -538,7 +558,7 @@ class BrowserService extends ChangeNotifier {
       title: _currentTitle ?? '',
       status: isError
           ? 'error: $_lastError'
-          : (hasLoadedPage ? 'loaded' : 'unknown'),
+          : (hasLoadedPage ? 'loaded$_httpStatusSuffix' : 'unknown'),
     );
   }
 
@@ -576,6 +596,7 @@ class BrowserService extends ChangeNotifier {
     _isLoading = true;
     _progress = 10;
     _lastError = null;
+    _lastHttpStatusCode = null;
     _currentTitle = null;
     _loadCompleter = Completer<void>();
     // Same local-capture rule as open(): never await the field across a
@@ -640,7 +661,7 @@ class BrowserService extends ChangeNotifier {
     return BrowserPageInfo(
       url: _currentUrl ?? '',
       title: _currentTitle ?? '',
-      status: isError ? 'error: $_lastError' : 'reloaded',
+      status: isError ? 'error: $_lastError' : 'reloaded$_httpStatusSuffix',
     );
   }
 

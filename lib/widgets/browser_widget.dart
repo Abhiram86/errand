@@ -652,9 +652,9 @@ class _BrowserWidgetState extends State<BrowserWidget> {
               (request.url.toString() == _service.currentUrl ||
                   request.url.toString() == _service.targetLoadingUrl);
           if (!isMainFrame) return;
-          _service.onLoadError(
+          _service.onHttpError(
             request.url.toString(),
-            'HTTP ${errorResponse.statusCode}',
+            errorResponse.statusCode,
           );
         },
         onProgressChanged: (controller, progress) {

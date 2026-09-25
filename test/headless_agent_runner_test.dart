@@ -292,6 +292,55 @@ void main() {
       expect(notif['isSuccess'], isTrue);
     });
 
+    test('TaskSchedulerService.executeTask with suppressNotification: true suppresses notification', () async {
+      final scheduler = TaskSchedulerService(
+        database: db,
+        notificationService: mockNotifications,
+      );
+
+      final runner = AgentRunner(
+        llm: mockLlm,
+        workingDirectory: workingDirectory,
+        selectedModel: 'mock-model',
+      );
+
+      final nowMillis = DateTime.now().millisecondsSinceEpoch;
+      final taskId = await db.into(db.schedulerTasks).insert(
+        SchedulerTasksCompanion.insert(
+          title: 'Manual Run Task',
+          type: 'one_off',
+          status: 'scheduled',
+          payloadJson: jsonEncode({'prompt': 'Manual on-the-fly task'}),
+          startsAt: nowMillis,
+          nextRunAt: Value(nowMillis),
+          notify: const Value(true),
+          timezone: 'UTC',
+          createdAt: nowMillis,
+          updatedAt: nowMillis,
+        ),
+      );
+
+      mockLlm.onChat = (_) {
+        return const LlmMessage(content: 'Manual task completed.');
+      };
+
+      final success = await scheduler.executeTask(
+        taskId,
+        runner: runner,
+        scratchDirectory: scratchDir,
+        suppressNotification: true,
+      );
+
+      expect(success, isTrue);
+
+      // Verify no notification dispatched since suppressNotification was true
+      expect(mockNotifications.notifications.isEmpty, isTrue);
+
+      // Verify log row records notificationSent = 0
+      final logs = await (db.select(db.schedulerTaskLogs)..where((l) => l.schedulerTaskId.equals(taskId))).get();
+      expect(logs.first.notificationSent, equals(0));
+    });
+
     test('TaskSchedulerService.executeTask advances recurring task nextRunAt', () async {
       final scheduler = TaskSchedulerService(
         database: db,

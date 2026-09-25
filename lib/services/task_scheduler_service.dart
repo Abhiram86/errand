@@ -595,6 +595,7 @@ class TaskSchedulerService {
   Future<bool> executeTask(
     int taskId, {
     bool allowCompleted = false,
+    bool suppressNotification = false,
     AgentRunner? runner,
     Directory? scratchDirectory,
     Duration timeout = const Duration(minutes: 10),
@@ -932,7 +933,7 @@ class TaskSchedulerService {
       }
     }
 
-    if (task.notify) {
+    if (task.notify && !suppressNotification) {
       bool shown = false;
       String skipReason = '';
       try {
@@ -969,7 +970,9 @@ class TaskSchedulerService {
       }
     } else {
       debugPrint(
-        '[TaskScheduler] Notifications disabled for task $taskId; skipping.',
+        suppressNotification
+            ? '[TaskScheduler] Notification suppressed for manual on-the-fly run of task $taskId.'
+            : '[TaskScheduler] Notifications disabled for task $taskId; skipping.',
       );
       // Silent runs have notify: false and no notification is posted.
       // Mark notificationSeen: 1 so they do not pollute the unread tab or badge count.

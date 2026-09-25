@@ -57,6 +57,7 @@ class TrackingSchedulerService extends TaskSchedulerService {
   Future<bool> executeTask(
     int taskId, {
     bool allowCompleted = false,
+    bool suppressNotification = false,
     AgentRunner? runner,
     Directory? scratchDirectory,
     Duration timeout = const Duration(minutes: 10),

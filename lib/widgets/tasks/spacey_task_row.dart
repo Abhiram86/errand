@@ -266,6 +266,7 @@ class _SpaceyTaskRowState extends State<SpaceyTaskRow> {
       final success = await TaskSchedulerService.instance.executeTask(
         taskId,
         allowCompleted: true,
+        suppressNotification: true,
       );
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

@@ -224,6 +224,30 @@ Tool browserTool({
                 'Failed to load page: ${pageInfo.status}',
               );
             }
+
+            // Automatically provide the page snapshot upon loading so the agent
+            // has immediate access to interactive refs and content without a wasted turn.
+            try {
+              final snapshotOutput = await service.snapshot(maxNodes: 120);
+              if (snapshotOutput.isNotEmpty &&
+                  !snapshotOutput.startsWith('Snapshot failed') &&
+                  !snapshotOutput.startsWith('Snapshot error') &&
+                  !snapshotOutput.startsWith('Snapshot parsing error')) {
+                buffer.writeln();
+                buffer.writeln('Page Snapshot:');
+                buffer.writeln(snapshotOutput);
+              }
+            } catch (_) {
+              try {
+                final text = await service.extractText(maxChars: 4000);
+                if (text.isNotEmpty && !text.startsWith('Text extraction error')) {
+                  buffer.writeln();
+                  buffer.writeln('Page Content:');
+                  buffer.writeln(text);
+                }
+              } catch (_) {}
+            }
+
             return ToolCallResult(
               id: call.id,
               ok: true,

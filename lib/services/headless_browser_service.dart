@@ -94,9 +94,9 @@ class HeadlessBrowserService extends BrowserService {
               (request.url.toString() == currentUrl ||
                   request.url.toString() == targetLoadingUrl);
           if (!isMainFrame) return;
-          onLoadError(
+          onHttpError(
             request.url.toString(),
-            'HTTP ${errorResponse.statusCode}',
+            errorResponse.statusCode,
           );
         },
         onProgressChanged: (controller, progress) => onProgressChanged(progress),
@@ -121,9 +121,9 @@ class HeadlessBrowserService extends BrowserService {
               (request.url.toString() == currentUrl ||
                   request.url.toString() == targetLoadingUrl);
           if (!isMainFrame) return;
-          onLoadError(
+          onHttpError(
             request.url.toString(),
-            'HTTP ${errorResponse.statusCode}',
+            errorResponse.statusCode,
           );
         },
         onProgressChanged: (controller, progress) => onProgressChanged(progress),

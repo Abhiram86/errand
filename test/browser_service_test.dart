@@ -171,6 +171,27 @@ void main() {
       expect(info2.title, isEmpty);
     });
 
+    test('onHttpError does not abort load and open reports loaded on onLoadStop', () async {
+      final realService = BrowserService();
+      final controller = FakeBrowserController();
+      controller.title = '503 Service Unavailable Page';
+      realService.setController(controller);
+
+      final openFuture = realService.open('https://busy-site.com', timeout: const Duration(seconds: 2));
+      realService.onLoadStart('https://busy-site.com');
+      realService.onHttpError('https://busy-site.com', 503, isForMainFrame: true);
+      expect(realService.lastError, isNull);
+      expect(realService.lastHttpStatusCode, equals(503));
+      expect(realService.isLoading, isTrue);
+
+      realService.onLoadStop('https://busy-site.com');
+      final info = await openFuture;
+      expect(info.status, equals('loaded (HTTP 503)'));
+      expect(info.title, equals('503 Service Unavailable Page'));
+      expect(realService.lastError, isNull);
+      realService.dispose();
+    });
+
     test('timed out navigation reports timeout error', () async {
       final realService = BrowserService();
       final controller = FakeBrowserController();

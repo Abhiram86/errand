@@ -116,6 +116,29 @@ void main() {
       expect(result.ok, isFalse);
       expect(result.errorMessage, contains('URL parameter is required'));
     });
+
+    test('opens page and automatically includes page snapshot preview', () async {
+      fakeController.jsResult = jsonEncode({
+        'meta': {'title': 'Flutter - Build apps for any screen', 'url': 'https://flutter.dev'},
+        'tree': '- heading [level=1] "Flutter": Flutter makes it easy to build apps.',
+      });
+
+      final call = ToolCall(
+        id: 'c-snap',
+        name: 'browser',
+        arguments: {
+          'action': 'open',
+          'url': 'https://flutter.dev',
+        },
+      );
+
+      final result = await tool.handler(call);
+      expect(result.ok, isTrue);
+      expect(result.output, contains('Opened browser at https://flutter.dev'));
+      expect(result.output, contains('Status: loaded'));
+      expect(result.output, contains('Page Snapshot:'));
+      expect(result.output, contains('Flutter makes it easy to build apps.'));
+    });
   });
 
   group('browserTool - action: close and reload', () {
