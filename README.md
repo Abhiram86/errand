@@ -1,6 +1,17 @@
 # Errand
 
-https://github.com/user-attachments/assets/948c64c5-5780-4e50-b54c-d71bbbb92788
+<div align="center">
+  <video
+    controls
+    width="360"
+    playsinline
+    src="https://github.com/user-attachments/assets/948c64c5-5780-4e50-b54c-d71bbbb92788"
+  >
+    <a href="https://github.com/user-attachments/assets/948c64c5-5780-4e50-b54c-d71bbbb92788">
+      Watch the Errand demo
+    </a>
+  </video>
+</div>
 
 <p align="center">
   <b>An on-device AI agent for Android.</b><br>
