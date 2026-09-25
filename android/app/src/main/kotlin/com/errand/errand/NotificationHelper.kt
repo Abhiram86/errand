@@ -84,16 +84,20 @@ object NotificationHelper {
                 null -> 0xFF58A6FF.toInt() // Blue
             }
 
-            val notification = builder
+            val notificationBuilder = builder
                 .setContentTitle(title)
                 .setContentText(body)
                 .setStyle(Notification.BigTextStyle().bigText(body))
                 .setSmallIcon(iconRes)
                 .setColor(notifColor)
-                .setColorized(isSuccess != null)
                 .setContentIntent(pendingTap)
                 .setAutoCancel(true)
-                .build()
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                notificationBuilder.setColorized(isSuccess != null)
+            }
+
+            val notification = notificationBuilder.build()
 
             manager.notify(id, notification)
             Log.d(TAG, "Notification $id ($title) delivered successfully")

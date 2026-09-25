@@ -133,4 +133,30 @@ void main() {
       expect(result.errorMessage, contains('Screen actions are not supported in this build of Errand'));
     });
   });
+
+  group('Lite flavor manifest boundary lock', () {
+    test('lite AndroidManifest.xml exists and strips ErrandAccessibilityService', () {
+      final manifestFile = File('android/app/src/lite/AndroidManifest.xml');
+      expect(manifestFile.existsSync(), isTrue,
+          reason: 'Lite AndroidManifest.xml must exist');
+      final content = manifestFile.readAsStringSync();
+
+      // Must explicitly remove ErrandAccessibilityService via tools:node="remove"
+      expect(content, contains('.ErrandAccessibilityService'));
+      expect(content, contains('tools:node="remove"'));
+
+      // Must never declare accessibility service intent filters or permissions
+      expect(content, isNot(contains('BIND_ACCESSIBILITY_SERVICE')));
+      expect(content, isNot(contains('android.accessibilityservice')));
+      expect(content, isNot(contains('<uses-permission')));
+    });
+
+    test('full AndroidManifest.xml retains ErrandAccessibilityService', () {
+      final mainManifest = File('android/app/src/main/AndroidManifest.xml');
+      expect(mainManifest.existsSync(), isTrue);
+      final content = mainManifest.readAsStringSync();
+      expect(content, contains('.ErrandAccessibilityService'));
+      expect(content, contains('BIND_ACCESSIBILITY_SERVICE'));
+    });
+  });
 }

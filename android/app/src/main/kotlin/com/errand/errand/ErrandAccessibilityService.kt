@@ -576,7 +576,7 @@ class ErrandAccessibilityService : AccessibilityService() {
         }
         val label = node.text?.toString()?.let { trimLabel(it, interactive) }?.ifBlank { null }
             ?: node.contentDescription?.toString()?.let { trimLabel(it, interactive) }?.ifBlank { null }
-            ?: node.hintText?.toString()?.let { trimLabel(it, interactive) }?.ifBlank { null }
+            ?: node.safeHintText()?.toString()?.let { trimLabel(it, interactive) }?.ifBlank { null }
         if (node.isSelected && activeTab == null) {
             activeTab = label ?: cls
         }
@@ -907,7 +907,10 @@ class ErrandAccessibilityService : AccessibilityService() {
             ?: node.contentDescription?.toString()?.trim()?.ifBlank { null }
             // Web form fields often expose ONLY their placeholder as hint —
             // the reader shows hints, so the tapper must match them too.
-            ?: node.hintText?.toString()?.trim()?.ifBlank { null }
+            ?: node.safeHintText()?.toString()?.trim()?.ifBlank { null }
+
+    private fun AccessibilityNodeInfo.safeHintText(): CharSequence? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) hintText else null
 
     private fun matchScore(candidate: String, needle: String, exact: Boolean): Int? {
         val lower = candidate.lowercase()

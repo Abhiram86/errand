@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:cryptography/cryptography.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
@@ -17,6 +18,9 @@ class UpdateService {
   static const String _dbKey = 'pref.app_update_info';
   static const String _kLastSeenVersionKey = 'pref.last_seen_version';
   static const Duration checkInterval = Duration(hours: 2);
+  static const Duration defaultDownloadInactivityTimeout =
+      Duration(seconds: 30);
+  static const Duration defaultDownloadTotalTimeout = Duration(minutes: 10);
 
   static final UpdateService instance = UpdateService();
 
@@ -180,6 +184,38 @@ class UpdateService {
     }
 
     return items;
+  }
+
+  /// Extracts a SHA-256 checksum from release notes or body text.
+  /// Looks for filename-associated hashes first, followed by explicit SHA-256 labels.
+  static String? extractSha256(String? text, [String? targetFileName]) {
+    if (text == null || text.trim().isEmpty) return null;
+    if (targetFileName != null && targetFileName.trim().isNotEmpty) {
+      final escaped = RegExp.escape(targetFileName.trim());
+      // Pattern 1: <sha256>  <filename>
+      final hashBefore = RegExp(
+        r'([a-fA-F0-9]{64})\s+[*]?(' + escaped + r')',
+        caseSensitive: false,
+      ).firstMatch(text);
+      if (hashBefore != null) return hashBefore.group(1)!.toLowerCase();
+
+      // Pattern 2: <filename>: <sha256> or <filename> = <sha256>
+      final hashAfter = RegExp(
+        r'(' + escaped + r')\s*[:=]\s*([a-fA-F0-9]{64})',
+        caseSensitive: false,
+      ).firstMatch(text);
+      if (hashAfter != null) return hashAfter.group(2)!.toLowerCase();
+    }
+
+    // Pattern 3: SHA256: <sha256> or SHA-256: <sha256> or checksum: <sha256>
+    final explicit = RegExp(
+      r'(?:sha-?256|checksum|hash)\s*[:=]\s*([a-fA-F0-9]{64})',
+      caseSensitive: false,
+    ).firstMatch(text);
+    if (explicit != null) {
+      return explicit.group(1)!.toLowerCase();
+    }
+    return null;
   }
 
   /// Fetches release notes from GitHub API for a specific tag or falls back to latest release.
@@ -484,6 +520,8 @@ class UpdateService {
         apkDownloadedAt = null;
       }
 
+      final matchedSha256 = extractSha256(releaseNotes, matchedName);
+
       final updated = AppUpdateInfo(
         currentVersion: currentVersion,
         latestVersion: latestVersion,
@@ -494,6 +532,7 @@ class UpdateService {
         apkLocation: apkLocation,
         apkDownloadedAt: apkDownloadedAt,
         apkSize: matchedSize,
+        sha256: matchedSha256,
       );
 
       await _persistInfo(updated);
@@ -511,8 +550,18 @@ class UpdateService {
   }
 
   /// Downloads the APK file to cache with atomic rename and progress reporting.
+  ///
+  /// Verification contract: exact byte length (when the server reports one)
+  /// plus SHA-256 when the release notes publish a checksum for the APK
+  /// (see [extractSha256]). Releases MUST publish hashes for full
+  /// verification; a hashless download is size-checked only and logs a
+  /// warning. Pass [requireSha256] to fail closed (reject hashless
+  /// downloads) once the release process guarantees published checksums.
   Future<String?> downloadApk(
     AppUpdateInfo info, {
+    Duration inactivityTimeout = defaultDownloadInactivityTimeout,
+    Duration totalTimeout = defaultDownloadTotalTimeout,
+    bool requireSha256 = false,
     void Function(double progress)? onProgress,
   }) async {
     if (info.apkUrl == null || info.apkUrl!.isEmpty) return null;
@@ -521,6 +570,7 @@ class UpdateService {
     downloadProgress.value = 0.0;
 
     File? tempFile;
+    IOSink? sink;
     try {
       final dir = cacheDirProvider != null
           ? await cacheDirProvider!()
@@ -540,7 +590,9 @@ class UpdateService {
 
       final request = http.Request('GET', Uri.parse(info.apkUrl!));
       request.headers['User-Agent'] = 'handy_flutter/1.0';
-      final streamedResponse = await _client.send(request);
+      final streamedResponse = await _client
+          .send(request)
+          .timeout(inactivityTimeout);
 
       if (streamedResponse.statusCode != 200) {
         return null;
@@ -548,24 +600,73 @@ class UpdateService {
 
       final contentLength = streamedResponse.contentLength ?? info.apkSize ?? 0;
       var receivedBytes = 0;
-      final sink = tempFile.openWrite();
+      sink = tempFile.openWrite();
 
-      await for (final chunk in streamedResponse.stream) {
-        sink.add(chunk);
-        receivedBytes += chunk.length;
-        if (contentLength > 0) {
-          final p = (receivedBytes / contentLength).clamp(0.0, 1.0);
-          downloadProgress.value = p;
-          onProgress?.call(p);
+      final stream = streamedResponse.stream.timeout(
+        inactivityTimeout,
+        onTimeout: (eventSink) {
+          eventSink.addError(
+            TimeoutException('APK download stalled (inactivity timeout)'),
+          );
+        },
+      );
+
+      // Note: .timeout() abandons the await-for but does not cancel the
+      // underlying HTTP subscription; the stream drains until GC. File and
+      // sink cleanup below still run, so the leak is transient bandwidth
+      // only, never orphaned disk state.
+      await Future.sync(() async {
+        await for (final chunk in stream) {
+          sink!.add(chunk);
+          receivedBytes += chunk.length;
+          if (contentLength > 0) {
+            final p = (receivedBytes / contentLength).clamp(0.0, 1.0);
+            downloadProgress.value = p;
+            onProgress?.call(p);
+          }
         }
-      }
-      await sink.flush();
-      await sink.close();
+        await sink!.flush();
+      }).timeout(totalTimeout);
 
-      // Integrity verification: ensure file size matches expected size
-      if (contentLength > 0 && tempFile.lengthSync() < contentLength) {
+      await sink.close();
+      sink = null;
+
+      // Exact integrity verification: ensure file size matches expected size
+      if (contentLength > 0 && tempFile.lengthSync() != contentLength) {
         tempFile.deleteSync();
         return null;
+      }
+
+      // SHA-256 verification when checksum is available
+      final targetSha = info.sha256?.trim().toLowerCase();
+      if (targetSha == null || targetSha.isEmpty) {
+        if (requireSha256) {
+          debugPrint(
+            '[UpdateService] Rejecting ${info.apkName}: no SHA-256 checksum '
+            'published (requireSha256)',
+          );
+          tempFile.deleteSync();
+          return null;
+        }
+        debugPrint(
+          '[UpdateService] No SHA-256 for ${info.apkName}; '
+          '${contentLength > 0 ? 'size-checked only' : 'no integrity verification possible'}. '
+          'Publish checksums in release notes for full verification.',
+        );
+      } else {
+        final hashSink = Sha256().newHashSink();
+        await for (final chunk in tempFile.openRead()) {
+          hashSink.add(chunk);
+        }
+        hashSink.close();
+        final digest = await hashSink.hash();
+        final actualHex = digest.bytes
+            .map((b) => b.toRadixString(16).padLeft(2, '0'))
+            .join();
+        if (actualHex.toLowerCase() != targetSha) {
+          tempFile.deleteSync();
+          return null;
+        }
       }
 
       // Atomic rename to final target file
@@ -584,6 +685,9 @@ class UpdateService {
 
       return finalPath;
     } catch (_) {
+      try {
+        await sink?.close();
+      } catch (_) {}
       if (tempFile != null && tempFile.existsSync()) {
         try {
           tempFile.deleteSync();

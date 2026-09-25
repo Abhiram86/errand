@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  verify:
+    name: Flutter & Android Verification
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Run Flutter analyze
+        run: flutter analyze
+
+      - name: Run Flutter unit & widget tests
+        run: flutter test
+
+      - name: Run Android Lint (LiteDebug)
+        run: ./gradlew :app:lintLiteDebug
+        working-directory: android
+
+      - name: Run Android Lint (FullDebug)
+        run: ./gradlew :app:lintFullDebug
+        working-directory: android

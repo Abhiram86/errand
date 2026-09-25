@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:cryptography/cryptography.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -599,6 +601,350 @@ void main() {
         final notes = await service.checkFirstLaunchAfterUpdate();
         expect(notes, isNotNull);
         expect(staleApk.existsSync(), isFalse);
+      },
+    );
+  });
+
+  group('OTA download hardening and integrity verification (P12.6)', () {
+    test('extractSha256 parses various checksum formats from release body', () {
+      const sha =
+          'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+
+      // Hash followed by filename
+      final t1 = UpdateService.extractSha256(
+        '$sha  Errand-v0.6.1-full-arm64-v8a.apk',
+        'Errand-v0.6.1-full-arm64-v8a.apk',
+      );
+      expect(t1, sha);
+
+      // Filename followed by colon and hash
+      final t2 = UpdateService.extractSha256(
+        'Errand-v0.6.1-full-arm64-v8a.apk: $sha',
+        'Errand-v0.6.1-full-arm64-v8a.apk',
+      );
+      expect(t2, sha);
+
+      // Explicit SHA-256 label
+      final t3 = UpdateService.extractSha256(
+        'Some notes\nSHA-256: $sha\nMore notes',
+      );
+      expect(t3, sha);
+
+      // Explicit checksum label
+      final t4 = UpdateService.extractSha256(
+        'checksum = $sha',
+      );
+      expect(t4, sha);
+
+      // Returns null when no valid hash found
+      expect(UpdateService.extractSha256('Just random text'), isNull);
+    });
+
+    test(
+      'downloadApk rejects truncated file (contentLength mismatch) and deletes temp file',
+      () async {
+        final mockClient = MockClient.streaming((request, bodyStream) async {
+          final body = [1, 2, 3, 4, 5]; // 5 bytes
+          return http.StreamedResponse(
+            Stream.value(body),
+            200,
+            contentLength: 10, // expects 10 bytes
+          );
+        });
+
+        final service = UpdateService(
+          client: mockClient,
+          appInfo: FakeAppInfoService(),
+          database: db,
+          cacheDirProvider: () async => tempDir,
+        );
+
+        final updateInfo = AppUpdateInfo(
+          currentVersion: '0.6.0',
+          latestVersion: '0.6.1',
+          lastPing: DateTime.now(),
+          apkUrl: 'https://example.com/test.apk',
+          apkName: 'test.apk',
+          apkSize: 10,
+        );
+
+        final result = await service.downloadApk(updateInfo);
+        expect(result, isNull);
+
+        final updatesDir = Directory('${tempDir.path}/updates');
+        expect(File('${updatesDir.path}/test.apk').existsSync(), isFalse);
+        expect(File('${updatesDir.path}/test.apk.tmp').existsSync(), isFalse);
+      },
+    );
+
+    test(
+      'downloadApk rejects oversized file (contentLength mismatch) and deletes temp file',
+      () async {
+        final mockClient = MockClient.streaming((request, bodyStream) async {
+          final body = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]; // 10 bytes
+          return http.StreamedResponse(
+            Stream.value(body),
+            200,
+            contentLength: 5, // expects 5 bytes
+          );
+        });
+
+        final service = UpdateService(
+          client: mockClient,
+          appInfo: FakeAppInfoService(),
+          database: db,
+          cacheDirProvider: () async => tempDir,
+        );
+
+        final updateInfo = AppUpdateInfo(
+          currentVersion: '0.6.0',
+          latestVersion: '0.6.1',
+          lastPing: DateTime.now(),
+          apkUrl: 'https://example.com/test.apk',
+          apkName: 'test.apk',
+          apkSize: 5,
+        );
+
+        final result = await service.downloadApk(updateInfo);
+        expect(result, isNull);
+
+        final updatesDir = Directory('${tempDir.path}/updates');
+        expect(File('${updatesDir.path}/test.apk').existsSync(), isFalse);
+        expect(File('${updatesDir.path}/test.apk.tmp').existsSync(), isFalse);
+      },
+    );
+
+    test(
+      'downloadApk times out on stream inactivity and cleans up temp file',
+      () async {
+        final controller = StreamController<List<int>>();
+        final mockClient = MockClient.streaming((request, bodyStream) async {
+          return http.StreamedResponse(
+            controller.stream,
+            200,
+            contentLength: 10,
+          );
+        });
+
+        final service = UpdateService(
+          client: mockClient,
+          appInfo: FakeAppInfoService(),
+          database: db,
+          cacheDirProvider: () async => tempDir,
+        );
+
+        final updateInfo = AppUpdateInfo(
+          currentVersion: '0.6.0',
+          latestVersion: '0.6.1',
+          lastPing: DateTime.now(),
+          apkUrl: 'https://example.com/test.apk',
+          apkName: 'test.apk',
+          apkSize: 10,
+        );
+
+        // Feed 2 bytes then stall
+        controller.add([1, 2]);
+
+        final downloadFuture = service.downloadApk(
+          updateInfo,
+          inactivityTimeout: const Duration(milliseconds: 50),
+        );
+
+        final result = await downloadFuture;
+        expect(result, isNull);
+
+        final updatesDir = Directory('${tempDir.path}/updates');
+        expect(File('${updatesDir.path}/test.apk').existsSync(), isFalse);
+        expect(File('${updatesDir.path}/test.apk.tmp').existsSync(), isFalse);
+
+        await controller.close();
+      },
+    );
+
+    test('downloadApk validates SHA-256 and rejects corrupt payload', () async {
+      final body = [10, 20, 30, 40, 50];
+      final mockClient = MockClient.streaming((request, bodyStream) async {
+        return http.StreamedResponse(
+          Stream.value(body),
+          200,
+          contentLength: body.length,
+        );
+      });
+
+      final service = UpdateService(
+        client: mockClient,
+        appInfo: FakeAppInfoService(),
+        database: db,
+        cacheDirProvider: () async => tempDir,
+      );
+
+      final updateInfo = AppUpdateInfo(
+        currentVersion: '0.6.0',
+        latestVersion: '0.6.1',
+        lastPing: DateTime.now(),
+        apkUrl: 'https://example.com/test.apk',
+        apkName: 'test.apk',
+        apkSize: body.length,
+        sha256:
+            '0000000000000000000000000000000000000000000000000000000000000000', // wrong hash
+      );
+
+      final result = await service.downloadApk(updateInfo);
+      expect(result, isNull);
+
+      final updatesDir = Directory('${tempDir.path}/updates');
+      expect(File('${updatesDir.path}/test.apk').existsSync(), isFalse);
+      expect(File('${updatesDir.path}/test.apk.tmp').existsSync(), isFalse);
+    });
+
+    test('downloadApk succeeds when exact size and SHA-256 match', () async {
+      final body = [10, 20, 30, 40, 50];
+      final digest = await Sha256().hash(body);
+      final expectedHash = digest.bytes
+          .map((b) => b.toRadixString(16).padLeft(2, '0'))
+          .join();
+
+      final mockClient = MockClient.streaming((request, bodyStream) async {
+        return http.StreamedResponse(
+          Stream.value(body),
+          200,
+          contentLength: body.length,
+        );
+      });
+
+      final service = UpdateService(
+        client: mockClient,
+        appInfo: FakeAppInfoService(),
+        database: db,
+        cacheDirProvider: () async => tempDir,
+      );
+
+      final updateInfo = AppUpdateInfo(
+        currentVersion: '0.6.0',
+        latestVersion: '0.6.1',
+        lastPing: DateTime.now(),
+        apkUrl: 'https://example.com/test.apk',
+        apkName: 'test.apk',
+        apkSize: body.length,
+        sha256: expectedHash,
+      );
+
+      final result = await service.downloadApk(updateInfo);
+      expect(result, isNotNull);
+
+      final finalFile = File(result!);
+      expect(finalFile.existsSync(), isTrue);
+      expect(finalFile.lengthSync(), body.length);
+    });
+
+    test('downloadApk with requireSha256 rejects hashless download', () async {
+      final body = [10, 20, 30, 40, 50];
+      final mockClient = MockClient.streaming((request, bodyStream) async {
+        return http.StreamedResponse(
+          Stream.value(body),
+          200,
+          contentLength: body.length,
+        );
+      });
+
+      final service = UpdateService(
+        client: mockClient,
+        appInfo: FakeAppInfoService(),
+        database: db,
+        cacheDirProvider: () async => tempDir,
+      );
+
+      final updateInfo = AppUpdateInfo(
+        currentVersion: '0.6.0',
+        latestVersion: '0.6.1',
+        lastPing: DateTime.now(),
+        apkUrl: 'https://example.com/test.apk',
+        apkName: 'test.apk',
+        apkSize: body.length,
+      );
+
+      final result = await service.downloadApk(
+        updateInfo,
+        requireSha256: true,
+      );
+      expect(result, isNull);
+
+      final updatesDir = Directory('${tempDir.path}/updates');
+      expect(File('${updatesDir.path}/test.apk').existsSync(), isFalse);
+      expect(File('${updatesDir.path}/test.apk.tmp').existsSync(), isFalse);
+    });
+
+    test('downloadApk with requireSha256 succeeds when hash matches', () async {
+      final body = [10, 20, 30, 40, 50];
+      final digest = await Sha256().hash(body);
+      final expectedHash = digest.bytes
+          .map((b) => b.toRadixString(16).padLeft(2, '0'))
+          .join();
+
+      final mockClient = MockClient.streaming((request, bodyStream) async {
+        return http.StreamedResponse(
+          Stream.value(body),
+          200,
+          contentLength: body.length,
+        );
+      });
+
+      final service = UpdateService(
+        client: mockClient,
+        appInfo: FakeAppInfoService(),
+        database: db,
+        cacheDirProvider: () async => tempDir,
+      );
+
+      final updateInfo = AppUpdateInfo(
+        currentVersion: '0.6.0',
+        latestVersion: '0.6.1',
+        lastPing: DateTime.now(),
+        apkUrl: 'https://example.com/test.apk',
+        apkName: 'test.apk',
+        apkSize: body.length,
+        sha256: expectedHash,
+      );
+
+      final result = await service.downloadApk(
+        updateInfo,
+        requireSha256: true,
+      );
+      expect(result, isNotNull);
+      expect(File(result!).existsSync(), isTrue);
+    });
+
+    test(
+      'checkUpdate extracts sha256 from release notes and stores in AppUpdateInfo',
+      () async {
+        const sha =
+            'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+        final fakeGitHubJson = jsonEncode({
+          'tag_name': 'v0.6.1',
+          'body': 'Notes\n$sha  Errand-v0.6.1-full-arm64-v8a.apk\nEnd notes',
+          'assets': [
+            {
+              'name': 'Errand-v0.6.1-full-arm64-v8a.apk',
+              'size': 25000000,
+              'browser_download_url':
+                  'https://github.com/download/full-arm64.apk',
+            },
+          ],
+        });
+
+        final service = UpdateService(
+          client: MockClient((_) async => http.Response(fakeGitHubJson, 200)),
+          appInfo: FakeAppInfoService(
+            pkg: 'com.errand.errand',
+            abiType: 'arm64-v8a',
+          ),
+          database: db,
+          cacheDirProvider: () async => tempDir,
+        );
+
+        final result = await service.checkUpdate();
+        expect(result, isNotNull);
+        expect(result!.sha256, sha);
       },
     );
   });

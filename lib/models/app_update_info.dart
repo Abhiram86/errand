@@ -12,6 +12,7 @@ class AppUpdateInfo {
   final DateTime? apkDownloadedAt;
   final int? apkSize;
   final String? dismissedVersion;
+  final String? sha256;
 
   const AppUpdateInfo({
     required this.currentVersion,
@@ -24,6 +25,7 @@ class AppUpdateInfo {
     this.apkDownloadedAt,
     this.apkSize,
     this.dismissedVersion,
+    this.sha256,
   });
 
   /// Maximum time a downloaded APK file is kept before requiring re-verification/download.
@@ -64,6 +66,7 @@ class AppUpdateInfo {
     DateTime? apkDownloadedAt,
     int? apkSize,
     String? dismissedVersion,
+    String? sha256,
     bool clearCachedApk = false,
     bool clearDismissedVersion = false,
   }) {
@@ -82,6 +85,7 @@ class AppUpdateInfo {
       dismissedVersion: clearDismissedVersion
           ? null
           : dismissedVersion ?? this.dismissedVersion,
+      sha256: clearCachedApk ? null : sha256 ?? this.sha256,
     );
   }
 
@@ -97,6 +101,7 @@ class AppUpdateInfo {
       'apk_downloaded_at': apkDownloadedAt!.millisecondsSinceEpoch,
     if (apkSize != null) 'apk_size': apkSize,
     if (dismissedVersion != null) 'dismissed_version': dismissedVersion,
+    if (sha256 != null) 'sha256': sha256,
   };
 
   factory AppUpdateInfo.fromJson(Map<String, dynamic> json) {
@@ -117,6 +122,7 @@ class AppUpdateInfo {
           : null,
       apkSize: json['apk_size'] as int?,
       dismissedVersion: json['dismissed_version'] as String?,
+      sha256: json['sha256'] as String?,
     );
   }
 
