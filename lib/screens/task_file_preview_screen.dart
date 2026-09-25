@@ -6,6 +6,7 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:gpt_markdown/gpt_markdown.dart';
 import 'package:path/path.dart' as p;
 
+import '../services/intent_service.dart';
 import '../theme/app_colors.dart';
 import '../widgets/bubbles/clamped_table_view.dart';
 
@@ -235,12 +236,37 @@ class _TaskFilePreviewScreenState extends State<TaskFilePreviewScreen> {
       ),
       initialSettings: InAppWebViewSettings(
         isInspectable: false,
+        allowFileAccess: false,
+        allowContentAccess: false,
+        allowFileAccessFromFileURLs: false,
+        allowUniversalAccessFromFileURLs: false,
+        geolocationEnabled: false,
+        databaseEnabled: false,
+        domStorageEnabled: false,
+        supportMultipleWindows: false,
+        javaScriptCanOpenWindowsAutomatically: false,
+        mediaPlaybackRequiresUserGesture: true,
         supportZoom: true,
         builtInZoomControls: true,
         displayZoomControls: false,
         useWideViewPort: true,
         loadWithOverviewMode: true,
       ),
+      shouldOverrideUrlLoading: (controller, navigationAction) async {
+        // Sandboxed preview: nothing loads inside the WebView. http(s) link
+        // taps escape to the external browser so report links stay usable;
+        // everything else (iframes, file/, data:, javascript:) stays
+        // cancelled and can neither navigate nor exfiltrate local content.
+        final url = navigationAction.request.url;
+        final scheme = url?.scheme.toLowerCase();
+        if (navigationAction.navigationType == NavigationType.LINK_ACTIVATED &&
+            (scheme == 'http' || scheme == 'https')) {
+          try {
+            await IntentService().launchAction('open_url', data: url.toString());
+          } catch (_) {}
+        }
+        return NavigationActionPolicy.CANCEL;
+      },
     );
   }
 

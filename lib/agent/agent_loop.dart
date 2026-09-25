@@ -70,12 +70,16 @@ class AgentLoop {
   /// the loop aborts and triggers cancelToken.
   static const int defaultMaxConsecutiveSameToolErrors = 3;
 
+  /// Maximum aggregate bytes of media content parts allowed per turn (30MB).
+  static const int defaultMaxTurnMediaBytes = 30 * 1024 * 1024;
+
   final LlmClient _llm;
   final ToolRegistry _registry;
   final ContextBudget budget;
   final int maxTurnCount;
   final Duration compactionTimeout;
   final int maxConsecutiveSameToolErrors;
+  final int maxTurnMediaBytes;
   final String Function()? systemPromptBuilder;
 
   /// Set by the UI stop button; checked at every turn boundary and between
@@ -97,6 +101,7 @@ class AgentLoop {
     int? maxTurns,
     Duration? compactionTimeout,
     int? maxConsecutiveSameToolErrors,
+    int? maxTurnMediaBytes,
     this.systemPromptBuilder,
     this.cancelToken,
     this.isCancelled,
@@ -114,7 +119,8 @@ class AgentLoop {
         maxTurnCount = maxTurns ?? defaultMaxTurns,
         compactionTimeout = compactionTimeout ?? defaultCompactionTimeout,
         maxConsecutiveSameToolErrors =
-            maxConsecutiveSameToolErrors ?? defaultMaxConsecutiveSameToolErrors;
+            maxConsecutiveSameToolErrors ?? defaultMaxConsecutiveSameToolErrors,
+        maxTurnMediaBytes = maxTurnMediaBytes ?? defaultMaxTurnMediaBytes;
 
   final Future<bool> Function()? isCancelled;
 
@@ -172,6 +178,8 @@ class AgentLoop {
 
       messages.add(message.toJson(includeReasoning: true));
       final pendingMediaParts = <Map<String, dynamic>>[];
+      var accumulatedMediaBytes = 0;
+      var omittedMediaPartsCount = 0;
 
       // Run stateless read/search tools concurrently for performance;
       // sequence stateful actions (screen navigation, clicks, directory change, app launch).
@@ -264,19 +272,28 @@ class AgentLoop {
             if (part['type'] == 'image_url' && supportsInput?.call('image') == false) {
               continue;
             }
+            final partBytes = _estimateMediaPartBytes(part);
+            if (accumulatedMediaBytes + partBytes > maxTurnMediaBytes) {
+              omittedMediaPartsCount++;
+              continue;
+            }
+            accumulatedMediaBytes += partBytes;
             pendingMediaParts.add(part);
           }
         }
       }
-      if (pendingMediaParts.isNotEmpty) {
+      if (pendingMediaParts.isNotEmpty || omittedMediaPartsCount > 0) {
+        final notice = omittedMediaPartsCount > 0
+            ? ' ($omittedMediaPartsCount additional media file(s) omitted to stay within per-turn media budget of ${(maxTurnMediaBytes ~/ (1024 * 1024))}MB)'
+            : '';
         messages.add({
           'role': 'user',
           'content': [
-            const {
+            {
               'type': 'text',
               'text':
                   '[Media file(s) you just read via a tool are attached above '
-                  'for your analysis.]',
+                  'for your analysis.$notice]',
             },
             ...pendingMediaParts,
           ],
@@ -591,5 +608,49 @@ class AgentLoop {
     }
 
     return messages;
+  }
+
+  /// Estimates the payload bytes a media content part contributes to the
+  /// request. Base64 data URLs decode to true bytes (3/4 of payload minus
+  /// padding); remote URLs cost only their string length on-device since the
+  /// provider fetches the bytes, not us.
+  static int _estimateMediaPartBytes(Map<String, dynamic> part) {
+    int dataUrlBytes(String? url) {
+      if (url == null) return 0;
+      const marker = 'base64,';
+      final idx = url.indexOf(marker);
+      if (url.startsWith('data:') && idx >= 0) {
+        var payload = url.substring(idx + marker.length);
+        // Strip whitespace some encoders insert; it carries no bytes.
+        payload = payload.replaceAll(RegExp(r'\s'), '');
+        var padding = 0;
+        if (payload.endsWith('==')) {
+          padding = 2;
+        } else if (payload.endsWith('=')) {
+          padding = 1;
+        }
+        return (payload.length * 3 ~/ 4) - padding;
+      }
+      return url.length;
+    }
+
+    final imageUrl = part['image_url'];
+    if (imageUrl is Map) {
+      final url = imageUrl['url'];
+      if (url is String) return dataUrlBytes(url);
+    }
+    final audioData = part['input_audio'];
+    if (audioData is Map) {
+      final data = audioData['data'];
+      if (data is String) return dataUrlBytes(data);
+    }
+    final videoUrl = part['video_url'];
+    if (videoUrl is Map) {
+      final url = videoUrl['url'];
+      if (url is String) return dataUrlBytes(url);
+    }
+    final text = part['text'];
+    if (text is String) return text.length;
+    return 0;
   }
 }

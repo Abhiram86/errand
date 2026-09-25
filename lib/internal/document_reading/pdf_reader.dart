@@ -80,6 +80,9 @@ class _LazyPdfUnitList extends ListBase<LogicalDocumentUnit> {
   final PdfTextExtractor extractor;
   final int pageCount;
   final bool Function() isDisposed;
+  static const int _maxCacheBytes = 8 * 1024 * 1024; // 8MB per PDF
+  static const int _maxCacheEntries = 32;
+  int _cacheBytes = 0;
   final Map<int, LogicalDocumentUnit> _cache = {};
 
   _LazyPdfUnitList({
@@ -103,7 +106,12 @@ class _LazyPdfUnitList extends ListBase<LogicalDocumentUnit> {
     RangeError.checkValidIndex(index, this, 'index', pageCount);
 
     final cached = _cache[index];
-    if (cached != null) return cached;
+    if (cached != null) {
+      // True LRU: update recency on hit
+      _cache.remove(index);
+      _cache[index] = cached;
+      return cached;
+    }
 
     String text;
     try {
@@ -133,11 +141,23 @@ class _LazyPdfUnitList extends ListBase<LogicalDocumentUnit> {
     }
 
     final unit = LogicalDocumentUnit(label: label, text: displayText);
+    final unitBytes = (unit.text.length + unit.label.length) * 2;
 
-    if (_cache.length >= 32) {
-      _cache.remove(_cache.keys.first);
+    while (_cache.isNotEmpty &&
+        (_cache.length >= _maxCacheEntries ||
+            _cacheBytes + unitBytes > _maxCacheBytes)) {
+      final oldestKey = _cache.keys.first;
+      final evicted = _cache.remove(oldestKey);
+      if (evicted != null) {
+        _cacheBytes -= (evicted.text.length + evicted.label.length) * 2;
+      }
     }
+
+    // Oversized single pages bypass the cache rather than evicting it.
+    if (unitBytes > _maxCacheBytes) return unit;
+
     _cache[index] = unit;
+    _cacheBytes += unitBytes;
 
     return unit;
   }

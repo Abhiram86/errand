@@ -588,6 +588,69 @@ void main() {
       expect(result, equals('Finished after alternating failures'));
       expect(cancelToken.isCancelled, isFalse);
     });
+
+    test('enforces aggregate per-turn media budget on contentParts', () async {
+      final mockLlm = MockLlmClient();
+      final tool = Tool(
+        name: 'test_media',
+        description: 'Returns media parts',
+        parameters: const {'type': 'object'},
+        handler: (call) async => ToolCallResult(
+          id: call.id,
+          ok: true,
+          output: 'read done',
+          contentParts: [
+            // 400 base64 chars decode to 300 true bytes each; cap 400 fits
+            // the first and omits the second.
+            {
+              'type': 'image_url',
+              'image_url': {'url': 'data:image/png;base64,${'A' * 400}'},
+            },
+            {
+              'type': 'image_url',
+              'image_url': {'url': 'data:image/png;base64,${'B' * 400}'},
+            },
+          ],
+        ),
+      );
+
+      final registry = ToolRegistry([tool]);
+      final loop = AgentLoop(
+        llm: mockLlm,
+        registry: registry,
+        maxTurnMediaBytes: 400, // Caps aggregate at 400 bytes (first 260 fits, second omitted)
+      );
+
+      var turn = 0;
+      mockLlm.onChat = (messages) {
+        turn++;
+        if (turn == 1) {
+          return const LlmMessage(
+            content: 'reading',
+            toolCalls: [
+              ToolCall(id: 'c1', name: 'test_media', arguments: {}),
+            ],
+          );
+        }
+        return const LlmMessage(content: 'Final done');
+      };
+
+      await loop.run(Conversation(
+        id: 'c-media',
+        messages: [const UserMessage(id: 'u1', text: 'fetch images')],
+        currentDir: Directory('/'),
+      ));
+
+      final turn2Messages = mockLlm.receivedMessages[1];
+      final userMessageWithMedia = turn2Messages.last;
+      expect(userMessageWithMedia['role'], 'user');
+      final content = userMessageWithMedia['content'] as List;
+      expect(content.length, 2);
+      expect(content[0]['type'], 'text');
+      expect(content[0]['text'], contains('1 additional media file(s) omitted'));
+      expect(content[1]['type'], 'image_url');
+      expect((content[1]['image_url'] as Map)['url'], contains('AAAA'));
+    });
   });
 }
 

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -112,5 +113,62 @@ void main() {
     final webFetch = registry.all.firstWhere((t) => t.name == 'webfetch');
     expect(webFetch, isNotNull);
     expect(webFetch.name, 'webfetch');
+  });
+
+  test('fallbackWebFetchTool caps raw response bytes and marks truncation', () async {
+    final mockClient = MockClient((request) async {
+      return http.Response(
+        'A' * 1000,
+        200,
+        headers: {'content-type': 'text/plain'},
+      );
+    });
+
+    final tool = fallbackWebFetchTool(
+      client: mockClient,
+      maxRawBytes: 200,
+    );
+    final result = await tool.handler(
+      const ToolCall(
+        id: 'cap-test',
+        name: 'webfetch',
+        arguments: {'url': 'https://example.com/large.txt'},
+      ),
+    );
+
+    expect(result.ok, isTrue);
+    expect(result.output, contains('[Note: raw webpage exceeded'));
+  });
+
+  test('fallbackWebFetchTool aborts on stream inactivity timeout', () async {
+    final controller = StreamController<List<int>>();
+    final mockClient = MockClient.streaming((request, bodyStream) async {
+      return http.StreamedResponse(
+        controller.stream,
+        200,
+        headers: {'content-type': 'text/plain'},
+      );
+    });
+
+    final tool = fallbackWebFetchTool(
+      client: mockClient,
+      inactivityTimeout: const Duration(milliseconds: 50),
+    );
+
+    // Feed a few bytes then stall
+    controller.add([65, 65]);
+
+    final result = await tool.handler(
+      const ToolCall(
+        id: 'stall-test',
+        name: 'webfetch',
+        arguments: {'url': 'https://example.com/stall'},
+      ),
+    );
+
+    expect(result.ok, isFalse);
+    expect(result.errorMessage, contains('inactivity timeout'));
+
+    await controller.close();
   });
 }

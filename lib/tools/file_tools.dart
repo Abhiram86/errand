@@ -58,6 +58,110 @@ class _CachedStructuredDocument {
   });
 }
 
+/// Byte-bounded true LRU cache for structured documents (PDF, Office) with
+/// in-flight parse deduplication to prevent concurrent multi-read spikes.
+class DocumentLruCache {
+  /// Aggregate byte ceiling for cached structured documents (default 64MB).
+  final int maxBytes;
+
+  /// Maximum count of cached documents (default 16).
+  final int maxEntries;
+
+  int _currentBytes = 0;
+  final Map<String, _CachedStructuredDocument> _entries = {};
+  final Map<String, Future<LogicalDocument?>> _inFlight = {};
+
+  DocumentLruCache({
+    this.maxBytes = 64 * 1024 * 1024,
+    this.maxEntries = 16,
+  });
+
+  int get currentBytes => _currentBytes;
+  int get entryCount => _entries.length;
+
+  Future<LogicalDocument?> getOrParse({
+    required File file,
+    required FileStat stat,
+    Future<LogicalDocument?> Function(File)? parser,
+  }) async {
+    final key = file.path;
+    final cached = _entries[key];
+
+    if (cached != null &&
+        cached.lastModified == stat.modified &&
+        cached.fileLength == stat.size) {
+      // True LRU: update recency by re-inserting to tail of Map
+      _entries.remove(key);
+      _entries[key] = cached;
+      return cached.document;
+    }
+
+    // Invalidate stale entry if it exists
+    if (cached != null) {
+      _entries.remove(key);
+      _currentBytes -= cached.fileLength;
+      cached.document.dispose();
+    }
+
+    // In-flight parse deduplication: if this file is already being parsed, join that future
+    var parseFuture = _inFlight[key];
+    final isInitiator = parseFuture == null;
+    if (isInitiator) {
+      final parseFn = parser ?? readStructuredDocument;
+      parseFuture = parseFn(file);
+      _inFlight[key] = parseFuture;
+    }
+
+    LogicalDocument? document;
+    try {
+      document = await parseFuture;
+    } finally {
+      if (isInitiator) {
+        _inFlight.remove(key);
+      }
+    }
+
+    if (document != null) {
+      final entrySize = stat.size;
+
+      // A single entry larger than the whole budget bypasses the cache
+      // entirely: it would evict everything for one read. The parse result
+      // is still returned to the caller.
+      if (entrySize > maxBytes) return document;
+
+      // Evict least-recently used entries until under byte and count bounds
+      while (_entries.isNotEmpty &&
+          (_entries.length >= maxEntries ||
+              _currentBytes + entrySize > maxBytes)) {
+        final oldestKey = _entries.keys.first;
+        final evicted = _entries.remove(oldestKey);
+        if (evicted != null) {
+          _currentBytes -= evicted.fileLength;
+          evicted.document.dispose();
+        }
+      }
+
+      _entries[key] = _CachedStructuredDocument(
+        lastModified: stat.modified,
+        fileLength: entrySize,
+        document: document,
+      );
+      _currentBytes += entrySize;
+    }
+
+    return document;
+  }
+
+  void dispose() {
+    for (final cached in _entries.values) {
+      cached.document.dispose();
+    }
+    _entries.clear();
+    _currentBytes = 0;
+    _inFlight.clear();
+  }
+}
+
 Tool readTool(
   WorkingDirectory workspace, {
   /// Reports whether the CURRENT model claims support for an input modality
@@ -66,16 +170,17 @@ Tool readTool(
   /// main.dart so the tool can fail honestly before burning a turn.
   bool Function(String modality)? supportsInput,
   List<String> Function()? getAttachedFiles,
+  DocumentLruCache? documentCache,
 }) {
-  final structuredDocuments = <String, _CachedStructuredDocument>{};
+  // Only dispose the cache on tool teardown when we created it; an injected
+  // shared cache is owned by its provider.
+  final cache = documentCache ?? DocumentLruCache();
+  final ownsCache = documentCache == null;
 
   return Tool(
     name: 'read',
     onDispose: () {
-      for (final cached in structuredDocuments.values) {
-        cached.document.dispose();
-      }
-      structuredDocuments.clear();
+      if (ownsCache) cache.dispose();
     },
     description:
         'Reads the contents of a specific file inside the workspace or an attached file. '
@@ -173,30 +278,7 @@ Tool readTool(
         }
 
         final stat = await file.stat();
-        final cached = structuredDocuments[file.path];
-        LogicalDocument? document;
-
-        if (cached != null &&
-            cached.lastModified == stat.modified &&
-            cached.fileLength == stat.size) {
-          document = cached.document;
-        } else {
-          cached?.document.dispose();
-          document = await readStructuredDocument(file);
-          if (document != null) {
-            if (structuredDocuments.length >= 10) {
-              final oldestKey = structuredDocuments.keys.first;
-              structuredDocuments.remove(oldestKey)?.document.dispose();
-            }
-            structuredDocuments[file.path] = _CachedStructuredDocument(
-              lastModified: stat.modified,
-              fileLength: stat.size,
-              document: document,
-            );
-          } else {
-            structuredDocuments.remove(file.path);
-          }
-        }
+        final document = await cache.getOrParse(file: file, stat: stat);
 
         final structured = document?.read(offset: offset, length: length);
         if (structured != null) {
