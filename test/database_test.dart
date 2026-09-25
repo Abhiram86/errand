@@ -542,5 +542,29 @@ void main() {
       expect(indexNames, contains('idx_scheduler_task_log_created'));
       expect(indexNames, contains('idx_scheduler_task_log_unseen_created'));
     });
+
+    test('rapid concurrent saveConversation calls serialize cleanly without error', () async {
+      final baseConv = makeConversation(id: 'conv-concurrent', messages: sampleMessages());
+      await db.saveConversation(baseConv);
+
+      // Fire 10 concurrent saves with evolving messages
+      final futures = <Future<void>>[];
+      for (var i = 0; i < 10; i++) {
+        final conv = makeConversation(
+          id: 'conv-concurrent',
+          messages: [
+            ...sampleMessages(),
+            UserMessage(id: 'm-concurrent-$i', text: 'concurrent msg $i'),
+          ],
+        );
+        futures.add(db.saveConversation(conv));
+      }
+
+      await Future.wait(futures);
+
+      final loaded = await db.loadConversation('conv-concurrent');
+      expect(loaded, isNotNull);
+      expect(loaded!.messages.length, greaterThanOrEqualTo(5));
+    });
   });
 }

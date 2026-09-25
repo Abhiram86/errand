@@ -43,6 +43,7 @@ import '../widgets/model_picker.dart';
 import '../widgets/options_modal_sheet.dart';
 import '../widgets/paging.dart';
 import '../widgets/pending_attachments_banner.dart';
+import '../utils/coalescing_writer.dart';
 import '../widgets/settings_sheet.dart';
 import '../widgets/update_toast.dart';
 
@@ -188,6 +189,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   StreamSubscription<List<Conversation>>? _pinnedConversationsSub;
   StreamSubscription<void>? _widgetVoiceSub;
   Timer? _persistTimer;
+  String? _pendingPersistConversationId;
+  final CoalescingWriter _persistWriter = CoalescingWriter();
+  Completer<void>? _appConfigCoreReady;
+  Future<void>? _loadAppConfigFuture;
   int _estimatedActiveTokens = 0;
   List<Conversation> _cachedSortedConversations = [];
   bool _sortedConversationsDirty = true;
@@ -306,7 +311,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _animatedMessageIds.addAll(_messages.map((m) => m.id));
     _updateEstimatedTokens();
     ModelsDevService.preload();
-    unawaited(_loadAppConfig());
+    _loadAppConfigFuture = _loadAppConfig();
     unawaited(Workspace.instance.ensureDefaultDirectories());
     unawaited(LocationService.instance.hasPermission().then((permitted) {
       if (permitted) {
@@ -545,10 +550,42 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     return false;
   }
 
+  /// Ensures that decrypted runtime settings, API keys, and model configurations
+  /// are fully hydrated before executing actions that depend on them.
+  ///
+  /// Sends only need the fast core (keys + stored model pick); the live
+  /// catalog refresh is network-bound, so only settings surfaces and
+  /// conversation switches wait for it via [requireCatalog].
+  Future<void> _ensureSettingsReady({bool requireCatalog = false}) async {
+    if (!AppSettingsService.instance.isLoaded) {
+      await AppSettingsService.instance.whenLoaded;
+    }
+    final coreReady = _appConfigCoreReady;
+    if (coreReady != null && !coreReady.isCompleted) {
+      await coreReady.future;
+    }
+    if (requireCatalog && _loadAppConfigFuture != null) {
+      await _loadAppConfigFuture;
+    }
+  }
+
   /// Loads runtime configuration (decrypted keys, last-selected model) from
   /// the settings store, then refreshes the model catalog. Replaces the old
   /// compile-time --dart-define env injection.
   Future<void> _loadAppConfig() async {
+    // Created synchronously on first call (from initState) so senders can
+    // gate on the fast core below without racing its creation. Always
+    // completed (even on early return/throw) so senders can never hang.
+    _appConfigCoreReady ??= Completer<void>();
+    try {
+      await _loadAppConfigBody();
+    } finally {
+      final core = _appConfigCoreReady;
+      if (core != null && !core.isCompleted) core.complete();
+    }
+  }
+
+  Future<void> _loadAppConfigBody() async {
     await AppSettingsService.instance.ensureLoaded();
     if (!mounted) return;
     final settings = AppSettingsService.instance;
@@ -619,6 +656,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _llm.close();
       _llm = _createLlmClient(_selectedModel);
     });
+    // Fast core done: stored keys + optimistic model pick are live. The live
+    // catalog refresh below is network-bound and must not stall sends.
+    _appConfigCoreReady?.complete();
     await _loadModelCatalog();
   }
 
@@ -627,6 +667,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   /// immediately.
   Future<bool> _openSettings() async {
     if (_busy) return false;
+    await _ensureSettingsReady(requireCatalog: true);
+    if (!mounted || _busy) return false;
     final previousProviderId = AppSettingsService.instance.activeProvider.id;
     // Local tab shows both history (conversation inventory) and pending.
     final allAttached = <String>[
@@ -850,7 +892,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _workingElapsedTimer?.cancel();
     _a11yToastTimer?.cancel();
     unawaited(_intentService.stopWorkIndicator());
+    // Flush any pending debounced persistence synchronously into fire-and-forget
+    // database write so pending conversation turns are never dropped on unmount.
     _persistTimer?.cancel();
+    _persistTimer = null;
+    final currentId = _activeConversation.id;
+    if (currentId != null) {
+      unawaited(database.saveConversation(_snapshotConversation()));
+    }
     _conversationsSub?.cancel();
     _pinnedConversationsSub?.cancel();
     _widgetVoiceSub?.cancel();
@@ -1218,11 +1267,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   // -- Persistence --------------------------------------------------------
 
-  /// Saves the active conversation (without the in-flight "…working" bubble)
-  /// to the local database.
-  Future<void> _persistConversation() async {
+  Conversation _snapshotConversation() {
     final id = _activeConversation.id;
-    if (id == null) return;
+    if (id == null) {
+      throw StateError('Cannot snapshot a conversation with no id');
+    }
 
     final workingId = _workingMessageId;
     final messages = workingId == null
@@ -1231,27 +1280,52 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
               .where((message) => message.id != workingId)
               .toList(growable: false);
 
-    await database.saveConversation(
-      Conversation(
-        id: id,
-        localSystemPrompt: _activeConversation.localSystemPrompt,
-        messages: messages,
-        currentDir: _activeConversation.currentDir,
-        attachedFileUris: _activeConversation.attachedFileUris,
-        title: _activeConversation.title,
-        provider: _activeConversation.provider,
-        model: _activeConversation.model,
-        isPinned: _activeConversation.isPinned,
-        createdAt: _activeConversation.createdAt,
-        updatedAt: _activeConversation.updatedAt,
-      ),
+    return Conversation(
+      id: id,
+      localSystemPrompt: _activeConversation.localSystemPrompt,
+      messages: messages,
+      currentDir: _activeConversation.currentDir,
+      attachedFileUris: _activeConversation.attachedFileUris,
+      title: _activeConversation.title,
+      provider: _activeConversation.provider,
+      model: _activeConversation.model,
+      isPinned: _activeConversation.isPinned,
+      createdAt: _activeConversation.createdAt,
+      updatedAt: _activeConversation.updatedAt,
     );
+  }
+
+  /// Saves the active conversation (without the in-flight "…working" bubble)
+  /// to the local database, serializing and coalescing overlapping calls via
+  /// [CoalescingWriter] (unit-tested in test/coalescing_writer_test.dart).
+  Future<void> _persistConversation() async {
+    final targetId = _activeConversation.id;
+    if (targetId == null) {
+      await _persistWriter.settled;
+      return;
+    }
+
+    _pendingPersistConversationId = targetId;
+
+    try {
+      await _persistWriter.run(() async {
+        final currentId = _activeConversation.id;
+        if (currentId != null && currentId == _pendingPersistConversationId) {
+          final snapshot = _snapshotConversation();
+          await database.saveConversation(snapshot);
+        }
+      });
+    } catch (e, st) {
+      debugPrint('[Persistence] Error saving conversation: $e\n$st');
+    }
   }
 
   /// Debounces saves during streaming so we don't rewrite the whole
   /// conversation on every text delta.
   void _schedulePersist([Duration delay = const Duration(milliseconds: 600)]) {
-    if (_activeConversation.id == null) return;
+    final targetId = _activeConversation.id;
+    if (targetId == null) return;
+    _pendingPersistConversationId = targetId;
     _persistTimer?.cancel();
     _persistTimer = Timer(delay, () {
       _persistTimer = null;
@@ -1259,10 +1333,23 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     });
   }
 
-  void _persistNow() {
+  Future<void> _persistNow() async {
     _persistTimer?.cancel();
     _persistTimer = null;
-    unawaited(_persistConversation());
+    await _persistConversation();
+  }
+
+  /// Cancels any debounced persist timer and flushes any pending writes
+  /// for the active conversation, guaranteeing that all in-flight or scheduled
+  /// writes complete before switching conversations or resetting draft state.
+  Future<void> _flushActiveConversationPersistence() async {
+    _persistTimer?.cancel();
+    _persistTimer = null;
+    if (_activeConversation.id != null) {
+      await _persistConversation();
+    } else {
+      await _persistWriter.settled;
+    }
   }
 
   void _startConversation(String firstMessage) {
@@ -1334,13 +1421,17 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
   }
 
-  void _startNewChat() {
+  Future<void> _startNewChat() async {
     if (_busy) return;
     if (_pendingConfirmation != null &&
         !_pendingConfirmation!.completer.isCompleted) {
       _pendingConfirmation!.completer.complete(ConfirmationDecision.deny);
       _pendingConfirmation = null;
     }
+    await _flushActiveConversationPersistence();
+    if (!mounted) return;
+    await _ensureSettingsReady(requireCatalog: true);
+    if (!mounted) return;
     _workingFlushTimer?.cancel();
     _workingFlushTimer = null;
     _controller.clear();
@@ -1405,6 +1496,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _pendingConfirmation = null;
     }
 
+    // Flush any pending persistence for the current conversation before
+    // switching to the new conversation.
+    await _flushActiveConversationPersistence();
+    if (!mounted) return;
+
     // Sidebar rows are summaries; fetch the full conversation with messages
     // before switching to it. OPT-07: only the newest window of messages is
     // loaded; older pages stream in on scroll-up.
@@ -1419,6 +1515,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
 
     if (loaded.provider != null) {
+      await _ensureSettingsReady(requireCatalog: true);
+      if (!mounted) return;
       final match = AppSettingsService.instance.providers.firstWhere(
         (p) => p.name == loaded.provider || p.id == loaded.provider,
         orElse: () => AppSettingsService.instance.activeProvider,
@@ -1563,7 +1661,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _sortedConversationsDirty = true;
     });
     if (_activeConversation.id == id) {
-      _startNewChat();
+      await _startNewChat();
     }
     // Keep the sidebar open so the user can continue managing history.
   }
@@ -1665,6 +1763,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   Future<void> _send() async {
     final text = _controller.text.trim();
     if (text.isEmpty || _busy) return;
+    await _ensureSettingsReady();
+    if (!mounted || _busy) return;
     _controller.clear();
 
     // A live dictation session would keep writing its next partials into
@@ -1728,6 +1828,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   /// semantics as edit-resend) and re-runs the loop for that turn.
   Future<void> _regenerate(String userMessageId) async {
     if (_busy) return;
+    await _ensureSettingsReady();
+    if (!mounted || _busy) return;
     // A pending edit (banner + loaded composer text) is superseded by an
     // explicit regenerate — drop it instead of leaving stale state around.
     if (_editingMessageId != null) _cancelEditing();
@@ -2481,6 +2583,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       return; // listening notifier flips via onStatus
     }
     if (_busy) return;
+    await _ensureSettingsReady();
+    if (!mounted || _busy) return;
 
     if (!await speech.hasMicPermission()) {
       final granted = await speech.requestMicPermission();
@@ -2772,7 +2876,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           const SizedBox(width: 4),
           if (_activeConversation.id != null)
             TextButton(
-              onPressed: _busy ? null : _startNewChat,
+              onPressed: _busy ? null : () => unawaited(_startNewChat()),
               style: TextButton.styleFrom(
                 foregroundColor: kText,
                 disabledForegroundColor: kMuted,

@@ -93,4 +93,44 @@ void main() {
     await settings.setA11yPromptDismissed(false);
     expect(await settings.a11yPromptDismissed(), isFalse);
   });
+
+  test('isLoaded is false before ensureLoaded and true after, whenLoaded resolves', () async {
+    final fresh = AppSettingsService(
+      database: db,
+      secretStore: SecretStore.instance
+        ..debugWithKey(List<int>.generate(32, (i) => i)),
+    );
+
+    expect(fresh.isLoaded, isFalse);
+
+    bool resolved = false;
+    final future = fresh.whenLoaded.then((_) => resolved = true);
+    expect(resolved, isFalse);
+
+    await future;
+    expect(resolved, isTrue);
+    expect(fresh.isLoaded, isTrue);
+
+    // Subsequent awaits on whenLoaded return immediately
+    bool subsequentResolved = false;
+    await fresh.whenLoaded.then((_) => subsequentResolved = true);
+    expect(subsequentResolved, isTrue);
+  });
+
+  test('concurrent whenLoaded callers join a single load', () async {
+    final fresh = AppSettingsService(
+      database: db,
+      secretStore: SecretStore.instance
+        ..debugWithKey(List<int>.generate(32, (i) => i)),
+    );
+
+    var resolved = 0;
+    await Future.wait([
+      fresh.whenLoaded.then((_) => resolved++),
+      fresh.whenLoaded.then((_) => resolved++),
+      fresh.whenLoaded.then((_) => resolved++),
+    ]);
+    expect(resolved, equals(3));
+    expect(fresh.isLoaded, isTrue);
+  });
 }

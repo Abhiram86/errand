@@ -51,6 +51,15 @@ final class AppSettingsService {
   bool _cacheLoaded = false;
   Future<void>? _loadInFlight;
 
+  /// Whether decrypted secrets and provider settings are cached in memory.
+  bool get isLoaded => _cacheLoaded;
+
+  /// A future that completes when [ensureLoaded] finishes loading settings into memory.
+  Future<void> get whenLoaded {
+    if (_cacheLoaded) return Future.value();
+    return ensureLoaded();
+  }
+
   List<LlmProvider> _providers = [];
   String? _activeProviderId;
 
