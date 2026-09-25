@@ -16,6 +16,9 @@
 .swiftpm/
 migrate_working_dir/
 diagrams/
+demo/*
+!demo/errand_demo.mp4
+!demo/errand_demo.gif
 
 # IntelliJ related
 *.iml

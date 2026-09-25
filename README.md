@@ -1,7 +1,7 @@
 # Errand
 
 <p align="center">
-  <img src="demo/demo.gif" alt="Errand demo" width="320">
+  <img src="demo/errand_demo.gif" alt="Errand demo" width="320">
 </p>
 
 <p align="center">
@@ -49,7 +49,7 @@ Errand connects to AI models through your own API keys (OpenRouter by default, a
 Sideloaded automation apps deserve skepticism, so here's the full picture:
 
 - **Your data stays on your device.** Conversations, memories, tasks, and logs live in a local SQLite database. There is no account, no cloud sync, no analytics.
-- **The only network calls are the ones you'd expect:** your chosen LLM provider (for chat) and Tavily (only when you use web search). Nothing else phones home.
+- **Network access is limited to the services needed for the features you use:** your configured LLM provider and model catalog, Tavily or the fallback web-search service when web search or extraction is used, `models.dev` for model metadata, GitHub Releases for update checks and APK downloads, and websites you ask the agent or embedded browser to open. No account or analytics service is used, and conversations remain local.
 - **API keys are encrypted** with AES-256-GCM before storage, with the key kept in a separate file — the database alone reveals nothing.
 - **Destructive actions ask first.** Shell deletions, payments, sends, and other commit-type actions require your explicit confirmation; the agent prepares, you decide.
 - **Permissions, justified:**
@@ -72,9 +72,9 @@ On Android, grant all-files access when prompted so the agent can reach your wor
 ## For developers
 
 ```bash
-flutter test          # full suite (615+ tests)
+flutter test          # run the full test suite
 flutter analyze       # lint
-flutter run --flavor Full   # or Lite
+flutter run --flavor full   # or lite
 ```
 
 - `architecture.md` — full map of the implementation.
