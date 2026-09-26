@@ -924,38 +924,6 @@ Directory? _resolveListDirectory(WorkingDirectory workspace, String? rawPath) {
   return Directory(targetPath);
 }
 
-// Tool writeTool() => Tool(
-//       name: 'write',
-//       description:
-//           'Overwrites a text file inside the granted workspace with the given '
-//           'content. Path is relative to the workspace root, or a full '
-//           'content:// URI.',
-//       parameters: {
-//         'type': 'object',
-//         'properties': {
-//           'path': {'type': 'string'},
-//           'content': {'type': 'string'},
-//         },
-//         'required': ['path', 'content'],
-//       },
-//       handler: (call) async {
-//         final uri =
-//             await Workspace.instance.resolve(call.arguments['path'] as String);
-//         final content = call.arguments['content'] as String;
-//         final data = utf8.encode(content);
-//         await Workspace.instance.saf.withFileDescriptor(uri, 'w', (fd) async {
-//           await File(fd.path).writeAsBytes(data, flush: true);
-//           return null;
-//         });
-//         return ToolCallResult(
-//           id: call.id,
-//           ok: true,
-//           output: 'Wrote ${data.length} bytes to $uri',
-//           filesChanged: [FileChange(path: uri)],
-//         );
-//       },
-//     );
-
 const kMaxFindResults = 500;
 
 const kDefaultFindLimit = 25;
@@ -1452,53 +1420,3 @@ RegExp _findMatcher(String pattern) {
     return glob; // not a valid regex — glob behavior unchanged
   }
 }
-
-// Tool grepTool() => Tool(
-//       name: 'grep',
-//       description:
-//           'Searches file contents inside the granted workspace for a RegExp. '
-//           'Only text files are searched; binary/large files are skipped. '
-//           'Returns "relativePath:lineNumber: line".',
-//       parameters: {
-//         'type': 'object',
-//         'properties': {
-//           'pattern': {
-//             'type': 'string',
-//             'description': 'RegExp to search for in file contents',
-//           },
-//         },
-//         'required': ['pattern'],
-//       },
-//       handler: (call) async {
-//         final root = Workspace.instance.grantedUri;
-//         if (root == null) return ToolCallResult.failure(call.id, 'No workspace granted');
-//         final re = RegExp(call.arguments['pattern'] as String);
-//         final matches = <String>[];
-//         final saf = Workspace.instance.saf;
-
-//         await for (final entry in saf.walk(root)) {
-//           if (entry.file.isDir) continue;
-//           if (entry.file.length > kMaxGrepFileBytes) continue;
-//           if (matches.length >= kMaxGrepMatches) break;
-//           try {
-//             final bytes = await saf.readFileBytes(entry.file.uri);
-//             final text = utf8.decode(bytes, allowMalformed: true);
-//             for (final line in text.split('\n')) {
-//               if (matches.length >= kMaxGrepMatches) break;
-//               if (re.hasMatch(line)) {
-//                 final lineNo = text.split('\n').indexOf(line) + 1;
-//                 matches.add('${entry.relativePath}:$lineNo: $line');
-//               }
-//             }
-//           } catch (_) {}
-//         }
-
-//         return ToolCallResult(
-//           id: call.id,
-//           ok: true,
-//           output: matches.isEmpty
-//               ? 'No matches'
-//               : '${matches.length} match(es):\n${matches.join('\n')}',
-//         );
-//       },
-//     );

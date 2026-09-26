@@ -163,6 +163,7 @@ class _EditTaskModelSheetState extends State<EditTaskModelSheet> {
       (cached != null && cached.isNotEmpty) ? cached : provider.defaultModels,
     )..sort(ModelOption.compareByReleaseDate);
 
+    if (!mounted) return;
     setState(() {
       _models = fallbackList;
       _loadingModels = cached == null;

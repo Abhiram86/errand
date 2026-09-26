@@ -63,10 +63,21 @@ class ContextBudget {
 
 // ---- Token Estimation Helpers ----------------------------------------------
 
-/// Rough token estimation for text content (~3.8 characters per token).
+/// Rough token estimation for text content (~3.8 characters per token for
+/// ASCII; CJK/emoji/Devanagari average ~1.5 chars/token, so non-ASCII runs
+/// are weighted heavier to avoid underestimation and late compaction).
 int estimateTextTokens(String text) {
   if (text.isEmpty) return 0;
-  return (text.length / 3.8).ceil();
+  var ascii = 0;
+  var nonAscii = 0;
+  for (var i = 0; i < text.length; i++) {
+    if (text.codeUnitAt(i) < 128) {
+      ascii++;
+    } else {
+      nonAscii++;
+    }
+  }
+  return (ascii / 3.8 + nonAscii / 1.5).ceil();
 }
 
 /// Estimates tokens contributed by a high-level [Message].

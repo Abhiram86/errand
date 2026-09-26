@@ -368,6 +368,47 @@ void main() {
       expect(nextRunAt, greaterThan(now));
     });
 
+    test('edit recurring task with tiny repeat_after completes immediately (no catch-up spin)', () async {
+      final tool = scheduleTaskTool(db: db);
+      final now = DateTime.now().millisecondsSinceEpoch;
+
+      final createRes = await tool.handler(
+        ToolCall(
+          id: 'c-tiny',
+          name: 'schedule_task',
+          arguments: {
+            'action': 'create',
+            'title': 'Tick',
+            'prompt': 'Tick',
+            'schedule_type': 'recurring',
+            'starts_at': (now + 3600000).toString(),
+            'repeat_after': 3600000,
+          },
+        ),
+      );
+      final id = jsonDecode(createRes.output)['task']['id'];
+
+      // repeat_after: 1 with a past start would spin ~1.75e12 linear iterations
+      // on the old code; the closed-form grid must return promptly.
+      final editRes = await tool
+          .handler(
+            ToolCall(
+              id: 'e-tiny',
+              name: 'schedule_task',
+              arguments: {
+                'action': 'edit',
+                'id': id,
+                'starts_at': (now - 86400000).toString(),
+                'repeat_after': 1,
+              },
+            ),
+          )
+          .timeout(const Duration(seconds: 10));
+      expect(editRes.ok, isTrue);
+      final nextRunAt = jsonDecode(editRes.output)['task']['next_run_at'] as int;
+      expect(nextRunAt, greaterThan(now));
+    });
+
     test('delete task and cascade logs', () async {
       final tool = scheduleTaskTool(db: db);
 

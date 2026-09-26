@@ -281,13 +281,28 @@ class LlmClient {
     if (cancelToken?.isCancelled ?? false) throw const LlmStoppedException();
   }
 
+  /// Parses an HTTP-date `Retry-After` value into seconds until retry,
+  /// clamped at zero. Returns null when absent or unparseable.
+  static int? _parseHttpDateRetryAfter(String? value) {
+    final v = value?.trim();
+    if (v == null || v.isEmpty) return null;
+    try {
+      final date = HttpDate.parse(v);
+      final secs = date.difference(DateTime.now().toUtc()).inSeconds;
+      return secs < 0 ? 0 : secs;
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<void> _backoff(
     int attempt,
     String? retryAfter,
     CancelToken? cancelToken,
   ) async {
     if (cancelToken?.isCancelled ?? false) throw const LlmStoppedException();
-    final seconds = int.tryParse(retryAfter ?? '');
+    final seconds =
+        int.tryParse(retryAfter ?? '') ?? _parseHttpDateRetryAfter(retryAfter);
     final delay = backoffDuration?.call(attempt) ??
         (seconds != null && seconds >= 0
             ? Duration(seconds: seconds)
@@ -759,7 +774,10 @@ class LlmClient {
   }
 
   List<ToolCall> _parseToolCalls(List<dynamic> rawCalls) => [
-    for (final raw in rawCalls) _parseToolCall(raw as Map<String, dynamic>),
+    // Skip non-map elements (mirrors the streaming path); a hostile proxy
+    // must not turn a cast into an unclassified TypeError.
+    for (final raw in rawCalls)
+      if (raw is Map<String, dynamic>) _parseToolCall(raw),
   ];
 
   ToolCall _parseToolCall(Map<String, dynamic> call) {

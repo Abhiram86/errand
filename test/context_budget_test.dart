@@ -284,4 +284,18 @@ void main() {
       expect(userPrompts, contains('Real user question about photo'));
     });
   });
+
+  group('estimateTextTokens', () {
+    test('weights non-ASCII runs heavier than ASCII', () {
+      expect(estimateTextTokens(''), equals(0));
+      expect(estimateTextTokens('abcd'), equals((4 / 3.8).ceil()));
+      // 6 CJK chars at ~1.5 chars/token: must exceed the ASCII estimate
+      // for the same length, so compaction fires before real overflow.
+      expect(estimateTextTokens('日本語テスト'), equals(4));
+      expect(
+        estimateTextTokens('日本語テスト'),
+        greaterThan(estimateTextTokens('abcdef')),
+      );
+    });
+  });
 }

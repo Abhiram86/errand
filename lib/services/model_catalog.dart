@@ -454,7 +454,10 @@ class ModelCatalogService {
 
   static String _cacheKey(String baseUrl, String apiKey) {
     final normalized = _normalizeBaseUrl(baseUrl);
-    return '$normalized|${apiKey.trim().isEmpty ? 'anon' : 'auth'}';
+    final key = apiKey.trim();
+    // Bucket by key-material hash so rotating the API key never serves the
+    // previous key's catalog (in-memory session cache; hashCode is fine).
+    return '$normalized|${key.isEmpty ? 'anon' : key.hashCode}';
   }
 
   /// Extracts input modalities.

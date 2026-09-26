@@ -379,14 +379,16 @@ Tool scheduleTaskTool({
                 if (newStartsAt > nowMillis) {
                   newNextRunAt = newStartsAt;
                 } else {
-                  final interval = (newRepeatAfter != null && newRepeatAfter > 0)
-                      ? newRepeatAfter
-                      : 60000;
-                  var target = newStartsAt + interval;
-                  while (target <= nowMillis) {
-                    target += interval;
-                  }
-                  newNextRunAt = target;
+                  // Closed-form catch-up on the strict grid: the old linear
+                  // loop spins ~1.75e12 iterations for repeat_after: 1.
+                  newNextRunAt = TaskSchedulerService.calculateNextRunAt(
+                    startsAt: newStartsAt,
+                    repeatAfter:
+                        (newRepeatAfter != null && newRepeatAfter > 0)
+                            ? newRepeatAfter
+                            : 60000,
+                    nowMillis: nowMillis,
+                  );
                 }
               } else {
                 newNextRunAt = newStartsAt;
@@ -396,14 +398,14 @@ Tool scheduleTaskTool({
               if (newStartsAt > nowMillis) {
                 newNextRunAt = newStartsAt;
               } else if (newType == 'recurring') {
-                final interval = (newRepeatAfter != null && newRepeatAfter > 0)
-                    ? newRepeatAfter
-                    : 60000;
-                var target = newStartsAt + interval;
-                while (target <= nowMillis) {
-                  target += interval;
-                }
-                newNextRunAt = target;
+                // Same closed-form catch-up as above (never a linear loop).
+                newNextRunAt = TaskSchedulerService.calculateNextRunAt(
+                  startsAt: newStartsAt,
+                  repeatAfter: (newRepeatAfter != null && newRepeatAfter > 0)
+                      ? newRepeatAfter
+                      : 60000,
+                  nowMillis: nowMillis,
+                );
               } else {
                 newNextRunAt = nowMillis + 60000;
               }

@@ -985,8 +985,6 @@ class TaskSchedulerService {
       );
     }
 
-    locallyCreatedClient?.close();
-
     return isSuccess;
   }
 

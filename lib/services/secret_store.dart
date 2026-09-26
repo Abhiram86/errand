@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -30,8 +31,28 @@ final class SecretStore {
 
   /// Loads (or creates) the encryption key. Idempotent; call once at startup
   /// before any secret access.
+  Completer<void>? _keyInit;
+
   Future<void> ensureKey() async {
     if (_key != null) return;
+    // Serialize concurrent initializers: without this, two callers can both
+    // generate and write different keys, leaving memory and disk mismatched.
+    var init = _keyInit;
+    if (init != null) {
+      await init.future;
+      return;
+    }
+    init = Completer<void>();
+    _keyInit = init;
+    try {
+      await _ensureKeyLocked();
+    } finally {
+      if (identical(_keyInit, init)) _keyInit = null;
+      init.complete();
+    }
+  }
+
+  Future<void> _ensureKeyLocked() async {
     final keyFile = await _keyFile();
     if (await keyFile.exists()) {
       final stored = await keyFile.readAsBytes();

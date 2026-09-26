@@ -1,7 +1,7 @@
 # Next Plan — Status & Roadmap
 
 > **Updated Sep 2026.** P0 through P11 are shipped. The current codebase is schema v8. `flutter analyze` reports no Dart issues, all 569 tests pass, and Android lint currently fails with four API-level errors plus non-blocking warnings.
-> **Active Milestone:** **P12 — Reliability, lifecycle, security, and performance hardening**. P6b browser PlatformView work remains queued behind P12.
+> **Active Milestone:** **P13 — Task storage ownership (report files)**. P12 shipped in v0.7.4. P6b browser PlatformView work remains queued.
 
 ---
 
@@ -256,6 +256,148 @@ Goal: Remove the confirmed correctness and memory-safety gaps found in the Septe
 - 8MB byte-bounded true LRU PDF unit extraction cache.
 - 5MB raw response byte cap and 10s inactivity streaming timeout in fallback `webfetch`.
 - Sandboxed HTML report previews with external browser link opening.
+
+---
+
+### 🟡 P13 — Cutting edges (ACTIVE)
+
+Goal: harden the surfaces that are currently best-effort into deterministic, owned, and diagnosable behavior. Every outcome labeled, every file owned, no silent partials.
+
+#### P13.1 Report paths + linked files + delete hook
+
+- **Keep `output_file_path` as the report path (no rename).** The column stays exactly as-is, so no `DROP COLUMN` (unsafe on old-device SQLite) or table rebuild is needed. The agent-facing name `report_path` is presentation-only: tool schemas, `schedule_task` output mapping (`schedule_task_tool.dart:732`), and headless prompts say `report_path`; all writes still target `output_file_path`.
+- **Store scratch-relative paths going forward.** Current writes are absolute (`agent_runner.dart:277` → stored at `task_scheduler_service.dart:858`), which rot across reinstalls/cache clears. Normalize to scratch-relative on write; convert legacy absolute values on read (strip the scratch prefix when present).
+- **Add only `linked_files` (TEXT JSON array, default `[]`).** Safe `ADD COLUMN` migration (schema v9). Holds auxiliary outputs alongside the primary report so one task's full footprint is enumerable: `report_path + linked_files`.
+- **Delete hook with informed prompt.** `deleteTask(id, {bool deleteFiles})` removes the files in `report_path`/`linked_files` when asked. UI prompt shows count + bytes ("Also delete 7 report files (2.3 MB)?"), checkbox defaults checked. The storage manager's per-task clear reuses this hook.
+- **Orphan sweep.** Files in scratch referenced by neither column (crash between write and log insert) are listed via one directory scan + one query, surfaced as an "Orphaned files (N, X MB) [clear]" section in the storage manager, optionally on boot.
+
+Acceptance:
+- New reports store scratch-relative paths; legacy absolute paths still resolve.
+- `linked_files` round-trips through create/edit/prune (keep-newest-10 prunes linked files with their report).
+- Deleting a task with the box checked leaves zero owned files; unchecked leaves them (visible in the sweep).
+- Orphan sweep lists exactly the unreferenced files, nothing owned.
+
+#### P13.2 Deterministic browser outcomes (no silent partials)
+
+Contract: 100% *labeled* outcomes, not 100% success (the live web forbids that). Every browser step ends as verified success, typed failure with cause, or explicit-unknown with evidence. "Assumed ok" stops existing.
+
+1. **Condition-waits kill all fixed sleeps.** Audit every fixed delay on the browser path (800ms settle, 300/500ms retry delays, 350ms render delay) and replace with poll-until-condition-or-timeout: `waitForUrl`, `waitForSelector(visible/stable)`, `waitForDomQuiet`. Each returns condition-met-with-timestamp or `TIMEOUT` with what was actually observed.
+2. **Ref freshness.** Stamp snapshots with an epoch; `act` re-resolves its ref at action time (attached, visible, enabled, topmost via `elementFromPoint`) and rejects stale/detached refs with `SNAPSHOT_STALE: re-snapshot` instead of firing into the void.
+3. **Act→verify loop.** Every mutating act declares its expected effect (URL change, element appeared/vanished, text present); the tool verifies post-action by re-query. Result is `VERIFIED` or `FAILED(effect not observed)`.
+4. **Typed error taxonomy + retry policy.** Exhaustive results: `OK_VERIFIED`, `NOT_FOUND`, `NOT_INTERACTABLE(covered|disabled|hidden)`, `NAV_TIMEOUT`, `HTTP_ERROR(code)`, `STALE_SNAPSHOT`, `AMBIGUOUS` (unknown — re-probe required, never reported as success). Retryable (timeout, stale) vs terminal (repeat not-found, auth wall) classified in the tool; per-class retry budgets replace the flat consecutive-error cap.
+5. **Evidence bundle on every failure.** Snapshot slice + console errors + HTTP status + final URL + screenshot attached to the failure result, so the diagnosis is deterministic even when the outcome is uncertain.
+6. **Self-check matrix suite.** Local test page with one of each nasty case (shadow DOM, covered button, JS-gated field, SPA hash-nav, delayed render, 503 page, auth wall) asserting the taxonomy cell-by-cell — a public determinism scoreboard.
+
+Acceptance:
+- Zero fixed sleeps remain on the browser act/load path; every wait returns evidence.
+- Stale-ref act is rejected 100% of the time without touching the page.
+- Every mutating act returns `VERIFIED` or a typed failure; no unverified `ok` leaves the tool.
+- `AMBIGUOUS` is never auto-retried into a success claim; terminal classes abort with diagnosis.
+- Matrix suite green on all cells; any red cell names the exact uncovered case.
+
+#### P13.3 Intent tool docs + honest outcome labeling
+
+Problem: outside alarms (solid) and calendar (okay), intent actions are unreliable — and Android's permission/activity model means most effects are unverifiable by design (fire-and-forget; no read-back without extra permissions). So unlike 13.2, failure-checking can't close the gap. What can: docs that tell the truth per action, and outcomes that never overclaim.
+
+1. **Per-action reliability tiers in `docs`.** Every documented action gets a tier: `verified` (alarms — exercised on-device), `partial` (calendar — works, edge cases known), `fire-and-forget` (effect unverifiable, dispatched-only), `experimental` (known-broken or OEM-dependent). Tiers ride with the action schema, not a wiki nobody reads.
+2. **Exact extras + caveats per action.** Required vs optional extras, OS-version minimums, OEM variance notes (Samsung vs Pixel dispatch behavior), and BAL/background-launch limits where they bite. Demote or remove actions that can't be documented honestly.
+3. **Outcome vocabulary that matches the platform.** Results are `DISPATCHED` (system accepted — never "timer created"), `NO_HANDLER` (deterministic failure via pre-flight `canResolve`, already in `IntentService`), `BLOCKED` (BAL/background restriction with the user-facing remedy), `UNKNOWN` (accepted, effect unverifiable). The agent is instructed to report these verbs, not invent completions.
+4. **Pre-flight `canResolve` everywhere it applies.** Turn blind attempts into deterministic `NO_HANDLER` before dispatch, with the top fuzzy-match suggestions on failure (existing behavior, now mandatory path).
+5. **Verify-after where a read-back exists.** Where a follow-up query is possible without new permissions, the agent flow does dispatch-then-confirm; where it needs a new permission (e.g. calendar read-back), the spec names it explicitly as a costed option instead of silently skipping verification.
+6. **On-device action matrix.** One row per documented action: handler present? dispatch accepted? effect confirmable? Run per release (and ideally per major OEM) so tier labels are measured, not vibes.
+
+Acceptance:
+- Every `docs` action carries a tier + extras schema + caveats; zero undocumented actions reachable by the agent.
+- No tool result or prompt language claims an unverifiable effect (grep-able: "created/set/started" only beside verified paths).
+- `NO_HANDLER`/`BLOCKED`/`UNKNOWN` are distinct, tested results with user-actionable messages.
+- Matrix run attached per release; any tier change is backed by a matrix delta.
+
+#### P13.4 Profile + optimize background runs (mobile-data slow/faily)
+
+Problem (researched, Sep 2026): headless runs are slow and failure-prone on mobile data. Structural causes, all verified in code: 30s timeout × 5 LLM attempts + backoff ≈ 2.7 min worst case per call (`llm_client.dart`, `task_scheduler_service.dart:718`); no connectivity check anywhere, so dead links burn the full budget; background FlutterEngine cold-starts per alarm batch; Doze fires `setExactAndAllowWhileIdle` alarms while keeping network restricted (`PARTIAL_WAKE_LOCK` holds CPU, not network) so all attempts fail fast and the task goes red; WiFi→data handoffs kill keep-alive sockets mid-stream; every transient blip becomes FAILED + notification while foreground retries feel normal.
+
+1. **Mine the logs first (profiling).** Break down existing runs by failure class (transport/offline vs timeout vs model error), attempt counts, per-call durations, and WiFi-vs-data where inferable. Decides whether Doze/offline dominates (→ items 2–4 suffice) or timeout tuning is needed. No code, ~1 hour analysis.
+2. **Pre-flight reachability probe + defer-instead-of-fail.** One short check (provider host connect, ~5s) before spending attempts. Offline → reschedule (recurring: next grid slot; one-off: +N backoff) instead of FAILED. Converts "faily" into "patient".
+3. **Split transport failure from task failure in UX.** Offline/timeout-class errors on retryable schedules → "waiting for network" state with no failure notification; notify only when retries are truly exhausted with no next run.
+4. **Network-preference toggle (WiFi-only per task or global).** Direct answer to metered-data complaints; pairs with item 2 for exact-time tasks.
+5. **Cheaper first attempt on metered links** (probe semantics, short timeout) instead of a uniform 30s — cuts perceived slowness without touching the success path. WorkManager-with-`CONNECTED`-constraint explicitly deferred: sacrifices exactness, revisit only if exact-time tasks fail disproportionately.
+
+Acceptance:
+- Log breakdown attached; build items justified by it, not vibes.
+- Offline at alarm time never produces FAILED; reschedule path covered by tests.
+- Transport-class errors never trigger failure notifications on retryable schedules (tested).
+- Metered-link p95 attempt waste (time spent on attempts that fail transport-class) drops; measured before/after from log durations.
+
+#### P13.5 Small nits batch
+
+1. **Voice widget listening icon.** The audio-reactive border glow stays; the icon must swap microphone → stop while listening (tapping stops). Currently shows mic in both states, which misreads as "tap to start" mid-dictation.
+2. **Composer autofocus on cold open.** Request focus post-first-frame on fresh app open so the keyboard is up and the user can type immediately. Resume-from-background must NOT re-focus (keyboard popping over resumed content annoys); gate on cold start only.
+3. **Unread tab is really run history.** The tab mixes unseen notifications with the full log list behind filter chips, so "Unread" misnames it. Rename without restructuring: tab **Runs**, first chip **New (n)** (was "Unread (n)"), rest unchanged. Every row is an execution run; the badge keeps meaning "new since you last looked".
+4. **Title generation as a declared tool group.** Conversation titles come from an explicit agent tool call (`conversations → write_title` on the first turn), rendered in the grouped tool-call UI with its description like any other tool — visible and explainable, never silent background magic. Fallback to first-user-message truncation on failure; re-title only on explicit request or extreme topic drift (gated, never eager).
+
+#### P13.6 External review findings (verified, `latest_review.md`)
+
+All items below were independently verified against the tree (26/30 confirmed as-written; H5 downgraded to cleanup — double `close()` is idempotent-harmless; M16 reframed — activity launches are properly blocked, only arbitrary *broadcast* actions pass). Fix in subsection order; each carries its own acceptance.
+
+- **13.6.1 Shell parser normalization (C1, H9, H10).** Strip backslash-escapes/quotes before executable classification (closes `\rm`, `"r"m` bypasses, proven untested); add `_isSystemPath` blocks to `mv`/`cp`/`shred`/`truncate` targets (`cp` currently has no branch at all); detect `<(`/`>(` process substitution. Acceptance: quoting-vector regression tests alongside the existing `$VAR`/`env` ones; no named destructive binary reachable under any quoting.
+- **13.6.2 Commit guard on ref path (C2).** Enforce `looksLikeCommitAction` for numeric-ref taps (resolve label via `tapByRef` result or refuse destructive refs in the service). Acceptance: `ref` tap on a Pay/Delete-labeled node is refused with the same error as the label path.
+- **13.6.3 File-read path gate (C3).** Replace `contains()` substring checks with `path.isWithin` against resolved picker-cache/screenshot dirs + `resolveSymbolicLinksSync` before `exists()`. Acceptance: planted-path test (substring path outside the real dirs) is rejected.
+- **13.6.4 Compaction alternation (H1).** Track last emitted role in `_toLlmHistory`; skip the post-compaction assistant ack when already `assistant` (the low-level path already does this). Acceptance: no consecutive same-role messages post-compaction on strict providers.
+- **13.6.5 Background engine lifecycle (H2, H3).** Set `backgroundEngine` only after successful `executeDartEntrypoint`; destroy + null on init failure before advancing the queue; move engine creation off the main thread. Acceptance: killed-engine init fails one task loudly, never poisons all future tasks; no UI-thread engine creation.
+- **13.6.6 Stream bounds (H4).** Cap accumulated bytes per stream (~8–16MB) + hard total-duration timeout on top of the 30s inactivity watchdog. Acceptance: dribbling-server test terminates bounded in bytes and time.
+- **13.6.7 Scheduler post-run correctness (H6 open + H5 ✅ DONE).** H5: redundant second `close()` removed (verified idempotent-harmless first). H6 still open: use re-read `freshTask` for all post-run status updates (type/interval/failures currently go stale over mid-run edits). Acceptance: edit-during-run test keeps user values.
+- **13.6.8 ChatScreen working-bubble isolation (H7, H8).** Extract the …working placeholder into its own `StatefulWidget` with a scoped timer; `mounted`/disposed guards on all async callbacks. Acceptance: per-second rebuild scoped to one widget; navigate-mid-turn never throws.
+- **13.6.9 Catch-up spin + compaction cap (loop ✅ DONE, cap ✅ DONE, 60s floor deliberately skipped).** Both linear catch-up loops replaced with closed-form `calculateNextRunAt` (zero behavior change; `repeat_after: 1` edit returns instantly, proven by regression test) — no 60s floor added, sub-minute schedules are legitimate. Compaction summary capped at `targetTokens`-as-chars. Acceptance: `repeat_after: 1` completes promptly by test; echo-history summary cannot loop compaction.
+- **13.6.10 Model/catalog matching (M2 open, M15 ✅ DONE).** M15: cache key buckets by key-material hash, so key rotation never serves the stale catalog. M2 still open: prefer exact/slug matches in `lookupContextTokens` (bidirectional `contains` misfires). Acceptance: misfire regression cases.
+- **13.6.11 Non-streaming parse hardening (M3 ✅ DONE).** `as Map` casts replaced with `is` checks; non-map elements skipped exactly like the streaming path, so a hostile proxy can't smuggle a `TypeError` past retry classification. Acceptance: hostile-protocol test on both paths.
+- **13.6.12 Tool scope + memory hygiene (M6, M7, M9).** Confine `bash working_directory` to the workspace root without persisting the mutation; push memory `find` filtering/scoring into SQL with `LIMIT`; pass `currentConversationId` as a resolver, not a construction-time value. Acceptance: CWD-escape test, memory-scale test, switch-conversation attribution test.
+- **13.6.13 Persistence races (M17 ✅ DONE, M8 open).** M17: `ensureKey` serialized via `Completer` mutex (existing encrypt/decrypt suite still green). M8 still open: transaction-wrap `insertMessage` sort-order read-then-write. Acceptance: concurrent-insert and concurrent-init tests.
+- **13.6.14 Document expansion accounting (M10).** Enforce the LRU ceiling against expanded bytes (`totalPartBytes`), not compressed `stat.size`; revisit the 4× expansion cap. Acceptance: zip-bomb fixture stays under budget in heap terms.
+- **13.6.15 Native threads + broadcast policy (M11, M16).** Shared `ExecutorService` + timed `Future.get` for geocoding; allowlist broadcast actions at the Dart headless layer (native already blocks activities). Acceptance: hung-geocoder test terminates; non-listed broadcast rejected.
+- **13.6.16 ChatScreen build hygiene (M13 ✅ DONE, M14 ✅ DONE, M12 open).** M13: `_animatedMessageIds` mutation moved to post-frame callback. M14: sidebar-watch `setState` gated on sidebar visibility (fields still update, pinned rows verified sidebar-only). M12 still open: precompute regenerate-target/latest-tool-group once per message list. Acceptance: build cost linear in messages; no build-time side effects.
+- **13.6.17 Token estimation (M1 ✅ DONE).** ASCII at 3.8 chars/token, non-ASCII runs at 1.5 (CJK/emoji/Devanagari), pinned by unit test. Acceptance: Japanese conversation compacts before the real window overflows.
+- **13.6.18 Low cleanup batch (L2/L4/L6/L9/L10 ✅ DONE; L5 ❌ refuted; L8 ❌ disputed; L1/L7 open).** Done: caught `getLocation` chain, mounted-guarded sheet `setState`, deleted ~80 lines of commented-out tools, `RepeatedToolFailureException` doc fix, HTTP-date `Retry-After`. L5 refuted — the import provides `CancelToken` (removal broke the build, reverted). L8 disputed — the `estimate*Chars` family has test callers, not dead. Open: L1 `ListenableBuilder`, L7 `_splitScreenHeader` dedup (churn exceeds value).
+
+---
+
+### 🟡 P14 — Everyday surface (QUEUED)
+
+Goal: features a non-technical user understands in one sentence, built by composing shipped systems. No new engines.
+
+#### P14.1 Briefing chips over composer
+
+ChatGPT-style: 3–4 horizontally scrollable floating chips above the composer, generated from live state — morning briefing, unread task runs, follow-ups, contextual starters. Tapping a chip sends it (or pre-fills the composer). Dynamic per time-of-day and app state, cached per session, never blocking first frame.
+
+Acceptance:
+- Chips render post-first-frame from a cheap state read (no network on the critical path).
+- Tap either sends or pre-fills (decided per chip kind, consistent).
+- Empty/loading states degrade to hidden, never to spinners or stale chips.
+
+#### P14.2 Read-aloud on assistant bubbles
+
+`flutter_tts` play/stop button beside copy/retry at the end of assistant bubbles. Stops on new turn, screen disposal, or toggling; exactly one utterance at a time. Pairs with the existing voice widget into a complete eyes-free loop (mic in, speech out).
+
+Acceptance:
+- Play/stop state never desyncs from the engine (rapid taps, turn switches, disposal all covered by tests).
+- No audio overlap: starting one utterance stops any active one.
+- Respects silent/vibrate mode with a documented behavior (duck or skip, no crash).
+
+#### P14.3 Conversations tool (title gen + scoped cross-reference)
+
+One `conversations` tool, three actions. No raw SQL exec (prompt-injection via stored untrusted content, token bloat, schema coupling) — curated read paths with baked-in limits. `search` discovers, `recall` reads deep; excerpts never bloat search responses.
+
+1. **`write_title` (self-scope, current convo only).** Agent proposes the title string in the call (no extra summarizer LLM call); tool sanitizes (length cap, strip quotes/"Chat about…" prefixes) and persists. System prompt triggers it once, end of first turn; renders in the grouped tool UI. Fallback is truncated first user message; re-title gated behind explicit request or extreme drift, never eager. No background jobs, no turn counters, no `write_summary` periodic job (titles + excerpts answer cross-referencing without summary infrastructure; summaries, if ever needed, generate lazily at title time).
+2. **`search` (global, read-only) — two phases enforced server-side, never a full-corpus body scan.** Phase 1: keyword over all titles (tiny table, cheap) + recency-ranked recent-N → candidate convo IDs, never bodies. Phase 2: message-body scan restricted to those IDs, excerpt hits capped (10–20) with convo id + turn ref. Time is the primary limiter: default 30-day window, explicit `since`/`until`, recent-first with title-match boost; widening the window is an explicit second call, each step bounded.
+3. **`recall` (current convo default, global by reference) — message-specific reads.** Fetches exact messages by convo id + message/turn ref plus a bounded context window (±N messages, capped), full bodies instead of excerpts. Convo ID omitted means current convo. Consumes references produced by `search`; nothing here discovers, everything here reads deep. Same read-only, UNTRUSTED-disciplined, headless-allowed posture as `search`.
+- **Scope rules** (mirrors `schedule_task` `currentTaskId`): bind `currentConversationId`; `write_title` valid on current only; `search` reads everything, writes nothing; headless runs get `search` only (same policy as the memory tool). Returned rows keep UNTRUSTED discipline.
+- **Latency posture:** plain `LIKE`, titles-before-messages, prefix-before-substring; duration marker on every call. FTS5 graduates from backlog only if measured p95 exceeds ~200ms or corpus passes ~50k messages.
+
+Acceptance:
+- No query path touches message bodies without a bounded convo-ID set (grep-able: every body query carries an ID filter + LIMIT).
+- First-turn title appears via declared tool call with fallback proven by test (failing generation → truncated first message).
+- Re-title never fires unprompted (test: topic drift without request leaves title intact).
+- Search across a seeded multi-convo corpus returns excerpts with correct convo/turn refs inside one call; window widening demonstrated by test.
+- `recall` by ref returns full bodies plus bounded context window; window cap enforced by test (over-wide request clamps, never unbounded).
 
 ---
 

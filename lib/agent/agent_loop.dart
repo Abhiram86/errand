@@ -67,7 +67,7 @@ class AgentLoop {
   static const Duration defaultCompactionTimeout = Duration(seconds: 60);
 
   /// Maximum number of consecutive identical failing tool calls before
-  /// the loop aborts and triggers cancelToken.
+  /// the loop aborts the turn with [RepeatedToolFailureException].
   static const int defaultMaxConsecutiveSameToolErrors = 3;
 
   /// Maximum aggregate bytes of media content parts allowed per turn (30MB).
@@ -464,6 +464,13 @@ class AgentLoop {
       rethrow;
     } catch (_) {
       summary = buildDeterministicFallbackSummary(toCompact);
+    }
+
+    // Bound the summary: an echoing model must not be able to loop
+    // compaction by returning history as the "summary".
+    final maxSummaryChars = (budget.targetTokens * 3.8).ceil();
+    if (summary.length > maxSummaryChars) {
+      summary = summary.substring(0, maxSummaryChars);
     }
 
     final compacted = applyCompactedHistory(

@@ -313,11 +313,15 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     ModelsDevService.preload();
     _loadAppConfigFuture = _loadAppConfig();
     unawaited(Workspace.instance.ensureDefaultDirectories());
-    unawaited(LocationService.instance.hasPermission().then((permitted) {
-      if (permitted) {
-        LocationService.instance.getLocation(requestIfMissing: false);
-      }
-    }));
+    // Startup location warm-up; never let a permission/store failure
+    // surface as an unhandled async error.
+    unawaited(() async {
+      try {
+        if (await LocationService.instance.hasPermission()) {
+          await LocationService.instance.getLocation(requestIfMissing: false);
+        }
+      } catch (_) {}
+    }());
     // One-time POST_NOTIFICATIONS grant so the foreground work indicator is
     // visible on API 33+ (the service itself runs regardless).
     unawaited(_intentService.requestNotificationPermission());
@@ -328,16 +332,19 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         .watchConversationSummaries(limit: _sidebarPageSize)
         .listen((summaries) {
           if (!mounted) return;
-          setState(() {
-            _conversations = summaries;
-            _sortedConversationsDirty = true;
-          });
+          _conversations = summaries;
+          _sortedConversationsDirty = true;
+          // The sidebar reads these fields on open; skip the full-screen
+          // rebuild while it is closed (persists fire ~every 600ms mid-turn).
+          if (_sidebarOpen) setState(() {});
         });
     _pinnedConversationsSub = database.watchPinnedConversations().listen((
       pinned,
     ) {
       if (!mounted) return;
-      setState(() => _pinnedConversations = pinned);
+      _pinnedConversations = pinned;
+      // Pinned rows render inside the sidebar only; same skip-while-closed.
+      if (_sidebarOpen) setState(() {});
     });
 
     WidgetService.instance.initialize();
@@ -2986,7 +2993,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             final item = displayItems[index];
             final shouldAnimate = !_animatedMessageIds.contains(item.id);
             if (shouldAnimate) {
-              _animatedMessageIds.add(item.id);
+              // Post-frame: mutating build-observed state during build is a
+              // side effect that can produce inconsistent frames. The add is
+              // not a setState, so post-dispose execution is harmless.
+              final animateId = item.id;
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                _animatedMessageIds.add(animateId);
+              });
             }
 
             final Widget bubbleWidget;
