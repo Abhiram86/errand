@@ -8,6 +8,7 @@ import 'package:path/path.dart' as p;
 
 import '../services/intent_service.dart';
 import '../theme/app_colors.dart';
+import '../utils/markdown_links.dart';
 import '../widgets/bubbles/clamped_table_view.dart';
 
 /// Full-page preview screen for task execution output files (Markdown, HTML, text).
@@ -282,6 +283,7 @@ class _TaskFilePreviewScreenState extends State<TaskFilePreviewScreen> {
             height: 1.5,
           ),
           tableBuilder: buildClampedTable,
+          onLinkTap: (url, _) => openMarkdownLink(context, url),
         ),
       ),
     );

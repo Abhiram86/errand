@@ -147,10 +147,10 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
       if (!mounted) return;
       final bytes = result[0];
       final count = result[1];
-      if (count == 0) return;
       setState(() {
-        _storageSummary =
-            'Scratch ${_formatBytes(bytes)} · $count ${count == 1 ? 'file' : 'files'}';
+        _storageSummary = count == 0
+            ? 'Scratch empty'
+            : 'Scratch ${_formatBytes(bytes)} · $count ${count == 1 ? 'file' : 'files'}';
       });
     } catch (_) {}
   }
