@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:errand/agent/tool.dart';
 import 'package:errand/services/a11y_service.dart';
@@ -149,7 +150,19 @@ void main() {
     });
 
     test('file read tool resolves and reads screenshot file from cache', () async {
+      TestWidgetsFlutterBinding.ensureInitialized();
       final tempRoot = await Directory.systemTemp.createTemp('screen_read_test');
+      // Simulate the real layout: temp screenshots live directly under the
+      // platform cache dir (<cache>/screenshots).
+      final cacheRoot = Directory('${tempRoot.path}/cache')..createSync();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+        const MethodChannel('plugins.flutter.io/path_provider'),
+        (call) async {
+          if (call.method == 'getTemporaryDirectory') return cacheRoot.path;
+          return null;
+        },
+      );
       try {
         final cacheDir = Directory('${tempRoot.path}/cache/screenshots')..createSync(recursive: true);
         final shotFile = File('${cacheDir.path}/screenshot_test.jpg');
@@ -175,6 +188,10 @@ void main() {
         expect(result.contentParts, isNotNull);
         expect(result.contentParts!.first['type'], 'image_url');
       } finally {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(
+                const MethodChannel('plugins.flutter.io/path_provider'),
+                null);
         await tempRoot.delete(recursive: true);
       }
     });

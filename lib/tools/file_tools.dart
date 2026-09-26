@@ -10,6 +10,7 @@ import '../internal/document_reading/document_reader.dart';
 import 'grep_filter.dart';
 
 import 'package:path/path.dart' as path;
+import 'package:path_provider/path_provider.dart';
 
 const kMaxReadBytes = 512 * 1024;
 
@@ -850,18 +851,53 @@ Future<File?> _resolveReadableFile(
       final outPath = path.normalize(outDir.path);
       isSpill = normalized == outPath || path.isWithin(outPath, normalized);
     } catch (_) {}
-    // Narrow allowances: picker-cache and screenshot captures.
-    final isPickerCache = normalized.contains('/cache/file_picker/') &&
-        await File(normalized).exists();
-    final isScreenshot = (normalized.contains('/cache/screenshots/') ||
-            normalized.contains('/Pictures/Screenshots/')) &&
-        await File(normalized).exists();
-    if ((isAttached || isSpill || isPickerCache || isScreenshot) &&
+    // Narrow allowances: files the app itself staged outside the workspace
+    // (picker cache, temp screenshots). Checked against the real cache dir
+    // post-symlink-resolution, so `..` segments and symlinks can't escape
+    // into unrelated directories (a bare substring test would admit any
+    // planted path containing the magic segment).
+    final isStaged = await _isAppStagedFile(normalized);
+    // Shared-storage screenshots stay allowed: Pictures/Screenshots lives
+    // inside the workspace root, so this grants nothing beyond the normal
+    // workspace path. Kept so absolute screenshot paths keep working.
+    final isScreenshot = normalized.contains('/Pictures/Screenshots/') &&
+        await _isExistingFile(normalized);
+    if ((isAttached || isSpill || isStaged || isScreenshot) &&
         await File(normalized).exists()) {
       return File(normalized);
     }
   }
   return null;
+}
+
+/// True when [normalized] (already `path.normalize`d) resolves to a real
+/// file inside the app's own staged-file dirs (`<cache>/file_picker`,
+/// `<cache>/screenshots`). Symlinks are resolved before the containment
+/// check, so a link placed inside an allowed dir can't point outside it.
+Future<bool> _isAppStagedFile(String normalized) async {
+  try {
+    final target = await File(normalized).resolveSymbolicLinks();
+    if (await FileSystemEntity.type(target) != FileSystemEntityType.file) {
+      return false;
+    }
+    final cacheDir = await getTemporaryDirectory();
+    final cachePath = path.normalize(cacheDir.path);
+    for (final name in const ['file_picker', 'screenshots']) {
+      final dir = path.join(cachePath, name);
+      if (target == dir || path.isWithin(dir, target)) return true;
+    }
+  } catch (_) {}
+  return false;
+}
+
+/// Exists-and-is-a-file probe that never throws.
+Future<bool> _isExistingFile(String normalized) async {
+  try {
+    return await FileSystemEntity.type(normalized) ==
+        FileSystemEntityType.file;
+  } catch (_) {
+    return false;
+  }
 }
 
 /// Counts 1-based start line for a byte [offset] by counting '\n' before it.
