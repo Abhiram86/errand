@@ -91,6 +91,11 @@ class ShellSafetyCheck {
   }
 
   static bool _hasDangerousShellConstruct(String cmd) {
+    // Process substitution <(...) or >(...) executes commands via subshells/pipes.
+    if (RegExp(r'(?:<|>)\s*\(').hasMatch(cmd)) {
+      return true;
+    }
+
     // eval/source/exec/. can hide arbitrary commands when invoked in command position.
     if (RegExp(
       r'(?:^|[;&|\n])\s*(?:eval|source|exec|\.)(?:\s+|$)',
@@ -142,6 +147,13 @@ class ShellSafetyCheck {
         continue;
       }
 
+      // If '&' is part of '>&' or '&>', it's a redirect, not a command separator.
+      if (c == '&' &&
+          ((i > 0 && command[i - 1] == '>') ||
+           (i + 1 < command.length && command[i + 1] == '>'))) {
+        continue;
+      }
+
       final isSeparator = c == ';' ||
           c == '\n' ||
           c == '|' ||
@@ -190,6 +202,31 @@ class ShellSafetyCheck {
       return const ShellSafetyCheck(
         ShellSafetyLevel.safe,
         'Environment assignment only',
+      );
+    }
+
+    // Shell control keywords (for, do, done, if, then, else, fi, while, until)
+    final firstWord = words.first;
+    if (firstWord == 'done' || firstWord == 'then' || firstWord == 'else' || firstWord == 'fi') {
+      return const ShellSafetyCheck(
+        ShellSafetyLevel.safe,
+        'Shell syntax keyword',
+      );
+    }
+    if (firstWord == 'for') {
+      // Loop header: for var in ...
+      return const ShellSafetyCheck(
+        ShellSafetyLevel.safe,
+        'Shell loop header',
+      );
+    }
+    if (firstWord == 'do' || firstWord == 'if' || firstWord == 'while' || firstWord == 'until') {
+      if (words.length > 1) {
+        return _analyzeCommand(words.sublist(1).join(' '));
+      }
+      return const ShellSafetyCheck(
+        ShellSafetyLevel.safe,
+        'Shell syntax keyword',
       );
     }
 
@@ -343,6 +380,42 @@ class ShellSafetyCheck {
     return _analyzeDirectCommand(words);
   }
 
+  // Inverted Allowlist of safe, non-destructive utilities in Android shell / Toybox.
+  static const _safeAllowedCommands = <String>{
+    // File / Directory navigation & inspection
+    'ls', 'dir', 'vdir', 'pwd', 'cd', 'pushd', 'popd', 'dirs',
+    'which', 'whereis', 'type', 'file', 'stat', 'whoami', 'id', 'groups',
+
+    // File reading & text viewing
+    'cat', 'head', 'tail', 'more', 'less', 'strings', 'nl', 'tac', 'rev',
+    'od', 'hexdump', 'xxd', 'base64',
+
+    // Searching, text processing & filtering
+    'grep', 'egrep', 'fgrep', 'awk', 'cut', 'sort', 'uniq', 'wc',
+    'tr', 'fold', 'paste', 'column', 'comm', 'cmp', 'diff', 'join', 'fmt',
+    'pr', 'expand', 'unexpand', 'dos2unix', 'unix2dos',
+
+    // Printing, flow, logic & math
+    'echo', 'printf', 'true', 'false', 'test', '[', 'expr', 'seq', 'sleep',
+    'usleep', 'bc', 'yes', 'exit', 'return',
+
+    // Path manipulation & checksums
+    'basename', 'dirname', 'realpath', 'readlink',
+    'md5sum', 'sha1sum', 'sha224sum', 'sha256sum', 'sha384sum', 'sha512sum',
+    'cksum', 'crc32',
+
+    // Dates, times & system / network inspection (heavily used on Android)
+    'date', 'cal', 'uptime', 'uname', 'hostname', 'arch', 'df', 'du',
+    'ps', 'top', 'free', 'vmstat', 'iostat', 'netstat', 'ss', 'ip',
+    'ifconfig', 'arp', 'route', 'printenv', 'export',
+
+    // Safe compression / archiving
+    'tar', 'gzip', 'gunzip', 'bzip2', 'bunzip2', 'xz', 'unxz', 'zip', 'unzip', 'zcat',
+
+    // Android-specific system inspection
+    'getprop', 'dumpsys', 'logcat',
+  };
+
   static ShellSafetyCheck _analyzeDirectCommand(
     List<String> words,
   ) {
@@ -389,7 +462,7 @@ class ShellSafetyCheck {
       );
     }
 
-    // dd to a block device.
+    // dd to a block device or bulk overwrite.
     if (command == 'dd') {
       for (final arg in args) {
         if (arg.startsWith('of=')) {
@@ -412,12 +485,32 @@ class ShellSafetyCheck {
       );
     }
 
+    // Redirecting into a system path or block device.
+    for (final target in _redirectTargets(words)) {
+      if (_isBlockDevice(target)) {
+        return const ShellSafetyCheck(
+          ShellSafetyLevel.blocked,
+          'Redirect writes directly to a block device',
+          '> /dev/block',
+        );
+      }
+
+      if (_isSystemPath(target)) {
+        return const ShellSafetyCheck(
+          ShellSafetyLevel.blocked,
+          'Writing to a system path is not allowed',
+          'system path write',
+        );
+      }
+    }
+
+    // File deletion (rm / rmdir)
     if (command == 'rm' || command == 'rmdir') {
       final targets = args
           .where((x) => !x.startsWith('-'))
           .toList();
 
-      if (targets.any(_isSystemPath)) {
+      if (targets.any(_isSystemPath) || targets.any(_isBlockDevice)) {
         return const ShellSafetyCheck(
           ShellSafetyLevel.blocked,
           'Deleting system paths is not allowed',
@@ -457,16 +550,32 @@ class ShellSafetyCheck {
       );
     }
 
+    // File mutations / overwrites (mv, shred, truncate, cp)
     if (command == 'mv' ||
         command == 'shred' ||
-        command == 'truncate') {
+        command == 'truncate' ||
+        command == 'cp') {
       final targets = args.where((x) => !x.startsWith('-')).toList();
+
+      // Block writing/mutating system paths or block devices.
+      if (targets.any(_isSystemPath) || targets.any(_isBlockDevice)) {
+        return ShellSafetyCheck(
+          ShellSafetyLevel.blocked,
+          'Targeting root or system path is not allowed with $command',
+          '$command on root/system path',
+        );
+      }
+
       if (_isScratchOnlyList(targets)) {
         return const ShellSafetyCheck(
           ShellSafetyLevel.safe,
           'Scratch directory operation',
         );
       }
+
+      // cp is only safe within scratch; anything else needs confirmation.
+      // (No unconditional safe path — destination must be confined.)
+
       return ShellSafetyCheck(
         ShellSafetyLevel.needsConfirmation,
         '$command can destroy or replace files',
@@ -474,22 +583,52 @@ class ShellSafetyCheck {
       );
     }
 
-    if (command == 'sed' && args.contains('-i')) {
-      final targets = args.where((x) => !x.startsWith('-') && !x.startsWith('s/')).toList();
-      if (targets.isNotEmpty && _isScratchOnlyList(targets)) {
+    // Directory / file creation (mkdir, touch)
+    if (command == 'mkdir' || command == 'touch') {
+      final targets = args.where((x) => !x.startsWith('-')).toList();
+      if (targets.any(_isSystemPath) || targets.any(_isBlockDevice)) {
+        return ShellSafetyCheck(
+          ShellSafetyLevel.blocked,
+          'Targeting root or system path is not allowed with $command',
+          '$command on root/system path',
+        );
+      }
+      // Safe only when confined to scratch; anything else needs confirmation.
+      if (_isScratchOnlyList(targets)) {
         return const ShellSafetyCheck(
           ShellSafetyLevel.safe,
-          'Scratch directory in-place editing',
+          'Scratch directory creation',
         );
       }
       return const ShellSafetyCheck(
         ShellSafetyLevel.needsConfirmation,
-        'In-place file editing ("sed -i")',
-        'sed -i',
+        'Creating files/directories outside scratch requires confirmation',
       );
     }
 
-    // find -delete / find -exec rm
+    // In-place sed editing
+    if (command == 'sed') {
+      if (args.contains('-i')) {
+        final targets = args.where((x) => !x.startsWith('-') && !x.startsWith('s/')).toList();
+        if (targets.isNotEmpty && _isScratchOnlyList(targets)) {
+          return const ShellSafetyCheck(
+            ShellSafetyLevel.safe,
+            'Scratch directory in-place editing',
+          );
+        }
+        return const ShellSafetyCheck(
+          ShellSafetyLevel.needsConfirmation,
+          'In-place file editing ("sed -i")',
+          'sed -i',
+        );
+      }
+      return const ShellSafetyCheck(
+        ShellSafetyLevel.safe,
+        'Streaming text processing ("sed")',
+      );
+    }
+
+    // find -delete / find -exec
     if (command == 'find') {
       if (args.contains('-delete')) {
         return const ShellSafetyCheck(
@@ -508,40 +647,95 @@ class ShellSafetyCheck {
           'find',
         );
       }
+      return const ShellSafetyCheck(
+        ShellSafetyLevel.safe,
+        'File search ("find")',
+      );
     }
 
-    // Redirecting into a system path or block device.
-    for (final target in _redirectTargets(words)) {
-      if (_isBlockDevice(target)) {
+    // date system time modification check
+    if (command == 'date') {
+      if (args.any((a) => a == '-s' || a.startsWith('-s') || a.startsWith('--set'))) {
         return const ShellSafetyCheck(
-          ShellSafetyLevel.blocked,
-          'Redirect writes directly to a block device',
-          '> /dev/block',
+          ShellSafetyLevel.needsConfirmation,
+          'Setting system date/time requires confirmation',
+          'date -s',
         );
       }
-
-      if (_isSystemPath(target)) {
-        return const ShellSafetyCheck(
-          ShellSafetyLevel.blocked,
-          'Writing to a system path is not allowed',
-          'system path write',
-        );
-      }
+      return const ShellSafetyCheck(
+        ShellSafetyLevel.safe,
+        'Date and time inspection',
+      );
     }
 
-    return const ShellSafetyCheck(
-      ShellSafetyLevel.safe,
-      'Command appears safe',
+    // Android package manager (pm)
+    if (command == 'pm') {
+      if (args.any((a) => a == 'install' || a == 'uninstall' || a == 'clear' || a == 'disable' || a == 'enable')) {
+        return ShellSafetyCheck(
+          ShellSafetyLevel.needsConfirmation,
+          'Package modification ("pm ${args.firstWhere((a) => a == 'install' || a == 'uninstall' || a == 'clear' || a == 'disable' || a == 'enable')}")',
+          'pm mutate',
+        );
+      }
+      return const ShellSafetyCheck(
+        ShellSafetyLevel.safe,
+        'Package manager inspection ("pm")',
+      );
+    }
+
+    // Android settings
+    if (command == 'settings') {
+      if (args.any((a) => a == 'put' || a == 'delete')) {
+        return const ShellSafetyCheck(
+          ShellSafetyLevel.needsConfirmation,
+          'Modifying system settings ("settings put/delete")',
+          'settings put',
+        );
+      }
+      return const ShellSafetyCheck(
+        ShellSafetyLevel.safe,
+        'Settings inspection ("settings")',
+      );
+    }
+
+    // Android command service (cmd)
+    if (command == 'cmd') {
+      if (args.contains('dump') || (args.isNotEmpty && args.first == 'package' && args.contains('list'))) {
+        return const ShellSafetyCheck(
+          ShellSafetyLevel.safe,
+          'Android service inspection ("cmd")',
+        );
+      }
+      return const ShellSafetyCheck(
+        ShellSafetyLevel.needsConfirmation,
+        'Android service command ("cmd")',
+        'cmd',
+      );
+    }
+
+    // Inverted Allowlist check: if command is known safe, allow it.
+    if (_safeAllowedCommands.contains(command)) {
+      return const ShellSafetyCheck(
+        ShellSafetyLevel.safe,
+        'Command appears safe',
+      );
+    }
+
+    // Fallback: any unknown, third-party, or non-allowlisted binary fails closed into needsConfirmation.
+    return ShellSafetyCheck(
+      ShellSafetyLevel.needsConfirmation,
+      'Unverified or non-allowlisted command ("$command") requires confirmation under Draft policy',
+      command,
     );
   }
 
   static List<String> _tokenize(String command) {
-    final matches = RegExp(r'''(?:[^\s"']+|"[^"]*"|'[^']*')+''')
+    final matches = RegExp(r'''(?:[^\s"'\\]+|\\.|"[^"]*"|'[^']*')+''')
         .allMatches(command);
 
     return matches
         .map((m) => m.group(0)!)
-        .map(_stripQuotes)
+        .map(_unquoteToken)
         .toList();
   }
 
@@ -557,7 +751,7 @@ class ShellSafetyCheck {
           word == '<<' ||
           word == '&>') {
         if (i + 1 < words.length) {
-          result.add(words[i + 1]);
+          result.add(_unquoteToken(words[i + 1]));
         }
         continue;
       }
@@ -567,7 +761,7 @@ class ShellSafetyCheck {
             .firstMatch(word);
 
         if (match != null) {
-          result.add(match.group(1)!);
+          result.add(_unquoteToken(match.group(1)!));
         }
       }
     }
@@ -618,7 +812,7 @@ class ShellSafetyCheck {
   }
 
   static String _normalizePath(String path) {
-    var p = _stripQuotes(path.trim());
+    var p = _unquoteToken(path.trim());
 
     // Remove obvious glob suffix.
     p = p.replaceFirst(RegExp(r'[\*\?]+$'), '');
@@ -643,18 +837,55 @@ class ShellSafetyCheck {
   }
 
   static String _basename(String path) {
-    return path.split('/').last;
+    return _unquoteToken(path).split('/').last;
   }
 
-  static String _stripQuotes(String value) {
-    if (value.length >= 2) {
-      if ((value.startsWith('"') && value.endsWith('"')) ||
-          (value.startsWith("'") && value.endsWith("'"))) {
-        return value.substring(1, value.length - 1);
+  /// Removes shell quoting (single quotes, double quotes) and backslash escapes
+  /// from a token, matching POSIX shell word expansion behavior.
+  /// e.g. `"r"m` -> `rm`, `\rm` -> `rm`, `'r'm` -> `rm`, `r""m` -> `rm`.
+  static String _unquoteToken(String value) {
+    if (value.isEmpty) return value;
+    final sb = StringBuffer();
+    var inSingleQuote = false;
+    var inDoubleQuote = false;
+
+    for (var i = 0; i < value.length; i++) {
+      final c = value[i];
+
+      if (c == '\\' && !inSingleQuote) {
+        if (i + 1 < value.length) {
+          final next = value[i + 1];
+          if (inDoubleQuote) {
+            if (next == r'$' || next == '`' || next == '"' || next == '\\' || next == '\n') {
+              sb.write(next);
+              i++;
+            } else {
+              sb.write(c);
+            }
+          } else {
+            sb.write(next);
+            i++;
+          }
+        } else {
+          sb.write(c);
+        }
+        continue;
       }
+
+      if (c == "'" && !inDoubleQuote) {
+        inSingleQuote = !inSingleQuote;
+        continue;
+      }
+
+      if (c == '"' && !inSingleQuote) {
+        inDoubleQuote = !inDoubleQuote;
+        continue;
+      }
+
+      sb.write(c);
     }
 
-    return value;
+    return sb.toString();
   }
 
   static bool _isAssignment(String value) {
@@ -668,7 +899,7 @@ class ShellSafetyCheck {
   static bool _isScratchOnlyList(List<String> targets) {
     if (targets.isEmpty) return false;
     return targets.every((token) {
-      final clean = _stripQuotes(token.trim());
+      final clean = _unquoteToken(token.trim());
       return clean.contains('.scratch') ||
           clean.contains('/.scratch/') ||
           clean.contains('/scratch/');

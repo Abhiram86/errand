@@ -19,9 +19,9 @@ void main() {
         'pwd',
         'cat README.md',
         'grep -rn "TODO" .',
-        'mkdir -p test_dir/sub',
-        'touch file.txt',
-        'cp a.txt b.txt',
+        'mkdir -p .scratch/test_dir/sub',
+        'touch .scratch/file.txt',
+        'cp .scratch/a.txt .scratch/b.txt',
         'mv .scratch/a.txt .scratch/b.txt',
         'rm .scratch/single_file.txt',
         'rm -rf .scratch',
@@ -35,6 +35,35 @@ void main() {
         expect(check.isSafe, isTrue, reason: 'Command "$cmd" should be safe');
         expect(check.isBlocked, isFalse);
         expect(check.needsConfirmation, isFalse);
+      }
+    });
+
+    test('confines mutation commands to scratch (13.6.1 follow-up)', () {
+      // Outside scratch: must require confirmation, never safe.
+      final needsConfirm = [
+        'mkdir -p test_dir/sub',
+        'touch file.txt',
+        'cp a.txt b.txt',
+        'cp a.txt /sdcard/evil.txt',
+        'mkdir /sdcard/evil',
+      ];
+      for (final cmd in needsConfirm) {
+        final check = ShellSafetyCheck.analyze(cmd);
+        expect(check.needsConfirmation, isTrue,
+            reason: 'Non-scratch mutation "$cmd" must require confirmation');
+        expect(check.isSafe, isFalse);
+      }
+
+      // Inside scratch: safe.
+      final scratchSafe = [
+        'mkdir -p .scratch/sub',
+        'touch .scratch/f.txt',
+        'cp .scratch/a.txt .scratch/b.txt',
+      ];
+      for (final cmd in scratchSafe) {
+        final check = ShellSafetyCheck.analyze(cmd);
+        expect(check.isSafe, isTrue,
+            reason: 'Scratch-confined mutation "$cmd" must be safe');
       }
     });
 
@@ -197,6 +226,133 @@ void main() {
         final check = ShellSafetyCheck.analyze(cmd);
         expect(check.isSafe, isTrue,
             reason: 'Safe env command "$cmd" should be considered safe');
+      }
+    });
+
+    test('normalizes quoting and backslash-escapes on executables and targets (C1, 13.6.1)', () {
+      final quotedDestructive = [
+        r'\rm file.txt',
+        r'"r"m file.txt',
+        r"'r'm file.txt",
+        r'r""m file.txt',
+        r'\r\m file.txt',
+        r'"rm" file.txt',
+        r"'rm' file.txt",
+        r'"/bin/rm" file.txt',
+        r'"/bin/"r"m" file.txt',
+        r'"m"v a.txt b.txt',
+        r'\mv a.txt b.txt',
+        r'"s"hred file.txt',
+        r'\truncate -s 0 file.txt',
+      ];
+
+      for (final cmd in quotedDestructive) {
+        final check = ShellSafetyCheck.analyze(cmd);
+        expect(check.needsConfirmation, isTrue,
+            reason: 'Quoted command "$cmd" should require confirmation');
+        expect(check.isSafe, isFalse);
+      }
+
+      final quotedSystemBlocks = [
+        r'\rm -rf /',
+        r'"r"m -rf /system',
+        r'\cp file.txt /system/bin/foo',
+        r'"c"p file.txt /system/bin/foo',
+        r'\mv file.txt /system/bin/foo',
+        r'"m"v file.txt /system/bin/foo',
+        r'\shred /system/build.prop',
+        r'\truncate -s 0 /system/build.prop',
+      ];
+
+      for (final cmd in quotedSystemBlocks) {
+        final check = ShellSafetyCheck.analyze(cmd);
+        expect(check.isBlocked, isTrue,
+            reason: 'Quoted command targeting system "$cmd" must be blocked');
+      }
+    });
+
+    test('blocks process substitution <() and >() (H10, 13.6.1)', () {
+      final procSubCommands = [
+        'diff <(cat a) <(cat b)',
+        'bash <(echo rm -rf /)',
+        'cat <(echo hi)',
+        'echo hi > (cat)',
+      ];
+
+      for (final cmd in procSubCommands) {
+        final check = ShellSafetyCheck.analyze(cmd);
+        expect(check.isBlocked, isTrue,
+            reason: 'Process substitution "$cmd" must be blocked');
+      }
+    });
+
+    test('blocks system path mutations for mv, cp, shred, truncate (H9, 13.6.1)', () {
+      final systemMutations = [
+        'cp file.txt /system/bin/foo',
+        'cp file.txt /vendor/lib/foo.so',
+        'cp file.txt /data/local/tmp/foo',
+        'mv file.txt /system/bin/foo',
+        'shred /system/bin/foo',
+        'truncate -s 0 /system/build.prop',
+      ];
+
+      for (final cmd in systemMutations) {
+        final check = ShellSafetyCheck.analyze(cmd);
+        expect(check.isBlocked, isTrue,
+            reason: 'System mutation "$cmd" must be blocked');
+      }
+
+      final safeCopies = [
+        'cp .scratch/file.txt .scratch/copy.txt',
+      ];
+      for (final cmd in safeCopies) {
+        final check = ShellSafetyCheck.analyze(cmd);
+        expect(check.isSafe, isTrue,
+            reason: 'Workspace copy "$cmd" must be safe');
+      }
+    });
+
+    test('enforces inverted allowlist and classifies Android shell utilities (13.6.1)', () {
+      final safeAndroid = [
+        'date',
+        'date "+%Y-%m-%d %H:%M:%S"',
+        'cal',
+        'uptime',
+        'getprop ro.build.version.release',
+        'dumpsys battery',
+        'logcat -d',
+        'pm list packages',
+        'settings get system screen_brightness',
+      ];
+
+      for (final cmd in safeAndroid) {
+        final check = ShellSafetyCheck.analyze(cmd);
+        expect(check.isSafe, isTrue,
+            reason: 'Safe Android utility "$cmd" should be safe');
+      }
+
+      final mutatingAndroid = [
+        'date -s "2026-01-01"',
+        'pm uninstall com.example',
+        'pm clear com.example',
+        'settings put system screen_brightness 100',
+      ];
+
+      for (final cmd in mutatingAndroid) {
+        final check = ShellSafetyCheck.analyze(cmd);
+        expect(check.needsConfirmation, isTrue,
+            reason: 'Mutating command "$cmd" should require confirmation');
+      }
+
+      final unknown = [
+        'unknown_custom_script.sh',
+        'some_binary --flag',
+      ];
+
+      for (final cmd in unknown) {
+        final check = ShellSafetyCheck.analyze(cmd);
+        expect(check.needsConfirmation, isTrue,
+            reason: 'Unknown executable "$cmd" must fail closed to needsConfirmation');
       }
     });
   });
