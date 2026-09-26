@@ -19,6 +19,11 @@
   browse the web, manage memories, and run scheduled background tasks — with you in control.
 </p>
 
+## Downloads
+
+- [All releases and APK variants](https://github.com/Abhiram86/errand/releases)
+- [Lite arm64-v8a APK](https://github.com/Abhiram86/errand/releases/latest/download/Errand-v0.7.4-lite-arm64-v8a.apk) for modern Android phones without the accessibility service.
+
 ---
 
 ## What it does
@@ -89,3 +94,7 @@ flutter run --flavor full   # or lite
 - `architecture.md` — full map of the implementation.
 - `next_plan.md` — status and roadmap.
 - Build flavors differ only by manifest/services: `Full` includes the accessibility service, `Lite` strips it.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
