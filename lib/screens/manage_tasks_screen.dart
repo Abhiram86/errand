@@ -588,27 +588,30 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
         if (!exactPermitted) {
           banners.add(
             Container(
-              margin: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              margin: const EdgeInsets.fromLTRB(16, 6, 16, 2),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
               decoration: BoxDecoration(
                 color: Colors.amber.withValues(alpha: 0.12),
                 borderRadius: BorderRadius.circular(8),
               ),
               child: Row(
                 children: [
-                  const Icon(Icons.warning_amber_rounded, color: Colors.amber, size: 18),
+                  const Icon(Icons.warning_amber_rounded, color: Colors.amber, size: 16),
                   const SizedBox(width: 8),
                   const Expanded(
                     child: Text(
-                      'Exact alarms not permitted. Tasks may be delayed by system battery optimization.',
+                      'Exact alarms disabled. Tasks may be delayed.',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: TextStyle(color: Colors.amber, fontSize: 11),
                     ),
                   ),
                   const SizedBox(width: 6),
                   TextButton(
                     style: TextButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                       visualDensity: VisualDensity.compact,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     ),
                     onPressed: () async {
                       await TaskSchedulerService.instance.openExactAlarmSettings();
@@ -642,46 +645,32 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
         if (!batteryExempt) {
           banners.add(
             Container(
-              margin: const EdgeInsets.fromLTRB(16, 4, 16, 4),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              margin: const EdgeInsets.fromLTRB(16, 2, 16, 4),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
               decoration: BoxDecoration(
                 color: Colors.amber.withValues(alpha: 0.12),
                 borderRadius: BorderRadius.circular(8),
               ),
               child: Row(
                 children: [
-                  const Icon(Icons.battery_alert_rounded, color: Colors.amber, size: 18),
+                  const Icon(Icons.battery_alert_rounded, color: Colors.amber, size: 16),
                   const SizedBox(width: 8),
                   const Expanded(
                     child: Text(
-                      'Battery optimization active. Scheduled tasks may not run reliably in the background.',
+                      'Battery optimization active. Tasks may fail.',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: TextStyle(color: Colors.amber, fontSize: 11),
                     ),
                   ),
                   const SizedBox(width: 6),
                   TextButton(
                     style: TextButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                       visualDensity: VisualDensity.compact,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     ),
-                    onPressed: () async {
-                      await TaskSchedulerService.instance.requestBatteryExemption();
-                      if (!context.mounted) return;
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text(
-                            'Requested battery optimization exemption. Return here after granting.',
-                          ),
-                          behavior: SnackBarBehavior.floating,
-                        ),
-                      );
-                      setState(() {
-                        _batteryExemptFuture =
-                            TaskSchedulerService.instance.isIgnoringBatteryOptimizations();
-                        _warningsFuture =
-                            Future.wait([_exactAlarmsFuture, _batteryExemptFuture]);
-                      });
-                    },
+                    onPressed: _showBatteryExemptionDialog,
                     child: const Text(
                       'Exempt',
                       style: TextStyle(color: Colors.amber, fontWeight: FontWeight.bold, fontSize: 12),
@@ -700,6 +689,115 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
         );
       },
     );
+  }
+
+  Future<void> _showBatteryExemptionDialog() async {
+    final openSettings = await showDialog<bool>(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E222B),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        title: const Row(
+          children: [
+            Icon(Icons.battery_charging_full_rounded, color: Colors.amber, size: 20),
+            SizedBox(width: 8),
+            Text(
+              'Battery Optimization',
+              style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Android blocks network and suspends tasks when your phone is locked. To allow tasks to run reliably in the background:',
+              style: TextStyle(color: Color(0xFFC9D1D9), fontSize: 13, height: 1.4),
+            ),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: kDarkBg.withValues(alpha: 0.5),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: kBorder),
+              ),
+              child: const Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '1. Tap "Battery" (or "App battery usage").',
+                    style: TextStyle(color: kText, fontSize: 12, fontWeight: FontWeight.w500),
+                  ),
+                  SizedBox(height: 6),
+                  Text(
+                    '2. Select "Unrestricted" (or toggle ON "Allow background activity" on Oppo/OnePlus).',
+                    style: TextStyle(color: kText, fontSize: 12, fontWeight: FontWeight.w500),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: Colors.amber.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.amber.withValues(alpha: 0.3)),
+              ),
+              child: const Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.help_outline_rounded, color: Colors.amber, size: 16),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Still confused? Ask Errand in chat: "How do I disable battery optimization on my phone?" and Errand will give you step-by-step instructions for your device.',
+                      style: TextStyle(color: Colors.amber, fontSize: 11, height: 1.35),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogCtx).pop(false),
+            child: const Text('Cancel', style: TextStyle(color: Color(0xFF8B949E))),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Colors.amber.shade700,
+              foregroundColor: Colors.white,
+              visualDensity: VisualDensity.compact,
+            ),
+            onPressed: () => Navigator.of(dialogCtx).pop(true),
+            child: const Text('Open Settings', style: TextStyle(fontWeight: FontWeight.w600)),
+          ),
+        ],
+      ),
+    );
+
+    if (openSettings == true && mounted) {
+      await TaskSchedulerService.instance.requestBatteryExemption();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Requested battery optimization exemption. Return here after granting.',
+          ),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      setState(() {
+        _batteryExemptFuture =
+            TaskSchedulerService.instance.isIgnoringBatteryOptimizations();
+        _warningsFuture =
+            Future.wait([_exactAlarmsFuture, _batteryExemptFuture]);
+      });
+    }
   }
 
   Future<void> _pauseAll(List<SchedulerTaskRow> allTasks) async {

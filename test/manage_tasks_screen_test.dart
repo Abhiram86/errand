@@ -355,7 +355,7 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 100));
 
-    expect(find.text('Exact alarms not permitted. Tasks may be delayed by system battery optimization.'), findsOneWidget);
+    expect(find.text('Exact alarms disabled. Tasks may be delayed.'), findsOneWidget);
     expect(find.text('Enable'), findsOneWidget);
     expect(find.text('Exempt'), findsNothing);
 
@@ -402,11 +402,14 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 100));
 
-    expect(find.text('Battery optimization active. Scheduled tasks may not run reliably in the background.'), findsOneWidget);
+    expect(find.text('Battery optimization active. Tasks may fail.'), findsOneWidget);
     expect(find.text('Exempt'), findsOneWidget);
     expect(find.text('Enable'), findsNothing);
 
     await tester.tap(find.text('Exempt'));
+    await tester.pumpAndSettle();
+    expect(find.text('Battery Optimization'), findsOneWidget);
+    await tester.tap(find.text('Open Settings'));
     await tester.pump();
     expect(calls, contains('requestBatteryExemption'));
     expect(find.byType(SnackBar), findsOneWidget);
@@ -449,8 +452,8 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 100));
 
-    expect(find.text('Exact alarms not permitted. Tasks may be delayed by system battery optimization.'), findsOneWidget);
-    expect(find.text('Battery optimization active. Scheduled tasks may not run reliably in the background.'), findsOneWidget);
+    expect(find.text('Exact alarms disabled. Tasks may be delayed.'), findsOneWidget);
+    expect(find.text('Battery optimization active. Tasks may fail.'), findsOneWidget);
     expect(find.text('Enable'), findsOneWidget);
     expect(find.text('Exempt'), findsOneWidget);
 
@@ -476,8 +479,8 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 100));
 
-    expect(find.text('Exact alarms not permitted. Tasks may be delayed by system battery optimization.'), findsNothing);
-    expect(find.text('Battery optimization active. Scheduled tasks may not run reliably in the background.'), findsNothing);
+    expect(find.text('Exact alarms disabled. Tasks may be delayed.'), findsNothing);
+    expect(find.text('Battery optimization active. Tasks may fail.'), findsNothing);
     expect(find.text('Enable'), findsNothing);
     expect(find.text('Exempt'), findsNothing);
 
