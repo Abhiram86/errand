@@ -1,7 +1,10 @@
+import 'dart:async';
 import 'package:drift/drift.dart' hide Column;
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../services/database.dart';
+import '../../services/task_progress_service.dart';
 import '../../services/task_scheduler_service.dart';
 import '../../theme/app_colors.dart';
 import 'task_action_button.dart';
@@ -29,8 +32,27 @@ class SpaceyTaskRow extends StatefulWidget {
 
 class _SpaceyTaskRowState extends State<SpaceyTaskRow> {
   bool _executing = false;
+  StreamSubscription<TaskProgressEvent>? _progressSub;
 
   bool get _isRunning => widget.task.status == 'running' || _executing;
+
+  @override
+  void initState() {
+    super.initState();
+    if (kDebugMode) {
+      _progressSub = TaskProgressService.instance.stream.listen((event) {
+        if (event.taskId == widget.task.id && mounted) {
+          setState(() {});
+        }
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _progressSub?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -151,6 +173,10 @@ class _SpaceyTaskRowState extends State<SpaceyTaskRow> {
 
           // Row 3: Timing Info
           TaskTimingInfo(task: task),
+          if (_isRunning && kDebugMode) ...[
+            const SizedBox(height: 6),
+            _DebugTaskLiveProgress(taskId: task.id),
+          ],
           const SizedBox(height: 6),
 
           // Row 4: Stats + Action buttons
@@ -418,5 +444,159 @@ class _SpaceyTaskRowState extends State<SpaceyTaskRow> {
     if (bytes < 1024) return '$bytes B';
     if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
     return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+}
+
+class _DebugTaskLiveProgress extends StatefulWidget {
+  final int taskId;
+  const _DebugTaskLiveProgress({required this.taskId});
+
+  @override
+  State<_DebugTaskLiveProgress> createState() => _DebugTaskLiveProgressState();
+}
+
+class _DebugTaskLiveProgressState extends State<_DebugTaskLiveProgress> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final latest = TaskProgressService.instance.getLatest(widget.taskId);
+    final history = TaskProgressService.instance.getHistory(widget.taskId);
+
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.symmetric(vertical: 2),
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0D1117),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: const Color(0xFF30363D)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 6,
+                height: 6,
+                decoration: const BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: Colors.greenAccent,
+                ),
+              ),
+              const SizedBox(width: 6),
+              const Text(
+                'DEBUG LIVE WATCH',
+                style: TextStyle(
+                  color: Colors.cyanAccent,
+                  fontSize: 9.5,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 0.5,
+                ),
+              ),
+              const Spacer(),
+              if (latest != null)
+                Text(
+                  'Turn ${latest.turn} • ${latest.stageLabel}',
+                  style: const TextStyle(color: kMuted, fontSize: 9.5),
+                ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          // Current step info
+          if (latest != null) ...[
+            Text(
+              latest.message,
+              style: TextStyle(
+                color: latest.isError ? Colors.redAccent : Colors.white,
+                fontSize: 11,
+                fontFamily: 'monospace',
+              ),
+            ),
+            if (latest.toolArgs != null && latest.toolArgs!.isNotEmpty) ...[
+              const SizedBox(height: 2),
+              Text(
+                'args: ${latest.toolArgs}',
+                style: const TextStyle(color: kMuted, fontSize: 10, fontFamily: 'monospace'),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ],
+          ] else ...[
+            const Row(
+              children: [
+                SizedBox(
+                  width: 10,
+                  height: 10,
+                  child: CircularProgressIndicator(strokeWidth: 1.5, color: Colors.cyanAccent),
+                ),
+                SizedBox(width: 6),
+                Text(
+                  'Waiting for task updates...',
+                  style: TextStyle(color: kMuted, fontSize: 11),
+                ),
+              ],
+            ),
+          ],
+          if (history.length > 1) ...[
+            const SizedBox(height: 6),
+            InkWell(
+              onTap: () => setState(() => _expanded = !_expanded),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    _expanded ? Icons.expand_less_rounded : Icons.expand_more_rounded,
+                    size: 14,
+                    color: Colors.cyanAccent,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    _expanded ? 'Hide trace' : 'Show trace (${history.length} steps)',
+                    style: const TextStyle(
+                      color: Colors.cyanAccent,
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            if (_expanded) ...[
+              const SizedBox(height: 4),
+              const Divider(color: Color(0xFF30363D), height: 8),
+              ...history.reversed.map((ev) {
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 2),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '[T${ev.turn}] ',
+                        style: const TextStyle(color: kMuted, fontSize: 9.5, fontFamily: 'monospace'),
+                      ),
+                      Expanded(
+                        child: Text(
+                          ev.message,
+                          style: TextStyle(
+                            color: ev.isError ? Colors.redAccent : const Color(0xFFC9D1D9),
+                            fontSize: 10,
+                            fontFamily: 'monospace',
+                          ),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              }),
+            ],
+          ],
+        ],
+      ),
+    );
   }
 }

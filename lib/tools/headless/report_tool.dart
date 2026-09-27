@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:errand/agent/tool.dart';
+import 'package:errand/tools/file_tools.dart';
 import 'package:errand/types/tool.dart';
 import 'package:path/path.dart' as p;
 
@@ -30,6 +31,7 @@ Tool saveReportTool({
   required int taskId,
   required int startedAtMillis,
   required HeadlessReportCollector collector,
+  WorkingDirectory? workingDirectory,
 }) {
   const allowedTypes = {'md', 'html', 'txt'};
 
@@ -84,6 +86,37 @@ Tool saveReportTool({
         );
       }
 
+      final rawLinked = call.arguments['linked_files'];
+      final validatedFiles = <({File file, String originalPath})>[];
+      final missingFiles = <String>[];
+
+      if (rawLinked is List) {
+        for (final item in rawLinked) {
+          if (item == null) continue;
+          final pathStr = item.toString().trim();
+          if (pathStr.isEmpty) continue;
+
+          final resolved = resolveExistingLinkedFile(
+            pathStr,
+            scratchDir: scratchDir,
+            workingDirectory: workingDirectory,
+          );
+          if (resolved == null) {
+            missingFiles.add(pathStr);
+          } else {
+            validatedFiles.add((file: resolved, originalPath: pathStr));
+          }
+        }
+      }
+
+      if (missingFiles.isNotEmpty) {
+        final fileListStr = missingFiles.map((f) => '"$f"').join(', ');
+        return ToolCallResult.failure(
+          call.id,
+          'The given path to file does not exist: check path of the file/s to $fileListStr',
+        );
+      }
+
       final rawType = call.arguments['type'];
       final typeStr = (rawType is String ? rawType : rawType?.toString() ?? 'md')
           .trim()
@@ -110,14 +143,27 @@ Tool saveReportTool({
       }
 
       collector.reportPath = reportFile.path;
-      final rawLinked = call.arguments['linked_files'];
-      if (rawLinked is List) {
-        for (final item in rawLinked) {
-          if (item != null && item.toString().trim().isNotEmpty) {
-            collector.linkedFiles.add(item.toString().trim());
+      collector.linkedFiles.clear();
+
+      for (final entry in validatedFiles) {
+        final file = entry.file;
+        if (p.isWithin(scratchDir.path, file.path)) {
+          collector.linkedFiles.add(p.relative(file.path, from: scratchDir.path));
+        } else {
+          // If file was created outside scratchDir (e.g. In working dir), copy into scratchDir
+          // so task log preview & report cleanup work deterministically.
+          final scratchCopy = File(p.join(scratchDir.path, p.basename(file.path)));
+          try {
+            if (!scratchCopy.existsSync() || scratchCopy.path != file.path) {
+              await file.copy(scratchCopy.path);
+            }
+            collector.linkedFiles.add(p.basename(file.path));
+          } catch (_) {
+            collector.linkedFiles.add(entry.originalPath);
           }
         }
       }
+
       return ToolCallResult(
         id: call.id,
         ok: true,
@@ -125,6 +171,61 @@ Tool saveReportTool({
       );
     },
   );
+}
+
+/// Resolves a candidate linked file path on disk against scratchDir,
+/// workingDirectory, or as an absolute path. Returns null if the file does not exist.
+File? resolveExistingLinkedFile(
+  String rawPath, {
+  required Directory scratchDir,
+  WorkingDirectory? workingDirectory,
+}) {
+  var cleanPath = rawPath.trim();
+  if (cleanPath.startsWith('file://')) {
+    final uri = Uri.tryParse(cleanPath);
+    if (uri != null && uri.path.isNotEmpty) {
+      cleanPath = uri.toFilePath();
+    } else {
+      cleanPath = cleanPath.replaceFirst(RegExp(r'^file://+'), '/');
+    }
+  }
+
+  // 1. Direct / Absolute check
+  if (p.isAbsolute(cleanPath)) {
+    final direct = File(cleanPath);
+    if (direct.existsSync()) return direct;
+  }
+
+  // 2. Relative to scratchDir
+  final inScratch = File(p.normalize(p.join(scratchDir.path, cleanPath)));
+  if (inScratch.existsSync()) return inScratch;
+
+  // 3. Traversal / prefix relative to scratch parent (e.g. ".scratch/file.xxx" or "scratch/file.xxx")
+  if (cleanPath.startsWith('.scratch/') || cleanPath.startsWith('scratch/')) {
+    final fromParent = File(p.normalize(p.join(scratchDir.parent.path, cleanPath)));
+    if (fromParent.existsSync()) return fromParent;
+
+    final stripped = cleanPath.replaceFirst(RegExp(r'^\.?scratch/'), '');
+    final inScratchStripped = File(p.normalize(p.join(scratchDir.path, stripped)));
+    if (inScratchStripped.existsSync()) return inScratchStripped;
+  }
+
+  // 4. Working directory checks (where bash commands execute)
+  if (workingDirectory != null) {
+    final inCwd = File(p.normalize(p.join(workingDirectory.current.path, cleanPath)));
+    if (inCwd.existsSync()) return inCwd;
+
+    if (workingDirectory.root.path != workingDirectory.current.path) {
+      final inRoot = File(p.normalize(p.join(workingDirectory.root.path, cleanPath)));
+      if (inRoot.existsSync()) return inRoot;
+    }
+  }
+
+  // 5. Check process current directory
+  final inProcessCwd = File(p.normalize(p.join(Directory.current.path, cleanPath)));
+  if (inProcessCwd.existsSync()) return inProcessCwd;
+
+  return null;
 }
 
 /// Maximum report content size accepted by [saveReportTool] (~500KB of text).

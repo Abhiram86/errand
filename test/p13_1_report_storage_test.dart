@@ -100,6 +100,9 @@ void main() {
 
     test('HeadlessReportCollector and saveReportTool collect linked_files', () async {
       final collector = HeadlessReportCollector();
+      File(p.join(scratchDir.path, 'aux1.csv')).writeAsStringSync('col1,col2\n1,2');
+      File(p.join(scratchDir.path, 'aux2.png')).writeAsBytesSync([0x89, 0x50, 0x4E, 0x47]);
+
       final tool = saveReportTool(
         scratchDir: scratchDir,
         taskId: 42,

@@ -9,6 +9,7 @@ import '../services/location_service.dart';
 import '../services/memory_service.dart';
 import '../services/model_catalog.dart';
 import '../services/shell_service.dart';
+import '../services/task_progress_service.dart';
 import '../services/task_scheduler_service.dart';
 import '../services/workspace.dart';
 import '../tools/file_tools.dart';
@@ -204,6 +205,60 @@ class AgentRunner {
           ),
         );
 
+    void effectiveOnEvent(AgentEvent event) {
+      if (kDebugMode) {
+        switch (event) {
+          case AgentThinking(:final turn):
+            TaskProgressService.instance.emit(
+              TaskProgressEvent(
+                taskId: taskId,
+                stage: TaskExecutionStage.thinking,
+                turn: turn,
+                message: 'Thinking (turn $turn)...',
+              ),
+            );
+          case AgentToolCallStarting(:final call, :final turn):
+            TaskProgressService.instance.emit(
+              TaskProgressEvent(
+                taskId: taskId,
+                stage: TaskExecutionStage.toolExecuting,
+                turn: turn,
+                toolName: call.name,
+                toolArgs: call.arguments,
+                message: 'Calling tool: ${call.name}',
+              ),
+            );
+          case AgentToolCall(:final call, :final result, :final turn):
+            TaskProgressService.instance.emit(
+              TaskProgressEvent(
+                taskId: taskId,
+                stage: TaskExecutionStage.toolCompleted,
+                turn: turn,
+                toolName: call.name,
+                toolArgs: call.arguments,
+                toolResultSnippet: result.toText(),
+                toolOk: result.ok,
+                isError: !result.ok,
+                message: result.ok
+                    ? '${call.name} succeeded'
+                    : '${call.name} failed: ${result.errorMessage}',
+              ),
+            );
+          case AgentCompacting():
+            TaskProgressService.instance.emit(
+              TaskProgressEvent(
+                taskId: taskId,
+                stage: TaskExecutionStage.compacting,
+                message: 'Compacting conversation context...',
+              ),
+            );
+          case AgentCompacted():
+            break;
+        }
+      }
+      onEvent?.call(event);
+    }
+
     final loop = AgentLoop(
       llm: llm,
       registry: registry,
@@ -238,7 +293,7 @@ class AgentRunner {
             baseUrl: baseUrl,
           ) !=
           false,
-      onEvent: onEvent,
+      onEvent: effectiveOnEvent,
       onTextDelta: textSink,
       onReasoningDelta: onReasoningDelta,
       onReset: onReset,

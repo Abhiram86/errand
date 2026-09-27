@@ -2193,6 +2193,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   void _handleEvent(AgentEvent event) {
     switch (event) {
+      case AgentThinking():
+        break;
+      case AgentToolCallStarting():
+        break;
       case AgentCompacting():
         _workingCompacting = true;
         _updateWorkingPlaceholder();

@@ -153,6 +153,7 @@ class ToolRegistry {
           startedAtMillis:
               runStartedAtMillis ?? DateTime.now().millisecondsSinceEpoch,
           collector: reportCollector,
+          workingDirectory: directory,
         ),
     ]);
   }

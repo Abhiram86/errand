@@ -27,17 +27,30 @@ class AgentCompacted extends AgentEvent {
   const AgentCompacted(this.summary, {this.tailBlockCount = 0});
 }
 
+class AgentThinking extends AgentEvent {
+  final int turn;
+  const AgentThinking({this.turn = 0});
+}
+
+class AgentToolCallStarting extends AgentEvent {
+  final ToolCall call;
+  final int turn;
+  const AgentToolCallStarting(this.call, {this.turn = 0});
+}
+
 class AgentToolCall extends AgentEvent {
   final ToolCall call;
   final ToolCallResult result;
   final String? reasoning;
   final List<Map<String, dynamic>> reasoningDetails;
+  final int turn;
 
   const AgentToolCall(
     this.call,
     this.result, {
     this.reasoning,
     this.reasoningDetails = const [],
+    this.turn = 0,
   });
 }
 
@@ -147,6 +160,7 @@ class AgentLoop {
         cancelToken?.cancel();
         throw const LlmStoppedException();
       }
+      onEvent?.call(AgentThinking(turn: turn));
       final systemPromptBuilder = this.systemPromptBuilder;
       if (systemPromptBuilder != null) {
         if (messages.isNotEmpty && messages[0]['role'] == 'system') {
@@ -212,6 +226,7 @@ class AgentLoop {
           if (i > 0 && !_prevAlreadySettled(message, results, i)) {
             await Future<void>.delayed(const Duration(milliseconds: 350));
           }
+          onEvent?.call(AgentToolCallStarting(call, turn: turn));
           final res = await _registry.execute(call);
           results.add(res);
           if (!res.ok) {
@@ -223,6 +238,9 @@ class AgentLoop {
         if (isCancelled != null && await isCancelled!()) {
           cancelToken?.cancel();
           throw const LlmStoppedException();
+        }
+        for (final call in message.toolCalls) {
+          onEvent?.call(AgentToolCallStarting(call, turn: turn));
         }
         results.addAll(
           await Future.wait(
@@ -240,6 +258,7 @@ class AgentLoop {
             result,
             reasoning: message.reasoning,
             reasoningDetails: message.reasoningDetails,
+            turn: turn,
           ),
         );
         messages.add({

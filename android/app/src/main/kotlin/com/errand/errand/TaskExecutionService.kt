@@ -45,7 +45,7 @@ class TaskExecutionService : Service() {
         // High constant far outside task-row-id range so task notifications
         // (keyed by task id) can never overwrite the foreground notification.
         private const val NOTIFICATION_ID = 2_000_000_007
-        private val MAIN_ENGINE_TIMEOUT_MS = 30_000L
+        private val MAIN_ENGINE_TIMEOUT_MS = 12 * 60 * 1000L
         private val BACKGROUND_ENGINE_TIMEOUT_MS = 12 * 60 * 1000L
         private const val TASK_WAKELOCK_TIMEOUT_MS = (10 * 60 * 1000L) + 60_000L // 10 min task timeout + 60s margin = 11 minutes
 

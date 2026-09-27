@@ -14,6 +14,7 @@ import '../services/app_settings.dart';
 import '../services/database.dart';
 import '../services/grant_flow_service.dart';
 import '../services/notification_service.dart';
+import '../services/task_progress_service.dart';
 import '../services/workspace.dart';
 import '../tools/file_tools.dart';
 import '../utils/app_profile.dart';
@@ -816,6 +817,16 @@ class TaskSchedulerService {
       return false;
     }
 
+    if (kDebugMode) {
+      TaskProgressService.instance.emit(
+        TaskProgressEvent(
+          taskId: taskId,
+          stage: TaskExecutionStage.starting,
+          message: 'Task #${task.id} started: "${task.title}"',
+        ),
+      );
+    }
+
     final scheduledFor = task.nextRunAt ?? task.startsAt;
     // The task can be deleted between the claim above and this insert, which
     // would violate the log FK. Distinguish that (quiet exit, nothing to
@@ -1051,6 +1062,19 @@ class TaskSchedulerService {
         updatedAt: Value(finishMillis),
       ),
     );
+
+    if (kDebugMode) {
+      TaskProgressService.instance.emit(
+        TaskProgressEvent(
+          taskId: taskId,
+          stage: isSuccess ? TaskExecutionStage.completed : TaskExecutionStage.failed,
+          message: isSuccess
+              ? 'Task #${task.id} completed successfully'
+              : (result.errorMessage ?? 'Task #${task.id} failed'),
+          isError: !isSuccess,
+        ),
+      );
+    }
 
     try {
       await _pruneOldReports(scratch, taskId, keep: 10, keepPath: reportPath);

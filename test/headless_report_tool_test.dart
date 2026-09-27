@@ -1,8 +1,10 @@
 import 'dart:io';
 
 import 'package:errand/agent/tool.dart';
+import 'package:errand/tools/file_tools.dart';
 import 'package:errand/tools/headless/report_tool.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:path/path.dart' as p;
 
 void main() {
   group('saveReportTool', () {
@@ -132,6 +134,105 @@ void main() {
       expect(sanitizeReportName('../../a/b'), equals('b'));
       expect(sanitizeReportName('x' * 100).length, equals(40));
       expect(sanitizeReportName(''), isEmpty);
+    });
+
+    test('errors out on single missing linked file with exact path', () async {
+      final result = await makeTool().handler(
+        const ToolCall(
+          id: 'c-8',
+          name: 'save_report',
+          arguments: {
+            'content': 'report body',
+            'linked_files': ['missing_file.html'],
+          },
+        ),
+      );
+
+      expect(result.ok, isFalse);
+      expect(collector.reportPath, isNull);
+      expect(
+        result.errorMessage,
+        equals('The given path to file does not exist: check path of the file/s to "missing_file.html"'),
+      );
+    });
+
+    test('accumulates all missing files without failing fast on the first', () async {
+      final result = await makeTool().handler(
+        const ToolCall(
+          id: 'c-9',
+          name: 'save_report',
+          arguments: {
+            'content': 'report body',
+            'linked_files': ['missing1.html', 'missing2.html', 'missing3.html'],
+          },
+        ),
+      );
+
+      expect(result.ok, isFalse);
+      expect(collector.reportPath, isNull);
+      expect(
+        result.errorMessage,
+        equals(
+          'The given path to file does not exist: check path of the file/s to "missing1.html", "missing2.html", "missing3.html"',
+        ),
+      );
+    });
+
+    test('detects multiple missing files even when one exists in the middle', () async {
+      final validFile = File(p.join(scratchDir.path, 'valid.html'));
+      validFile.writeAsStringSync('<h1>Valid</h1>');
+
+      final result = await makeTool().handler(
+        const ToolCall(
+          id: 'c-10',
+          name: 'save_report',
+          arguments: {
+            'content': 'report body',
+            'linked_files': ['wrong1.html', 'valid.html', 'wrong3.html'],
+          },
+        ),
+      );
+
+      expect(result.ok, isFalse);
+      expect(collector.reportPath, isNull);
+      expect(
+        result.errorMessage,
+        equals('The given path to file does not exist: check path of the file/s to "wrong1.html", "wrong3.html"'),
+      );
+    });
+
+    test('resolves file in workingDirectory outside scratch and copies to scratch', () async {
+      final workDir = Directory(p.join(tempDir.path, 'workspace'));
+      await workDir.create(recursive: true);
+      final cwdFile = File(p.join(workDir.path, 'page1.html'));
+      cwdFile.writeAsStringSync('<h1>From CWD</h1>');
+
+      final tool = saveReportTool(
+        scratchDir: scratchDir,
+        taskId: 42,
+        startedAtMillis: 1700000000000,
+        collector: collector,
+        workingDirectory: WorkingDirectory(workDir),
+      );
+
+      final result = await tool.handler(
+        const ToolCall(
+          id: 'c-11',
+          name: 'save_report',
+          arguments: {
+            'content': 'report body',
+            'linked_files': ['page1.html'],
+          },
+        ),
+      );
+
+      expect(result.ok, isTrue);
+      expect(collector.reportPath, isNotNull);
+      expect(collector.linkedFiles, equals(['page1.html']));
+      // Copied into scratch for log preview
+      final scratchCopy = File(p.join(scratchDir.path, 'page1.html'));
+      expect(scratchCopy.existsSync(), isTrue);
+      expect(scratchCopy.readAsStringSync(), equals('<h1>From CWD</h1>'));
     });
   });
 }

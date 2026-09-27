@@ -738,7 +738,12 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
                   ),
                   SizedBox(height: 6),
                   Text(
-                    '2. Select "Unrestricted" (or turn ON "Allow background activity").',
+                    '2. Select "Unrestricted" (or turn ON "Allow background activity" if it is OFF).',
+                    style: TextStyle(color: kText, fontSize: 12.5, fontWeight: FontWeight.w500),
+                  ),
+                  SizedBox(height: 6),
+                  Text(
+                    '3. Select Dont optimize. On "Optimize Battery Use"',
                     style: TextStyle(color: kText, fontSize: 12.5, fontWeight: FontWeight.w500),
                   ),
                 ],
