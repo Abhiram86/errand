@@ -4,6 +4,7 @@ import 'dart:isolate';
 
 import 'package:drift/drift.dart' hide isNull, isNotNull, Column;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../services/database.dart';
 import '../services/task_scheduler_service.dart';
 import '../services/task_toast_service.dart';
@@ -752,15 +753,71 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
                 borderRadius: BorderRadius.circular(8),
                 border: Border.all(color: Colors.amber.withValues(alpha: 0.3)),
               ),
-              child: const Row(
+              child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Icon(Icons.help_outline_rounded, color: Colors.amber, size: 16),
-                  SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Still confused? Ask Errand in chat: "How do I disable battery optimization on my phone?" and Errand will give you step-by-step instructions for your device.',
-                      style: TextStyle(color: Colors.amber, fontSize: 11.5, height: 1.35),
+                  const Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(Icons.help_outline_rounded, color: Colors.amber, size: 16),
+                      SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Still confused? Ask Errand in chat and Errand will give you step-by-step instructions for your device:',
+                          style: TextStyle(color: Colors.amber, fontSize: 11.5, height: 1.35),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  InkWell(
+                    borderRadius: BorderRadius.circular(6),
+                    onTap: () async {
+                      await Clipboard.setData(
+                        const ClipboardData(text: 'How do I disable battery optimization on my phone?'),
+                      );
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Prompt copied to clipboard'),
+                            duration: Duration(seconds: 2),
+                            behavior: SnackBarBehavior.floating,
+                          ),
+                        );
+                      }
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: Colors.amber.withValues(alpha: 0.15),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: Colors.amber.withValues(alpha: 0.4)),
+                      ),
+                      child: const Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              '"How do I disable battery optimization on my phone?"',
+                              style: TextStyle(
+                                color: Colors.amber,
+                                fontSize: 11.5,
+                                fontStyle: FontStyle.italic,
+                              ),
+                            ),
+                          ),
+                          SizedBox(width: 8),
+                          Icon(Icons.copy_rounded, color: Colors.amber, size: 14),
+                          SizedBox(width: 4),
+                          Text(
+                            'Copy',
+                            style: TextStyle(
+                              color: Colors.amber,
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 ],
