@@ -35,10 +35,13 @@ void main() {
           reason: 'past tense / derived forms are not the commit control');
     });
 
-    test('handles punctuation and casing', () {
+    test('handles punctuation, casing, and hyphenated compounds', () {
       expect(looksLikeCommitAction('SEND!'), 'send');
       expect(looksLikeCommitAction('  delete  '), 'delete');
       expect(looksLikeCommitAction('Buy now →'), 'buy');
+      expect(looksLikeCommitAction('confirm-order'), 'confirm');
+      expect(looksLikeCommitAction('order-confirmation'), 'order');
+      expect(looksLikeCommitAction('reply-all'), 'reply-all');
     });
   });
 
@@ -148,6 +151,97 @@ void main() {
       expect(res.output, isNot(contains('[1] Button "Next"')));
     });
   });
+
+  group('C2: Numeric-ref commit guard & modal post-hook', () {
+    test('ref tap on a Pay/Delete/Send-labeled node is refused with the exact same error as the label path', () async {
+      final mock = MockA11yService()
+        ..screenOutline = 'Screen: package=com.example\n'
+            '[1] Button "Pay now"\n'
+            '[2] Button "Delete chat?"\n'
+            '[3] Button "Send message"\n'
+            '[4] Button "Next"';
+      final tool = actTool(service: mock);
+
+      // Populate ref cache by reading screen
+      await mock.readScreen();
+
+      for (final (ref, label, word) in [
+        (1, 'Pay now', 'pay'),
+        (2, 'Delete chat?', 'delete'),
+        (3, 'Send message', 'send'),
+      ]) {
+        final labelRes = await tool.handler(
+          ToolCall(
+            id: 'call_label_$ref',
+            name: 'act',
+            arguments: {'action': 'tap', 'label': label},
+          ),
+        );
+        final refRes = await tool.handler(
+          ToolCall(
+            id: 'call_ref_$ref',
+            name: 'act',
+            arguments: {'action': 'tap', 'ref': ref},
+          ),
+        );
+
+        expect(labelRes.ok, isFalse);
+        expect(refRes.ok, isFalse);
+        expect(refRes.error?.message, equals(labelRes.error?.message));
+        expect(refRes.error?.message, equals(formatCommitRefusal(label, word)));
+      }
+
+      // Safe control succeeds
+      final nextRes = await tool.handler(
+        const ToolCall(
+          id: 'call_next',
+          name: 'act',
+          arguments: {'action': 'tap', 'ref': 4},
+        ),
+      );
+      expect(nextRes.ok, isTrue);
+      expect(nextRes.output, contains('Tapped [4]'));
+    });
+
+    test('long_press by ref also enforces commit guard with identical error', () async {
+      final mock = MockA11yService()
+        ..screenOutline = 'Screen: package=com.example\n[1] Button "Delete chat"';
+      final tool = actTool(service: mock);
+      await mock.readScreen();
+
+      final res = await tool.handler(
+        const ToolCall(
+          id: 'call_lp',
+          name: 'act',
+          arguments: {'action': 'long_press', 'ref': 1},
+        ),
+      );
+
+      expect(res.ok, isFalse);
+      expect(res.error?.message, equals(formatCommitRefusal('Delete chat', 'delete')));
+    });
+
+    test('modal post-hook pauses the agent loop if a confirmation dialog appears post-tap', () async {
+      final mock = MockA11yService()
+        ..screenOutline = 'Screen: package=com.example\n[1] Button "Proceed"'
+        ..modalOnProbe = 'AlertDialog: "Confirm transaction of \$50?"';
+      final tool = actTool(service: mock);
+      await mock.readScreen();
+
+      final res = await tool.handler(
+        const ToolCall(
+          id: 'call_modal',
+          name: 'act',
+          arguments: {'action': 'tap', 'ref': 1},
+        ),
+      );
+
+      expect(res.ok, isFalse);
+      expect(res.error?.message, contains('Confirmation modal appeared post-tap'));
+      expect(res.error?.message, contains('AlertDialog: "Confirm transaction of \$50?"'));
+      expect(res.error?.message, contains('Execution paused'));
+    });
+  });
 }
 
 class MockA11yService extends A11yService {
@@ -155,6 +249,7 @@ class MockA11yService extends A11yService {
   bool tapSuccess = true;
   String screenOutline = 'Screen: package=com.example\n[1] Button "Next"';
   bool unchanged = false;
+  String? modalOnProbe;
 
   @override
   Future<bool> isEnabled() async => enabled;
@@ -165,7 +260,31 @@ class MockA11yService extends A11yService {
   @override
   Future<Map<String, dynamic>> tapByRef(int ref, {bool longClick = false}) async {
     if (!tapSuccess) return {'ok': false, 'message': 'Ref tap failed'};
+    final label = getRefLabel(ref) ?? _extractLabelFromOutline(ref);
+    if (label != null) {
+      final commitWord = looksLikeCommitAction(label);
+      if (commitWord != null) {
+        return {
+          'ok': false,
+          'error': 'COMMIT_REFUSAL',
+          'label': label,
+          'matched': commitWord,
+          'message': formatCommitRefusal(label, commitWord),
+        };
+      }
+    }
     return {'ok': true, 'message': 'Tapped [$ref]'};
+  }
+
+  String? _extractLabelFromOutline(int ref) {
+    final m = RegExp(r'\[' + RegExp.escape('$ref') + r'\](?:\s+[^\s"]+)?\s+"([^"]+)"')
+        .firstMatch(screenOutline);
+    return m?.group(1);
+  }
+
+  @override
+  Future<Map<String, dynamic>> longPressByRef(int ref) async {
+    return tapByRef(ref, longClick: true);
   }
 
   @override
@@ -180,7 +299,7 @@ class MockA11yService extends A11yService {
 
   @override
   Future<Map<String, dynamic>> probeChanged({int settleMs = 1000}) async {
-    return {'ok': true, 'changed': true};
+    return {'ok': true, 'changed': true, 'modal': modalOnProbe};
   }
 
   @override
@@ -192,9 +311,11 @@ class MockA11yService extends A11yService {
     if (unchanged) {
       return {'ok': true, 'unchanged': true};
     }
+    cacheOutline(screenOutline);
     return {
       'ok': true,
       'outline': screenOutline,
+      'modal': modalOnProbe,
     };
   }
 }

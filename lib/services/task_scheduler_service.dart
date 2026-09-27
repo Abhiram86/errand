@@ -11,6 +11,7 @@ import '../llm/llm_client.dart';
 import '../models/llm_provider.dart';
 import '../services/app_settings.dart';
 import '../services/database.dart';
+import '../services/grant_flow_service.dart';
 import '../services/notification_service.dart';
 import '../services/workspace.dart';
 import '../tools/file_tools.dart';
@@ -914,6 +915,16 @@ class TaskSchedulerService {
         );
       }
     } else {
+      if (GrantFlowService.isDozeSuspectedFailure(
+        result.errorMessage,
+        isTimeout: isTimeout,
+      )) {
+        unawaited(GrantFlowService.rearmOnFailure(
+          db,
+          errorMessage: result.errorMessage,
+          isTimeout: isTimeout,
+        ));
+      }
       final newFailures = task.failures + 1;
       final maxRetries = task.retriesPerTurn;
       final hasExceededRetries = maxRetries > 0 && newFailures >= maxRetries;

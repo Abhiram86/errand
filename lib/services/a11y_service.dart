@@ -77,9 +77,27 @@ class A11yService {
   /// reads return {ok, unchanged: true, message} unless [full] is set.
   /// With [probe], returns ONLY {ok, changed} without updating the stored
   /// snapshot — used as the post-action effect check.
+  final Map<int, String> _refLabelCache = {};
+
+  /// Looks up the cached label for numeric [ref] parsed from the latest screen outline.
+  String? getRefLabel(int ref) => _refLabelCache[ref];
+
+  /// Parses and caches refs and their labels from a screen [outline].
+  void cacheOutline(String outline) {
+    _refLabelCache.clear();
+    final regex = RegExp(r'\[(\d+)\](?:\s+[^\s"]+)?\s+"([^"]+)"');
+    for (final m in regex.allMatches(outline)) {
+      final r = int.tryParse(m.group(1)!);
+      final lbl = m.group(2);
+      if (r != null && lbl != null) {
+        _refLabelCache[r] = lbl;
+      }
+    }
+  }
+
   ///
   /// Returns {ok, package?, outline?, nodes?, truncated?, unchanged?,
-  /// capHit?, elements?, changed?, error?, message?}.
+  /// capHit?, elements?, changed?, error?, message?, modal?}.
   Future<Map<String, dynamic>> readScreen({
     int maxNodes = 300,
     bool full = false,
@@ -90,11 +108,15 @@ class A11yService {
       'full': full,
       'probe': probe,
     });
-    return res?.map((k, v) => MapEntry(k.toString(), v)) ?? {'ok': false};
+    final map = res?.map((k, v) => MapEntry(k.toString(), v)) ?? {'ok': false};
+    if (map['outline'] is String) {
+      cacheOutline(map['outline'] as String);
+    }
+    return map;
   }
 
   /// Effect check: did the screen change since the last full read?
-  /// Returns {ok, changed: bool}. Never dumps content.
+  /// Returns {ok, changed: bool, modal?: String}. Never dumps content.
   /// Default 600ms keeps plain tap/scroll effect checks snappy; the
   /// then_read path uses its own 1000ms settle for toggles/animations.
   Future<Map<String, dynamic>> probeChanged({int settleMs = 600}) async {
@@ -102,7 +124,11 @@ class A11yService {
       await Future<void>.delayed(Duration(milliseconds: settleMs));
     }
     final res = await readScreen(probe: true);
-    return {'ok': res['ok'] == true, 'changed': res['changed'] == true};
+    return {
+      'ok': res['ok'] == true,
+      'changed': res['changed'] == true,
+      'modal': res['modal'] as String?,
+    };
   }
 
   /// Taps (or long-clicks) the element addressed by numeric [ref] from the

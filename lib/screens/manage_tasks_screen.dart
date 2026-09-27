@@ -51,6 +51,8 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
   Timer? _taskSearchDebounce;
 
   late Future<bool> _exactAlarmsFuture;
+  late Future<bool> _batteryExemptFuture;
+  late Future<List<bool>> _warningsFuture;
   // P12.3: bounded watches, not full-table. Tasks stay small (tens), logs
   // can grow unbounded — both capped at the DB layer so a 10k-log history
   // never materializes into RAM. UI "Load more" paginates within the window;
@@ -113,6 +115,8 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
           : 0,
     );
     _exactAlarmsFuture = TaskSchedulerService.instance.canScheduleExactAlarms();
+    _batteryExemptFuture = TaskSchedulerService.instance.isIgnoringBatteryOptimizations();
+    _warningsFuture = Future.wait([_exactAlarmsFuture, _batteryExemptFuture]);
     unawaited(_loadStorageSummary());
     WidgetsBinding.instance.addPostFrameCallback(
       (_) => AppProfile.mark(
@@ -208,6 +212,8 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
       } catch (_) {}
       setState(() {
         _exactAlarmsFuture = TaskSchedulerService.instance.canScheduleExactAlarms();
+        _batteryExemptFuture = TaskSchedulerService.instance.isIgnoringBatteryOptimizations();
+        _warningsFuture = Future.wait([_exactAlarmsFuture, _batteryExemptFuture]);
       });
     }
   }
@@ -446,7 +452,9 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
                   ),
               body: Column(
                 children: [
-                  _buildExactAlarmWarning(),
+                  _buildExactAlarmWarning(
+                    hasActiveTasks: upcomingTasks.isNotEmpty,
+                  ),
                   Expanded(
                     child: TabBarView(
                       controller: _tabController,
@@ -510,45 +518,131 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
     );
   }
 
-  Widget _buildExactAlarmWarning() {
-    return FutureBuilder<bool>(
-      future: _exactAlarmsFuture,
+  Widget _buildExactAlarmWarning({required bool hasActiveTasks}) {
+    if (!hasActiveTasks) return const SizedBox.shrink();
+
+    return FutureBuilder<List<bool>>(
+      future: _warningsFuture,
       builder: (context, snapshot) {
-        if (snapshot.hasData && snapshot.data == false) {
-          return Container(
-            margin: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            decoration: BoxDecoration(
-              color: Colors.amber.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Row(
-              children: [
-                const Icon(Icons.warning_amber_rounded, color: Colors.amber, size: 18),
-                const SizedBox(width: 8),
-                const Expanded(
-                  child: Text(
-                    'Exact alarms not permitted. Tasks may be delayed by system battery optimization.',
-                    style: TextStyle(color: Colors.amber, fontSize: 11),
+        if (!snapshot.hasData) return const SizedBox.shrink();
+        final exactPermitted = snapshot.data![0];
+        final batteryExempt = snapshot.data![1];
+
+        final banners = <Widget>[];
+
+        if (!exactPermitted) {
+          banners.add(
+            Container(
+              margin: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: Colors.amber.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.warning_amber_rounded, color: Colors.amber, size: 18),
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text(
+                      'Exact alarms not permitted. Tasks may be delayed by system battery optimization.',
+                      style: TextStyle(color: Colors.amber, fontSize: 11),
+                    ),
                   ),
-                ),
-                const SizedBox(width: 6),
-                TextButton(
-                  style: TextButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    visualDensity: VisualDensity.compact,
+                  const SizedBox(width: 6),
+                  TextButton(
+                    style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                    onPressed: () async {
+                      await TaskSchedulerService.instance.openExactAlarmSettings();
+                      if (!context.mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text(
+                            'Opening exact alarm settings. Return here after granting.',
+                          ),
+                          behavior: SnackBarBehavior.floating,
+                        ),
+                      );
+                      setState(() {
+                        _exactAlarmsFuture =
+                            TaskSchedulerService.instance.canScheduleExactAlarms();
+                        _warningsFuture =
+                            Future.wait([_exactAlarmsFuture, _batteryExemptFuture]);
+                      });
+                    },
+                    child: const Text(
+                      'Enable',
+                      style: TextStyle(color: Colors.amber, fontWeight: FontWeight.bold, fontSize: 12),
+                    ),
                   ),
-                  onPressed: () => TaskSchedulerService.instance.openExactAlarmSettings(),
-                  child: const Text(
-                    'Enable',
-                    style: TextStyle(color: Colors.amber, fontWeight: FontWeight.bold, fontSize: 12),
-                  ),
-                ),
-              ],
+                ],
+              ),
             ),
           );
         }
-        return const SizedBox.shrink();
+
+        if (!batteryExempt) {
+          banners.add(
+            Container(
+              margin: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: Colors.amber.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.battery_alert_rounded, color: Colors.amber, size: 18),
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text(
+                      'Battery optimization active. Scheduled tasks may not run reliably in the background.',
+                      style: TextStyle(color: Colors.amber, fontSize: 11),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  TextButton(
+                    style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                    onPressed: () async {
+                      await TaskSchedulerService.instance.requestBatteryExemption();
+                      if (!context.mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text(
+                            'Requested battery optimization exemption. Return here after granting.',
+                          ),
+                          behavior: SnackBarBehavior.floating,
+                        ),
+                      );
+                      setState(() {
+                        _batteryExemptFuture =
+                            TaskSchedulerService.instance.isIgnoringBatteryOptimizations();
+                        _warningsFuture =
+                            Future.wait([_exactAlarmsFuture, _batteryExemptFuture]);
+                      });
+                    },
+                    child: const Text(
+                      'Exempt',
+                      style: TextStyle(color: Colors.amber, fontWeight: FontWeight.bold, fontSize: 12),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }
+
+        if (banners.isEmpty) return const SizedBox.shrink();
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          children: banners,
+        );
       },
     );
   }

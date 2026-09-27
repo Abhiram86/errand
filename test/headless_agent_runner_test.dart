@@ -636,6 +636,48 @@ void main() {
       expect(taskRow.failures, equals(0)); // Reset to 0!
     });
 
+    test('Successful run on recurring task preserves scheduled status and failures: 0 without fallthrough', () async {
+      final scheduler = TaskSchedulerService(
+        database: db,
+        notificationService: mockNotifications,
+      );
+
+      final runner = AgentRunner(
+        llm: mockLlm,
+        workingDirectory: workingDirectory,
+        selectedModel: 'mock-model',
+      );
+
+      final nowMillis = DateTime.now().millisecondsSinceEpoch;
+      final taskId = await db.into(db.schedulerTasks).insert(
+        SchedulerTasksCompanion.insert(
+          title: 'Recurring Success Task',
+          type: 'recurring',
+          status: 'scheduled',
+          repeatAfter: const Value(3600000), // 1 hour
+          payloadJson: '{}',
+          startsAt: nowMillis,
+          failures: const Value(2), // Had prior failures
+          timezone: 'UTC',
+          createdAt: nowMillis,
+          updatedAt: nowMillis,
+        ),
+      );
+
+      final success = await scheduler.executeTask(
+        taskId,
+        runner: runner,
+        scratchDirectory: scratchDir,
+      );
+
+      expect(success, isTrue);
+
+      final taskRow = await (db.select(db.schedulerTasks)..where((t) => t.id.equals(taskId))).getSingle();
+      expect(taskRow.status, equals('scheduled'));
+      expect(taskRow.failures, equals(0)); // Must be 0, no failure accounting fallthrough!
+      expect(taskRow.nextRunAt, greaterThan(nowMillis));
+    });
+
     test('Execution timeout logs status timeout and marks run failed', () async {
       mockLlm.onChat = (_) {
         // Simulate a hanging call that delays longer than timeout

@@ -222,6 +222,14 @@ Future<ToolCallResult> handleActAction(ToolCall call, A11yService svc) async {
       await Future<void>.delayed(Duration(milliseconds: settleMs));
     }
     final readRes = await svc.readScreen(full: hasGrep);
+    if (readRes['modal'] case final String modalInfo when modalInfo.isNotEmpty) {
+      return ToolCallResult.failure(
+        call.id,
+        '${result.output}\n\n[PAUSE: Confirmation modal appeared post-action ($modalInfo). '
+        'Draft policy: Errand prepares, the USER presses Confirm/Pay/Delete/etc. '
+        'Execution paused — tell the user to confirm or review the dialog on their screen.]',
+      );
+    }
     if (readRes['ok'] == true) {
       if (readRes['unchanged'] == true) {
         final staleOutline = readRes['outline'] as String?;
@@ -316,18 +324,47 @@ String? looksLikeCommitAction(String label) {
   return null;
 }
 
+String formatCommitRefusal(String label, String matchedWord) {
+  return 'Refusing to tap "$label" — refused: matches commit pattern '
+      '"$matchedWord". Draft policy: Errand prepares, the USER presses '
+      'Send/Confirm/Pay/etc. Prepare everything up to that point, then tell '
+      'the user to do the last step.';
+}
+
 // ---- Handlers ---------------------------------------------------------------
 
 Future<ToolCallResult> _tap(ToolCall call, A11yService svc) async {
   final refRaw = call.arguments['ref'];
   if (refRaw is int && refRaw > 0) {
-    // Numeric-ref path: no label matching, no commit-word policy (refs are
-    // only issued from reads the model already made deliberately).
+    final explicitLabel = (call.arguments['label'] as String?)?.trim();
+    final cachedLabel = svc.getRefLabel(refRaw);
+    final knownLabel = (explicitLabel != null && explicitLabel.isNotEmpty)
+        ? explicitLabel
+        : cachedLabel;
+
+    if (knownLabel != null) {
+      if (looksLikeCommitAction(knownLabel) case final matchedWord?) {
+        return ToolCallResult.failure(
+          call.id,
+          formatCommitRefusal(knownLabel, matchedWord),
+        );
+      }
+    }
+
     final res = await svc.tapByRef(refRaw);
     if (res['ok'] != true) {
+      if (res['error'] == 'COMMIT_REFUSAL') {
+        final label = (res['label'] as String?) ?? (knownLabel ?? '');
+        final matched = (res['matched'] as String?) ??
+            (looksLikeCommitAction(label) ?? 'commit');
+        return ToolCallResult.failure(
+          call.id,
+          formatCommitRefusal(label, matched),
+        );
+      }
       return ToolCallResult.failure(
         call.id,
-        res['message'] ?? 'Tap failed.',
+        (res['message'] as String?) ?? 'Tap failed.',
       );
     }
     final hasGrep = (call.arguments['grep'] as String?)?.trim().isNotEmpty == true;
@@ -335,10 +372,18 @@ Future<ToolCallResult> _tap(ToolCall call, A11yService svc) async {
       return ToolCallResult(
         id: call.id,
         ok: true,
-        output: res['message'] ?? '',
+        output: (res['message'] as String?) ?? '',
       );
     }
     final probe = await svc.probeChanged();
+    if (probe['modal'] case final String modalInfo when modalInfo.isNotEmpty) {
+      return ToolCallResult.failure(
+        call.id,
+        'Confirmation modal appeared post-tap ($modalInfo). '
+        'Draft policy: Errand prepares, the USER presses Confirm/Pay/Delete/etc. '
+        'Execution paused — tell the user to confirm or review the dialog on their screen.',
+      );
+    }
     final effect = probe['changed'] == true
         ? '[effect: screen CHANGED — tap landed]'
         : '[effect: NO observable change — the UI may be animating or took no visible effect]';
@@ -361,10 +406,7 @@ Future<ToolCallResult> _tap(ToolCall call, A11yService svc) async {
   if (looksLikeCommitAction(label) case final matchedWord?) {
     return ToolCallResult.failure(
       call.id,
-      'Refusing to tap "$label" — refused: matches commit pattern '
-      '"$matchedWord". Draft policy: Errand prepares, the USER presses '
-      'Send/Confirm/Pay/etc. Prepare everything up to that point, then tell '
-      'the user to do the last step.',
+      formatCommitRefusal(label, matchedWord),
     );
   }
 
@@ -388,6 +430,14 @@ Future<ToolCallResult> _tap(ToolCall call, A11yService svc) async {
     );
   }
   final probe = await svc.probeChanged();
+  if (probe['modal'] case final String modalInfo when modalInfo.isNotEmpty) {
+    return ToolCallResult.failure(
+      call.id,
+      'Confirmation modal appeared post-tap ($modalInfo). '
+      'Draft policy: Errand prepares, the USER presses Confirm/Pay/Delete/etc. '
+      'Execution paused — tell the user to confirm or review the dialog on their screen.',
+    );
+  }
   final effect = probe['changed'] == true
       ? '[effect: screen CHANGED]'
       : '[effect: NO observable change — the UI may be animating or took no visible effect]';
@@ -403,9 +453,51 @@ Future<ToolCallResult> _longPress(ToolCall call, A11yService svc) async {
     return ToolCallResult.failure(
       call.id, 'Provide "ref" (preferred) or "label" for long_press.');
   }
+  if (label != null && label.isNotEmpty) {
+    if (looksLikeCommitAction(label) case final matchedWord?) {
+      return ToolCallResult.failure(
+        call.id,
+        formatCommitRefusal(label, matchedWord),
+      );
+    }
+  }
   if (refRaw is int) {
+    final cachedLabel = svc.getRefLabel(refRaw);
+    final knownLabel = (label != null && label.isNotEmpty) ? label : cachedLabel;
+    if (knownLabel != null) {
+      if (looksLikeCommitAction(knownLabel) case final matchedWord?) {
+        return ToolCallResult.failure(
+          call.id,
+          formatCommitRefusal(knownLabel, matchedWord),
+        );
+      }
+    }
     final res = await svc.longPressByRef(refRaw);
-    return ToolCallResult(id: call.id, ok: res['ok'] == true,
+    if (res['ok'] != true) {
+      if (res['error'] == 'COMMIT_REFUSAL') {
+        final lbl = (res['label'] as String?) ?? (knownLabel ?? '');
+        final matched = (res['matched'] as String?) ??
+            (looksLikeCommitAction(lbl) ?? 'commit');
+        return ToolCallResult.failure(
+          call.id,
+          formatCommitRefusal(lbl, matched),
+        );
+      }
+      return ToolCallResult.failure(
+        call.id,
+        (res['message'] as String?) ?? 'Long press failed.',
+      );
+    }
+    final probe = await svc.probeChanged();
+    if (probe['modal'] case final String modalInfo when modalInfo.isNotEmpty) {
+      return ToolCallResult.failure(
+        call.id,
+        'Confirmation modal appeared post-tap ($modalInfo). '
+        'Draft policy: Errand prepares, the USER presses Confirm/Pay/Delete/etc. '
+        'Execution paused — tell the user to confirm or review the dialog on their screen.',
+      );
+    }
+    return ToolCallResult(id: call.id, ok: true,
         output: res['message'] as String? ?? '');
   }
   // Label fallback: resolve through tapByText's matcher is not exposed for
@@ -450,11 +542,30 @@ Future<ToolCallResult> _fill(ToolCall call, A11yService svc) async {
   final exact = call.arguments['exact'] == true;
   final overwrite = call.arguments['overwrite'] == true;
 
+  final fieldLabel = byRef ? svc.getRefLabel(refRaw) : label;
+  if (fieldLabel != null) {
+    if (looksLikeCommitAction(fieldLabel) case final matchedWord?) {
+      return ToolCallResult.failure(
+        call.id,
+        formatCommitRefusal(fieldLabel, matchedWord),
+      );
+    }
+  }
+
   // 1. Tap to focus.
   final tapped = byRef
       ? await svc.tapByRef(refRaw)
       : await svc.tapByText(label!, exact: exact, occurrence: occurrence);
   if (tapped['ok'] != true) {
+    if (tapped['error'] == 'COMMIT_REFUSAL') {
+      final lbl = (tapped['label'] as String?) ?? (fieldLabel ?? '');
+      final matched = (tapped['matched'] as String?) ??
+          (looksLikeCommitAction(lbl) ?? 'commit');
+      return ToolCallResult.failure(
+        call.id,
+        formatCommitRefusal(lbl, matched),
+      );
+    }
     return ToolCallResult.failure(
       call.id,
       (tapped['message'] as String?) ??

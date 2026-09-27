@@ -497,6 +497,15 @@ No mutex. If two coroutines call `ensureKey()` concurrently, both can see `_key 
 
 ---
 
+### M18. In-app browser lacks draft-policy commit guard on web interactions
+**File:** `lib/tools/browser_tool.dart:338-376`, `lib/services/in_app_browser_service.dart`
+
+The draft policy promises that final-commit actions (Send/Post/Pay/Delete/Confirm/Order...) require explicit user confirmation. While device-level accessibility taps now enforce this via `looksLikeCommitAction` across both label and ref paths (C2), the in-app browser tool (`browser_tool.dart`) executes `action: "act", act_action: "click"` directly on DOM elements without inspecting whether the clicked element is a web commit control (e.g. "Pay Now", "Place Order", "Delete Account", "Confirm Purchase").
+
+**Fix:** Inspect target DOM element text/value/aria-label before executing click actions; refuse commit actions with the draft policy error. Optionally intercept/confirm mutating HTTP requests.
+
+---
+
 ## LOW — Worth Cleaning Up
 
 | # | File | Issue |

@@ -312,7 +312,7 @@ class MainActivity : FlutterActivity() {
                 }
                 "requestBatteryExemption" -> {
                     // Full flavor declares REQUEST_IGNORE_BATTERY_OPTIMIZATIONS;
-                    // fall back to general battery optimization settings if direct request fails or is disallowed.
+                    // fall back to app-specific battery settings if direct request fails or is disallowed (e.g. lite flavor).
                     try {
                         val intent = Intent(
                             Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
@@ -324,16 +324,32 @@ class MainActivity : FlutterActivity() {
                         result.success(true)
                     } catch (e: Exception) {
                         try {
-                            val fallbackIntent = Intent(
-                                Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS
-                            ).apply {
-                                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                            // On Android 13+ (API 33+), directly open Errand's battery usage page (Unrestricted / Optimized / Restricted)
+                            val fallbackIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                Intent(Settings.ACTION_APP_BATTERY_USAGE_DETAILS).apply {
+                                    data = android.net.Uri.parse("package:$packageName")
+                                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                                }
+                            } else {
+                                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                    data = android.net.Uri.parse("package:$packageName")
+                                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                                }
                             }
                             startActivity(fallbackIntent)
                             result.success(true)
                         } catch (e2: Exception) {
-                            Log.e("MainActivity", "Battery exemption request fallback failed", e2)
-                            result.success(false)
+                            try {
+                                val lastResort = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                    data = android.net.Uri.parse("package:$packageName")
+                                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                                }
+                                startActivity(lastResort)
+                                result.success(true)
+                            } catch (e3: Exception) {
+                                Log.e("MainActivity", "Battery exemption request fallback failed", e3)
+                                result.success(false)
+                            }
                         }
                     }
                 }

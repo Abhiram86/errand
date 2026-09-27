@@ -12,6 +12,7 @@ import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.SystemClock
 import android.util.Base64
 import android.view.Display
 import android.view.KeyEvent
@@ -119,9 +120,27 @@ class ErrandAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() {}
 
-    // Only listening for window changes right now; no background monitoring.
-    // Everything the agent does is pulled on-demand via readScreen().
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+    @Volatile
+    private var lastActionTime: Long = 0L
+    @Volatile
+    private var lastModalEventTime: Long = 0L
+    @Volatile
+    private var lastModalInfo: String? = null
+
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event == null) return
+        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            val cls = event.className?.toString() ?: ""
+            val isModal = cls.contains("Dialog", ignoreCase = true) ||
+                cls.contains("BottomSheet", ignoreCase = true)
+            if (isModal) {
+                lastModalEventTime = SystemClock.uptimeMillis()
+                val textList = event.text?.mapNotNull { it?.toString()?.trim()?.ifBlank { null } } ?: emptyList()
+                val text = if (textList.isNotEmpty()) textList.joinToString(" ") else null
+                lastModalInfo = if (text != null) "$cls: \"$text\"" else cls
+            }
+        }
+    }
 
     // ---- Screen reading ----------------------------------------------------
 
@@ -388,10 +407,29 @@ class ErrandAccessibilityService : AccessibilityService() {
             elementRefs = refs
 
             val outlineText = header + body
+            val modal = if (lastActionTime > 0 &&
+                lastModalEventTime >= (lastActionTime - 100) &&
+                SystemClock.uptimeMillis() - lastModalEventTime < 2500
+            ) {
+                val info = lastModalInfo
+                lastModalEventTime = 0L
+                lastModalInfo = null
+                lastActionTime = 0L
+                info
+            } else {
+                if (probe) {
+                    lastActionTime = 0L
+                }
+                null
+            }
             // Probe mode: effect check only. Does NOT update the stored snapshot,
             // so a subsequent real read still diffs against the pre-action state.
             if (probe) {
-                return mapOf("ok" to true, "changed" to (outlineText != lastOutline))
+                return mapOf(
+                    "ok" to true,
+                    "changed" to (outlineText != lastOutline),
+                    "modal" to modal,
+                )
             }
             // Verification re-reads are the biggest token sink: if nothing changed
             // since the previous read, say so in one line instead of re-dumping.
@@ -405,6 +443,7 @@ class ErrandAccessibilityService : AccessibilityService() {
                     "message" to "Screen is UNCHANGED since your previous read -- everything " +
                         "reported earlier still applies. Pass full:true only if you believe " +
                         "this snapshot is stale.",
+                    "modal" to modal,
                 )
             }
             // m6: `truncated` conflates walk-budget cuts (node or char cap hit
@@ -427,6 +466,7 @@ class ErrandAccessibilityService : AccessibilityService() {
                     else -> null
                 },
                 "truncated" to truncated,
+                "modal" to modal,
             )
         } finally {
             recycleQuietly(root)
@@ -657,7 +697,13 @@ class ErrandAccessibilityService : AccessibilityService() {
     private fun commitMatch(label: String?): String? {
         if (label == null) return null
         val words = label.lowercase().split(WORD_SPLIT).filter { it.isNotEmpty() }
-        return words.firstOrNull { it in COMMIT_WORDS || it.split("-").any(COMMIT_WORDS::contains) }
+        for (word in words) {
+            if (word in COMMIT_WORDS) return word
+            for (segment in word.split("-")) {
+                if (segment in COMMIT_WORDS) return segment
+            }
+        }
+        return null
     }
 
     private fun rectClose(a: Rect, b: Rect, slop: Int): Boolean =
@@ -725,6 +771,25 @@ class ErrandAccessibilityService : AccessibilityService() {
         return best
     }
 
+    private fun findChildLabel(node: AccessibilityNodeInfo, depth: Int = 0): String? {
+        if (depth > 3) return null
+        try {
+            val childCount = node.childCount
+            for (i in 0 until childCount) {
+                val child = node.getChild(i) ?: continue
+                val label = nodeLabel(child)
+                if (label != null) {
+                    recycleQuietly(child)
+                    return label
+                }
+                val nested = findChildLabel(child, depth + 1)
+                recycleQuietly(child)
+                if (nested != null) return nested
+            }
+        } catch (_: Exception) {}
+        return null
+    }
+
     /** Long-click variant of [tapByRef]. */
     fun longPressByRef(ref: Int): Map<String, Any?> = tapByRef(ref, longClick = true)
 
@@ -732,9 +797,9 @@ class ErrandAccessibilityService : AccessibilityService() {
      * Taps (or long-clicks) the element addressed by a numeric ref from the
      * last read. Honest failure when the ref is stale.
      *
-     * Draft-policy note: refs bypass act_tool.dart's Dart-side label refusal,
-     * so the same commit-word guard is mirrored here. Keep the word list in
-     * sync with kCommitWords in lib/tools/act_tool.dart.
+     * Draft-policy note: numeric refs must enforce the exact same commit-word
+     * guard as label taps. Upstream resolution checks the cached ref label,
+     * live node target, clickable container ancestor, and child labels.
      */
     fun tapByRef(ref: Int, longClick: Boolean = false): Map<String, Any?> {
         val root = rootInActiveWindow
@@ -744,13 +809,18 @@ class ErrandAccessibilityService : AccessibilityService() {
             val entry = elementRefs[ref]
                 ?: return mapOf("ok" to false, "error" to "STALE_REF",
                     "message" to "Ref $ref is not known. Re-read the screen; refs are renumbered on every read.")
-            if (!longClick) {
-                val matched = commitMatch(entry.label)
-                if (matched != null) {
-                    return mapOf("ok" to false, "error" to "COMMIT_REFUSAL",
-                        "message" to "Refusing to tap [$ref] \"${entry.label?.lowercase()}\" -- matches commit pattern \"$matched\". " +
-                            "Draft policy: Errand prepares, the USER presses Send/Confirm/Pay/etc.")
-                }
+            val preMatched = commitMatch(entry.label)
+            if (preMatched != null) {
+                val lbl = entry.label ?: ""
+                return mapOf(
+                    "ok" to false,
+                    "error" to "COMMIT_REFUSAL",
+                    "label" to lbl,
+                    "matched" to preMatched,
+                    "message" to "Refusing to tap \"$lbl\" — refused: matches commit pattern \"$preMatched\". " +
+                        "Draft policy: Errand prepares, the USER presses Send/Confirm/Pay/etc. " +
+                        "Prepare everything up to that point, then tell the user to do the last step."
+                )
             }
             val target = findNodeByRef(root, entry)
                 ?: return mapOf("ok" to false, "error" to "STALE_REF",
@@ -764,8 +834,32 @@ class ErrandAccessibilityService : AccessibilityService() {
                 t = parent
                 hops++
             }
+
+            // Upstream resolution: verify label/description on the resolved live node and its clickable container/children
+            val targetLabel = nodeLabel(target)?.let { trimLabel(it, isInteractive = true) }
+            val tLabel = if (t != target) nodeLabel(t)?.let { trimLabel(it, isInteractive = true) } else null
+            val childLabel = (if (targetLabel == null) findChildLabel(target) else null)?.let { trimLabel(it, isInteractive = true) }
+
+            val candidateLabels = listOfNotNull(targetLabel, tLabel, childLabel)
+            for (candidate in candidateLabels) {
+                val matched = commitMatch(candidate)
+                if (matched != null) {
+                    touched.forEach { recycleQuietly(it) }
+                    return mapOf(
+                        "ok" to false,
+                        "error" to "COMMIT_REFUSAL",
+                        "label" to candidate,
+                        "matched" to matched,
+                        "message" to "Refusing to tap \"$candidate\" — refused: matches commit pattern \"$matched\". " +
+                            "Draft policy: Errand prepares, the USER presses Send/Confirm/Pay/etc. " +
+                            "Prepare everything up to that point, then tell the user to do the last step."
+                    )
+                }
+            }
+
             val action = if (longClick) AccessibilityNodeInfo.ACTION_LONG_CLICK
             else AccessibilityNodeInfo.ACTION_CLICK
+            lastActionTime = SystemClock.uptimeMillis()
             val ok = t.isClickable && t.performAction(action)
             touched.forEach { recycleQuietly(it) }
             return if (ok) {
@@ -790,6 +884,7 @@ class ErrandAccessibilityService : AccessibilityService() {
         val conn = imeReady()
             ?: return mapOf("ok" to false, "error" to "NO_INPUT_FOCUS",
                 "message" to "Escape needs a focused field to deliver the key. Try global back instead.")
+        lastActionTime = SystemClock.uptimeMillis()
         conn.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ESCAPE))
         conn.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ESCAPE))
         return mapOf("ok" to true, "message" to "Sent Escape.")
@@ -884,6 +979,7 @@ class ErrandAccessibilityService : AccessibilityService() {
                 target = parent
                 hops++
             }
+            lastActionTime = SystemClock.uptimeMillis()
             val ok = target.isClickable && target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             touched.forEach { recycleQuietly(it) }
             candidates.forEach { if (it !== picked) recycleQuietly(it.node) }
@@ -985,6 +1081,7 @@ class ErrandAccessibilityService : AccessibilityService() {
                     putCharSequence(
                         AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
                 }
+                lastActionTime = SystemClock.uptimeMillis()
                 val ok = focus.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
                 return if (ok) {
                     mapOf("ok" to true, "chars" to text.length,
@@ -1074,6 +1171,7 @@ class ErrandAccessibilityService : AccessibilityService() {
                 try {
                     var done = 0
                     repeat(clamped) {
+                        lastActionTime = SystemClock.uptimeMillis()
                         if (s.performAction(targetAction)) done++
                     }
                     if (done > 0) {
@@ -1108,8 +1206,9 @@ class ErrandAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun gestureFallbackScroll(direction: String): Map<String, Any?> =
-        when {
+    private fun gestureFallbackScroll(direction: String): Map<String, Any?> {
+        lastActionTime = SystemClock.uptimeMillis()
+        return when {
             direction == "left" && swipeHorizontal(right = false) ->
                 mapOf("ok" to true, "method" to "gesture", "message" to "Swiped right-to-left")
             direction == "right" && swipeHorizontal(right = true) ->
@@ -1121,6 +1220,7 @@ class ErrandAccessibilityService : AccessibilityService() {
             else -> mapOf("ok" to false, "error" to "SCROLL_FAILED",
                 "message" to "Nothing scrollable found and gesture dispatch failed.")
         }
+    }
 
     /** First visible scrollable node whose actionList contains [actionId]. */
     private fun findScrollable(
@@ -1316,6 +1416,7 @@ class ErrandAccessibilityService : AccessibilityService() {
             val len = st?.text?.length ?: 0
             if (len > 0) conn.setSelection(0, len)
         }
+        lastActionTime = SystemClock.uptimeMillis()
         conn.commitText(text, 1, null)
         val after = try {
             conn.getSurroundingText(4096, 4096, 0)?.text?.toString() ?: ""
@@ -1334,6 +1435,7 @@ class ErrandAccessibilityService : AccessibilityService() {
         val conn = imeReady()
             ?: return mapOf("ok" to false, "error" to "NO_INPUT_FOCUS",
                 "message" to "No focused editable field to Tab from. Tap a field first.")
+        lastActionTime = SystemClock.uptimeMillis()
         conn.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_TAB))
         conn.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_TAB))
         return mapOf("ok" to true,

@@ -320,4 +320,169 @@ void main() {
         .getSingle();
     expect(countRow.read<int>('c'), equals(30));
   });
+
+  testWidgets('ManageTasksScreen displays exact alarm warning banner when not permitted and active tasks exist', (tester) async {
+    final calls = <String>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(const MethodChannel('task_scheduler'), (call) async {
+      calls.add(call.method);
+      if (call.method == 'canScheduleExactAlarms') return false;
+      if (call.method == 'isIgnoringBatteryOptimizations') return true;
+      return true;
+    });
+
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await db.into(db.schedulerTasks).insert(
+      SchedulerTasksCompanion.insert(
+        title: 'Daily Report',
+        type: 'recurring',
+        status: 'scheduled',
+        payloadJson: jsonEncode({'prompt': 'Report'}),
+        startsAt: now + 60000,
+        nextRunAt: Value(now + 60000),
+        repeatAfter: const Value(3600000),
+        timezone: 'UTC',
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ManageTasksScreen(database: db),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(find.text('Exact alarms not permitted. Tasks may be delayed by system battery optimization.'), findsOneWidget);
+    expect(find.text('Enable'), findsOneWidget);
+    expect(find.text('Exempt'), findsNothing);
+
+    await tester.tap(find.text('Enable'));
+    await tester.pump();
+    expect(calls, contains('openExactAlarmSettings'));
+
+    // Clean up timers
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(milliseconds: 50));
+  });
+
+  testWidgets('ManageTasksScreen displays battery optimization warning banner when exact permitted but battery not exempt', (tester) async {
+    final calls = <String>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(const MethodChannel('task_scheduler'), (call) async {
+      calls.add(call.method);
+      if (call.method == 'canScheduleExactAlarms') return true;
+      if (call.method == 'isIgnoringBatteryOptimizations') return false;
+      return true;
+    });
+
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await db.into(db.schedulerTasks).insert(
+      SchedulerTasksCompanion.insert(
+        title: 'Weekly Sync',
+        type: 'recurring',
+        status: 'scheduled',
+        payloadJson: jsonEncode({'prompt': 'Sync'}),
+        startsAt: now + 60000,
+        nextRunAt: Value(now + 60000),
+        repeatAfter: const Value(3600000),
+        timezone: 'UTC',
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ManageTasksScreen(database: db),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(find.text('Battery optimization active. Scheduled tasks may not run reliably in the background.'), findsOneWidget);
+    expect(find.text('Exempt'), findsOneWidget);
+    expect(find.text('Enable'), findsNothing);
+
+    await tester.tap(find.text('Exempt'));
+    await tester.pump();
+    expect(calls, contains('requestBatteryExemption'));
+    expect(find.byType(SnackBar), findsOneWidget);
+    expect(find.text('Requested battery optimization exemption. Return here after granting.'), findsOneWidget);
+
+    // Clean up timers
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(milliseconds: 50));
+  });
+
+  testWidgets('ManageTasksScreen stacks both warning banners when neither is granted', (tester) async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(const MethodChannel('task_scheduler'), (call) async {
+      if (call.method == 'canScheduleExactAlarms') return false;
+      if (call.method == 'isIgnoringBatteryOptimizations') return false;
+      return true;
+    });
+
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await db.into(db.schedulerTasks).insert(
+      SchedulerTasksCompanion.insert(
+        title: 'Pending Task',
+        type: 'recurring',
+        status: 'scheduled',
+        payloadJson: jsonEncode({'prompt': 'Pending'}),
+        startsAt: now + 60000,
+        nextRunAt: Value(now + 60000),
+        repeatAfter: const Value(3600000),
+        timezone: 'UTC',
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ManageTasksScreen(database: db),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(find.text('Exact alarms not permitted. Tasks may be delayed by system battery optimization.'), findsOneWidget);
+    expect(find.text('Battery optimization active. Scheduled tasks may not run reliably in the background.'), findsOneWidget);
+    expect(find.text('Enable'), findsOneWidget);
+    expect(find.text('Exempt'), findsOneWidget);
+
+    // Clean up timers
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(milliseconds: 50));
+  });
+
+  testWidgets('ManageTasksScreen suppresses warning banners when there are no active tasks', (tester) async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(const MethodChannel('task_scheduler'), (call) async {
+      if (call.method == 'canScheduleExactAlarms') return false;
+      if (call.method == 'isIgnoringBatteryOptimizations') return false;
+      return true;
+    });
+
+    // Zero tasks in db
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ManageTasksScreen(database: db),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(find.text('Exact alarms not permitted. Tasks may be delayed by system battery optimization.'), findsNothing);
+    expect(find.text('Battery optimization active. Scheduled tasks may not run reliably in the background.'), findsNothing);
+    expect(find.text('Enable'), findsNothing);
+    expect(find.text('Exempt'), findsNothing);
+
+    // Clean up timers
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(milliseconds: 50));
+  });
 }
