@@ -49,5 +49,29 @@ void main() {
       await tester.pump();
       expect(trusted, isTrue);
     });
+
+    testWidgets('renders without overflow on narrow screens or with long command/reason', (tester) async {
+      tester.view.physicalSize = const Size(320, 250);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(() => tester.view.resetPhysicalSize());
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: CommandConfirmationBanner(
+              title: 'Super Long Destructive Action Title That Could Overflow Easily',
+              command: 'rm -rf /storage/emulated/0/Android/data/com.example.verylongpackagename/files/some/deeply/nested/path/that/has/no/spaces/whatsoever/and/keeps/going/and/going',
+              reason: 'Dangerous recursive deletion outside workspace scratchpad with extra long explanation',
+              onAccept: () {},
+              onDeny: () {},
+              onTrust: () {},
+            ),
+          ),
+        ),
+      );
+
+      // Verify no Flutter error (like RenderFlex overflowed)
+      expect(tester.takeException(), isNull);
+    });
   });
 }

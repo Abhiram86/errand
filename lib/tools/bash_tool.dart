@@ -5,6 +5,7 @@ import 'package:path/path.dart' as p;
 import '../agent/tool.dart';
 import '../llm/llm_client.dart';
 import '../services/shell_service.dart';
+import '../services/workspace.dart';
 import '../types/tool.dart';
 import 'file_tools.dart';
 
@@ -113,7 +114,18 @@ Tool bashTool({
           .clamp(1, 120);
       final explicitConfirm = call.arguments['confirm_destructive'] == true;
       final sessionTrusted = isSessionTrusted?.call() == true;
-      final safetyCheck = ShellSafetyCheck.analyze(command);
+      // Real dirs for the guardrail: scratch confinement is computed against
+      // these, never string-matched. Resolved defensively — a failure here
+      // fails closed (confirmation) rather than failing open.
+      String? scratchPath;
+      try {
+        scratchPath = Workspace.instance.scratchDir.path;
+      } catch (_) {}
+      final safetyCheck = ShellSafetyCheck.analyze(
+        command,
+        scratchPath: scratchPath,
+        workingDirectory: execDir.path,
+      );
 
       if (safetyCheck.needsConfirmation && isHeadless) {
         return ToolCallResult.failure(
@@ -123,10 +135,12 @@ Tool bashTool({
         );
       }
 
-      var effectiveConfirm = explicitConfirm || sessionTrusted;
+      var effectiveConfirm = false;
 
-      if (safetyCheck.needsConfirmation && !effectiveConfirm) {
-        if (onConfirmCommand != null) {
+      if (safetyCheck.needsConfirmation) {
+        if (sessionTrusted) {
+          effectiveConfirm = true;
+        } else if (onConfirmCommand != null) {
           final decision = await onConfirmCommand(
             title: 'Destructive Command',
             command: command,
@@ -140,6 +154,8 @@ Tool bashTool({
             );
           }
           effectiveConfirm = true;
+        } else {
+          effectiveConfirm = explicitConfirm;
         }
       }
 
@@ -147,6 +163,7 @@ Tool bashTool({
         final result = await svc.execute(
           command,
           workingDirectory: execDir,
+          scratchPath: scratchPath,
           timeout: Duration(seconds: timeoutSecs),
           cancelToken: getCancelToken?.call(),
           confirmDestructive: effectiveConfirm,

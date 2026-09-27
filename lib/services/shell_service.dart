@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:path/path.dart' as p;
+
 import '../llm/llm_client.dart';
 
 /// Safety classification for a shell command.
@@ -48,7 +50,28 @@ class ShellSafetyCheck {
   bool get isBlocked => level == ShellSafetyLevel.blocked;
 
   /// Analyzes a command line for dangerous operations and destructive mutations.
-  static ShellSafetyCheck analyze(String command) {
+  ///
+  /// Decision pipeline (in order — do not add new layers, extend the matching
+  /// section instead):
+  ///   1. HARD BLOCK: dangerous constructs, catastrophic expressions,
+  ///      destructive binaries, system/block-device/protected targets.
+  ///      Blocked means tool failure, never a permission prompt.
+  ///   2. ALLOW: scratch-confined mutations and known read-only verbs.
+  ///   3. CONFIRM: everything else fails closed into Draft confirmation.
+  ///
+  /// Standing rules:
+  /// - Match on normalized tokens ([_unquoteToken]), never raw text, so
+  ///   quoting/backslash tricks cannot dodge a check.
+  /// - A verb being allowlisted says nothing about its arguments; any
+  ///   allowlisted verb that gains an argument-interpreting mode needs
+  ///   re-review (see the `echo`/payload note at the allowlist).
+  /// - [scratchPath]/[workingDirectory] confine scratch checks to real dirs.
+  ///   When absent, scratch checks fail closed (confirmation, never safe).
+  static ShellSafetyCheck analyze(
+    String command, {
+    String? scratchPath,
+    String? workingDirectory,
+  }) {
     final cmd = command.trim();
 
     if (cmd.isEmpty) {
@@ -71,14 +94,22 @@ class ShellSafetyCheck {
     for (final m in subcmdMatches) {
       final inner = (m.group(1) ?? m.group(2) ?? '').trim();
       if (inner.isNotEmpty) {
-        final innerResult = analyze(inner);
+        final innerResult = analyze(
+          inner,
+          scratchPath: scratchPath,
+          workingDirectory: workingDirectory,
+        );
         if (innerResult.isBlocked) return innerResult;
         if (innerResult.needsConfirmation) return innerResult;
       }
     }
 
     for (final segment in _splitCommands(cmd)) {
-      final result = _analyzeCommand(segment);
+      final result = _analyzeCommand(
+        segment,
+        scratchPath: scratchPath,
+        workingDirectory: workingDirectory,
+      );
 
       if (result.isBlocked) return result;
       if (result.needsConfirmation) return result;
@@ -154,6 +185,12 @@ class ShellSafetyCheck {
         continue;
       }
 
+      // If '|' is part of '>|' (noclobber override), it's a redirect target,
+      // not a pipe.
+      if (c == '|' && i > 0 && command[i - 1] == '>') {
+        continue;
+      }
+
       final isSeparator = c == ';' ||
           c == '\n' ||
           c == '|' ||
@@ -183,13 +220,31 @@ class ShellSafetyCheck {
     return result;
   }
 
-  static ShellSafetyCheck _analyzeCommand(String command) {
+  static ShellSafetyCheck _analyzeCommand(
+    String command, {
+    String? scratchPath,
+    String? workingDirectory,
+  }) {
     var words = _tokenize(command);
 
     if (words.isEmpty) {
       return const ShellSafetyCheck(
         ShellSafetyLevel.safe,
         'Empty command',
+      );
+    }
+
+    // PATH mutation poisons every lookup later in the segment (e.g.
+    // `PATH=/evil ls` would otherwise analyze as harmless `ls`). Always
+    // confirm; plain `export FOO=bar` stays on the allowlist path.
+    final pathMutated = words.first == 'export'
+        ? words.skip(1).any((w) => w.startsWith('PATH='))
+        : words.first.startsWith('PATH=');
+    if (pathMutated) {
+      return const ShellSafetyCheck(
+        ShellSafetyLevel.needsConfirmation,
+        'PATH mutation can redirect subsequent command lookups',
+        'PATH assignment',
       );
     }
 
@@ -222,7 +277,7 @@ class ShellSafetyCheck {
     }
     if (firstWord == 'do' || firstWord == 'if' || firstWord == 'while' || firstWord == 'until') {
       if (words.length > 1) {
-        return _analyzeCommand(words.sublist(1).join(' '));
+        return _analyzeCommand(words.sublist(1).join(' '), scratchPath: scratchPath, workingDirectory: workingDirectory);
       }
       return const ShellSafetyCheck(
         ShellSafetyLevel.safe,
@@ -288,7 +343,16 @@ class ShellSafetyCheck {
         }
       }
       if (idx < words.length) {
-        return _analyzeCommand(words.sublist(idx).join(' '));
+        // PATH smuggled through env still poisons lookup — the recursion
+        // below would otherwise see only the remainder.
+        if (words.sublist(1, idx).any((w) => w.startsWith('PATH='))) {
+          return const ShellSafetyCheck(
+            ShellSafetyLevel.needsConfirmation,
+            'PATH mutation can redirect subsequent command lookups',
+            'PATH assignment',
+          );
+        }
+        return _analyzeCommand(words.sublist(idx).join(' '), scratchPath: scratchPath, workingDirectory: workingDirectory);
       }
       return const ShellSafetyCheck(
         ShellSafetyLevel.safe,
@@ -301,7 +365,7 @@ class ShellSafetyCheck {
       for (var i = 1; i < words.length; i++) {
         if (!words[i].startsWith('-') &&
             !_looksLikeWrapperValue(words[i])) {
-          return _analyzeCommand(words.sublist(i).join(' '));
+          return _analyzeCommand(words.sublist(i).join(' '), scratchPath: scratchPath, workingDirectory: workingDirectory);
         }
       }
 
@@ -326,7 +390,7 @@ class ShellSafetyCheck {
         final nested = words[cIndex + 1];
 
         for (final part in _splitCommands(nested)) {
-          final result = _analyzeCommand(part);
+          final result = _analyzeCommand(part, scratchPath: scratchPath, workingDirectory: workingDirectory);
 
           if (result.isBlocked) return result;
           if (result.needsConfirmation) return result;
@@ -347,13 +411,13 @@ class ShellSafetyCheck {
     // busybox rm ...
     if (executable == 'busybox' || executable == 'toybox') {
       if (words.length > 1) {
-        return _analyzeCommand(words.sublist(1).join(' '));
+        return _analyzeCommand(words.sublist(1).join(' '), scratchPath: scratchPath, workingDirectory: workingDirectory);
       }
     }
 
     // command rm ...
     if (executable == 'command' && words.length > 1) {
-      return _analyzeCommand(words.sublist(1).join(' '));
+      return _analyzeCommand(words.sublist(1).join(' '), scratchPath: scratchPath, workingDirectory: workingDirectory);
     }
 
     // xargs can turn a harmless-looking command into bulk deletion.
@@ -377,7 +441,7 @@ class ShellSafetyCheck {
       );
     }
 
-    return _analyzeDirectCommand(words);
+    return _analyzeDirectCommand(words, scratchPath: scratchPath, workingDirectory: workingDirectory);
   }
 
   // Inverted Allowlist of safe, non-destructive utilities in Android shell / Toybox.
@@ -416,11 +480,27 @@ class ShellSafetyCheck {
     'getprop', 'dumpsys', 'logcat',
   };
 
+  // ---------------------------------------------------------------------------
+  // Single decision pipeline per command segment. Order is load-bearing:
+  //   1. HARD BLOCKS (deny-list): destructive binaries, catastrophic
+  //      expressions, system/block-device/protected targets. Blocked means
+  //      tool failure — never a permission prompt.
+  //   2. ALLOW: scratch-confined mutations and known read-only verbs.
+  //   3. CONFIRM: everything else fails closed into Draft confirmation.
+  // ---------------------------------------------------------------------------
   static ShellSafetyCheck _analyzeDirectCommand(
-    List<String> words,
-  ) {
+    List<String> words, {
+    String? scratchPath,
+    String? workingDirectory,
+  }) {
     final command = _basename(words.first);
     final args = words.sublist(1);
+    // Absolute, normalized view of every non-flag target for the checks
+    // below. Unresolvable tokens (bare `~`, relative paths with unknown
+    // cwd) fall back to lexical normalization at each check site.
+    List<String> resolved(Iterable<String> tokens) => tokens
+        .map((t) => _resolveTarget(t, workingDirectory) ?? _normalizePath(t))
+        .toList();
 
     // Commands that can obviously destroy/control the system.
     if ({
@@ -444,12 +524,16 @@ class ShellSafetyCheck {
       );
     }
 
-    // Android/system property power control.
-    if (command == 'setprop' && args.contains('sys.powerctl')) {
+    // Android/system property power control, and zygote lifecycle.
+    // `setprop` anything else is unknown → confirm fallback below.
+    if (command == 'setprop' &&
+        (args.contains('sys.powerctl') ||
+            (args.any((a) => a.startsWith('ctl.')) &&
+                args.any((a) => a.contains('zygote'))))) {
       return const ShellSafetyCheck(
         ShellSafetyLevel.blocked,
-        'System power control is not allowed',
-        'setprop sys.powerctl',
+        'System power control / zygote lifecycle is not allowed',
+        'setprop power/zygote',
       );
     }
 
@@ -459,6 +543,39 @@ class ShellSafetyCheck {
         ShellSafetyLevel.blocked,
         'System state change via init is not allowed',
         'init',
+      );
+    }
+
+    // Device wipe / factory reset: matched on normalized tokens (quoting
+    // cannot dodge these, unlike raw-text regexes).
+    if (command == 'am' && args.any((a) => a.contains('MASTER_CLEAR'))) {
+      return const ShellSafetyCheck(
+        ShellSafetyLevel.blocked,
+        'Factory reset / device wipe commands are strictly prohibited',
+        'device wipe',
+      );
+    }
+    if (command == 'recovery' && args.any((a) => a.contains('wipe'))) {
+      return const ShellSafetyCheck(
+        ShellSafetyLevel.blocked,
+        'Factory reset / device wipe commands are strictly prohibited',
+        'device wipe',
+      );
+    }
+    if (command == 'wipe') {
+      return const ShellSafetyCheck(
+        ShellSafetyLevel.blocked,
+        'Factory reset / device wipe commands are strictly prohibited',
+        'device wipe',
+      );
+    }
+    if (command == 'svc' &&
+        args.contains('power') &&
+        (args.contains('reboot') || args.contains('shutdown'))) {
+      return const ShellSafetyCheck(
+        ShellSafetyLevel.blocked,
+        'System power control via svc is not allowed',
+        'svc power',
       );
     }
 
@@ -485,9 +602,18 @@ class ShellSafetyCheck {
       );
     }
 
-    // Redirecting into a system path or block device.
+    // Redirecting into a system path, protected dir, block device, or the
+    // kernel sysrq trigger. Targets resolve against the cwd when known.
     for (final target in _redirectTargets(words)) {
-      if (_isBlockDevice(target)) {
+      final resolved = _resolveTarget(target, workingDirectory) ?? _normalizePath(target);
+      if (resolved == '/proc/sysrq-trigger') {
+        return const ShellSafetyCheck(
+          ShellSafetyLevel.blocked,
+          'Triggering kernel sysrq commands is strictly prohibited',
+          'sysrq trigger',
+        );
+      }
+      if (_isBlockDevice(resolved)) {
         return const ShellSafetyCheck(
           ShellSafetyLevel.blocked,
           'Redirect writes directly to a block device',
@@ -495,30 +621,30 @@ class ShellSafetyCheck {
         );
       }
 
-      if (_isSystemPath(target)) {
+      if (_isSystemPath(resolved) || _isProtectedPath(resolved)) {
         return const ShellSafetyCheck(
           ShellSafetyLevel.blocked,
-          'Writing to a system path is not allowed',
-          'system path write',
+          'Writing to a system or protected path is not allowed',
+          'system/protected path write',
         );
       }
     }
 
     // File deletion (rm / rmdir)
     if (command == 'rm' || command == 'rmdir') {
-      final targets = args
-          .where((x) => !x.startsWith('-'))
-          .toList();
+      final targets = resolved(args.where((x) => !x.startsWith('-')));
 
-      if (targets.any(_isSystemPath) || targets.any(_isBlockDevice)) {
+      if (targets.any(_isSystemPath) ||
+          targets.any(_isBlockDevice) ||
+          targets.any(_isProtectedPath)) {
         return const ShellSafetyCheck(
           ShellSafetyLevel.blocked,
-          'Deleting system paths is not allowed',
-          'rm on root/system path',
+          'Deleting system or protected paths is not allowed',
+          'rm on system/protected path',
         );
       }
 
-      if (_isScratchOnlyList(targets)) {
+      if (_isScratchOnlyList(targets, scratchPath)) {
         return const ShellSafetyCheck(
           ShellSafetyLevel.safe,
           'Scratch directory deletion',
@@ -555,18 +681,20 @@ class ShellSafetyCheck {
         command == 'shred' ||
         command == 'truncate' ||
         command == 'cp') {
-      final targets = args.where((x) => !x.startsWith('-')).toList();
+      final targets = resolved(args.where((x) => !x.startsWith('-')));
 
-      // Block writing/mutating system paths or block devices.
-      if (targets.any(_isSystemPath) || targets.any(_isBlockDevice)) {
+      // Block writing/mutating system paths, block devices, or protected dirs.
+      if (targets.any(_isSystemPath) ||
+          targets.any(_isBlockDevice) ||
+          targets.any(_isProtectedPath)) {
         return ShellSafetyCheck(
           ShellSafetyLevel.blocked,
-          'Targeting root or system path is not allowed with $command',
-          '$command on root/system path',
+          'Targeting system or protected path is not allowed with $command',
+          '$command on system/protected path',
         );
       }
 
-      if (_isScratchOnlyList(targets)) {
+      if (_isScratchOnlyList(targets, scratchPath)) {
         return const ShellSafetyCheck(
           ShellSafetyLevel.safe,
           'Scratch directory operation',
@@ -585,16 +713,18 @@ class ShellSafetyCheck {
 
     // Directory / file creation (mkdir, touch)
     if (command == 'mkdir' || command == 'touch') {
-      final targets = args.where((x) => !x.startsWith('-')).toList();
-      if (targets.any(_isSystemPath) || targets.any(_isBlockDevice)) {
+      final targets = resolved(args.where((x) => !x.startsWith('-')));
+      if (targets.any(_isSystemPath) ||
+          targets.any(_isBlockDevice) ||
+          targets.any(_isProtectedPath)) {
         return ShellSafetyCheck(
           ShellSafetyLevel.blocked,
-          'Targeting root or system path is not allowed with $command',
-          '$command on root/system path',
+          'Targeting system or protected path is not allowed with $command',
+          '$command on system/protected path',
         );
       }
       // Safe only when confined to scratch; anything else needs confirmation.
-      if (_isScratchOnlyList(targets)) {
+      if (_isScratchOnlyList(targets, scratchPath)) {
         return const ShellSafetyCheck(
           ShellSafetyLevel.safe,
           'Scratch directory creation',
@@ -609,8 +739,8 @@ class ShellSafetyCheck {
     // In-place sed editing
     if (command == 'sed') {
       if (args.contains('-i')) {
-        final targets = args.where((x) => !x.startsWith('-') && !x.startsWith('s/')).toList();
-        if (targets.isNotEmpty && _isScratchOnlyList(targets)) {
+        final targets = resolved(args.where((x) => !x.startsWith('-') && !x.startsWith('s/')));
+        if (targets.isNotEmpty && _isScratchOnlyList(targets, scratchPath)) {
           return const ShellSafetyCheck(
             ShellSafetyLevel.safe,
             'Scratch directory in-place editing',
@@ -670,10 +800,35 @@ class ShellSafetyCheck {
 
     // Android package manager (pm)
     if (command == 'pm') {
-      if (args.any((a) => a == 'install' || a == 'uninstall' || a == 'clear' || a == 'disable' || a == 'enable')) {
+      // Disabling/uninstalling critical packages bricks the device or the
+      // app itself — blocked outright, never confirmable (token-level, so
+      // `"disable"` quoting variants are covered too).
+      const criticalPackages = {
+        'com.android.settings',
+        'com.google.android.gms',
+        'com.android.systemui',
+        'com.errand.errand',
+      };
+      // `enable` is excluded: re-enabling a critical package is restore, not harm.
+      final criticalMutating = args.any((a) =>
+          a == 'install' ||
+          a == 'uninstall' ||
+          a == 'clear' ||
+          a == 'disable' ||
+          a == 'disable-user');
+      final mutating = criticalMutating || args.contains('enable');
+      if (criticalMutating &&
+          args.any((a) => criticalPackages.any((pkg) => a.contains(pkg)))) {
+        return const ShellSafetyCheck(
+          ShellSafetyLevel.blocked,
+          'Disabling or modifying critical system services or Errand is strictly prohibited',
+          'system package tamper',
+        );
+      }
+      if (mutating) {
         return ShellSafetyCheck(
           ShellSafetyLevel.needsConfirmation,
-          'Package modification ("pm ${args.firstWhere((a) => a == 'install' || a == 'uninstall' || a == 'clear' || a == 'disable' || a == 'enable')}")',
+          'Package modification ("pm ${args.firstWhere((a) => a == 'install' || a == 'uninstall' || a == 'clear' || a == 'disable' || a == 'disable-user' || a == 'enable')}")',
           'pm mutate',
         );
       }
@@ -713,7 +868,12 @@ class ShellSafetyCheck {
       );
     }
 
-    // Inverted Allowlist check: if command is known safe, allow it.
+    // Inverted allowlist: read-only verbs that are unconditionally safe.
+    // A verb being here says NOTHING about its arguments — every branch
+    // above already ran, so any argument-interpreting mode (write flags,
+    // exec modes, URL/destination operands) must be classified in its own
+    // branch BEFORE this point. Never add a verb here that can act on its
+    // arguments without re-reviewing those modes.
     if (_safeAllowedCommands.contains(command)) {
       return const ShellSafetyCheck(
         ShellSafetyLevel.safe,
@@ -749,15 +909,22 @@ class ShellSafetyCheck {
           word == '>>' ||
           word == '<' ||
           word == '<<' ||
-          word == '&>') {
+          word == '&>' ||
+          word == '&>>' ||
+          word == '>|') {
         if (i + 1 < words.length) {
           result.add(_unquoteToken(words[i + 1]));
         }
         continue;
       }
 
-      if (RegExp(r'^\d*(>>|>|<|<<)').hasMatch(word)) {
-        final match = RegExp(r'^\d*(?:>>|>|<|<<)(.+)$')
+      // `<<<` is a herestring: following text is literal content, not a path.
+      if (word == '<<<' || word.startsWith('<<<')) {
+        continue;
+      }
+
+      if (RegExp(r'^\d*(&>>|>>|>|<|<<)').hasMatch(word)) {
+        final match = RegExp(r'^\d*(?:&>>|>>|>|<|<<)(.+)$')
             .firstMatch(word);
 
         if (match != null) {
@@ -798,6 +965,31 @@ class ShellSafetyCheck {
     return roots.any(
       (root) => p == root || p.startsWith('$root/'),
     );
+  }
+
+  /// Well-known storage roots and top-level user directories that must never
+  /// be wiped or destroyed wholesale — blocked outright, never sent to confirmation.
+  static bool _isProtectedPath(String path) {
+    final p = _normalizePath(path);
+    const roots = [
+      '/sdcard',
+      '/storage/emulated/0',
+      '/sdcard/DCIM',
+      '/sdcard/Pictures',
+      '/sdcard/Movies',
+      '/sdcard/Music',
+      '/sdcard/Documents',
+      '/sdcard/Download',
+      '/sdcard/Android',
+      '/storage/emulated/0/DCIM',
+      '/storage/emulated/0/Pictures',
+      '/storage/emulated/0/Movies',
+      '/storage/emulated/0/Music',
+      '/storage/emulated/0/Documents',
+      '/storage/emulated/0/Download',
+      '/storage/emulated/0/Android',
+    ];
+    return roots.any((root) => p == root || p == '$root/');
   }
 
   static bool _isBlockDevice(String path) {
@@ -896,14 +1088,31 @@ class ShellSafetyCheck {
     return RegExp(r'^\d+(?:\.\d+)?(?:ms|s|m|h)?$').hasMatch(value);
   }
 
-  static bool _isScratchOnlyList(List<String> targets) {
+  /// Scratch confinement against real directories: every target must
+  /// resolve inside [scratchPath]. Unknown scratch (null) fails closed.
+  /// Replaces the old substring heuristic (any path merely containing
+  /// ".scratch" used to pass).
+  static bool _isScratchOnlyList(List<String> targets, String? scratchPath) {
     if (targets.isEmpty) return false;
-    return targets.every((token) {
-      final clean = _unquoteToken(token.trim());
-      return clean.contains('.scratch') ||
-          clean.contains('/.scratch/') ||
-          clean.contains('/scratch/');
+    final scratch = scratchPath?.trim();
+    if (scratch == null || scratch.isEmpty) return false;
+    final scratchAbs = p.normalize(scratch);
+    return targets.every((t) {
+      final abs = p.normalize(t);
+      return abs == scratchAbs || p.isWithin(scratchAbs, abs);
     });
+  }
+
+  /// Resolves a raw token to an absolute normalized path, or null when it
+  /// cannot be resolved statically (`~`-prefixed, or relative with unknown
+  /// cwd). Callers fall back to lexical normalization (old behavior) on null.
+  static String? _resolveTarget(String token, String? cwd) {
+    final clean = _unquoteToken(token.trim());
+    if (clean.isEmpty) return null;
+    if (clean.startsWith('~')) return null;
+    if (p.isAbsolute(clean)) return p.normalize(clean);
+    if (cwd == null || cwd.isEmpty) return null;
+    return p.normalize(p.join(cwd, clean));
   }
 }
 
@@ -1016,15 +1225,24 @@ class ShellService {
   }
 
   /// Executes [command] in [workingDirectory] with timeout and cancellation support.
+  ///
+  /// [scratchPath] confines scratch checks to the real scratch dir; when null
+  /// they fail closed (confirmation). Kept as a parameter (not a Workspace
+  /// lookup) so this service stays dependency-free and testable.
   Future<ShellResult> execute(
     String command, {
     Directory? workingDirectory,
+    String? scratchPath,
     Duration? timeout,
     CancelToken? cancelToken,
     bool confirmDestructive = false,
   }) async {
     // 1. Safety check
-    final safetyCheck = ShellSafetyCheck.analyze(command);
+    final safetyCheck = ShellSafetyCheck.analyze(
+      command,
+      scratchPath: scratchPath,
+      workingDirectory: workingDirectory?.path,
+    );
     if (safetyCheck.isBlocked) {
       throw ShellSecurityException(
         safetyCheck.reason ?? 'Command is blocked by security policy.',

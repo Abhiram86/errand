@@ -12,6 +12,11 @@ import 'package:errand/tools/file_tools.dart';
 
 void main() {
   group('ShellSafetyCheck', () {
+    // Real-dir confinement context: relative `.scratch/...` paths resolve
+    // under /ws, which is the scratch dir itself.
+    const testScratch = '/ws/.scratch';
+    const testCwd = '/ws';
+
     test('identifies safe commands', () {
       final safeCommands = [
         'echo "hello world"',
@@ -31,7 +36,11 @@ void main() {
       ];
 
       for (final cmd in safeCommands) {
-        final check = ShellSafetyCheck.analyze(cmd);
+        final check = ShellSafetyCheck.analyze(
+          cmd,
+          scratchPath: testScratch,
+          workingDirectory: testCwd,
+        );
         expect(check.isSafe, isTrue, reason: 'Command "$cmd" should be safe');
         expect(check.isBlocked, isFalse);
         expect(check.needsConfirmation, isFalse);
@@ -61,7 +70,11 @@ void main() {
         'cp .scratch/a.txt .scratch/b.txt',
       ];
       for (final cmd in scratchSafe) {
-        final check = ShellSafetyCheck.analyze(cmd);
+        final check = ShellSafetyCheck.analyze(
+          cmd,
+          scratchPath: testScratch,
+          workingDirectory: testCwd,
+        );
         expect(check.isSafe, isTrue,
             reason: 'Scratch-confined mutation "$cmd" must be safe');
       }
@@ -179,6 +192,34 @@ void main() {
         expect(check.needsConfirmation, isTrue,
             reason: 'Command "$cmd" should require confirmation');
         expect(check.isBlocked, isFalse);
+      }
+    });
+
+    test('blocks catastrophic nuke commands early without prompting user', () {
+      final nukes = [
+        'rm -rf /sdcard',
+        'rm -rf /sdcard/',
+        'rm -rf /sdcard/*',
+        'rm -rf /storage/emulated/0',
+        'rm -rf /storage/emulated/0/*',
+        'rm -rf /sdcard/DCIM',
+        'rm -rf /sdcard/DCIM/*',
+        'rm -rf /storage/emulated/0/Pictures',
+        'rm -rf /storage/emulated/0/Pictures/*',
+        'rm -rf /sdcard/Android',
+        'am broadcast -a android.intent.action.MASTER_CLEAR',
+        'recovery --wipe_data',
+        'wipe data',
+        'pm disable com.android.systemui',
+        'pm uninstall com.errand.errand',
+        'echo c > /proc/sysrq-trigger',
+        'setprop ctl.stop zygote',
+      ];
+
+      for (final cmd in nukes) {
+        final check = ShellSafetyCheck.analyze(cmd);
+        expect(check.isBlocked, isTrue,
+            reason: 'Nuke command "$cmd" must be hard blocked');
       }
     });
 
@@ -306,7 +347,11 @@ void main() {
         'cp .scratch/file.txt .scratch/copy.txt',
       ];
       for (final cmd in safeCopies) {
-        final check = ShellSafetyCheck.analyze(cmd);
+        final check = ShellSafetyCheck.analyze(
+          cmd,
+          scratchPath: testScratch,
+          workingDirectory: testCwd,
+        );
         expect(check.isSafe, isTrue,
             reason: 'Workspace copy "$cmd" must be safe');
       }
@@ -354,6 +399,88 @@ void main() {
         expect(check.needsConfirmation, isTrue,
             reason: 'Unknown executable "$cmd" must fail closed to needsConfirmation');
       }
+    });
+
+    test('blocks token-level catastrophes regardless of quoting (rewrite)', () {
+      final catastrophes = [
+        'am broadcast -a android.intent.action.MASTER_CLEAR',
+        'am broadcast -a "android.intent.action.MASTER_CLEAR"',
+        'recovery --wipe_data',
+        'wipe data',
+        'pm disable com.android.systemui',
+        'pm "disable" com.errand.errand',
+        'pm uninstall com.google.android.gms',
+        'svc power reboot',
+        'svc power shutdown',
+        'echo c > /proc/sysrq-trigger',
+        'setprop ctl.stop zygote',
+        'setprop ctl.restart zygote',
+      ];
+      for (final cmd in catastrophes) {
+        final check = ShellSafetyCheck.analyze(cmd);
+        expect(check.isBlocked, isTrue,
+            reason: 'Catastrophe "$cmd" must be blocked');
+      }
+
+      // Benign near-misses stay out of the block set.
+      expect(ShellSafetyCheck.analyze('pm enable com.android.systemui').isBlocked,
+          isFalse);
+      expect(ShellSafetyCheck.analyze('svc wifi enable').isBlocked, isFalse);
+    });
+
+    test('PATH mutation always requires confirmation (rewrite)', () {
+      for (final cmd in [
+        'PATH=/evil ls',
+        'export PATH=/evil',
+        'export PATH=/evil; ls',
+        'env PATH=/evil ls',
+      ]) {
+        final check = ShellSafetyCheck.analyze(cmd);
+        expect(check.needsConfirmation, isTrue,
+            reason: 'PATH mutation "$cmd" must require confirmation');
+        expect(check.isSafe, isFalse);
+      }
+      // Non-PATH exports stay safe via the allowlist.
+      expect(ShellSafetyCheck.analyze('export FOO=bar').isSafe, isTrue);
+    });
+
+    test('redirect gaps closed: &>>, >|, herestrings skipped (rewrite)', () {
+      for (final cmd in [
+        'echo x &>> /system/build.prop',
+        'echo x >| /system/build.prop',
+      ]) {
+        final check = ShellSafetyCheck.analyze(cmd);
+        expect(check.isBlocked, isTrue,
+            reason: 'Redirect "$cmd" must be blocked');
+      }
+      // Herestring content is literal, not a path — must not false-block.
+      expect(ShellSafetyCheck.analyze('cat <<< hello').isSafe, isTrue);
+    });
+
+    test('scratch confinement uses real dirs, not substrings (rewrite)', () {
+      // Folders merely named like scratch are NOT scratch.
+      for (final cmd in [
+        'rm -rf my.scratch/',
+        'rm -rf /sdcard/scratch/',
+        'cp a.txt scratchpad/b.txt',
+      ]) {
+        final check = ShellSafetyCheck.analyze(
+          cmd,
+          scratchPath: testScratch,
+          workingDirectory: testCwd,
+        );
+        expect(check.isSafe, isFalse,
+            reason: 'Lookalike "$cmd" must not be scratch-safe');
+      }
+      // Real confinement resolves through cwd, including .. segments.
+      final check = ShellSafetyCheck.analyze(
+        'cp /ws/.scratch/a.txt /ws/.scratch/sub/../b.txt',
+        scratchPath: testScratch,
+        workingDirectory: testCwd,
+      );
+      expect(check.isSafe, isTrue);
+      // Unknown scratch context fails closed, never safe.
+      expect(ShellSafetyCheck.analyze('rm -rf .scratch').isSafe, isFalse);
     });
   });
 
@@ -418,7 +545,8 @@ void main() {
       );
     });
 
-    test('throws ShellDraftConfirmationException for destructive mutations without confirmation', () async {
+    test('throws ShellDraftConfirmationException for recursive deletion outside scratch', () async {
+      // Recursive deletion outside scratch requires confirmation (not blocked).
       expect(
         () => service.execute('rm -rf test_dir', workingDirectory: tempDir),
         throwsA(isA<ShellDraftConfirmationException>()),
@@ -430,12 +558,32 @@ void main() {
       );
     });
 
+    test('hard-blocks deletion of protected paths', () async {
+      // Common destructive absolute paths are blocked outright.
+      expect(
+        () => service.execute('rm -rf /sdcard/DCIM', workingDirectory: tempDir),
+        throwsA(isA<ShellSecurityException>()),
+      );
+      expect(
+        () => service.execute('rm -rf /storage/emulated/0/Pictures', workingDirectory: tempDir),
+        throwsA(isA<ShellSecurityException>()),
+      );
+    });
+
+    test('throws ShellDraftConfirmationException for non-recursive deletion outside scratch', () async {
+      // Single-file deletion (no -r, no wildcard) still requires confirmation.
+      expect(
+        () => service.execute('rm file.txt', workingDirectory: tempDir),
+        throwsA(isA<ShellDraftConfirmationException>()),
+      );
+    });
+
     test('allows destructive mutations when confirmDestructive is true', () async {
       final fileToDelete = File('${tempDir.path}/to_delete.txt');
       await fileToDelete.writeAsString('bye');
 
       final result = await service.execute(
-        'rm -f "${tempDir.path}"/*.txt',
+        'rm -f "${tempDir.path}/to_delete.txt"',
         workingDirectory: tempDir,
         confirmDestructive: true,
       );
@@ -680,6 +828,37 @@ void main() {
         ),
       );
 
+      expect(promptCalled, isTrue);
+      expect(result.ok, isTrue);
+      expect(await testFile.exists(), isFalse);
+    });
+
+    test('bashTool prompts via onConfirmCommand even if confirm_destructive: true is passed by agent', () async {
+      final testFile = File('${tempDir.path}/prompt_agent_self_confirm.txt');
+      await testFile.writeAsString('should not bypass modal');
+
+      var promptCalled = false;
+      final customTool = bashTool(
+        workingDirectory: workingDir,
+        onConfirmCommand: ({required command, required title, reason}) async {
+          promptCalled = true;
+          return ConfirmationDecision.accept;
+        },
+      );
+      addTearDown(() => customTool.dispose());
+
+      final result = await customTool.handler(
+        ToolCall(
+          id: 'call-self-confirm',
+          name: 'bash',
+          arguments: {
+            'command': 'rm "${testFile.path}"',
+            'confirm_destructive': true,
+          },
+        ),
+      );
+
+      // Must STILL prompt the user via onConfirmCommand even though agent passed confirm_destructive: true
       expect(promptCalled, isTrue);
       expect(result.ok, isTrue);
       expect(await testFile.exists(), isFalse);
