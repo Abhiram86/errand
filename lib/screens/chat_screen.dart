@@ -2570,22 +2570,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   bool _isTogglingVoice = false;
   int _speechSessionId = 0;
 
-  /// Deduplicates speech recognition results when the underlying engine
-  /// returns a phrase duplicated twice (e.g. on certain Android configurations).
-  String _deduplicateSpeechWords(String text) {
-    final trimmed = text.trim();
-    if (trimmed.isEmpty) return text;
-    final words = trimmed.split(RegExp(r'\s+'));
-    if (words.length >= 2 && words.length % 2 == 0) {
-      final mid = words.length ~/ 2;
-      final firstHalf = words.sublist(0, mid).join(' ');
-      final secondHalf = words.sublist(mid).join(' ');
-      if (firstHalf.toLowerCase() == secondHalf.toLowerCase()) {
-        return firstHalf;
-      }
-    }
-    return text;
-  }
 
   /// Triggered via Android Home Screen Widget or direct voice shortcuts.
   Future<void> _startVoicePrompt() async {
@@ -2611,28 +2595,36 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   /// lands in the composer (live partials); the user reviews and sends.
   Future<void> _toggleVoiceInput() async {
     final speech = SpeechService.instance;
-    if (speech.listening.value) {
+    if (speech.listening.value || _isTogglingVoice) {
       _speechSessionId++;
       await speech.stop();
-      return; // listening notifier flips via onStatus
+      if (mounted) setState(() {});
+      return; // listening notifier flips via onStatus / stop
     }
-    if (_busy || _isTogglingVoice) return;
     _isTogglingVoice = true;
+    speech.listening.value = true;
+    if (mounted) setState(() {});
 
     try {
       await _ensureSettingsReady();
-      if (!mounted || _busy) return;
+      if (!mounted || _busy) {
+        speech.listening.value = false;
+        return;
+      }
 
       if (!await speech.hasMicPermission()) {
+        speech.listening.value = false;
         final granted = await speech.requestMicPermission();
         if (!mounted) return;
         if (!granted) {
           _showToast('Microphone permission is needed for voice input.');
           return;
         }
+        speech.listening.value = true;
       }
 
       if (!await speech.initialize()) {
+        speech.listening.value = false;
         if (!mounted) return;
         _showToast(
           'Speech recognition is unavailable on this device. On emulators, '
@@ -2643,10 +2635,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
       var localeId = await speech.savedLocaleId();
       if (localeId == null) {
+        speech.listening.value = false;
         localeId = await _pickVoiceLocale();
         if (!mounted) return;
         if (localeId == null) return; // user cancelled the picker
         await speech.saveLocaleId(localeId);
+        speech.listening.value = true;
       }
 
       final sessionId = ++_speechSessionId;
@@ -2655,17 +2649,21 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           localeId: localeId,
           onResult: (words, isFinal) {
             if (!mounted || sessionId != _speechSessionId) return;
-            final cleanWords = _deduplicateSpeechWords(words);
+            final cleanWords = SpeechService.cleanSpeechText(words);
             // Cumulative partials replace the composer text; keep the cursor
             // at the end so typing can continue seamlessly.
             _controller.value = TextEditingValue(
               text: cleanWords,
               selection: TextSelection.collapsed(offset: cleanWords.length),
             );
-            if (isFinal && mounted) setState(() {});
+            if (isFinal && mounted) {
+              speech.stop();
+              setState(() {});
+            }
           },
         );
       } catch (e) {
+        speech.listening.value = false;
         if (!mounted) return;
         _showToast('Could not start voice input: $e');
       }

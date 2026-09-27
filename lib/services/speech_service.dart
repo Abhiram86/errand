@@ -35,8 +35,12 @@ class SpeechService {
     _initialized = await _speech.initialize(
       onStatus: (status) {
         final isList = status == 'listening';
-        listening.value = isList;
-        if (!isList) soundLevel.value = 0.0;
+        if (isList) {
+          listening.value = true;
+        } else if (status == 'notListening' || status == 'done') {
+          listening.value = false;
+          soundLevel.value = 0.0;
+        }
       },
       onError: (_) {
         listening.value = false;
@@ -63,36 +67,51 @@ class SpeechService {
     String? localeId,
     Duration pauseFor = const Duration(seconds: 5),
     Duration listenFor = const Duration(minutes: 2),
-  }) {
+  }) async {
     soundLevel.value = 0.0;
-    return _speech.listen(
-      onResult: (result) => onResult(result.recognizedWords, result.finalResult),
-      onSoundLevelChange: (level) {
-        // Android speech_to_text reports RMS dB (typically -2..10+).
-        // Map to 0.0-1.0 with exponential smoothing to avoid UI jitter:
-        // clamp floor at ~0.5dB so silence stays 0, scale 0.5..9, then
-        // low-pass filter (70% old + 30% new).
-        final clamped = level <= 0.5
-            ? 0.0
-            : level >= 9.0
-                ? 1.0
-                : (level - 0.5) / 8.5;
-        final smoothed = soundLevel.value * 0.7 + clamped * 0.3;
-        // Skip tiny updates to avoid rebuilding the composer at 20Hz.
-        if ((smoothed - soundLevel.value).abs() < 0.02) return;
-        soundLevel.value = smoothed.clamp(0.0, 1.0);
-      },
-      listenOptions: SpeechListenOptions(
-        partialResults: true,
-        cancelOnError: true,
-        localeId: localeId,
-        pauseFor: pauseFor,
-        listenFor: listenFor,
-      ),
-    );
+    listening.value = true;
+    try {
+      await _speech.listen(
+        onResult: (result) {
+          final cleaned = cleanSpeechText(result.recognizedWords);
+          onResult(cleaned, result.finalResult);
+          if (result.finalResult) {
+            listening.value = false;
+            soundLevel.value = 0.0;
+          }
+        },
+        onSoundLevelChange: (level) {
+          // Android speech_to_text reports RMS dB (typically -2..10+).
+          // Map to 0.0-1.0 with exponential smoothing to avoid UI jitter:
+          // clamp floor at ~0.5dB so silence stays 0, scale 0.5..9, then
+          // low-pass filter (70% old + 30% new).
+          final clamped = level <= 0.5
+              ? 0.0
+              : level >= 9.0
+                  ? 1.0
+                  : (level - 0.5) / 8.5;
+          final smoothed = soundLevel.value * 0.7 + clamped * 0.3;
+          // Skip tiny updates to avoid rebuilding the composer at 20Hz.
+          if ((smoothed - soundLevel.value).abs() < 0.02) return;
+          soundLevel.value = smoothed.clamp(0.0, 1.0);
+        },
+        listenOptions: SpeechListenOptions(
+          partialResults: true,
+          cancelOnError: true,
+          localeId: localeId,
+          pauseFor: pauseFor,
+          listenFor: listenFor,
+        ),
+      );
+    } catch (_) {
+      listening.value = false;
+      soundLevel.value = 0.0;
+      rethrow;
+    }
   }
 
   Future<void> stop() async {
+    listening.value = false;
     soundLevel.value = 0.0;
     await _speech.stop();
   }
@@ -123,6 +142,89 @@ class SpeechService {
     } on PlatformException {
       return false;
     }
+  }
+
+  /// Cleans and deduplicates spoken text when device speech engines
+  /// (such as Android Google Speech Recognizer) deliver repeated sentences or phrases.
+  static String cleanSpeechText(String text) {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) return text;
+
+    String normalize(String s) {
+      final noPunct = s.replaceAll(RegExp(r'[^\w\s]'), '').toLowerCase();
+      return noPunct.replaceAll(RegExp(r'\s+'), ' ').trim();
+    }
+
+    final normFull = normalize(trimmed);
+    if (normFull.isEmpty) return text;
+
+    // 1. Character-level exact repeat without spaces (e.g. 'hellohello')
+    if (trimmed.length >= 4 && trimmed.length % 2 == 0) {
+      final halfLen = trimmed.length ~/ 2;
+      if (trimmed.substring(0, halfLen).toLowerCase() ==
+          trimmed.substring(halfLen).toLowerCase()) {
+        return trimmed.substring(0, halfLen);
+      }
+    }
+
+    // 2. Sentence-level split by punctuation: '.', '?', '!'
+    final sentenceMatches = trimmed
+        .split(RegExp(r'(?<=[.?!])\s+'))
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty)
+        .toList();
+    if (sentenceMatches.length >= 2 && sentenceMatches.length % 2 == 0) {
+      final mid = sentenceMatches.length ~/ 2;
+      final s1 = sentenceMatches.sublist(0, mid).join(' ');
+      final s2 = sentenceMatches.sublist(mid).join(' ');
+      if (normalize(s1) == normalize(s2)) {
+        return s1;
+      }
+    }
+
+    // 3. Word-level split
+    final words = trimmed.split(RegExp(r'\s+'));
+    if (words.length >= 2) {
+      // 3a. Exact midpoint split
+      if (words.length % 2 == 0) {
+        final mid = words.length ~/ 2;
+        final w1 = words.sublist(0, mid).join(' ');
+        final w2 = words.sublist(mid).join(' ');
+        if (normalize(w1) == normalize(w2)) {
+          if (w1.endsWith('.') || w1.endsWith('?') || w1.endsWith('!')) {
+            return w1;
+          }
+          if (w2.endsWith('.') || w2.endsWith('?') || w2.endsWith('!')) {
+            return '$w1${w2.substring(w2.length - 1)}';
+          }
+          return w1;
+        }
+      }
+
+      // 3b. Any split point k where normalized prefix equals normalized suffix
+      for (var k = 1; k < words.length; k++) {
+        final prefix = words.sublist(0, k).join(' ');
+        final suffix = words.sublist(k).join(' ');
+        if (normalize(prefix) == normalize(suffix)) {
+          return prefix;
+        }
+      }
+
+      // 3c. Prefix/suffix overlap (e.g. 'call mom. call mom now')
+      for (var k = 1; k < words.length; k++) {
+        final prefix = words.sublist(0, k).join(' ');
+        final suffix = words.sublist(k).join(' ');
+        final np = normalize(prefix);
+        final ns = normalize(suffix);
+        if (np.isNotEmpty && ns.isNotEmpty && (np.startsWith(ns) || ns.startsWith(np))) {
+          if (np.length >= 8 && (np.length - ns.length).abs() <= 6) {
+            return np.length >= ns.length ? prefix : suffix;
+          }
+        }
+      }
+    }
+
+    return trimmed;
   }
 }
 

@@ -345,6 +345,22 @@ void main() {
         equals('hello world and how are you'),
       );
     });
+
+    test('SpeechService.cleanSpeechText deduplicates repeated sentences, words, and punctuation variations', () {
+      expect(SpeechService.cleanSpeechText(''), equals(''));
+      expect(SpeechService.cleanSpeechText('hello hello'), equals('hello'));
+      expect(SpeechService.cleanSpeechText('hello world hello world'), equals('hello world'));
+      expect(SpeechService.cleanSpeechText('Hello world. Hello world'), equals('Hello world.'));
+      expect(SpeechService.cleanSpeechText('Hello world. Hello world.'), equals('Hello world.'));
+      expect(SpeechService.cleanSpeechText('What is the weather today? What is the weather today?'), equals('What is the weather today?'));
+      expect(SpeechService.cleanSpeechText('what is the weather today. What is the weather today'), equals('what is the weather today.'));
+      expect(SpeechService.cleanSpeechText('turn on the light turn on the light'), equals('turn on the light'));
+      expect(SpeechService.cleanSpeechText('hellohello'), equals('hello'));
+      expect(
+        SpeechService.cleanSpeechText('This is a normal message that is not duplicated.'),
+        equals('This is a normal message that is not duplicated.'),
+      );
+    });
   });
 }
 
