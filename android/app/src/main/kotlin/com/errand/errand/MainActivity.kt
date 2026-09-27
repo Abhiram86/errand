@@ -311,39 +311,60 @@ class MainActivity : FlutterActivity() {
                     }
                 }
                 "requestBatteryExemption" -> {
-                    // Full flavor declares REQUEST_IGNORE_BATTERY_OPTIMIZATIONS;
-                    // fall back to app-specific battery settings if direct request fails or is disallowed (e.g. lite flavor).
-                    try {
-                        val intent = Intent(
-                            Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
-                        ).apply {
-                            data = android.net.Uri.parse("package:$packageName")
-                            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                    // Full flavor declares REQUEST_IGNORE_BATTERY_OPTIMIZATIONS and can show the direct dialog.
+                    // Lite flavor does not declare it; on lite, launching ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
+                    // silently finishes without throwing or displaying any UI.
+                    val hasDirectPermission = try {
+                        val info = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            packageManager.getPackageInfo(
+                                packageName,
+                                PackageManager.PackageInfoFlags.of(PackageManager.GET_PERMISSIONS.toLong())
+                            )
+                        } else {
+                            @Suppress("DEPRECATION")
+                            packageManager.getPackageInfo(packageName, PackageManager.GET_PERMISSIONS)
                         }
-                        startActivity(intent)
-                        result.success(true)
-                    } catch (e: Exception) {
+                        info.requestedPermissions?.contains("android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS") == true
+                    } catch (_: Exception) {
+                        false
+                    }
+
+                    if (hasDirectPermission) {
                         try {
-                            // Primary fallback: open Errand's App Info page where the user can configure
-                            // Battery -> Unrestricted (or "No restrictions" on Xiaomi/Oppo).
-                            val appDetailsIntent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                            val intent = Intent(
+                                Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
+                            ).apply {
                                 data = android.net.Uri.parse("package:$packageName")
                                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
                             }
-                            startActivity(appDetailsIntent)
+                            startActivity(intent)
                             result.success(true)
-                        } catch (e2: Exception) {
-                            try {
-                                // Last resort: open the system battery optimization list
-                                val batteryListIntent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).apply {
-                                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                                }
-                                startActivity(batteryListIntent)
-                                result.success(true)
-                            } catch (e3: Exception) {
-                                Log.e("MainActivity", "Battery exemption request fallback failed", e3)
-                                result.success(false)
+                            return@setMethodCallHandler
+                        } catch (e: Exception) {
+                            Log.w("MainActivity", "Direct battery exemption dialog failed, falling back to app details", e)
+                        }
+                    }
+
+                    try {
+                        // Primary fallback (and default for lite flavor): open Errand's App Info page
+                        // where the user can configure Battery -> Unrestricted (or "No restrictions" on Xiaomi/Oppo).
+                        val appDetailsIntent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                            data = android.net.Uri.parse("package:$packageName")
+                            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                        }
+                        startActivity(appDetailsIntent)
+                        result.success(true)
+                    } catch (e2: Exception) {
+                        try {
+                            // Last resort: open the system battery optimization list
+                            val batteryListIntent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).apply {
+                                flags = Intent.FLAG_ACTIVITY_NEW_TASK
                             }
+                            startActivity(batteryListIntent)
+                            result.success(true)
+                        } catch (e3: Exception) {
+                            Log.e("MainActivity", "Battery exemption request fallback failed", e3)
+                            result.success(false)
                         }
                     }
                 }

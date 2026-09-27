@@ -64,7 +64,9 @@ Tool saveReportTool({
         'linked_files': {
           'type': 'array',
           'items': {'type': 'string'},
-          'description': 'Optional list of auxiliary file paths or names in scratch associated with this report.',
+          'description':
+              'Optional list of auxiliary file paths created during the task (e.g. CSVs, charts, exports, downloaded files) '
+              'to link with this report for user download, preview, and tracking.',
         },
       },
       'required': ['content'],

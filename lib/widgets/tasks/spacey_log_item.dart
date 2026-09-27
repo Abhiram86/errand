@@ -8,7 +8,7 @@ import '../../theme/app_colors.dart';
 import 'task_action_button.dart';
 
 /// Spacey Unread / Log Item Widget
-class SpaceyLogItem extends StatelessWidget {
+class SpaceyLogItem extends StatefulWidget {
   final SchedulerTaskLogRow log;
   final SchedulerTaskRow? task;
   final VoidCallback onMarkSeen;
@@ -21,32 +21,78 @@ class SpaceyLogItem extends StatelessWidget {
   });
 
   @override
+  State<SpaceyLogItem> createState() => _SpaceyLogItemState();
+}
+
+class _SpaceyLogItemState extends State<SpaceyLogItem> {
+  bool _isExpanded = false;
+
+  IconData _iconForPath(String filePath) {
+    final ext = p.extension(filePath).toLowerCase();
+    switch (ext) {
+      case '.csv':
+      case '.tsv':
+      case '.json':
+        return Icons.table_chart_outlined;
+      case '.png':
+      case '.jpg':
+      case '.jpeg':
+      case '.webp':
+      case '.gif':
+      case '.svg':
+        return Icons.image_outlined;
+      case '.pdf':
+        return Icons.picture_as_pdf_outlined;
+      case '.html':
+        return Icons.html_outlined;
+      case '.md':
+      case '.txt':
+        return Icons.description_outlined;
+      default:
+        return Icons.insert_drive_file_outlined;
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final isUnread = log.notificationSeen == 0;
-    final title = task?.title ?? 'Task #${log.schedulerTaskId}';
+    final isUnread = widget.log.notificationSeen == 0;
+    final title = widget.task?.title ?? 'Task #${widget.log.schedulerTaskId}';
+    final linkedFiles = TaskSchedulerService.parseLinkedFiles(widget.log.linkedFiles);
 
     return InkWell(
       onTap: () {
-        if (isUnread) onMarkSeen();
+        if (isUnread) widget.onMarkSeen();
+        setState(() {
+          _isExpanded = !_isExpanded;
+        });
       },
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Top: status indicator + timestamp + unread dot
+            // Top: status indicator + timestamp + unread dot + expand indicator
             Row(
               children: [
-                _buildStatusIndicator(log.status),
+                _buildStatusIndicator(widget.log.status),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    _formatTime(log.startedAt ?? log.createdAt),
+                    _formatTime(widget.log.startedAt ?? widget.log.createdAt),
                     style: TextStyle(color: kMuted.withValues(alpha: 0.7), fontSize: 11),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
+                if (linkedFiles.isNotEmpty || widget.log.outputFilePath != null)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 6),
+                    child: Icon(
+                      _isExpanded ? Icons.expand_less_rounded : Icons.expand_more_rounded,
+                      color: kMuted.withValues(alpha: 0.7),
+                      size: 16,
+                    ),
+                  ),
                 if (isUnread) ...[
                   Container(
                     width: 6,
@@ -61,7 +107,7 @@ class SpaceyLogItem extends StatelessWidget {
                     icon: Icons.check_rounded,
                     tooltip: 'Mark as read',
                     color: kMuted,
-                    onTap: onMarkSeen,
+                    onTap: widget.onMarkSeen,
                   ),
                 ],
               ],
@@ -76,39 +122,39 @@ class SpaceyLogItem extends StatelessWidget {
                 fontSize: 13,
                 fontWeight: isUnread ? FontWeight.w600 : FontWeight.w500,
               ),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
+              maxLines: _isExpanded ? null : 2,
+              overflow: _isExpanded ? TextOverflow.visible : TextOverflow.ellipsis,
             ),
 
             // Summary
-            if (log.summary != null && log.summary!.isNotEmpty) ...[
+            if (widget.log.summary != null && widget.log.summary!.isNotEmpty) ...[
               const SizedBox(height: 4),
               Text(
-                log.summary!,
+                widget.log.summary!,
                 style: const TextStyle(color: kMuted, fontSize: 11, height: 1.35),
-                maxLines: 3,
-                overflow: TextOverflow.ellipsis,
+                maxLines: _isExpanded ? null : 3,
+                overflow: _isExpanded ? TextOverflow.visible : TextOverflow.ellipsis,
               ),
             ],
 
             // Error
-            if (log.errorMessage != null && log.errorMessage!.isNotEmpty) ...[
+            if (widget.log.errorMessage != null && widget.log.errorMessage!.isNotEmpty) ...[
               const SizedBox(height: 4),
               Text(
-                'Error: ${log.errorMessage}',
+                'Error: ${widget.log.errorMessage}',
                 style: const TextStyle(color: kDanger, fontSize: 11),
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
+                maxLines: _isExpanded ? null : 2,
+                overflow: _isExpanded ? TextOverflow.visible : TextOverflow.ellipsis,
               ),
             ],
 
-            // Output File Link
-            if (log.outputFilePath != null && log.outputFilePath!.isNotEmpty) ...[
+            // Primary Output Report File Link
+            if (widget.log.outputFilePath != null && widget.log.outputFilePath!.isNotEmpty) ...[
               const SizedBox(height: 8),
               InkWell(
                 onTap: () {
-                  if (isUnread) onMarkSeen();
-                  final resolvedPath = TaskSchedulerService.resolveReportPath(log.outputFilePath);
+                  if (isUnread) widget.onMarkSeen();
+                  final resolvedPath = TaskSchedulerService.resolveReportPath(widget.log.outputFilePath);
                   TaskFilePreviewScreen.show(
                     context,
                     filePath: resolvedPath,
@@ -124,7 +170,7 @@ class SpaceyLogItem extends StatelessWidget {
                       const SizedBox(width: 6),
                       Expanded(
                         child: Text(
-                          log.outputFilePath!,
+                          widget.log.outputFilePath!,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
@@ -153,6 +199,112 @@ class SpaceyLogItem extends StatelessWidget {
                       ),
                     ],
                   ),
+                ),
+              ),
+            ],
+
+            // Collapsed linked files hint
+            if (!_isExpanded && linkedFiles.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              Row(
+                children: [
+                  const Icon(Icons.attach_file_rounded, color: kMuted, size: 13),
+                  const SizedBox(width: 4),
+                  Text(
+                    '${linkedFiles.length} linked file${linkedFiles.length == 1 ? '' : 's'} (tap to view)',
+                    style: TextStyle(
+                      color: kMuted.withValues(alpha: 0.85),
+                      fontSize: 11,
+                      fontStyle: FontStyle.italic,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+
+            // Expanded Linked Files Section
+            if (_isExpanded && linkedFiles.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: kBorder.withValues(alpha: 0.25),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(Icons.attach_file_rounded, color: Color(0xFF58A6FF), size: 13),
+                        const SizedBox(width: 4),
+                        Text(
+                          'Linked Files (${linkedFiles.length})',
+                          style: const TextStyle(
+                            color: kText,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    ...linkedFiles.map((fileRelPath) {
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 2),
+                        child: InkWell(
+                          onTap: () {
+                            if (isUnread) widget.onMarkSeen();
+                            final resolvedPath = TaskSchedulerService.resolveReportPath(fileRelPath);
+                            TaskFilePreviewScreen.show(
+                              context,
+                              filePath: resolvedPath,
+                              title: p.basename(resolvedPath),
+                            );
+                          },
+                          borderRadius: BorderRadius.circular(4),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 3, horizontal: 4),
+                            child: Row(
+                              children: [
+                                Icon(_iconForPath(fileRelPath), color: const Color(0xFF58A6FF), size: 13),
+                                const SizedBox(width: 6),
+                                Expanded(
+                                  child: Text(
+                                    fileRelPath,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      color: const Color(0xFF58A6FF),
+                                      fontSize: 11,
+                                      decoration: TextDecoration.underline,
+                                      decorationColor: const Color(0xFF58A6FF).withValues(alpha: 0.55),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 6),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFF58A6FF).withValues(alpha: 0.12),
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
+                                  child: const Text(
+                                    'Preview',
+                                    style: TextStyle(
+                                      color: Color(0xFF58A6FF),
+                                      fontSize: 9,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      );
+                    }),
+                  ],
                 ),
               ),
             ],
