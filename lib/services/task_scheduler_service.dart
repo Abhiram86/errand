@@ -428,6 +428,31 @@ class TaskSchedulerService {
     }
   }
 
+  /// Whether the OS exempts the app from battery optimization (Doze network
+  /// restrictions don't apply when true). Defaults to false on failure so
+  /// callers check-then-prompt rather than assume.
+  Future<bool> isIgnoringBatteryOptimizations() async {
+    try {
+      final result =
+          await _channel.invokeMethod<bool>('isIgnoringBatteryOptimizations');
+      return result ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Opens the system battery-optimization exemption prompt for this app.
+  /// Full flavor only (declares the permission); returns false elsewhere.
+  Future<bool> requestBatteryExemption() async {
+    try {
+      final result =
+          await _channel.invokeMethod<bool>('requestBatteryExemption');
+      return result ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// Outcome of editing a task's schedule type/interval in settings sheets.
   /// Outcome of editing a task's schedule type/interval in settings sheets.
   /// Pure and unit-tested: the sheet must apply exactly this, so status and

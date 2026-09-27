@@ -8,6 +8,7 @@ import 'screens/manage_tasks_screen.dart';
 import 'services/app_settings.dart';
 import 'services/task_scheduler_service.dart';
 import 'services/task_toast_service.dart';
+import 'services/grant_flow_service.dart';
 import 'theme/app_colors.dart';
 import 'utils/app_profile.dart';
 import 'widgets/unread_task_banner.dart';
@@ -220,6 +221,17 @@ class _ErrandAppState extends State<ErrandApp> {
                 : null,
           ),
         );
+      // Creation-time grant flow (P13.4): first tasks trigger the exact
+      // alarm → battery exemption prompts where the user is. Fire-and-forget;
+      // the sheet needs a foreground context, so headless creations skip it
+      // (no navigator context available there — same reason prompts can't
+      // originate from background code).
+      if (event.type == TaskToastType.create) {
+        final context = appNavigatorKey.currentContext;
+        if (context != null && context.mounted) {
+          unawaited(GrantFlowService.maybePromptAfterTaskCreated(context));
+        }
+      }
     });
   }
 

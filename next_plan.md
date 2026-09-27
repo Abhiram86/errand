@@ -321,6 +321,7 @@ Problem (researched, Sep 2026): headless runs are slow and failure-prone on mobi
 3. **Split transport failure from task failure in UX.** Offline/timeout-class errors on retryable schedules → "waiting for network" state with no failure notification; notify only when retries are truly exhausted with no next run.
 4. **Network-preference toggle (WiFi-only per task or global).** Direct answer to metered-data complaints; pairs with item 2 for exact-time tasks.
 5. **Cheaper first attempt on metered links** (probe semantics, short timeout) instead of a uniform 30s — cuts perceived slowness without touching the success path. WorkManager-with-`CONNECTED`-constraint explicitly deferred: sacrifices exactness, revisit only if exact-time tasks fail disproportionately.
+6. **Creation-time grant flow (UX, not buried in Manage Tasks).** When the first scheduled task is created, run the sequential grant flow in the foreground UI: exact alarm first (nothing to exempt if nothing fires), then battery exemption — each skippable, each with a one-line why, shown once per grant. Trigger off the existing task-created broadcast, never for task-free users; explicit denial cools down until the next Doze-suspected failure (which re-arms via the failure-fix path). Exemption intent must fire from a foreground activity — never from headless/background code.
 
 Acceptance:
 - Log breakdown attached; build items justified by it, not vibes.

@@ -301,6 +301,42 @@ class MainActivity : FlutterActivity() {
                         result.success(false)
                     }
                 }
+                "isIgnoringBatteryOptimizations" -> {
+                    try {
+                        val pm = getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+                        result.success(pm.isIgnoringBatteryOptimizations(packageName))
+                    } catch (e: Exception) {
+                        Log.e("MainActivity", "Battery exemption query failed", e)
+                        result.success(false)
+                    }
+                }
+                "requestBatteryExemption" -> {
+                    // Full flavor declares REQUEST_IGNORE_BATTERY_OPTIMIZATIONS;
+                    // fall back to general battery optimization settings if direct request fails or is disallowed.
+                    try {
+                        val intent = Intent(
+                            Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
+                        ).apply {
+                            data = android.net.Uri.parse("package:$packageName")
+                            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                        }
+                        startActivity(intent)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        try {
+                            val fallbackIntent = Intent(
+                                Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS
+                            ).apply {
+                                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                            }
+                            startActivity(fallbackIntent)
+                            result.success(true)
+                        } catch (e2: Exception) {
+                            Log.e("MainActivity", "Battery exemption request fallback failed", e2)
+                            result.success(false)
+                        }
+                    }
+                }
                 "getPendingNotificationClick" -> {
                     logP10("pending_lookup_native_start")
                     val pending = pendingTaskNotification
