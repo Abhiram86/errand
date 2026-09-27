@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:drift/drift.dart' hide Column;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../services/database.dart';
 import '../../services/task_progress_service.dart';
@@ -457,6 +458,51 @@ class _DebugTaskLiveProgress extends StatefulWidget {
 
 class _DebugTaskLiveProgressState extends State<_DebugTaskLiveProgress> {
   bool _expanded = false;
+  bool _copied = false;
+  Timer? _copyTimer;
+
+  @override
+  void dispose() {
+    _copyTimer?.cancel();
+    super.dispose();
+  }
+
+  String _formatTraceForClipboard(List<TaskProgressEvent> history) {
+    final buffer = StringBuffer();
+    buffer.writeln('=== Task #${widget.taskId} Debug Trace ===');
+    for (var i = 0; i < history.length; i++) {
+      final ev = history[i];
+      final time =
+          '${ev.timestamp.hour.toString().padLeft(2, '0')}:${ev.timestamp.minute.toString().padLeft(2, '0')}:${ev.timestamp.second.toString().padLeft(2, '0')}';
+      buffer.writeln('[$time] [Step ${i + 1}] [Turn ${ev.turn}] [${ev.stageLabel}] ${ev.message}');
+      if (ev.toolArgs != null && ev.toolArgs!.isNotEmpty) {
+        buffer.writeln('  Arguments: ${ev.toolArgs}');
+      }
+      if (ev.toolResultSnippet != null && ev.toolResultSnippet!.isNotEmpty) {
+        buffer.writeln('  Result: ${ev.toolResultSnippet}');
+      }
+    }
+    return buffer.toString().trim();
+  }
+
+  void _copyTrace(List<TaskProgressEvent> history) {
+    if (history.isEmpty) return;
+    final text = _formatTraceForClipboard(history);
+    Clipboard.setData(ClipboardData(text: text));
+    setState(() => _copied = true);
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Copied ${history.length} trace step${history.length == 1 ? '' : 's'} to clipboard'),
+        duration: const Duration(seconds: 2),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+    _copyTimer?.cancel();
+    _copyTimer = Timer(const Duration(seconds: 2), () {
+      if (mounted) setState(() => _copied = false);
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -502,6 +548,35 @@ class _DebugTaskLiveProgressState extends State<_DebugTaskLiveProgress> {
                   'Turn ${latest.turn} • ${latest.stageLabel}',
                   style: const TextStyle(color: kMuted, fontSize: 9.5),
                 ),
+              if (history.isNotEmpty) ...[
+                const SizedBox(width: 8),
+                InkWell(
+                  onTap: () => _copyTrace(history),
+                  borderRadius: BorderRadius.circular(4),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          _copied ? Icons.check_rounded : Icons.copy_rounded,
+                          size: 11,
+                          color: _copied ? Colors.greenAccent : Colors.cyanAccent,
+                        ),
+                        const SizedBox(width: 3),
+                        Text(
+                          _copied ? 'Copied' : 'Copy Trace',
+                          style: TextStyle(
+                            color: _copied ? Colors.greenAccent : Colors.cyanAccent,
+                            fontSize: 9.5,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
             ],
           ),
           const SizedBox(height: 6),

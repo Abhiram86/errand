@@ -62,9 +62,11 @@ class _SpaceyLogItemState extends State<SpaceyLogItem> {
     return InkWell(
       onTap: () {
         if (isUnread) widget.onMarkSeen();
-        setState(() {
-          _isExpanded = !_isExpanded;
-        });
+        if (linkedFiles.isNotEmpty) {
+          setState(() {
+            _isExpanded = !_isExpanded;
+          });
+        }
       },
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -84,7 +86,7 @@ class _SpaceyLogItemState extends State<SpaceyLogItem> {
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
-                if (linkedFiles.isNotEmpty || widget.log.outputFilePath != null)
+                if (linkedFiles.isNotEmpty)
                   Padding(
                     padding: const EdgeInsets.only(right: 6),
                     child: Icon(
