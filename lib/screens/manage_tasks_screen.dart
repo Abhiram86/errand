@@ -696,7 +696,11 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
       context: context,
       builder: (dialogCtx) => AlertDialog(
         backgroundColor: const Color(0xFF1E222B),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+        titlePadding: const EdgeInsets.fromLTRB(20, 20, 20, 10),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 20),
+        actionsPadding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: const Row(
           children: [
             Icon(Icons.battery_charging_full_rounded, color: Colors.amber, size: 20),
@@ -717,7 +721,8 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
             ),
             const SizedBox(height: 12),
             Container(
-              padding: const EdgeInsets.all(10),
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
               decoration: BoxDecoration(
                 color: kDarkBg.withValues(alpha: 0.5),
                 borderRadius: BorderRadius.circular(8),
@@ -728,19 +733,20 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
                 children: [
                   Text(
                     '1. Tap "Battery" (or "App battery usage").',
-                    style: TextStyle(color: kText, fontSize: 12, fontWeight: FontWeight.w500),
+                    style: TextStyle(color: kText, fontSize: 12.5, fontWeight: FontWeight.w500),
                   ),
                   SizedBox(height: 6),
                   Text(
                     '2. Select "Unrestricted" (or toggle ON "Allow background activity" on Oppo/OnePlus).',
-                    style: TextStyle(color: kText, fontSize: 12, fontWeight: FontWeight.w500),
+                    style: TextStyle(color: kText, fontSize: 12.5, fontWeight: FontWeight.w500),
                   ),
                 ],
               ),
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 10),
             Container(
-              padding: const EdgeInsets.all(10),
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
               decoration: BoxDecoration(
                 color: Colors.amber.withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(8),
@@ -754,7 +760,7 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
                   Expanded(
                     child: Text(
                       'Still confused? Ask Errand in chat: "How do I disable battery optimization on my phone?" and Errand will give you step-by-step instructions for your device.',
-                      style: TextStyle(color: Colors.amber, fontSize: 11, height: 1.35),
+                      style: TextStyle(color: Colors.amber, fontSize: 11.5, height: 1.35),
                     ),
                   ),
                 ],
