@@ -212,8 +212,8 @@ void main() {
     expect(find.text('SUCCESS'), findsOneWidget);
     expect(find.text('FAILED'), findsOneWidget);
 
-    // Verify filter chips exist: Unread (2), All logs (2), Failed (1), Success (1)
-    expect(find.text('Unread (2)'), findsOneWidget);
+    // Verify filter chips exist: New (2), All logs (2), Failed (1), Success (1)
+    expect(find.text('New (2)'), findsOneWidget);
     expect(find.text('All logs (2)'), findsOneWidget);
     expect(find.text('Failed (1)'), findsOneWidget);
     expect(find.text('Success (1)'), findsOneWidget);

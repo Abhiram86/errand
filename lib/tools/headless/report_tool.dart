@@ -11,6 +11,9 @@ import 'package:path/path.dart' as p;
 class HeadlessReportCollector {
   /// Absolute path of the most recently saved report, if any.
   String? reportPath;
+
+  /// Additional auxiliary files generated or linked during the run.
+  final List<String> linkedFiles = [];
 }
 
 /// Builds the headless-only `save_report` tool: the single blessed way for a
@@ -58,6 +61,11 @@ Tool saveReportTool({
           'description': 'Report format. Use html for charts, styled tables, or dashboards; md otherwise.',
           'default': 'md',
         },
+        'linked_files': {
+          'type': 'array',
+          'items': {'type': 'string'},
+          'description': 'Optional list of auxiliary file paths or names in scratch associated with this report.',
+        },
       },
       'required': ['content'],
     },
@@ -100,6 +108,14 @@ Tool saveReportTool({
       }
 
       collector.reportPath = reportFile.path;
+      final rawLinked = call.arguments['linked_files'];
+      if (rawLinked is List) {
+        for (final item in rawLinked) {
+          if (item != null && item.toString().trim().isNotEmpty) {
+            collector.linkedFiles.add(item.toString().trim());
+          }
+        }
+      }
       return ToolCallResult(
         id: call.id,
         ok: true,

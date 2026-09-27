@@ -125,6 +125,9 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
     );
   }
 
+  int _orphanCount = 0;
+  int _orphanBytes = 0;
+
   /// Sums scratch report files once per screen open. Best-effort and silent.
   /// P12.3: runs off the UI isolate — the old listSync()/lengthSync() blocked
   /// the first frame on disk IO.
@@ -151,12 +154,35 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
       if (!mounted) return;
       final bytes = result[0];
       final count = result[1];
+
+      final orphans = await TaskSchedulerService.instance.getOrphanedFiles();
+      if (!mounted) return;
+      var oBytes = 0;
+      for (final f in orphans) {
+        try {
+          oBytes += f.lengthSync();
+        } catch (_) {}
+      }
+
       setState(() {
+        _orphanCount = orphans.length;
+        _orphanBytes = oBytes;
         _storageSummary = count == 0
             ? 'Scratch empty'
             : 'Scratch ${_formatBytes(bytes)} · $count ${count == 1 ? 'file' : 'files'}';
       });
     } catch (_) {}
+  }
+
+  Future<void> _clearOrphans() async {
+    final result = await TaskSchedulerService.instance.sweepOrphanFiles();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Cleared ${result.count} orphaned files (${_formatBytes(result.bytes)})'),
+      ),
+    );
+    await _loadStorageSummary();
   }
 
   static String _formatBytes(int bytes) {
@@ -181,11 +207,40 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
           const Icon(Icons.storage_rounded, color: kMuted, size: 13),
           const SizedBox(width: 6),
           Expanded(
-            child: Text(
-              summary,
-              style: const TextStyle(color: kMuted, fontSize: 11.5),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Flexible(
+                  child: Text(
+                    summary,
+                    style: const TextStyle(color: kMuted, fontSize: 11.5),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                if (_orphanCount > 0) ...[
+                  const SizedBox(width: 6),
+                  Text(
+                    '· Orphaned: $_orphanCount (${_formatBytes(_orphanBytes)})',
+                    style: const TextStyle(color: Color(0xFFD29922), fontSize: 11.5),
+                  ),
+                  const SizedBox(width: 4),
+                  InkWell(
+                    onTap: _clearOrphans,
+                    child: const Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 3, vertical: 1),
+                      child: Text(
+                        '[Clear]',
+                        style: TextStyle(
+                          color: Color(0xFF58A6FF),
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ],
             ),
           ),
           InkWell(
@@ -436,7 +491,7 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
                         ),
                         Tab(
                           child: _buildTabLabel(
-                            title: 'Unread',
+                            title: 'Runs',
                             count: unreadCount,
                             highlight: unreadCount > 0,
                           ),
@@ -837,7 +892,7 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
               : null,
           children: [
             _buildChoiceChip(
-              label: 'Unread ($unreadCount)',
+              label: 'New ($unreadCount)',
               selected: _unreadScopeFilter == 'unread',
               onSelected: () => setState(() {
                 _unreadScopeFilter = 'unread';

@@ -3399,6 +3399,18 @@ class $SchedulerTaskLogsTable extends SchedulerTaskLogs
     type: DriftSqlType.string,
     requiredDuringInsert: false,
   );
+  static const VerificationMeta _linkedFilesMeta = const VerificationMeta(
+    'linkedFiles',
+  );
+  @override
+  late final GeneratedColumn<String> linkedFiles = GeneratedColumn<String>(
+    'linked_files',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultValue: const Constant('[]'),
+  );
   static const VerificationMeta _summaryMeta = const VerificationMeta(
     'summary',
   );
@@ -3467,6 +3479,7 @@ class $SchedulerTaskLogsTable extends SchedulerTaskLogs
     noAttempts,
     errorMessage,
     outputFilePath,
+    linkedFiles,
     summary,
     notificationSent,
     notificationSeen,
@@ -3551,6 +3564,15 @@ class $SchedulerTaskLogsTable extends SchedulerTaskLogs
         outputFilePath.isAcceptableOrUnknown(
           data['output_file_path']!,
           _outputFilePathMeta,
+        ),
+      );
+    }
+    if (data.containsKey('linked_files')) {
+      context.handle(
+        _linkedFilesMeta,
+        linkedFiles.isAcceptableOrUnknown(
+          data['linked_files']!,
+          _linkedFilesMeta,
         ),
       );
     }
@@ -3639,6 +3661,10 @@ class $SchedulerTaskLogsTable extends SchedulerTaskLogs
         DriftSqlType.string,
         data['${effectivePrefix}output_file_path'],
       ),
+      linkedFiles: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}linked_files'],
+      )!,
       summary: attachedDatabase.typeMapping.read(
         DriftSqlType.string,
         data['${effectivePrefix}summary'],
@@ -3679,6 +3705,7 @@ class SchedulerTaskLogRow extends DataClass
   final int noAttempts;
   final String? errorMessage;
   final String? outputFilePath;
+  final String linkedFiles;
   final String? summary;
   final int notificationSent;
   final int notificationSeen;
@@ -3694,6 +3721,7 @@ class SchedulerTaskLogRow extends DataClass
     required this.noAttempts,
     this.errorMessage,
     this.outputFilePath,
+    required this.linkedFiles,
     this.summary,
     required this.notificationSent,
     required this.notificationSeen,
@@ -3720,6 +3748,7 @@ class SchedulerTaskLogRow extends DataClass
     if (!nullToAbsent || outputFilePath != null) {
       map['output_file_path'] = Variable<String>(outputFilePath);
     }
+    map['linked_files'] = Variable<String>(linkedFiles);
     if (!nullToAbsent || summary != null) {
       map['summary'] = Variable<String>(summary);
     }
@@ -3749,6 +3778,7 @@ class SchedulerTaskLogRow extends DataClass
       outputFilePath: outputFilePath == null && nullToAbsent
           ? const Value.absent()
           : Value(outputFilePath),
+      linkedFiles: Value(linkedFiles),
       summary: summary == null && nullToAbsent
           ? const Value.absent()
           : Value(summary),
@@ -3774,6 +3804,7 @@ class SchedulerTaskLogRow extends DataClass
       noAttempts: serializer.fromJson<int>(json['noAttempts']),
       errorMessage: serializer.fromJson<String?>(json['errorMessage']),
       outputFilePath: serializer.fromJson<String?>(json['outputFilePath']),
+      linkedFiles: serializer.fromJson<String>(json['linkedFiles']),
       summary: serializer.fromJson<String?>(json['summary']),
       notificationSent: serializer.fromJson<int>(json['notificationSent']),
       notificationSeen: serializer.fromJson<int>(json['notificationSeen']),
@@ -3794,6 +3825,7 @@ class SchedulerTaskLogRow extends DataClass
       'noAttempts': serializer.toJson<int>(noAttempts),
       'errorMessage': serializer.toJson<String?>(errorMessage),
       'outputFilePath': serializer.toJson<String?>(outputFilePath),
+      'linkedFiles': serializer.toJson<String>(linkedFiles),
       'summary': serializer.toJson<String?>(summary),
       'notificationSent': serializer.toJson<int>(notificationSent),
       'notificationSeen': serializer.toJson<int>(notificationSeen),
@@ -3812,6 +3844,7 @@ class SchedulerTaskLogRow extends DataClass
     int? noAttempts,
     Value<String?> errorMessage = const Value.absent(),
     Value<String?> outputFilePath = const Value.absent(),
+    String? linkedFiles,
     Value<String?> summary = const Value.absent(),
     int? notificationSent,
     int? notificationSeen,
@@ -3829,6 +3862,7 @@ class SchedulerTaskLogRow extends DataClass
     outputFilePath: outputFilePath.present
         ? outputFilePath.value
         : this.outputFilePath,
+    linkedFiles: linkedFiles ?? this.linkedFiles,
     summary: summary.present ? summary.value : this.summary,
     notificationSent: notificationSent ?? this.notificationSent,
     notificationSeen: notificationSeen ?? this.notificationSeen,
@@ -3858,6 +3892,9 @@ class SchedulerTaskLogRow extends DataClass
       outputFilePath: data.outputFilePath.present
           ? data.outputFilePath.value
           : this.outputFilePath,
+      linkedFiles: data.linkedFiles.present
+          ? data.linkedFiles.value
+          : this.linkedFiles,
       summary: data.summary.present ? data.summary.value : this.summary,
       notificationSent: data.notificationSent.present
           ? data.notificationSent.value
@@ -3882,6 +3919,7 @@ class SchedulerTaskLogRow extends DataClass
           ..write('noAttempts: $noAttempts, ')
           ..write('errorMessage: $errorMessage, ')
           ..write('outputFilePath: $outputFilePath, ')
+          ..write('linkedFiles: $linkedFiles, ')
           ..write('summary: $summary, ')
           ..write('notificationSent: $notificationSent, ')
           ..write('notificationSeen: $notificationSeen, ')
@@ -3902,6 +3940,7 @@ class SchedulerTaskLogRow extends DataClass
     noAttempts,
     errorMessage,
     outputFilePath,
+    linkedFiles,
     summary,
     notificationSent,
     notificationSeen,
@@ -3921,6 +3960,7 @@ class SchedulerTaskLogRow extends DataClass
           other.noAttempts == this.noAttempts &&
           other.errorMessage == this.errorMessage &&
           other.outputFilePath == this.outputFilePath &&
+          other.linkedFiles == this.linkedFiles &&
           other.summary == this.summary &&
           other.notificationSent == this.notificationSent &&
           other.notificationSeen == this.notificationSeen &&
@@ -3938,6 +3978,7 @@ class SchedulerTaskLogsCompanion extends UpdateCompanion<SchedulerTaskLogRow> {
   final Value<int> noAttempts;
   final Value<String?> errorMessage;
   final Value<String?> outputFilePath;
+  final Value<String> linkedFiles;
   final Value<String?> summary;
   final Value<int> notificationSent;
   final Value<int> notificationSeen;
@@ -3953,6 +3994,7 @@ class SchedulerTaskLogsCompanion extends UpdateCompanion<SchedulerTaskLogRow> {
     this.noAttempts = const Value.absent(),
     this.errorMessage = const Value.absent(),
     this.outputFilePath = const Value.absent(),
+    this.linkedFiles = const Value.absent(),
     this.summary = const Value.absent(),
     this.notificationSent = const Value.absent(),
     this.notificationSeen = const Value.absent(),
@@ -3969,6 +4011,7 @@ class SchedulerTaskLogsCompanion extends UpdateCompanion<SchedulerTaskLogRow> {
     this.noAttempts = const Value.absent(),
     this.errorMessage = const Value.absent(),
     this.outputFilePath = const Value.absent(),
+    this.linkedFiles = const Value.absent(),
     this.summary = const Value.absent(),
     this.notificationSent = const Value.absent(),
     this.notificationSeen = const Value.absent(),
@@ -3989,6 +4032,7 @@ class SchedulerTaskLogsCompanion extends UpdateCompanion<SchedulerTaskLogRow> {
     Expression<int>? noAttempts,
     Expression<String>? errorMessage,
     Expression<String>? outputFilePath,
+    Expression<String>? linkedFiles,
     Expression<String>? summary,
     Expression<int>? notificationSent,
     Expression<int>? notificationSeen,
@@ -4005,6 +4049,7 @@ class SchedulerTaskLogsCompanion extends UpdateCompanion<SchedulerTaskLogRow> {
       if (noAttempts != null) 'no_attempts': noAttempts,
       if (errorMessage != null) 'error_message': errorMessage,
       if (outputFilePath != null) 'output_file_path': outputFilePath,
+      if (linkedFiles != null) 'linked_files': linkedFiles,
       if (summary != null) 'summary': summary,
       if (notificationSent != null) 'notification_sent': notificationSent,
       if (notificationSeen != null) 'notification_seen': notificationSeen,
@@ -4023,6 +4068,7 @@ class SchedulerTaskLogsCompanion extends UpdateCompanion<SchedulerTaskLogRow> {
     Value<int>? noAttempts,
     Value<String?>? errorMessage,
     Value<String?>? outputFilePath,
+    Value<String>? linkedFiles,
     Value<String?>? summary,
     Value<int>? notificationSent,
     Value<int>? notificationSeen,
@@ -4039,6 +4085,7 @@ class SchedulerTaskLogsCompanion extends UpdateCompanion<SchedulerTaskLogRow> {
       noAttempts: noAttempts ?? this.noAttempts,
       errorMessage: errorMessage ?? this.errorMessage,
       outputFilePath: outputFilePath ?? this.outputFilePath,
+      linkedFiles: linkedFiles ?? this.linkedFiles,
       summary: summary ?? this.summary,
       notificationSent: notificationSent ?? this.notificationSent,
       notificationSeen: notificationSeen ?? this.notificationSeen,
@@ -4077,6 +4124,9 @@ class SchedulerTaskLogsCompanion extends UpdateCompanion<SchedulerTaskLogRow> {
     if (outputFilePath.present) {
       map['output_file_path'] = Variable<String>(outputFilePath.value);
     }
+    if (linkedFiles.present) {
+      map['linked_files'] = Variable<String>(linkedFiles.value);
+    }
     if (summary.present) {
       map['summary'] = Variable<String>(summary.value);
     }
@@ -4107,6 +4157,7 @@ class SchedulerTaskLogsCompanion extends UpdateCompanion<SchedulerTaskLogRow> {
           ..write('noAttempts: $noAttempts, ')
           ..write('errorMessage: $errorMessage, ')
           ..write('outputFilePath: $outputFilePath, ')
+          ..write('linkedFiles: $linkedFiles, ')
           ..write('summary: $summary, ')
           ..write('notificationSent: $notificationSent, ')
           ..write('notificationSeen: $notificationSeen, ')
@@ -6390,6 +6441,7 @@ typedef $$SchedulerTaskLogsTableCreateCompanionBuilder =
       Value<int> noAttempts,
       Value<String?> errorMessage,
       Value<String?> outputFilePath,
+      Value<String> linkedFiles,
       Value<String?> summary,
       Value<int> notificationSent,
       Value<int> notificationSeen,
@@ -6407,6 +6459,7 @@ typedef $$SchedulerTaskLogsTableUpdateCompanionBuilder =
       Value<int> noAttempts,
       Value<String?> errorMessage,
       Value<String?> outputFilePath,
+      Value<String> linkedFiles,
       Value<String?> summary,
       Value<int> notificationSent,
       Value<int> notificationSeen,
@@ -6492,6 +6545,11 @@ class $$SchedulerTaskLogsTableFilterComposer
 
   ColumnFilters<String> get outputFilePath => $composableBuilder(
     column: $table.outputFilePath,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get linkedFiles => $composableBuilder(
+    column: $table.linkedFiles,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -6593,6 +6651,11 @@ class $$SchedulerTaskLogsTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<String> get linkedFiles => $composableBuilder(
+    column: $table.linkedFiles,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<String> get summary => $composableBuilder(
     column: $table.summary,
     builder: (column) => ColumnOrderings(column),
@@ -6685,6 +6748,11 @@ class $$SchedulerTaskLogsTableAnnotationComposer
     builder: (column) => column,
   );
 
+  GeneratedColumn<String> get linkedFiles => $composableBuilder(
+    column: $table.linkedFiles,
+    builder: (column) => column,
+  );
+
   GeneratedColumn<String> get summary =>
       $composableBuilder(column: $table.summary, builder: (column) => column);
 
@@ -6770,6 +6838,7 @@ class $$SchedulerTaskLogsTableTableManager
                 Value<int> noAttempts = const Value.absent(),
                 Value<String?> errorMessage = const Value.absent(),
                 Value<String?> outputFilePath = const Value.absent(),
+                Value<String> linkedFiles = const Value.absent(),
                 Value<String?> summary = const Value.absent(),
                 Value<int> notificationSent = const Value.absent(),
                 Value<int> notificationSeen = const Value.absent(),
@@ -6785,6 +6854,7 @@ class $$SchedulerTaskLogsTableTableManager
                 noAttempts: noAttempts,
                 errorMessage: errorMessage,
                 outputFilePath: outputFilePath,
+                linkedFiles: linkedFiles,
                 summary: summary,
                 notificationSent: notificationSent,
                 notificationSeen: notificationSeen,
@@ -6802,6 +6872,7 @@ class $$SchedulerTaskLogsTableTableManager
                 Value<int> noAttempts = const Value.absent(),
                 Value<String?> errorMessage = const Value.absent(),
                 Value<String?> outputFilePath = const Value.absent(),
+                Value<String> linkedFiles = const Value.absent(),
                 Value<String?> summary = const Value.absent(),
                 Value<int> notificationSent = const Value.absent(),
                 Value<int> notificationSeen = const Value.absent(),
@@ -6817,6 +6888,7 @@ class $$SchedulerTaskLogsTableTableManager
                 noAttempts: noAttempts,
                 errorMessage: errorMessage,
                 outputFilePath: outputFilePath,
+                linkedFiles: linkedFiles,
                 summary: summary,
                 notificationSent: notificationSent,
                 notificationSeen: notificationSeen,

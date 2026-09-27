@@ -286,6 +286,7 @@ class AgentRunner {
         ok: true,
         output: output,
         reportPath: reportPath,
+        linkedFiles: List<String>.unmodifiable(reportCollector.linkedFiles),
       );
     } catch (e) {
       return HeadlessRunResult(
@@ -310,12 +311,14 @@ class HeadlessRunResult {
   final String output;
   final String? reportPath;
   final String? errorMessage;
+  final List<String> linkedFiles;
 
   const HeadlessRunResult({
     required this.ok,
     required this.output,
     this.reportPath,
     this.errorMessage,
+    this.linkedFiles = const [],
   });
 }
 

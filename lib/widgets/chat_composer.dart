@@ -240,8 +240,11 @@ class _ChatComposerState extends State<ChatComposer>
                   valueListenable: widget.isListening,
                   builder: (context, listening, child) => _SendButton(
                     canSend: true,
-                    onPressed: hasText ? widget.onSend : widget.onMic,
-                    mic: !hasText,
+                    onPressed: listening
+                        ? widget.onMic
+                        : (hasText ? widget.onSend : widget.onMic),
+                    mic: !listening && !hasText,
+                    stop: listening,
                     listening: listening,
                   ),
                 );
@@ -277,10 +280,11 @@ class _SendButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final Color background;
-    if (stop || (mic && listening)) {
-      // Stop and an active mic both read as "tap to end": accent for stop,
-      // danger red for the live mic.
-      background = stop ? kBubbleUser : kDanger;
+    if (listening) {
+      // Live mic / dictation reads as "tap to end recording"
+      background = kDanger;
+    } else if (stop) {
+      background = kBubbleUser;
     } else {
       background = kBubbleUser;
     }
@@ -291,19 +295,15 @@ class _SendButton extends StatelessWidget {
         onPressed: onPressed,
         style: IconButton.styleFrom(
           backgroundColor: background,
-          shape: stop
+          shape: (stop || listening)
               ? RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))
               : const CircleBorder(),
           padding: EdgeInsets.zero,
         ),
-        icon: stop
+        icon: (stop || listening)
             ? const Icon(Icons.stop_rounded, color: Colors.white, size: 24)
             : mic
-                ? Icon(
-                    Icons.mic_rounded,
-                    color: Colors.white,
-                    size: listening ? 22 : 20,
-                  )
+                ? const Icon(Icons.mic_rounded, color: Colors.white, size: 20)
                 : const Icon(Icons.arrow_upward, color: Colors.white, size: 20),
       ),
     );

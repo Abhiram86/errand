@@ -163,6 +163,7 @@ class SchedulerTaskLogs extends Table {
   IntColumn get noAttempts => integer().withDefault(const Constant(0))();
   TextColumn get errorMessage => text().nullable()();
   TextColumn get outputFilePath => text().nullable()();
+  TextColumn get linkedFiles => text().withDefault(const Constant('[]'))();
   TextColumn get summary => text().nullable()();
   IntColumn get notificationSent => integer().withDefault(const Constant(0))();
   IntColumn get notificationSeen => integer().withDefault(const Constant(0))();
@@ -193,7 +194,7 @@ final class ErrandDatabase extends _$ErrandDatabase {
       ErrandDatabase._(NativeDatabase.memory());
 
   @override
-  int get schemaVersion => 8;
+  int get schemaVersion => 9;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -241,6 +242,9 @@ final class ErrandDatabase extends _$ErrandDatabase {
       }
       if (from < 8) {
         await _createSchedulerV8Indexes(m);
+      }
+      if (from < 9) {
+        await m.addColumn(schedulerTaskLogs, schedulerTaskLogs.linkedFiles);
       }
     },
   );

@@ -3,6 +3,7 @@ import 'package:path/path.dart' as p;
 
 import '../../screens/task_file_preview_screen.dart';
 import '../../services/database.dart';
+import '../../services/task_scheduler_service.dart';
 import '../../theme/app_colors.dart';
 import 'task_action_button.dart';
 
@@ -107,10 +108,11 @@ class SpaceyLogItem extends StatelessWidget {
               InkWell(
                 onTap: () {
                   if (isUnread) onMarkSeen();
+                  final resolvedPath = TaskSchedulerService.resolveReportPath(log.outputFilePath);
                   TaskFilePreviewScreen.show(
                     context,
-                    filePath: log.outputFilePath!,
-                    title: p.basename(log.outputFilePath!),
+                    filePath: resolvedPath,
+                    title: p.basename(resolvedPath),
                   );
                 },
                 borderRadius: BorderRadius.circular(6),

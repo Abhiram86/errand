@@ -731,6 +731,8 @@ Map<String, dynamic> _logRowToMap(SchedulerTaskLogRow row) {
     'status': row.status,
     'no_attempts': row.noAttempts,
     'error_message': row.errorMessage,
+    'report_path': row.outputFilePath,
+    'linked_files': TaskSchedulerService.parseLinkedFiles(row.linkedFiles),
     'output_file_path': row.outputFilePath,
     'summary': row.summary,
     'notification_sent': row.notificationSent == 1,

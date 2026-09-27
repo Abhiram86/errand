@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:drift/drift.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:path/path.dart' as p;
 
 import '../agent/agent_runner.dart';
 import '../llm/llm_client.dart';
@@ -53,24 +54,180 @@ class TaskSchedulerService {
   /// Checks if a task is currently executing in-process.
   bool isTaskRunning(int taskId) => _runningTokens.containsKey(taskId);
 
+  /// Normalizes an absolute or relative file path to a scratch-relative path.
+  static String toScratchRelative(String pathStr, [Directory? scratchDir]) {
+    final scratch = scratchDir ?? Workspace.instance.scratchDir;
+    final scratchPath = scratch.path;
+    if (p.isWithin(scratchPath, pathStr)) {
+      return p.relative(pathStr, from: scratchPath);
+    }
+    if (!p.isAbsolute(pathStr)) {
+      return pathStr;
+    }
+    final parts = p.split(pathStr);
+    final scratchIdx = parts.lastIndexOf('scratch');
+    if (scratchIdx != -1 && scratchIdx < parts.length - 1) {
+      return p.joinAll(parts.sublist(scratchIdx + 1));
+    }
+    return p.basename(pathStr);
+  }
+
+  /// Resolves a stored path (scratch-relative or legacy absolute) into an
+  /// absolute path within the current [scratchDir].
+  static String resolveReportPath(String? pathStr, [Directory? scratchDir]) {
+    if (pathStr == null || pathStr.trim().isEmpty) return '';
+    final scratch = scratchDir ?? Workspace.instance.scratchDir;
+    if (p.isAbsolute(pathStr)) {
+      if (File(pathStr).existsSync()) {
+        return pathStr;
+      }
+      final rel = toScratchRelative(pathStr, scratch);
+      return p.join(scratch.path, rel);
+    }
+    return p.join(scratch.path, pathStr);
+  }
+
+  /// Parses the JSON array in [linkedFilesRaw] into a list of strings.
+  static List<String> parseLinkedFiles(String? linkedFilesRaw) {
+    if (linkedFilesRaw == null || linkedFilesRaw.trim().isEmpty) return const [];
+    try {
+      final decoded = jsonDecode(linkedFilesRaw);
+      if (decoded is List) {
+        return decoded.map((e) => e.toString()).toList();
+      }
+    } catch (_) {}
+    return const [];
+  }
+
+  /// Returns all existing [File]s on disk owned by [taskId] across all its logs
+  /// (both primary report paths and linked files).
+  Future<List<File>> getOwnedFilesForTask(int taskId, [Directory? scratchDir]) async {
+    final scratch = scratchDir ?? Workspace.instance.scratchDir;
+    final logs = await (db.select(db.schedulerTaskLogs)
+          ..where((l) => l.schedulerTaskId.equals(taskId)))
+        .get();
+
+    final files = <String, File>{};
+    for (final log in logs) {
+      if (log.outputFilePath != null && log.outputFilePath!.isNotEmpty) {
+        final absPath = resolveReportPath(log.outputFilePath, scratch);
+        final file = File(absPath);
+        if (file.existsSync()) {
+          files[file.path] = file;
+        }
+      }
+      for (final rel in parseLinkedFiles(log.linkedFiles)) {
+        final absPath = resolveReportPath(rel, scratch);
+        final file = File(absPath);
+        if (file.existsSync()) {
+          files[file.path] = file;
+        }
+      }
+    }
+    return files.values.toList();
+  }
+
+  /// Computes the count and total size in bytes of existing files owned by [taskId].
+  Future<({int count, int bytes})> getTaskFileStats(int taskId, [Directory? scratchDir]) async {
+    final files = await getOwnedFilesForTask(taskId, scratchDir);
+    var bytes = 0;
+    for (final f in files) {
+      try {
+        bytes += f.lengthSync();
+      } catch (_) {}
+    }
+    return (count: files.length, bytes: bytes);
+  }
+
+  /// Scans [scratchDir] and finds all files not referenced by any execution
+  /// log's [outputFilePath] or [linkedFiles].
+  Future<List<File>> getOrphanedFiles([Directory? scratchDir]) async {
+    final scratch = scratchDir ?? Workspace.instance.scratchDir;
+    if (!scratch.existsSync()) return const [];
+
+    final logs = await db.select(db.schedulerTaskLogs).get();
+    final referencedNames = <String>{};
+
+    for (final log in logs) {
+      if (log.outputFilePath != null && log.outputFilePath!.isNotEmpty) {
+        final rel = toScratchRelative(log.outputFilePath!, scratch);
+        referencedNames.add(rel);
+        referencedNames.add(p.basename(rel));
+      }
+      for (final rel in parseLinkedFiles(log.linkedFiles)) {
+        final relPath = toScratchRelative(rel, scratch);
+        referencedNames.add(relPath);
+        referencedNames.add(p.basename(relPath));
+      }
+    }
+
+    final orphans = <File>[];
+    try {
+      for (final entity in scratch.listSync(recursive: true)) {
+        if (entity is File) {
+          final rel = p.relative(entity.path, from: scratch.path);
+          final base = p.basename(entity.path);
+          if (!referencedNames.contains(rel) && !referencedNames.contains(base)) {
+            orphans.add(entity);
+          }
+        }
+      }
+    } catch (_) {}
+    return orphans;
+  }
+
+  /// Deletes all orphaned files in [scratchDir] and returns count and bytes cleared.
+  Future<({int count, int bytes})> sweepOrphanFiles([Directory? scratchDir]) async {
+    final orphans = await getOrphanedFiles(scratchDir);
+    var count = 0;
+    var bytes = 0;
+    for (final file in orphans) {
+      try {
+        if (file.existsSync()) {
+          final len = file.lengthSync();
+          file.deleteSync();
+          count++;
+          bytes += len;
+        }
+      } catch (_) {}
+    }
+    return (count: count, bytes: bytes);
+  }
+
   /// Deletes a task and everything tied to it: stops an in-flight run first
-   /// so it cannot complete-or-notify afterwards, then cancels the native
-   /// alarm and posted notification before removing the row (logs cascade).
-   /// Returns false when the task does not exist.
-   Future<bool> deleteTask(int taskId) async {
-     final existing = await (db.select(db.schedulerTasks)
-           ..where((t) => t.id.equals(taskId)))
-         .getSingleOrNull();
-     if (existing == null) return false;
-     await cancelRunningTask(taskId);
-     await cancelTask(taskId);
-     try {
-       await notificationService.cancelNotification(taskId);
-     } catch (_) {}
-     await (db.delete(db.schedulerTasks)..where((t) => t.id.equals(taskId)))
-         .go();
-     return true;
-   }
+  /// so it cannot complete-or-notify afterwards, then cancels the native
+  /// alarm and posted notification before removing the row (logs cascade).
+  ///
+  /// When [deleteFiles] is true, removes all report and linked output files
+  /// stored on disk for this task. Returns false when the task does not exist.
+  Future<bool> deleteTask(int taskId, {bool deleteFiles = false, Directory? scratchDir}) async {
+    final existing = await (db.select(db.schedulerTasks)
+          ..where((t) => t.id.equals(taskId)))
+        .getSingleOrNull();
+    if (existing == null) return false;
+    await cancelRunningTask(taskId);
+    await cancelTask(taskId);
+    try {
+      await notificationService.cancelNotification(taskId);
+    } catch (_) {}
+
+    if (deleteFiles) {
+      try {
+        final files = await getOwnedFilesForTask(taskId, scratchDir);
+        for (final f in files) {
+          try {
+            if (f.existsSync()) {
+              f.deleteSync();
+            }
+          } catch (_) {}
+        }
+      } catch (_) {}
+    }
+
+    await (db.delete(db.schedulerTasks)..where((t) => t.id.equals(taskId)))
+        .go();
+    return true;
+  }
 
   /// Returns the number of execution logs that still have an unseen
   /// completion notification.
@@ -864,8 +1021,14 @@ class TaskSchedulerService {
       if (reportPath != null && !File(reportPath).existsSync()) {
         reportPath = null;
       }
-      _pruneOldReports(scratch, taskId, keep: 10, keepPath: reportPath);
     } catch (_) {}
+
+    final relativeReportPath = reportPath != null
+        ? toScratchRelative(reportPath, scratch)
+        : null;
+    final relativeLinkedFiles = result.linkedFiles
+        .map((f) => toScratchRelative(f, scratch))
+        .toList();
 
     // Extract one-line summary for logs and notification
     final summary = result.output.trim().split('\n').firstWhere(
@@ -881,12 +1044,17 @@ class TaskSchedulerService {
       SchedulerTaskLogsCompanion(
         finishedAt: Value(finishMillis),
         status: Value(logStatus),
-        outputFilePath: Value(reportPath),
+        outputFilePath: Value(relativeReportPath),
+        linkedFiles: Value(jsonEncode(relativeLinkedFiles)),
         summary: Value(summary),
         errorMessage: Value(result.errorMessage),
         updatedAt: Value(finishMillis),
       ),
     );
+
+    try {
+      await _pruneOldReports(scratch, taskId, keep: 10, keepPath: reportPath);
+    } catch (_) {}
 
     if (isSuccess) {
       if (task.type == 'recurring' && task.repeatAfter != null && task.repeatAfter! > 0) {
@@ -1024,38 +1192,88 @@ class TaskSchedulerService {
     return isSuccess;
   }
 
-  /// Deletes older `task-<taskId>-*` reports in [scratch], keeping the newest
-  /// [keep] files so recurring tasks don't fill the disk unboundedly.
+  /// Deletes older reports and linked files in [scratch] for runs beyond the newest
+  /// [keep] runs so recurring tasks don't fill the disk unboundedly.
   /// Never deletes the file at [keepPath] (the current run's report).
-  void _pruneOldReports(Directory scratch, int taskId,
-      {int keep = 10, String? keepPath}) {
+  Future<void> _pruneOldReports(Directory scratch, int taskId,
+      {int keep = 10, String? keepPath}) async {
     try {
       if (!scratch.existsSync()) return;
-      final prefix = 'task-$taskId-';
-      final reports = scratch
-          .listSync()
-          .whereType<File>()
-          .where((f) => f.uri.pathSegments.last.startsWith(prefix))
-          .toList();
-      reports.sort((a, b) {
-        DateTime aTime, bTime;
-        try {
-          aTime = a.lastModifiedSync();
-        } catch (_) {
-          aTime = DateTime.fromMillisecondsSinceEpoch(0);
+
+      // Query database logs for this task to prune reports & linked_files for runs beyond the newest [keep].
+      final logs = await (db.select(db.schedulerTaskLogs)
+            ..where((l) => l.schedulerTaskId.equals(taskId))
+            ..orderBy([(l) => OrderingTerm.desc(l.createdAt)]))
+          .get();
+
+      final keepAbs = <String>{};
+      if (keepPath != null) {
+        keepAbs.add(resolveReportPath(keepPath, scratch));
+      }
+
+      for (final activeLog in logs.take(keep)) {
+        if (activeLog.outputFilePath != null && activeLog.outputFilePath!.isNotEmpty) {
+          keepAbs.add(resolveReportPath(activeLog.outputFilePath!, scratch));
         }
-        try {
-          bTime = b.lastModifiedSync();
-        } catch (_) {
-          bTime = DateTime.fromMillisecondsSinceEpoch(0);
+        for (final rel in parseLinkedFiles(activeLog.linkedFiles)) {
+          keepAbs.add(resolveReportPath(rel, scratch));
         }
-        return bTime.compareTo(aTime);
-      });
-      for (final f in reports.skip(keep)) {
-        if (keepPath != null && f.path == keepPath) continue;
-        try {
-          f.deleteSync();
-        } catch (_) {}
+      }
+
+      for (final oldLog in logs.skip(keep)) {
+        if (oldLog.outputFilePath != null && oldLog.outputFilePath!.isNotEmpty) {
+          final abs = resolveReportPath(oldLog.outputFilePath!, scratch);
+          if (!keepAbs.contains(abs)) {
+            try {
+              final f = File(abs);
+              if (f.existsSync()) f.deleteSync();
+            } catch (_) {}
+          }
+        }
+        for (final rel in parseLinkedFiles(oldLog.linkedFiles)) {
+          final abs = resolveReportPath(rel, scratch);
+          if (!keepAbs.contains(abs)) {
+            try {
+              final f = File(abs);
+              if (f.existsSync()) f.deleteSync();
+            } catch (_) {}
+          }
+        }
+      }
+
+      // Legacy fallback: if there are no logs matching this task, prune legacy task-$taskId-* files directly.
+      if (logs.isEmpty) {
+        final prefix = 'task-$taskId-';
+        final legacyFiles = scratch
+            .listSync()
+            .whereType<File>()
+            .where((f) {
+              final name = f.uri.pathSegments.last;
+              return name.startsWith(prefix) &&
+                  (name.endsWith('.md') || name.endsWith('.html'));
+            })
+            .toList();
+        legacyFiles.sort((a, b) {
+          DateTime aTime, bTime;
+          try {
+            aTime = a.lastModifiedSync();
+          } catch (_) {
+            aTime = DateTime.fromMillisecondsSinceEpoch(0);
+          }
+          try {
+            bTime = b.lastModifiedSync();
+          } catch (_) {
+            bTime = DateTime.fromMillisecondsSinceEpoch(0);
+          }
+          return bTime.compareTo(aTime);
+        });
+        for (final f in legacyFiles.skip(keep)) {
+          if (!keepAbs.contains(f.path)) {
+            try {
+              f.deleteSync();
+            } catch (_) {}
+          }
+        }
       }
     } catch (_) {}
   }

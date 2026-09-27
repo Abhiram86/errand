@@ -43,6 +43,9 @@ class SpeechService {
         soundLevel.value = 0.0;
       },
     );
+    if (_initialized) {
+      _speech.unexpectedPhraseAggregator = cleanSpeechPhrases;
+    }
     return _initialized;
   }
 
@@ -121,4 +124,32 @@ class SpeechService {
       return false;
     }
   }
+}
+
+/// Clean phrase aggregator that deduplicates identical or prefix/subsumed phrases
+/// produced by certain device speech engines instead of concatenating duplicate text.
+String cleanSpeechPhrases(List<String> phrases) {
+  if (phrases.isEmpty) return '';
+  final cleaned = <String>[];
+  for (final phrase in phrases) {
+    final trimmed = phrase.trim();
+    if (trimmed.isEmpty) continue;
+    if (cleaned.isEmpty) {
+      cleaned.add(trimmed);
+      continue;
+    }
+    final last = cleaned.last;
+    if (last.toLowerCase() == trimmed.toLowerCase()) {
+      continue;
+    }
+    if (trimmed.toLowerCase().startsWith(last.toLowerCase())) {
+      cleaned[cleaned.length - 1] = trimmed;
+      continue;
+    }
+    if (last.toLowerCase().startsWith(trimmed.toLowerCase())) {
+      continue;
+    }
+    cleaned.add(trimmed);
+  }
+  return cleaned.join(' ');
 }

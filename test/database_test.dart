@@ -533,7 +533,7 @@ void main() {
     });
 
     test('schema v8 defines reverse-chronological and unseen indexes', () async {
-      expect(db.schemaVersion, equals(8));
+      expect(db.schemaVersion, greaterThanOrEqualTo(8));
       final indexes = await db.customSelect(
         "SELECT name FROM sqlite_master WHERE type = 'index'",
       ).get();

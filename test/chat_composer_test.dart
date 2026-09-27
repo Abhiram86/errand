@@ -104,15 +104,24 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 100));
 
-    // Mic button is present and active
-    expect(find.byIcon(Icons.mic_rounded), findsOneWidget);
+    // When listening, the button turns into a stop button (P13.5)
+    expect(find.byIcon(Icons.stop_rounded), findsOneWidget);
+    expect(find.byIcon(Icons.mic_rounded), findsNothing);
 
-    // Stop listening
+    // Text in controller while listening keeps the stop button
+    controller.text = 'Dictated text';
+    await tester.pump();
+    expect(find.byIcon(Icons.stop_rounded), findsOneWidget);
+    expect(find.byIcon(Icons.arrow_upward), findsNothing);
+
+    // Stop listening: since there is text, swaps to send button
     isListening.value = false;
     soundLevel.value = 0.0;
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 100));
     expect(isListening.value, isFalse);
+    expect(find.byIcon(Icons.arrow_upward), findsOneWidget);
+    expect(find.byIcon(Icons.stop_rounded), findsNothing);
   });
 }
 

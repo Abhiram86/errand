@@ -263,7 +263,7 @@ Goal: Remove the confirmed correctness and memory-safety gaps found in the Septe
 
 Goal: harden the surfaces that are currently best-effort into deterministic, owned, and diagnosable behavior. Every outcome labeled, every file owned, no silent partials.
 
-#### P13.1 Report paths + linked files + delete hook
+#### P13.1 Report paths + linked files + delete hook (✅ DONE)
 
 - **Keep `output_file_path` as the report path (no rename).** The column stays exactly as-is, so no `DROP COLUMN` (unsafe on old-device SQLite) or table rebuild is needed. The agent-facing name `report_path` is presentation-only: tool schemas, `schedule_task` output mapping (`schedule_task_tool.dart:732`), and headless prompts say `report_path`; all writes still target `output_file_path`.
 - **Store scratch-relative paths going forward.** Current writes are absolute (`agent_runner.dart:277` → stored at `task_scheduler_service.dart:858`), which rot across reinstalls/cache clears. Normalize to scratch-relative on write; convert legacy absolute values on read (strip the scratch prefix when present).
@@ -330,12 +330,12 @@ Acceptance:
 - Transport-class errors never trigger failure notifications on retryable schedules (tested).
 - Metered-link p95 attempt waste (time spent on attempts that fail transport-class) drops; measured before/after from log durations.
 
-#### P13.5 Small nits batch
-
-1. **Voice widget listening icon.** The audio-reactive border glow stays; the icon must swap microphone → stop while listening (tapping stops). Currently shows mic in both states, which misreads as "tap to start" mid-dictation.
-2. **Composer autofocus on cold open.** Request focus post-first-frame on fresh app open so the keyboard is up and the user can type immediately. Resume-from-background must NOT re-focus (keyboard popping over resumed content annoys); gate on cold start only.
-3. **Unread tab is really run history.** The tab mixes unseen notifications with the full log list behind filter chips, so "Unread" misnames it. Rename without restructuring: tab **Runs**, first chip **New (n)** (was "Unread (n)"), rest unchanged. Every row is an execution run; the badge keeps meaning "new since you last looked".
-4. **Title generation as a declared tool group.** Conversation titles come from an explicit agent tool call (`conversations → write_title` on the first turn), rendered in the grouped tool-call UI with its description like any other tool — visible and explainable, never silent background magic. Fallback to first-user-message truncation on failure; re-title only on explicit request or extreme topic drift (gated, never eager).
+#### P13.5 Small nits batch (13.5.1–13.5.3 ✅ DONE, 13.5.4 deferred per user)
+ 
+1. **Voice widget listening icon (✅ DONE).** The audio-reactive border glow stays; the icon swaps microphone → stop (`Icons.stop_rounded` in `kDanger`) while listening (tapping stops). Also fixed speech engine double-fill bug via phrase deduplication and speech session IDs.
+2. **Composer autofocus on cold open (✅ DONE).** Request focus post-first-frame on fresh app open so the keyboard is up and the user can type immediately. Resume-from-background does NOT re-focus; gated on cold start only.
+3. **Unread tab is really run history (✅ DONE).** The tab mixes unseen notifications with the full log list behind filter chips. Renamed tab to **Runs**, first chip to **New (n)** (was "Unread (n)"), preserving badge semantics.
+4. **Title generation as a declared tool group (DEFERRED per user).** Conversation titles come from an explicit agent tool call (`conversations → write_title` on the first turn), rendered in the grouped tool-call UI with its description like any other tool — visible and explainable, never silent background magic. Fallback to first-user-message truncation on failure; re-title only on explicit request or extreme topic drift (gated, never eager).
 
 #### P13.6 External review findings (verified, `latest_review.md`)
 

@@ -339,11 +339,84 @@ class _SpaceyTaskRowState extends State<SpaceyTaskRow> {
   }
 
   Future<void> _deleteTask(int taskId) async {
-    final deleted = await TaskSchedulerService.instance.deleteTask(taskId);
+    final stats = await TaskSchedulerService.instance.getTaskFileStats(taskId);
+    if (!mounted) return;
+
+    var deleteFiles = stats.count > 0;
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (dialogCtx) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            final bytesStr = _formatBytes(stats.bytes);
+            return AlertDialog(
+              backgroundColor: const Color(0xFF1E222B),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+              title: const Text('Delete Task?', style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w600)),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Are you sure you want to delete "${widget.task.title}"?',
+                    style: const TextStyle(color: Color(0xFFC9D1D9), fontSize: 14),
+                  ),
+                  if (stats.count > 0) ...[
+                    const SizedBox(height: 16),
+                    InkWell(
+                      onTap: () => setDialogState(() => deleteFiles = !deleteFiles),
+                      borderRadius: BorderRadius.circular(8),
+                      child: Row(
+                        children: [
+                          Checkbox(
+                            value: deleteFiles,
+                            onChanged: (val) => setDialogState(() => deleteFiles = val ?? false),
+                            activeColor: kBubbleUser,
+                          ),
+                          Expanded(
+                            child: Text(
+                              'Also delete ${stats.count} report ${stats.count == 1 ? 'file' : 'files'} ($bytesStr)?',
+                              style: const TextStyle(color: Color(0xFFE6EDF3), fontSize: 13),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogCtx).pop(false),
+                  child: const Text('Cancel', style: TextStyle(color: Color(0xFF8B949E))),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.of(dialogCtx).pop(true),
+                  child: const Text('Delete', style: TextStyle(color: kDanger, fontWeight: FontWeight.w600)),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (confirm != true || !mounted) return;
+
+    final deleted = await TaskSchedulerService.instance.deleteTask(
+      taskId,
+      deleteFiles: deleteFiles,
+    );
     if (!deleted && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Task not found — already deleted')),
       );
     }
+  }
+
+  static String _formatBytes(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
   }
 }

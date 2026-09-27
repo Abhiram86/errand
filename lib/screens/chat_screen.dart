@@ -369,6 +369,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             await WidgetService.instance.consumeInitialVoicePrompt();
         if (triggerVoice && mounted) {
           _startVoicePrompt();
+        } else if (mounted) {
+          // Cold-open autofocus: request focus on the composer after the first
+          // frame so the user can type immediately without tapping. Gated to
+          // cold start only — resume from background never re-focuses.
+          _composerFocusNode.requestFocus();
         }
       }
       unawaited(InstalledAppsService.instance.initAndRefresh());
@@ -1775,7 +1780,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _controller.clear();
 
     // A live dictation session would keep writing its next partials into
-    // the (now empty) composer after the message is gone — end it.
+    // the (now empty) composer after the message is gone — end it and invalidate
+    // the active speech session so late callbacks never refill the composer.
+    _speechSessionId++;
     unawaited(SpeechService.instance.stop());
 
     // Preserve attachments from the message being edited (structured field
@@ -2560,6 +2567,25 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   // -- Voice input ---------------------------------------------------------
 
   DateTime? _lastVoicePromptAt;
+  bool _isTogglingVoice = false;
+  int _speechSessionId = 0;
+
+  /// Deduplicates speech recognition results when the underlying engine
+  /// returns a phrase duplicated twice (e.g. on certain Android configurations).
+  String _deduplicateSpeechWords(String text) {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) return text;
+    final words = trimmed.split(RegExp(r'\s+'));
+    if (words.length >= 2 && words.length % 2 == 0) {
+      final mid = words.length ~/ 2;
+      final firstHalf = words.sublist(0, mid).join(' ');
+      final secondHalf = words.sublist(mid).join(' ');
+      if (firstHalf.toLowerCase() == secondHalf.toLowerCase()) {
+        return firstHalf;
+      }
+    }
+    return text;
+  }
 
   /// Triggered via Android Home Screen Widget or direct voice shortcuts.
   Future<void> _startVoicePrompt() async {
@@ -2586,56 +2612,65 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   Future<void> _toggleVoiceInput() async {
     final speech = SpeechService.instance;
     if (speech.listening.value) {
+      _speechSessionId++;
       await speech.stop();
       return; // listening notifier flips via onStatus
     }
-    if (_busy) return;
-    await _ensureSettingsReady();
-    if (!mounted || _busy) return;
-
-    if (!await speech.hasMicPermission()) {
-      final granted = await speech.requestMicPermission();
-      if (!mounted) return;
-      if (!granted) {
-        _showToast('Microphone permission is needed for voice input.');
-        return;
-      }
-    }
-
-    if (!await speech.initialize()) {
-      if (!mounted) return;
-      _showToast(
-        'Speech recognition is unavailable on this device. On emulators, '
-        'enable the Google app and grant it microphone access.',
-      );
-      return;
-    }
-
-    var localeId = await speech.savedLocaleId();
-    if (localeId == null) {
-      localeId = await _pickVoiceLocale();
-      if (!mounted) return;
-      if (localeId == null) return; // user cancelled the picker
-      await speech.saveLocaleId(localeId);
-    }
+    if (_busy || _isTogglingVoice) return;
+    _isTogglingVoice = true;
 
     try {
-      await speech.listen(
-        localeId: localeId,
-        onResult: (words, isFinal) {
-          if (!mounted) return;
-          // Cumulative partials replace the composer text; keep the cursor
-          // at the end so typing can continue seamlessly.
-          _controller.value = TextEditingValue(
-            text: words,
-            selection: TextSelection.collapsed(offset: words.length),
-          );
-          if (isFinal && mounted) setState(() {});
-        },
-      );
-    } catch (e) {
-      if (!mounted) return;
-      _showToast('Could not start voice input: $e');
+      await _ensureSettingsReady();
+      if (!mounted || _busy) return;
+
+      if (!await speech.hasMicPermission()) {
+        final granted = await speech.requestMicPermission();
+        if (!mounted) return;
+        if (!granted) {
+          _showToast('Microphone permission is needed for voice input.');
+          return;
+        }
+      }
+
+      if (!await speech.initialize()) {
+        if (!mounted) return;
+        _showToast(
+          'Speech recognition is unavailable on this device. On emulators, '
+          'enable the Google app and grant it microphone access.',
+        );
+        return;
+      }
+
+      var localeId = await speech.savedLocaleId();
+      if (localeId == null) {
+        localeId = await _pickVoiceLocale();
+        if (!mounted) return;
+        if (localeId == null) return; // user cancelled the picker
+        await speech.saveLocaleId(localeId);
+      }
+
+      final sessionId = ++_speechSessionId;
+      try {
+        await speech.listen(
+          localeId: localeId,
+          onResult: (words, isFinal) {
+            if (!mounted || sessionId != _speechSessionId) return;
+            final cleanWords = _deduplicateSpeechWords(words);
+            // Cumulative partials replace the composer text; keep the cursor
+            // at the end so typing can continue seamlessly.
+            _controller.value = TextEditingValue(
+              text: cleanWords,
+              selection: TextSelection.collapsed(offset: cleanWords.length),
+            );
+            if (isFinal && mounted) setState(() {});
+          },
+        );
+      } catch (e) {
+        if (!mounted) return;
+        _showToast('Could not start voice input: $e');
+      }
+    } finally {
+      _isTogglingVoice = false;
     }
   }
 
