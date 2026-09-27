@@ -324,27 +324,21 @@ class MainActivity : FlutterActivity() {
                         result.success(true)
                     } catch (e: Exception) {
                         try {
-                            // On Android 13+ (API 33+), directly open Errand's battery usage page (Unrestricted / Optimized / Restricted)
-                            val fallbackIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                                Intent(Settings.ACTION_APP_BATTERY_USAGE_DETAILS).apply {
-                                    data = android.net.Uri.parse("package:$packageName")
-                                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                                }
-                            } else {
-                                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                                    data = android.net.Uri.parse("package:$packageName")
-                                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                                }
+                            // Primary fallback: open Errand's App Info page where the user can configure
+                            // Battery -> Unrestricted (or "No restrictions" on Xiaomi/Oppo).
+                            val appDetailsIntent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                data = android.net.Uri.parse("package:$packageName")
+                                flags = Intent.FLAG_ACTIVITY_NEW_TASK
                             }
-                            startActivity(fallbackIntent)
+                            startActivity(appDetailsIntent)
                             result.success(true)
                         } catch (e2: Exception) {
                             try {
-                                val lastResort = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                                    data = android.net.Uri.parse("package:$packageName")
+                                // Last resort: open the system battery optimization list
+                                val batteryListIntent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).apply {
                                     flags = Intent.FLAG_ACTIVITY_NEW_TASK
                                 }
-                                startActivity(lastResort)
+                                startActivity(batteryListIntent)
                                 result.success(true)
                             } catch (e3: Exception) {
                                 Log.e("MainActivity", "Battery exemption request fallback failed", e3)
