@@ -738,7 +738,7 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
                   ),
                   SizedBox(height: 6),
                   Text(
-                    '2. Select "Unrestricted" (or toggle ON "Allow background activity" on Oppo/OnePlus).',
+                    '2. Select "Unrestricted" (or turn ON "Allow background activity").',
                     style: TextStyle(color: kText, fontSize: 12.5, fontWeight: FontWeight.w500),
                   ),
                 ],
@@ -747,11 +747,11 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
             const SizedBox(height: 10),
             Container(
               width: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
               decoration: BoxDecoration(
                 color: Colors.amber.withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.amber.withValues(alpha: 0.3)),
+                border: Border.all(color: Colors.amber.withValues(alpha: 0.25)),
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -763,18 +763,19 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
                       SizedBox(width: 8),
                       Expanded(
                         child: Text(
-                          'Still confused? Ask Errand in chat and Errand will give you step-by-step instructions for your device:',
+                          'Still confused? Ask Errand in chat to inspect your device model and Android version for step-by-step guidance.',
                           style: TextStyle(color: Colors.amber, fontSize: 11.5, height: 1.35),
                         ),
                       ),
                     ],
                   ),
                   const SizedBox(height: 8),
-                  InkWell(
-                    borderRadius: BorderRadius.circular(6),
+                  GestureDetector(
                     onTap: () async {
                       await Clipboard.setData(
-                        const ClipboardData(text: 'How do I disable battery optimization on my phone?'),
+                        const ClipboardData(
+                          text: 'Analyze my device model and Android version, then explain how to disable battery optimization and background restrictions specifically for Errand.',
+                        ),
                       );
                       if (mounted) {
                         ScaffoldMessenger.of(context).showSnackBar(
@@ -786,34 +787,20 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
                         );
                       }
                     },
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                      decoration: BoxDecoration(
-                        color: Colors.amber.withValues(alpha: 0.15),
-                        borderRadius: BorderRadius.circular(6),
-                        border: Border.all(color: Colors.amber.withValues(alpha: 0.4)),
-                      ),
-                      child: const Row(
+                    child: const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 2),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
                         children: [
-                          Expanded(
-                            child: Text(
-                              '"How do I disable battery optimization on my phone?"',
-                              style: TextStyle(
-                                color: Colors.amber,
-                                fontSize: 11.5,
-                                fontStyle: FontStyle.italic,
-                              ),
-                            ),
-                          ),
-                          SizedBox(width: 8),
-                          Icon(Icons.copy_rounded, color: Colors.amber, size: 14),
-                          SizedBox(width: 4),
+                          Icon(Icons.copy_rounded, color: Colors.amber, size: 13),
+                          SizedBox(width: 6),
                           Text(
-                            'Copy',
+                            'Copy prompt to ask in chat',
                             style: TextStyle(
                               color: Colors.amber,
-                              fontSize: 11,
-                              fontWeight: FontWeight.bold,
+                              fontSize: 11.5,
+                              fontWeight: FontWeight.w600,
+                              decoration: TextDecoration.underline,
                             ),
                           ),
                         ],
