@@ -2,6 +2,7 @@ import 'package:drift/drift.dart' hide Column;
 import 'package:flutter/material.dart';
 
 import '../../services/database.dart';
+import '../../services/task_scheduler_service.dart';
 import '../../theme/app_colors.dart';
 import 'spacey_log_item.dart';
 
@@ -41,23 +42,34 @@ class TaskLogsModal extends StatelessWidget {
             ),
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+              child: Row(
                 children: [
-                  Text(
-                    'Execution Logs • #$taskId',
-                    style: const TextStyle(
-                      color: kText,
-                      fontSize: 15,
-                      fontWeight: FontWeight.w700,
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Execution Logs • #$taskId',
+                          style: const TextStyle(
+                            color: kText,
+                            fontSize: 15,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          taskTitle,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(color: kMuted, fontSize: 11),
+                        ),
+                      ],
                     ),
                   ),
-                  const SizedBox(height: 2),
-                  Text(
-                    taskTitle,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: kMuted, fontSize: 11),
+                  _ClearLogsButton(
+                    taskId: taskId,
+                    taskTitle: taskTitle,
+                    db: db,
                   ),
                 ],
               ),
@@ -150,6 +162,162 @@ class TaskLogsModal extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _ClearLogsButton extends StatelessWidget {
+  final int taskId;
+  final String taskTitle;
+  final ErrandDatabase db;
+
+  const _ClearLogsButton({
+    required this.taskId,
+    required this.taskTitle,
+    required this.db,
+  });
+
+  String _formatBytes(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+
+  Future<void> _handleClear(BuildContext context) async {
+    final scheduler = TaskSchedulerService.instance;
+    final files = await scheduler.getOwnedFilesForTask(taskId);
+    if (!context.mounted) return;
+
+    var totalBytes = 0;
+    for (final f in files) {
+      try {
+        totalBytes += f.lengthSync();
+      } catch (_) {}
+    }
+
+    var deleteFiles = files.isNotEmpty;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogCtx) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            final bytesStr = _formatBytes(totalBytes);
+            return AlertDialog(
+              backgroundColor: const Color(0xFF1E222B),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+              title: const Text(
+                'Clear Logs & Files?',
+                style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w600),
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Are you sure you want to clear all execution logs for "$taskTitle"?',
+                    style: const TextStyle(color: Color(0xFFC9D1D9), fontSize: 14),
+                  ),
+                  if (files.isNotEmpty) ...[
+                    const SizedBox(height: 16),
+                    Container(
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF161B22),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: const Color(0xFF30363D)),
+                      ),
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      child: Row(
+                        children: [
+                          Checkbox(
+                            value: deleteFiles,
+                            onChanged: (val) => setDialogState(() => deleteFiles = val ?? false),
+                            activeColor: kBubbleUser,
+                          ),
+                          Expanded(
+                            child: InkWell(
+                              onTap: () => setDialogState(() => deleteFiles = !deleteFiles),
+                              borderRadius: BorderRadius.circular(4),
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(vertical: 4),
+                                child: Text(
+                                  'Also delete output & linked files (${files.length} file${files.length == 1 ? '' : 's'}, $bytesStr)',
+                                  style: const TextStyle(color: Color(0xFFC9D1D9), fontSize: 12),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogCtx).pop(false),
+                  child: const Text('Cancel', style: TextStyle(color: Color(0xFF8B949E))),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.of(dialogCtx).pop(true),
+                  child: const Text('Clear', style: TextStyle(color: kDanger, fontWeight: FontWeight.w600)),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (confirmed == true && context.mounted) {
+      await scheduler.deleteLogsForTask(taskId, deleteFiles: deleteFiles);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              deleteFiles ? 'Cleared logs and deleted associated files' : 'Cleared execution logs',
+            ),
+            duration: const Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<List<SchedulerTaskLogRow>>(
+      stream: (db.select(db.schedulerTaskLogs)
+            ..where((l) => l.schedulerTaskId.equals(taskId)))
+          .watch(),
+      builder: (context, snapshot) {
+        final hasLogs = (snapshot.data ?? []).isNotEmpty;
+        if (!hasLogs) return const SizedBox.shrink();
+
+        return InkWell(
+          onTap: () => _handleClear(context),
+          borderRadius: BorderRadius.circular(6),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: const [
+                Icon(Icons.delete_sweep_outlined, size: 16, color: kDanger),
+                SizedBox(width: 4),
+                Text(
+                  'Clear',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: kDanger,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }

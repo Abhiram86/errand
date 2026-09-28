@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:errand/llm/llm_client.dart';
@@ -1051,6 +1052,49 @@ void main() {
         ),
       ),
     );
+  });
+
+  test('chatStream terminates immediately when finish_reason is stop without [DONE]', () async {
+    Stream<List<int>> createFinishReasonStream() async* {
+      yield utf8.encode(_sseEvent({
+        'choices': [
+          {
+            'delta': {'content': 'Final answer'},
+            'finish_reason': 'stop',
+          },
+        ],
+      }));
+      // Intentionally do NOT emit [DONE] and keep stream open
+      final completer = Completer<void>();
+      await completer.future;
+    }
+
+    final client = LlmClient(
+      config: const LlmConfig(
+        baseUrl: 'https://example.test/v1',
+        apiKey: 'test-key',
+        model: 'test-model',
+      ),
+      backoffDuration: (_) => Duration.zero,
+      client: _StreamingClient((request) async {
+        return http.StreamedResponse(
+          createFinishReasonStream(),
+          200,
+          headers: const {'content-type': 'text/event-stream'},
+        );
+      }),
+    );
+
+    final deltas = <String>[];
+    final message = await client.chatStream(
+      messages: const [
+        {'role': 'user', 'content': 'Hi'},
+      ],
+      onTextDelta: deltas.add,
+    );
+
+    expect(message.content, equals('Final answer'));
+    expect(deltas, equals(['Final answer']));
   });
 }
 

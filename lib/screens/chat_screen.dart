@@ -2088,6 +2088,21 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       // are not the agent's fault — show a transient toast instead of adding
       // an error message to the conversation context.
       _failWorking(e is LlmException ? e.message : 'Unexpected error: $e');
+    } finally {
+      if (_busy) {
+        if (mounted) {
+          setState(() {
+            _busy = false;
+            _workingMessageId = null;
+          });
+        } else {
+          _busy = false;
+          _workingMessageId = null;
+        }
+      }
+      _workingFlushTimer?.cancel();
+      _workingFlushTimer = null;
+      unawaited(_intentService.stopWorkIndicator());
     }
   }
 

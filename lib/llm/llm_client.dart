@@ -728,6 +728,12 @@ class LlmClient {
           transport: true,
         );
       }
+
+      if (finishReason != null &&
+          finishReason.isNotEmpty &&
+          finishReason != 'null') {
+        break;
+      }
     }
 
     final toolCalls = <ToolCall>[];

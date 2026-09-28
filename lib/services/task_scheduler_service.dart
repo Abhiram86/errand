@@ -75,17 +75,45 @@ class TaskSchedulerService {
 
   /// Resolves a stored path (scratch-relative or legacy absolute) into an
   /// absolute path within the current [scratchDir].
-  static String resolveReportPath(String? pathStr, [Directory? scratchDir]) {
+  /// Resolves a stored path (scratch-relative, workspace-relative, file:// URI,
+  /// or legacy absolute) into an absolute path on disk.
+  static String resolveReportPath(
+    String? pathStr, [
+    Directory? scratchDir,
+    Directory? workspaceDir,
+  ]) {
     if (pathStr == null || pathStr.trim().isEmpty) return '';
-    final scratch = scratchDir ?? Workspace.instance.scratchDir;
-    if (p.isAbsolute(pathStr)) {
-      if (File(pathStr).existsSync()) {
-        return pathStr;
+    var clean = pathStr.trim();
+    if (clean.startsWith('file://')) {
+      final uri = Uri.tryParse(clean);
+      if (uri != null && uri.path.isNotEmpty) {
+        clean = uri.toFilePath();
+      } else {
+        clean = clean.replaceFirst(RegExp(r'^file://+'), '/');
       }
-      final rel = toScratchRelative(pathStr, scratch);
-      return p.join(scratch.path, rel);
     }
-    return p.join(scratch.path, pathStr);
+    final scratch = scratchDir ?? Workspace.instance.scratchDir;
+    final workspace = workspaceDir ?? Workspace.instance.documentsDir;
+
+    if (p.isAbsolute(clean)) {
+      if (File(clean).existsSync()) {
+        return clean;
+      }
+      final rel = toScratchRelative(clean, scratch);
+      final inScratch = p.join(scratch.path, rel);
+      if (File(inScratch).existsSync()) return inScratch;
+      final inWs = p.join(workspace.path, rel);
+      if (File(inWs).existsSync()) return inWs;
+      return inScratch;
+    }
+
+    final inScratch = p.join(scratch.path, clean);
+    if (File(inScratch).existsSync()) return inScratch;
+
+    final inWs = p.join(workspace.path, clean);
+    if (File(inWs).existsSync()) return inWs;
+
+    return inScratch;
   }
 
   /// Containment guard for destructive paths: true only when [absPath]
@@ -105,6 +133,33 @@ class TaskSchedulerService {
     }
   }
 
+  /// Containment guard for task-owned paths: true only when [absPath]
+  /// normalizes to a location inside [scratchDir] OR [workspaceDir].
+  /// Refuses anything outside these sandboxes so deleting task files
+  /// cannot touch arbitrary system or user directories.
+  static bool isTaskOwnedPath(
+    String absPath, {
+    Directory? scratchDir,
+    Directory? workspaceDir,
+  }) {
+    final scratch = scratchDir ?? Workspace.instance.scratchDir;
+    final workspace = workspaceDir ?? Workspace.instance.documentsDir;
+    try {
+      final normalized = p.normalize(absPath);
+      final scratchPath = p.normalize(scratch.path);
+      if (p.isWithin(scratchPath, normalized) || p.equals(scratchPath, normalized)) {
+        return true;
+      }
+      final wsPath = p.normalize(workspace.path);
+      if (p.isWithin(wsPath, normalized) || p.equals(wsPath, normalized)) {
+        return true;
+      }
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// Parses the JSON array in [linkedFilesRaw] into a list of strings.
   static List<String> parseLinkedFiles(String? linkedFilesRaw) {
     if (linkedFilesRaw == null || linkedFilesRaw.trim().isEmpty) return const [];
@@ -119,41 +174,74 @@ class TaskSchedulerService {
 
   /// Returns all existing [File]s on disk owned by [taskId] across all its logs
   /// (both primary report paths and linked files).
-  Future<List<File>> getOwnedFilesForTask(int taskId, [Directory? scratchDir]) async {
+  Future<List<File>> getOwnedFilesForTask(
+    int taskId, [
+    Directory? scratchDir,
+    Directory? workspaceDir,
+  ]) async {
     final scratch = scratchDir ?? Workspace.instance.scratchDir;
+    final workspace = workspaceDir ?? Workspace.instance.documentsDir;
     final logs = await (db.select(db.schedulerTaskLogs)
           ..where((l) => l.schedulerTaskId.equals(taskId)))
         .get();
 
     final files = <String, File>{};
-    for (final log in logs) {
-      if (log.outputFilePath != null && log.outputFilePath!.isNotEmpty) {
-        final absPath = resolveReportPath(log.outputFilePath, scratch);
-        // Never report (hence never delete) files outside scratch, even
-        // when a legacy absolute row points at one.
-        if (absPath.isNotEmpty && isScratchOwned(absPath, scratch)) {
-          final file = File(absPath);
-          if (file.existsSync()) {
-            files[file.path] = file;
-          }
+
+    void addIfOwned(String absPath) {
+      if (absPath.isEmpty) return;
+      if (isTaskOwnedPath(absPath, scratchDir: scratch, workspaceDir: workspace)) {
+        final file = File(absPath);
+        if (file.existsSync()) {
+          files[file.path] = file;
         }
       }
+    }
+
+    for (final log in logs) {
+      if (log.outputFilePath != null && log.outputFilePath!.isNotEmpty) {
+        final absPath = resolveReportPath(log.outputFilePath, scratch, workspace);
+        addIfOwned(absPath);
+      }
       for (final rel in parseLinkedFiles(log.linkedFiles)) {
-        final absPath = resolveReportPath(rel, scratch);
-        if (absPath.isNotEmpty && isScratchOwned(absPath, scratch)) {
-          final file = File(absPath);
-          if (file.existsSync()) {
-            files[file.path] = file;
+        final absPath = resolveReportPath(rel, scratch, workspace);
+        addIfOwned(absPath);
+
+        // Also check if `rel` was a scratch link copy (e.g. task-1-123-link-foo.csv)
+        // and check if original file exists in workspace
+        final base = p.basename(rel);
+        final match = RegExp(r'^task-\d+-\d+-link-(.+)$').firstMatch(base);
+        if (match != null) {
+          final origName = match.group(1);
+          if (origName != null && origName.isNotEmpty) {
+            final wsFile = p.join(workspace.path, origName);
+            addIfOwned(wsFile);
           }
         }
       }
     }
+
+    // Also scan scratch for any task-$taskId-* files (both reports and link copies)
+    try {
+      if (scratch.existsSync()) {
+        final prefix = 'task-$taskId-';
+        for (final entity in scratch.listSync()) {
+          if (entity is File && p.basename(entity.path).startsWith(prefix)) {
+            addIfOwned(entity.path);
+          }
+        }
+      }
+    } catch (_) {}
+
     return files.values.toList();
   }
 
   /// Computes the count and total size in bytes of existing files owned by [taskId].
-  Future<({int count, int bytes})> getTaskFileStats(int taskId, [Directory? scratchDir]) async {
-    final files = await getOwnedFilesForTask(taskId, scratchDir);
+  Future<({int count, int bytes})> getTaskFileStats(
+    int taskId, [
+    Directory? scratchDir,
+    Directory? workspaceDir,
+  ]) async {
+    final files = await getOwnedFilesForTask(taskId, scratchDir, workspaceDir);
     var bytes = 0;
     for (final f in files) {
       try {
@@ -224,7 +312,12 @@ class TaskSchedulerService {
   ///
   /// When [deleteFiles] is true, removes all report and linked output files
   /// stored on disk for this task. Returns false when the task does not exist.
-  Future<bool> deleteTask(int taskId, {bool deleteFiles = false, Directory? scratchDir}) async {
+  Future<bool> deleteTask(
+    int taskId, {
+    bool deleteFiles = false,
+    Directory? scratchDir,
+    Directory? workspaceDir,
+  }) async {
     final existing = await (db.select(db.schedulerTasks)
           ..where((t) => t.id.equals(taskId)))
         .getSingleOrNull();
@@ -237,7 +330,7 @@ class TaskSchedulerService {
 
     if (deleteFiles) {
       try {
-        final files = await getOwnedFilesForTask(taskId, scratchDir);
+        final files = await getOwnedFilesForTask(taskId, scratchDir, workspaceDir);
         for (final f in files) {
           try {
             if (f.existsSync()) {
@@ -251,6 +344,32 @@ class TaskSchedulerService {
     await (db.delete(db.schedulerTasks)..where((t) => t.id.equals(taskId)))
         .go();
     return true;
+  }
+
+  /// Clears all execution logs for [taskId].
+  /// When [deleteFiles] is true, also deletes all report files and linked files
+  /// associated with those logs.
+  Future<int> deleteLogsForTask(
+    int taskId, {
+    bool deleteFiles = false,
+    Directory? scratchDir,
+    Directory? workspaceDir,
+  }) async {
+    if (deleteFiles) {
+      try {
+        final files = await getOwnedFilesForTask(taskId, scratchDir, workspaceDir);
+        for (final f in files) {
+          try {
+            if (f.existsSync()) {
+              f.deleteSync();
+            }
+          } catch (_) {}
+        }
+      } catch (_) {}
+    }
+    return (db.delete(db.schedulerTaskLogs)
+          ..where((l) => l.schedulerTaskId.equals(taskId)))
+        .go();
   }
 
   /// Returns the number of execution logs that still have an unseen

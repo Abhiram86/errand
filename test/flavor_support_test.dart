@@ -4,7 +4,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:errand/agent/system_prompt.dart';
 import 'package:errand/agent/tool.dart';
 import 'package:errand/agent/tool_registry.dart';
-import 'package:errand/main.dart';
 import 'package:errand/services/a11y_service.dart';
 import 'package:errand/tools/act_tool.dart';
 import 'package:errand/tools/screen_tool.dart';

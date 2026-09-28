@@ -213,6 +213,169 @@ void main() {
       // File remains on disk
       expect(reportFile.existsSync(), isTrue);
     });
+
+    test('deleteTask with workspace linked files, scratch copies, and file:// URIs removes both scratch and workspace files', () async {
+      final workspaceDir = Directory.systemTemp.createTempSync('p13_1_workspace_');
+      addTearDown(() {
+        if (workspaceDir.existsSync()) workspaceDir.deleteSync(recursive: true);
+      });
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final taskId = await db.into(db.schedulerTasks).insert(
+        SchedulerTasksCompanion.insert(
+          title: 'Workspace Linked Task',
+          type: 'one_off',
+          status: 'completed',
+          payloadJson: '{}',
+          startsAt: now,
+          timezone: 'UTC',
+          createdAt: now,
+          updatedAt: now,
+        ),
+      );
+
+      // Create report file in scratch
+      final reportFile = File(p.join(scratchDir.path, 'task-$taskId-report.md'))..writeAsStringSync('report');
+      // Create scratch copy of linked file
+      final scratchCopy = File(p.join(scratchDir.path, 'task-$taskId-1000-link-data.csv'))..writeAsStringSync('1,2,3');
+      // Create original linked file in workspace
+      final wsFile = File(p.join(workspaceDir.path, 'data.csv'))..writeAsStringSync('1,2,3');
+      // Create another file referenced via file:// URI in workspace
+      final wsUriFile = File(p.join(workspaceDir.path, 'output.txt'))..writeAsStringSync('out');
+
+      await db.into(db.schedulerTaskLogs).insert(
+        SchedulerTaskLogsCompanion.insert(
+          schedulerTaskId: taskId,
+          scheduledFor: now,
+          status: 'success',
+          outputFilePath: Value('task-$taskId-report.md'),
+          linkedFiles: Value(jsonEncode([
+            'task-$taskId-1000-link-data.csv',
+            'file://${wsUriFile.path}',
+          ])),
+          createdAt: now,
+          updatedAt: now,
+        ),
+      );
+
+      final files = await service.getOwnedFilesForTask(taskId, scratchDir, workspaceDir);
+      final filePaths = files.map((f) => f.path).toSet();
+      expect(filePaths, contains(reportFile.path));
+      expect(filePaths, contains(scratchCopy.path));
+      expect(filePaths, contains(wsFile.path));
+      expect(filePaths, contains(wsUriFile.path));
+
+      final deleted = await service.deleteTask(
+        taskId,
+        deleteFiles: true,
+        scratchDir: scratchDir,
+        workspaceDir: workspaceDir,
+      );
+      expect(deleted, isTrue);
+
+      expect(reportFile.existsSync(), isFalse);
+      expect(scratchCopy.existsSync(), isFalse);
+      expect(wsFile.existsSync(), isFalse);
+      expect(wsUriFile.existsSync(), isFalse);
+    });
+
+    test('deleteLogsForTask clears log rows and removes owned files when deleteFiles is true', () async {
+      final workspaceDir = Directory.systemTemp.createTempSync('p13_1_workspace_logs_');
+      addTearDown(() {
+        if (workspaceDir.existsSync()) workspaceDir.deleteSync(recursive: true);
+      });
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final taskId = await db.into(db.schedulerTasks).insert(
+        SchedulerTasksCompanion.insert(
+          title: 'Logs Clear Task',
+          type: 'one_off',
+          status: 'completed',
+          payloadJson: '{}',
+          startsAt: now,
+          timezone: 'UTC',
+          createdAt: now,
+          updatedAt: now,
+        ),
+      );
+
+      final reportFile = File(p.join(scratchDir.path, 'task-$taskId-rep.md'))..writeAsStringSync('rep');
+      final wsFile = File(p.join(workspaceDir.path, 'table.csv'))..writeAsStringSync('col1,col2');
+
+      await db.into(db.schedulerTaskLogs).insert(
+        SchedulerTaskLogsCompanion.insert(
+          schedulerTaskId: taskId,
+          scheduledFor: now,
+          status: 'success',
+          outputFilePath: Value('task-$taskId-rep.md'),
+          linkedFiles: Value(jsonEncode([wsFile.path])),
+          createdAt: now,
+          updatedAt: now,
+        ),
+      );
+
+      // Verify log row exists
+      final logRowsBefore = await (db.select(db.schedulerTaskLogs)..where((l) => l.schedulerTaskId.equals(taskId))).get();
+      expect(logRowsBefore, hasLength(1));
+
+      // Clear logs with deleteFiles: true
+      final deletedCount = await service.deleteLogsForTask(
+        taskId,
+        deleteFiles: true,
+        scratchDir: scratchDir,
+        workspaceDir: workspaceDir,
+      );
+      expect(deletedCount, equals(1));
+
+      // Task row remains intact
+      final taskRow = await (db.select(db.schedulerTasks)..where((t) => t.id.equals(taskId))).getSingleOrNull();
+      expect(taskRow, isNotNull);
+
+      // Logs are deleted from DB
+      final logRowsAfter = await (db.select(db.schedulerTaskLogs)..where((l) => l.schedulerTaskId.equals(taskId))).get();
+      expect(logRowsAfter, isEmpty);
+
+      // Files are deleted from disk
+      expect(reportFile.existsSync(), isFalse);
+      expect(wsFile.existsSync(), isFalse);
+    });
+
+    test('deleteLogsForTask clears log rows but preserves files when deleteFiles is false', () async {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final taskId = await db.into(db.schedulerTasks).insert(
+        SchedulerTasksCompanion.insert(
+          title: 'Preserve Logs Files Task',
+          type: 'one_off',
+          status: 'completed',
+          payloadJson: '{}',
+          startsAt: now,
+          timezone: 'UTC',
+          createdAt: now,
+          updatedAt: now,
+        ),
+      );
+
+      final reportFile = File(p.join(scratchDir.path, 'task-$taskId-preserve.md'))..writeAsStringSync('preserve');
+
+      await db.into(db.schedulerTaskLogs).insert(
+        SchedulerTaskLogsCompanion.insert(
+          schedulerTaskId: taskId,
+          scheduledFor: now,
+          status: 'success',
+          outputFilePath: Value('task-$taskId-preserve.md'),
+          createdAt: now,
+          updatedAt: now,
+        ),
+      );
+
+      final deletedCount = await service.deleteLogsForTask(taskId, deleteFiles: false, scratchDir: scratchDir);
+      expect(deletedCount, equals(1));
+
+      // Logs are gone
+      final logRowsAfter = await (db.select(db.schedulerTaskLogs)..where((l) => l.schedulerTaskId.equals(taskId))).get();
+      expect(logRowsAfter, isEmpty);
+
+      // File preserved
+      expect(reportFile.existsSync(), isTrue);
+    });
   });
 
   group('P13.1 Orphan sweep', () {
