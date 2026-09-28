@@ -234,18 +234,55 @@ class ModelsDevService {
     final baseName = _baseName(normalized);
     final cleanQuery = _stripQualifiers(baseName);
 
+    // 1. Exact slug / basename / cleaned matches
     for (final entry in _seedLimits.entries) {
       final seedNorm = _normalizeSlug(entry.key.toLowerCase());
       final seedClean = _stripQualifiers(seedNorm);
-      if (baseName == seedNorm ||
-          baseName.contains(seedNorm) ||
-          seedNorm.contains(baseName) ||
-          cleanQuery == seedClean ||
-          cleanQuery.contains(seedClean) ||
-          seedClean.contains(cleanQuery)) {
+      if (baseName == seedNorm || cleanQuery == seedClean) {
         return entry.value;
       }
     }
+
+    // 2. Prefix / boundary matches (prefer longest match)
+    int? bestPrefixValue;
+    int bestPrefixLength = 0;
+    for (final entry in _seedLimits.entries) {
+      final seedNorm = _normalizeSlug(entry.key.toLowerCase());
+      final seedClean = _stripQualifiers(seedNorm);
+      if (baseName.startsWith('$seedNorm-') ||
+          baseName.startsWith('${seedNorm}_') ||
+          cleanQuery.startsWith('$seedClean-') ||
+          cleanQuery.startsWith('${seedClean}_')) {
+        final len = seedClean.length;
+        if (len > bestPrefixLength) {
+          bestPrefixLength = len;
+          bestPrefixValue = entry.value;
+        }
+      }
+    }
+    if (bestPrefixValue != null) return bestPrefixValue;
+
+    // 3. Fallback: contains match (prefer longest seedClean match to prevent short-slug hijack)
+    int? bestContainsValue;
+    int bestContainsLength = 0;
+    for (final entry in _seedLimits.entries) {
+      final seedNorm = _normalizeSlug(entry.key.toLowerCase());
+      final seedClean = _stripQualifiers(seedNorm);
+      if (baseName.contains(seedNorm) || cleanQuery.contains(seedClean)) {
+        // Guard against parameter/version collisions: e.g. '1b' should not match '8b'
+        final qParam = RegExp(r'\b\d+b\b').firstMatch(cleanQuery)?.group(0);
+        final sParam = RegExp(r'\b\d+b\b').firstMatch(seedClean)?.group(0);
+        if (qParam != null && sParam != null && qParam != sParam) {
+          continue;
+        }
+        final len = seedClean.length;
+        if (len > bestContainsLength) {
+          bestContainsLength = len;
+          bestContainsValue = entry.value;
+        }
+      }
+    }
+    if (bestContainsValue != null) return bestContainsValue;
 
     // Check if model name has an explicit token indicator (e.g. "32k", "128k", "1m")
     final nameIndicator = _extractContextFromName(raw);
@@ -337,11 +374,12 @@ class ModelsDevService {
       result = result.replaceAll(q, '');
     }
     // Remove context sizes like -32768, -128k
-    result = result.replaceAll(RegExp(r'-\d+k?\b'), '');
+    result = result.replaceAll(RegExp(r'-\d+k\b'), '');
+    result = result.replaceAll(RegExp(r'-\d{5,}\b'), '');
     // Remove date stamps like -20250219 or -2024-05-13, and revision suffixes like -001, -002
     result = result.replaceAll(RegExp(r'-\d{8}\b'), '');
     result = result.replaceAll(RegExp(r'-\d{4}-\d{2}-\d{2}\b'), '');
-    result = result.replaceAll(RegExp(r'-\d{3,4}\b'), '');
+    result = result.replaceAll(RegExp(r'-0\d{2,3}\b'), '');
     return result;
   }
 

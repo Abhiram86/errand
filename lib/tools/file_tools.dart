@@ -50,11 +50,13 @@ class WorkingDirectory {
 class _CachedStructuredDocument {
   final DateTime lastModified;
   final int fileLength;
+  final int cachedBytes;
   final LogicalDocument document;
 
   _CachedStructuredDocument({
     required this.lastModified,
     required this.fileLength,
+    required this.cachedBytes,
     required this.document,
   });
 }
@@ -100,7 +102,7 @@ class DocumentLruCache {
     // Invalidate stale entry if it exists
     if (cached != null) {
       _entries.remove(key);
-      _currentBytes -= cached.fileLength;
+      _currentBytes -= cached.cachedBytes;
       cached.document.dispose();
     }
 
@@ -123,7 +125,8 @@ class DocumentLruCache {
     }
 
     if (document != null) {
-      final entrySize = stat.size;
+      // Enforce the LRU ceiling against expanded bytes to protect against zip bombs
+      final entrySize = max(stat.size, document.estimatedByteSize);
 
       // A single entry larger than the whole budget bypasses the cache
       // entirely: it would evict everything for one read. The parse result
@@ -137,14 +140,15 @@ class DocumentLruCache {
         final oldestKey = _entries.keys.first;
         final evicted = _entries.remove(oldestKey);
         if (evicted != null) {
-          _currentBytes -= evicted.fileLength;
+          _currentBytes -= evicted.cachedBytes;
           evicted.document.dispose();
         }
       }
 
       _entries[key] = _CachedStructuredDocument(
         lastModified: stat.modified,
-        fileLength: entrySize,
+        fileLength: stat.size,
+        cachedBytes: entrySize,
         document: document,
       );
       _currentBytes += entrySize;

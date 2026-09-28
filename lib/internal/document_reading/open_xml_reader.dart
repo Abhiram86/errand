@@ -168,7 +168,11 @@ Future<LogicalDocument> readDocxDocument(File file) async {
     }
   }
 
-  return LogicalDocument(format: 'DOCX', units: units);
+  return LogicalDocument(
+    format: 'DOCX',
+    units: units,
+    totalExpandedBytes: package.totalPartBytes,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -300,7 +304,11 @@ Future<LogicalDocument> readXlsxDocument(File file) async {
     units.addAll(_chunkLines('Sheet: ${sheet.name}', rows));
   }
 
-  return LogicalDocument(format: 'XLSX', units: units);
+  return LogicalDocument(
+    format: 'XLSX',
+    units: units,
+    totalExpandedBytes: package.totalPartBytes,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -372,7 +380,11 @@ Future<LogicalDocument> readPptxDocument(File file) async {
     ));
   }
 
-  return LogicalDocument(format: 'PPTX', units: units);
+  return LogicalDocument(
+    format: 'PPTX',
+    units: units,
+    totalExpandedBytes: package.totalPartBytes,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -381,8 +393,13 @@ Future<LogicalDocument> readPptxDocument(File file) async {
 class _StreamingOpenXmlPackage {
   final Map<String, Uint8List> _parts;
   final List<String> entryNames;
+  final int totalPartBytes;
 
-  const _StreamingOpenXmlPackage._(this._parts, this.entryNames);
+  const _StreamingOpenXmlPackage._(
+    this._parts,
+    this.entryNames,
+    this.totalPartBytes,
+  );
 
   /// Streams an uncompressed entry on demand, matching part names case-insensitively.
   Stream<List<int>>? openPartStream(String partName) {
@@ -449,7 +466,7 @@ class _StreamingOpenXmlPackage {
         names.add(name);
       }
 
-      return _StreamingOpenXmlPackage._(parts, names);
+      return _StreamingOpenXmlPackage._(parts, names, totalPartBytes);
     } on ArchiveException catch (e) {
       throw FormatException(
         'Office document contains an invalid ZIP archive: $e',

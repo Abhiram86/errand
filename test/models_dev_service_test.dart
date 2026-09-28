@@ -23,6 +23,20 @@ void main() {
       expect(ModelsDevService.lookupContextTokens('mixtral-8x7b-32768'), 32768);
     });
 
+    test('avoids bidirectional contains misfires (M2 regression)', () {
+      // llama-3.2-1b must not match llama-3-8b (8192)
+      expect(ModelsDevService.lookupContextTokens('meta-llama/llama-3.2-1b-instruct'), 128000);
+      expect(ModelsDevService.lookupContextTokens('llama-3.2-1b'), 128000);
+      expect(ModelsDevService.lookupContextTokens('llama-3-8b'), 8192);
+      expect(ModelsDevService.lookupContextTokens('llama-3-8b-instruct'), 8192);
+
+      // o1-mini must not match o1 (200000)
+      expect(ModelsDevService.lookupContextTokens('o1-mini'), 128000);
+      expect(ModelsDevService.lookupContextTokens('openai/o1-mini-2024-09-12'), 128000);
+      expect(ModelsDevService.lookupContextTokens('o1'), 200000);
+      expect(ModelsDevService.lookupContextTokens('openai/o1'), 200000);
+    });
+
     test('extracts context limit from model name if explicit (e.g. 32k, 1m)', () {
       expect(ModelsDevService.lookupContextTokens('my-custom-model-64k'), 64 * 1024);
       expect(ModelsDevService.lookupContextTokens('big-brain-1m'), 1024 * 1024);

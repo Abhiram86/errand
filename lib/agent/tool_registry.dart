@@ -46,6 +46,7 @@ class ToolRegistry {
     CancelToken Function()? getCancelToken,
     MemoryService? memoryService,
     String? currentConversationId,
+    String? Function()? currentConversationIdResolver,
     BrowserService? browserService,
     Future<ConfirmationDecision> Function({
       required String title,
@@ -75,6 +76,7 @@ class ToolRegistry {
       memoryTool(
         memoryService: memoryService,
         currentConversationId: currentConversationId,
+        currentConversationIdResolver: currentConversationIdResolver,
       ),
       browserTool(
         browserService: browserService,

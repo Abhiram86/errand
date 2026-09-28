@@ -566,5 +566,22 @@ void main() {
       expect(loaded, isNotNull);
       expect(loaded!.messages.length, greaterThanOrEqualTo(5));
     });
+
+    test('rapid concurrent insertMessage calls assign unique sort orders without error', () async {
+      final baseConv = makeConversation(id: 'conv-insert-race', messages: []);
+      await db.saveConversation(baseConv);
+
+      final futures = <Future<void>>[];
+      for (var i = 0; i < 10; i++) {
+        futures.add(db.insertMessage('conv-insert-race', UserMessage(id: 'm-$i', text: 'msg $i')));
+      }
+
+      await Future.wait(futures);
+
+      final messages = await db.loadMessages('conv-insert-race');
+      expect(messages.length, 10);
+      final ids = messages.map((m) => m.id).toSet();
+      expect(ids.length, 10);
+    });
   });
 }

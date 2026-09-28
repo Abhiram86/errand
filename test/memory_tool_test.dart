@@ -283,5 +283,42 @@ void main() {
       expect(resFind.ok, isTrue);
       expect(resFind.output, contains('ToolRegistry integration check'));
     });
+
+    test('resolves currentConversationId dynamically via resolver', () async {
+      var currentConvo = 'conv_A';
+      final dynamicTool = memoryTool(
+        memoryService: service,
+        currentConversationIdResolver: () => currentConvo,
+      );
+
+      final callA = ToolCall(
+        id: 'c_dyn_1',
+        name: 'memory',
+        arguments: {
+          'action': 'create',
+          'about': 'Dynamic convo A memory',
+          'description': 'Description A',
+        },
+      );
+      await dynamicTool.handler(callA);
+
+      currentConvo = 'conv_B';
+      final callB = ToolCall(
+        id: 'c_dyn_2',
+        name: 'memory',
+        arguments: {
+          'action': 'create',
+          'about': 'Dynamic convo B memory',
+          'description': 'Description B',
+        },
+      );
+      await dynamicTool.handler(callB);
+
+      final all = await db.loadAllMemories();
+      final memA = all.firstWhere((m) => m.about == 'Dynamic convo A memory');
+      final memB = all.firstWhere((m) => m.about == 'Dynamic convo B memory');
+      expect(memA.sourceConversationId, 'conv_A');
+      expect(memB.sourceConversationId, 'conv_B');
+    });
   });
 }

@@ -7,7 +7,11 @@ import 'package:errand/tools/file_tools.dart';
 class MockDisposedDocument extends LogicalDocument {
   bool isDisposed = false;
 
-  MockDisposedDocument({required super.format, super.units = const []});
+  MockDisposedDocument({
+    required super.format,
+    super.units = const [],
+    super.totalExpandedBytes,
+  });
 
   @override
   void dispose() {
@@ -160,6 +164,27 @@ void main() {
       final results = await Future.wait([f1, f2]);
       expect(parseCount, 1);
       expect(identical(results[0], results[1]), isTrue);
+    });
+
+    test('enforces byte ceiling against expanded bytes rather than compressed file size (zip bomb protection)', () async {
+      final cache = DocumentLruCache(maxBytes: 1000, maxEntries: 10);
+      final mtime = DateTime.now();
+
+      // Compressed file is small (100 bytes), but expanded size is 2000 bytes (> 1000 maxBytes)
+      final bombFile = File('/tmp/bomb.docx');
+      final bombStat = FakeFileStat(modified: mtime, size: 100);
+      final bombDoc = MockDisposedDocument(format: 'DOCX', totalExpandedBytes: 2000);
+
+      final result = await cache.getOrParse(
+        file: bombFile,
+        stat: bombStat,
+        parser: (_) async => bombDoc,
+      );
+
+      // Returned to caller, but bypasses cache because expanded bytes exceed maxBytes
+      expect(identical(result, bombDoc), isTrue);
+      expect(cache.entryCount, 0);
+      expect(cache.currentBytes, 0);
     });
   });
 }

@@ -11,8 +11,25 @@ class LogicalDocumentUnit {
 class LogicalDocument {
   final String format;
   final List<LogicalDocumentUnit> units;
+  final int? totalExpandedBytes;
 
-  const LogicalDocument({required this.format, required this.units});
+  const LogicalDocument({
+    required this.format,
+    required this.units,
+    this.totalExpandedBytes,
+  });
+
+  /// Approximate memory footprint in bytes.
+  int get estimatedByteSize {
+    if (totalExpandedBytes != null && totalExpandedBytes! > 0) {
+      return totalExpandedBytes!;
+    }
+    var total = 0;
+    for (final unit in units) {
+      total += unit.label.length + unit.text.length;
+    }
+    return total;
+  }
 
   /// Releases any native or package resources held by this document.
   void dispose() {}

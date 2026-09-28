@@ -33,8 +33,9 @@ class PooledPdfDocument extends LogicalDocument {
 
   PooledPdfDocument._(
     this._doc,
-    List<LogicalDocumentUnit> units,
-  ) : super(format: 'PDF', units: units);
+    List<LogicalDocumentUnit> units, {
+    super.totalExpandedBytes,
+  }) : super(format: 'PDF', units: units);
 
   factory PooledPdfDocument(List<int> bytes) {
     PdfDocument doc;
@@ -53,7 +54,11 @@ class PooledPdfDocument extends LogicalDocument {
       isDisposed: () => instance._isDisposed,
     );
 
-    instance = PooledPdfDocument._(doc, lazyUnits);
+    instance = PooledPdfDocument._(
+      doc,
+      lazyUnits,
+      totalExpandedBytes: bytes.length,
+    );
     _finalizer.attach(instance, doc, detach: instance);
     return instance;
   }

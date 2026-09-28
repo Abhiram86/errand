@@ -477,6 +477,54 @@ final class ErrandDatabase extends _$ErrandDatabase {
         .get();
   }
 
+  /// Loads bounded candidate memories matching [tokens] or recency.
+  Future<List<MemoryRow>> loadCandidateMemories({
+    List<String> tokens = const [],
+    int limit = 100,
+  }) async {
+    if (tokens.isEmpty) {
+      return (select(memories)
+            ..orderBy([(m) => OrderingTerm.desc(m.updatedAt)])
+            ..limit(limit))
+          .get();
+    }
+
+    Expression<bool>? predicate;
+    for (final token in tokens.take(5)) {
+      if (token.isEmpty) continue;
+      final p = '%$token%';
+      final tokenPred = memories.about.like(p) |
+          memories.keywords.like(p) |
+          memories.description.like(p);
+      predicate = predicate == null ? tokenPred : predicate | tokenPred;
+    }
+
+    List<MemoryRow> results = const [];
+    if (predicate != null) {
+      results = await (select(memories)
+            ..where((m) => predicate!)
+            ..orderBy([(m) => OrderingTerm.desc(m.updatedAt)])
+            ..limit(limit))
+          .get();
+    }
+
+    if (results.length < 20) {
+      final recent = await (select(memories)
+            ..orderBy([(m) => OrderingTerm.desc(m.updatedAt)])
+            ..limit(50))
+          .get();
+      final seenIds = results.map((r) => r.id).toSet();
+      final combined = [...results];
+      for (final r in recent) {
+        if (seenIds.add(r.id)) {
+          combined.add(r);
+        }
+      }
+      return combined;
+    }
+    return results;
+  }
+
   /// Finds a single memory by its id.
   Future<MemoryRow?> getMemoryById(String id) {
     return (select(memories)..where((m) => m.id.equals(id))).getSingleOrNull();
@@ -508,15 +556,17 @@ final class ErrandDatabase extends _$ErrandDatabase {
   /// Appends [message] to the conversation; inserts a fresh row even if a
   /// message with the same id already exists.
   Future<void> insertMessage(String conversationId, Message message) async {
-    final maxId = conversationMessages.sortOrder.max();
-    final query = selectOnly(conversationMessages)
-      ..addColumns([maxId])
-      ..where(conversationMessages.conversationId.equals(conversationId));
-    final row = await query.getSingle();
+    await transaction(() async {
+      final maxId = conversationMessages.sortOrder.max();
+      final query = selectOnly(conversationMessages)
+        ..addColumns([maxId])
+        ..where(conversationMessages.conversationId.equals(conversationId));
+      final row = await query.getSingle();
 
-    final nextSortOrder = (row.read(maxId) ?? -1) + 1;
-    await into(conversationMessages)
-        .insert(_messageCompanion(conversationId, nextSortOrder, message));
+      final nextSortOrder = (row.read(maxId) ?? -1) + 1;
+      await into(conversationMessages)
+          .insert(_messageCompanion(conversationId, nextSortOrder, message));
+    });
   }
 
   /// Replaces the stored message identified by [messageId] with [message],

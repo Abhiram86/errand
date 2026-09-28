@@ -55,7 +55,15 @@ class MemoryService {
     int k = 3,
   }) async {
     final effectiveK = math.max(1, math.min(k, 50));
-    final rows = await _db.loadAllMemories();
+    final trimmedQuery = query?.trim().toLowerCase();
+    final queryTokens = (trimmedQuery != null && trimmedQuery.isNotEmpty)
+        ? _tokenize(trimmedQuery)
+        : <String>[];
+
+    final rows = await _db.loadCandidateMemories(
+      tokens: queryTokens,
+      limit: 100,
+    );
     if (rows.isEmpty) return const [];
 
     final memories = rows.map(_rowToMemory).toList();
@@ -74,7 +82,6 @@ class MemoryService {
     if (filtered.isEmpty) return const [];
 
     // 2. Lexical / token-based scoring
-    final trimmedQuery = query?.trim().toLowerCase();
     if (trimmedQuery == null || trimmedQuery.isEmpty) {
       // No query: return top k ordered by recency
       return filtered
@@ -83,7 +90,6 @@ class MemoryService {
           .toList();
     }
 
-    final queryTokens = _tokenize(trimmedQuery);
     final scored = <({UserMemory memory, double score})>[];
 
     for (final memory in filtered) {

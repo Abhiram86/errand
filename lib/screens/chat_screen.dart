@@ -1854,28 +1854,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     await _runAgentTurn();
   }
 
-  /// If the message at [index] is the final assistant bubble of a user-turn response
-  /// (the end-of-response step), returns the owning user message id so a
-  /// regenerate can be anchored to that turn; otherwise null.
-  String? _regenerateTargetFor(int index) {
-    if (index < 0 || index >= _messages.length) return null;
-    final message = _messages[index];
-    if (message is! AssistantMessage) return null;
-    // The response's last step: no other assistant bubble follows before
-    // the next user message (tool bubbles in between are fine).
-    for (var i = index + 1; i < _messages.length; i++) {
-      final next = _messages[i];
-      if (next is AssistantMessage) return null;
-      if (next is UserMessage) break; // turn boundary — this IS the last step
-    }
-    // Walk back to the owning user message; no user message → nothing to
-    // regenerate from (e.g. the welcome bubble).
-    for (var i = index - 1; i >= 0; i--) {
-      final previous = _messages[i];
-      if (previous is UserMessage) return previous.id;
-    }
-    return null;
-  }
 
   String _stripAttachedBlock(String text) {
     const marker = '\n\n[Attached files:\n';
@@ -2048,6 +2026,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         enableA11yTools: _a11ySupported,
         getCancelToken: () => _cancelToken,
         currentConversationId: _activeConversation.id,
+        currentConversationIdResolver: () => _activeConversation.id,
         onConfirmCommand: _handleConfirmCommand,
         isSessionTrusted: _isCurrentSessionTrusted,
       );
@@ -3010,6 +2989,42 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   Widget _buildMessageList() {
     final displayItems = groupMessagesForDisplay(_messages);
+
+    // M12: Precompute latest active tool group in a single O(N) backward scan.
+    int? latestActiveToolGroupIndex;
+    for (var j = displayItems.length - 1; j >= 0; j--) {
+      final item = displayItems[j];
+      if (item is ToolGroupDisplayItem) {
+        latestActiveToolGroupIndex = j;
+        break;
+      }
+      if (item is SingleMessageDisplayItem && item.message.id != _workingMessageId) {
+        break;
+      }
+    }
+
+    // M12: Precompute regenerate targets in a single O(N) pass over _messages.
+    final regenerateTargets = <int, String>{};
+    String? currentUserId;
+    int? lastAssistantIndexInTurn;
+    for (var idx = 0; idx < _messages.length; idx++) {
+      final msg = _messages[idx];
+      if (msg is UserMessage) {
+        if (currentUserId != null && lastAssistantIndexInTurn != null) {
+          regenerateTargets[lastAssistantIndexInTurn] = currentUserId;
+        }
+        currentUserId = msg.id;
+        lastAssistantIndexInTurn = null;
+      } else if (msg is AssistantMessage) {
+        if (currentUserId != null) {
+          lastAssistantIndexInTurn = idx;
+        }
+      }
+    }
+    if (currentUserId != null && lastAssistantIndexInTurn != null) {
+      regenerateTargets[lastAssistantIndexInTurn] = currentUserId;
+    }
+
     return SelectionArea(
       child: NotificationListener<ScrollNotification>(
         onNotification: (notification) {
@@ -3043,10 +3058,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
             final Widget bubbleWidget;
             if (item is ToolGroupDisplayItem) {
-              final isLatestActive = _isLatestActiveToolGroup(
-                displayItems,
-                index,
-              );
+              final isLatestActive = index == latestActiveToolGroupIndex;
               final isRunning = _busy && isLatestActive && _workingText.isEmpty;
               bubbleWidget = ToolGroupBubble(
                 key: ValueKey(item.id),
@@ -3066,7 +3078,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                 // message of the conversation. Regenerating an older turn also
                 // drops every later turn — same semantics as edit-resend.
                 final regenerateUserId = !_busy
-                    ? _regenerateTargetFor(item.originalIndex)
+                    ? regenerateTargets[item.originalIndex]
                     : null;
                 bubbleWidget = MessageBubble(
                   key: ValueKey(message.id),
@@ -3097,18 +3109,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     );
   }
 
-  bool _isLatestActiveToolGroup(List<ChatDisplayItem> items, int index) {
-    for (var j = index + 1; j < items.length; j++) {
-      final following = items[j];
-      if (following is ToolGroupDisplayItem) return false;
-      if (following is SingleMessageDisplayItem) {
-        if (following.message.id != _workingMessageId) {
-          return false;
-        }
-      }
-    }
-    return true;
-  }
 
   String _formatTokens(int tokens) => formatTokenCount(tokens);
 

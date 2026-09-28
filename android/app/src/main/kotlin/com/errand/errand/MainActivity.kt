@@ -33,12 +33,17 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 
 class MainActivity : FlutterActivity() {
 
     companion object {
         var schedulerChannel: MethodChannel? = null
     }
+
+    private val geocodeExecutor = Executors.newCachedThreadPool()
 
     private val STORAGE_CHANNEL = "storage_access"
     private val INTENT_CHANNEL = "intent"
@@ -250,6 +255,9 @@ class MainActivity : FlutterActivity() {
         widgetChannel = null
         schedulerChannel?.setMethodCallHandler(null)
         schedulerChannel = null
+        try {
+            geocodeExecutor.shutdownNow()
+        } catch (_: Exception) {}
         super.onDestroy()
     }
 
@@ -1201,8 +1209,19 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun dispatchLocationResult(location: Location, result: MethodChannel.Result) {
-        Thread {
-            val addressMap = reverseGeocode(location)
+        geocodeExecutor.execute {
+            val future = geocodeExecutor.submit<Map<String, Any?>> {
+                reverseGeocode(location)
+            }
+            val addressMap = try {
+                future.get(8, TimeUnit.SECONDS)
+            } catch (_: TimeoutException) {
+                future.cancel(true)
+                mapOf("error" to "Geocoding timed out after 8s")
+            } catch (e: Exception) {
+                mapOf("error" to (e.message ?: "Geocoding failed"))
+            }
+
             val data = mapOf(
                 "latitude" to location.latitude,
                 "longitude" to location.longitude,
@@ -1221,7 +1240,7 @@ class MainActivity : FlutterActivity() {
                     // Second reply after a timeout race — already answered.
                 }
             }
-        }.start()
+        }
     }
 
     private fun fetchLocation(result: MethodChannel.Result) {

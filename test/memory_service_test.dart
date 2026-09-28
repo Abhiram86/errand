@@ -270,6 +270,18 @@ void main() {
       final afterPast = await service.find(query: 'python', timestamp: 'after:$pastDate');
       expect(afterPast.isNotEmpty, isTrue);
     });
+
+    test('bounds candidate results under heavy scale', () async {
+      for (var i = 0; i < 120; i++) {
+        await service.create(
+          about: 'Scaled item $i preference',
+          description: 'Description for scaled item $i',
+          keywords: ['scaled'],
+        );
+      }
+      final results = await service.find(query: 'scaled', k: 5);
+      expect(results.length, 5);
+    });
   });
 
   group('MemoryService.delete', () {

@@ -10,6 +10,7 @@ import '../types/tool.dart';
 Tool memoryTool({
   MemoryService? memoryService,
   String? currentConversationId,
+  String? Function()? currentConversationIdResolver,
   bool isHeadless = false,
 }) {
   return Tool(
@@ -80,7 +81,7 @@ Tool memoryTool({
     handler: (call) => _handleMemoryCall(
       call,
       memoryService ?? MemoryService.instance,
-      currentConversationId,
+      currentConversationIdResolver?.call() ?? currentConversationId,
       isHeadless: isHeadless,
     ),
   );
