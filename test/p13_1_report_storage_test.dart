@@ -278,6 +278,184 @@ void main() {
       expect(wsUriFile.existsSync(), isFalse);
     });
 
+    test('deleteTask spares innocent same-named workspace file with different size', () async {
+      final workspaceDir = Directory.systemTemp.createTempSync('p13_1_ws_sizemismatch_');
+      addTearDown(() {
+        if (workspaceDir.existsSync()) workspaceDir.deleteSync(recursive: true);
+      });
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final taskId = await db.into(db.schedulerTasks).insert(
+        SchedulerTasksCompanion.insert(
+          title: 'Size Mismatch Task',
+          type: 'one_off',
+          status: 'completed',
+          payloadJson: '{}',
+          startsAt: now,
+          timezone: 'UTC',
+          createdAt: now,
+          updatedAt: now,
+        ),
+      );
+
+      final reportFile = File(p.join(scratchDir.path, 'task-$taskId-report.md'))..writeAsStringSync('report');
+      // Scratch copy the task actually produced.
+      final scratchCopy = File(p.join(scratchDir.path, 'task-$taskId-$now-link-data.csv'))..writeAsStringSync('1,2,3');
+      // User's own file with the same name but different content (hence size).
+      // Fresh mtime passes the recency check, so only the size guard spares it.
+      final innocent = File(p.join(workspaceDir.path, 'data.csv'))..writeAsStringSync('user-owned content here');
+
+      await db.into(db.schedulerTaskLogs).insert(
+        SchedulerTaskLogsCompanion.insert(
+          schedulerTaskId: taskId,
+          scheduledFor: now,
+          status: 'success',
+          outputFilePath: Value('task-$taskId-report.md'),
+          linkedFiles: Value(jsonEncode(['task-$taskId-$now-link-data.csv'])),
+          createdAt: now,
+          updatedAt: now,
+        ),
+      );
+
+      final owned = await service.getOwnedFilesForTask(taskId, scratchDir, workspaceDir);
+      final ownedPaths = owned.map((f) => f.path).toSet();
+      expect(ownedPaths, contains(reportFile.path));
+      expect(ownedPaths, contains(scratchCopy.path));
+      expect(ownedPaths, isNot(contains(innocent.path)));
+
+      final deleted = await service.deleteTask(
+        taskId,
+        deleteFiles: true,
+        scratchDir: scratchDir,
+        workspaceDir: workspaceDir,
+      );
+      expect(deleted, isTrue);
+
+      expect(reportFile.existsSync(), isFalse);
+      expect(scratchCopy.existsSync(), isFalse);
+      expect(innocent.existsSync(), isTrue);
+    });
+
+    test('deleteTask spares same-named workspace file modified before the task ran', () async {
+      final workspaceDir = Directory.systemTemp.createTempSync('p13_1_ws_stalemtime_');
+      addTearDown(() {
+        if (workspaceDir.existsSync()) workspaceDir.deleteSync(recursive: true);
+      });
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final taskId = await db.into(db.schedulerTasks).insert(
+        SchedulerTasksCompanion.insert(
+          title: 'Stale Mtime Task',
+          type: 'one_off',
+          status: 'completed',
+          payloadJson: '{}',
+          startsAt: now,
+          timezone: 'UTC',
+          createdAt: now,
+          updatedAt: now,
+        ),
+      );
+
+      final reportFile = File(p.join(scratchDir.path, 'task-$taskId-report.md'))..writeAsStringSync('report');
+      final scratchCopy = File(p.join(scratchDir.path, 'task-$taskId-${now + 120000}-link-data.csv'))
+        ..writeAsStringSync('1,2,3');
+      // Same byte size as the copy, but this file predates the task run, so
+      // the recency guard (mtime vs startedAt embedded in the copy name)
+      // must reject it. The copy name carries a future startedAt to force
+      // the mismatch deterministically.
+      final innocent = File(p.join(workspaceDir.path, 'data.csv'))..writeAsStringSync('1,2,3');
+
+      await db.into(db.schedulerTaskLogs).insert(
+        SchedulerTaskLogsCompanion.insert(
+          schedulerTaskId: taskId,
+          scheduledFor: now,
+          status: 'success',
+          outputFilePath: Value('task-$taskId-report.md'),
+          linkedFiles: Value(jsonEncode(['task-$taskId-${now + 120000}-link-data.csv'])),
+          createdAt: now,
+          updatedAt: now,
+        ),
+      );
+
+      final owned = await service.getOwnedFilesForTask(taskId, scratchDir, workspaceDir);
+      final ownedPaths = owned.map((f) => f.path).toSet();
+      expect(ownedPaths, contains(reportFile.path));
+      expect(ownedPaths, contains(scratchCopy.path));
+      expect(ownedPaths, isNot(contains(innocent.path)));
+
+      final deleted = await service.deleteTask(
+        taskId,
+        deleteFiles: true,
+        scratchDir: scratchDir,
+        workspaceDir: workspaceDir,
+      );
+      expect(deleted, isTrue);
+
+      expect(reportFile.existsSync(), isFalse);
+      expect(scratchCopy.existsSync(), isFalse);
+      expect(innocent.existsSync(), isTrue);
+    });
+
+    test('prune evicts old scratch link copies but never workspace originals', () async {
+      final workspaceDir = Directory.systemTemp.createTempSync('p13_1_ws_prune_');
+      addTearDown(() {
+        if (workspaceDir.existsSync()) workspaceDir.deleteSync(recursive: true);
+      });
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final taskId = await db.into(db.schedulerTasks).insert(
+        SchedulerTasksCompanion.insert(
+          title: 'Prune Workspace Task',
+          type: 'recurring',
+          repeatAfter: const Value(60000),
+          status: 'scheduled',
+          payloadJson: '{}',
+          startsAt: now,
+          timezone: 'UTC',
+          createdAt: now,
+          updatedAt: now,
+        ),
+      );
+
+      File? run1Copy;
+      File? run1Report;
+      final wsOriginal = File(p.join(workspaceDir.path, 'ws.csv'))..writeAsStringSync('ws-data');
+
+      final runner = MockRunner((runNum) {
+        if (runNum == 1) {
+          // First run links a scratch copy whose original lives in workspace.
+          run1Report = File(p.join(scratchDir.path, 'task-$taskId-run1.md'))..writeAsStringSync('run 1 report');
+          run1Copy = File(p.join(scratchDir.path, 'task-$taskId-$now-link-ws.csv'))..writeAsStringSync('ws-data');
+          return HeadlessRunResult(
+            ok: true,
+            output: 'Run 1 success',
+            reportPath: run1Report!.path,
+            linkedFiles: [run1Copy!.path],
+          );
+        }
+        final r = File(p.join(scratchDir.path, 'task-$taskId-run$runNum.md'))..writeAsStringSync('run $runNum report');
+        return HeadlessRunResult(
+          ok: true,
+          output: 'Run $runNum success',
+          reportPath: r.path,
+        );
+      });
+
+      for (int i = 1; i <= 12; i++) {
+        await (db.update(db.schedulerTasks)..where((t) => t.id.equals(taskId))).write(
+          const SchedulerTasksCompanion(status: Value('scheduled')),
+        );
+        await service.executeTask(
+          taskId,
+          runner: runner,
+          scratchDirectory: scratchDir,
+        );
+      }
+
+      // Run 1 fell out of the keep-10 window: scratch files pruned...
+      expect(run1Report!.existsSync(), isFalse);
+      expect(run1Copy!.existsSync(), isFalse);
+      // ...but the background prune must never touch the workspace original.
+      expect(wsOriginal.existsSync(), isTrue);
+    });
+
     test('deleteLogsForTask clears log rows and removes owned files when deleteFiles is true', () async {
       final workspaceDir = Directory.systemTemp.createTempSync('p13_1_workspace_logs_');
       addTearDown(() {
