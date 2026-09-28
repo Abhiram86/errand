@@ -51,10 +51,13 @@ Tool Selection Guide:
   * Memory Write Policy: Memory creation/editing must NEVER happen automatically. Only two cases:
     1. User explicitly asks to remember/save something -> create/edit memory directly.
     2. You think something would be useful to remember -> DO NOT write immediately. Ask the user for confirmation first. Only create/edit after explicit user confirmation.
-  * Content Schema: "about" is a concise, natural one-line summary of what the memory is about (e.g. "Prefers Python with pytest", "Home Wi-Fi password" — NOT a generic title like "Notes" or "Preferences", and NOT snake_case). "description" provides context-rich details. "keywords" are up to 10 short generic concepts (not sentences).
+- Reminders, Alarms & Timers vs. Scheduled Tasks:
+  * Personal Reminders, Alarms & Timers (USE INTENT): For simple alerts, timers, or reminders (e.g. "remind me to call Mom at 5pm", "wake me up at 7 AM", "timer for 15 minutes", "remind me to take meds in 1 hour", "add event to calendar"), ALWAYS use `intent` (actions: "intent" with android_action: "android.intent.action.SET_ALARM", "android.intent.action.SET_TIMER", or calendar). The user just wants a device alert or notification, NOT a full background agent task.
+  * Autonomous Background Execution (USE SCHEDULE_TASK): For tasks where the AGENT must run tools, browse the web, check data, or execute code in the background (e.g. "check the weather every morning and generate a report", "scrape this site at 9 PM", "monitor system stats every hour"), use `schedule_task`.
 - location: Get the user's current GPS coordinates and reverse-geocoded physical address (city, state, country, street). Use whenever the user asks about local context (e.g. weather, nearby places, directions, or current position).
-- schedule_task: Schedule and manage background autonomous tasks and reminders (actions: create, edit, delete, get, list, logs).
-  * Use when the user asks to perform an action at a later time, set a reminder, or run a recurring task.
+- schedule_task: Schedule and manage background autonomous agent jobs (actions: create, edit, delete, get, list, logs).
+  * Use ONLY when the user asks the agent to autonomously execute tasks, checks, reports, or workflows in the background at a later time or on a recurring interval.
+  * NEVER use schedule_task for simple personal reminders, wake-up alarms, or countdown timers — use `intent` (SET_ALARM / SET_TIMER) instead.
   * Timing Confirmation & Disambiguation (CRITICAL):
     - NEVER guess ambiguous times. If the user does not specify AM/PM (e.g. "at 5", "at 9:30"), today vs tomorrow, or specifies a vague timeframe ("this evening", "tomorrow morning"), ALWAYS ask the user to clarify before scheduling (e.g. "Did you mean 5:00 PM today or 5:00 AM tomorrow?").
     - If a requested time has already passed today in local time, explicitly confirm whether they intend tomorrow.
@@ -70,20 +73,56 @@ Tool Selection Guide:
 - If a tool call fails, re-check arguments against the tool schema and adapt. Never repeat an identical failing call. Two identical failures mean the approach is wrong: change approach or ask the user.
 ''';
 
+String _formatCurrentDate(DateTime dt) {
+  const weekdayNames = [
+    'Monday',
+    'Tuesday',
+    'Wednesday',
+    'Thursday',
+    'Friday',
+    'Saturday',
+    'Sunday'
+  ];
+  const monthNames = [
+    'January',
+    'February',
+    'March',
+    'April',
+    'May',
+    'June',
+    'July',
+    'August',
+    'September',
+    'October',
+    'November',
+    'December'
+  ];
+  final weekday = weekdayNames[dt.weekday - 1];
+  final month = monthNames[dt.month - 1];
+  final hour = dt.hour.toString().padLeft(2, '0');
+  final minute = dt.minute.toString().padLeft(2, '0');
+  final tz = dt.timeZoneName;
+  return '$weekday, $month ${dt.day}, ${dt.year} ($hour:$minute $tz)';
+}
+
 String systemPromptFor(
   Directory currentDir, {
   Directory? scratchDir,
   String? locationSummary,
+  DateTime? now,
   bool screenAccess = false,
   bool screenRestricted = false,
   bool a11ySupported = true,
   bool? isDebug,
 }) {
   final debug = isDebug ?? kDebugMode;
+  final currentTime = now ?? DateTime.now();
+  final dateSummary = _formatCurrentDate(currentTime);
   var prompt = '$kSystemPrompt\n'
       'Current working directory: ${currentDir.path}\n'
       '${scratchDir != null ? 'Scratch directory: ${scratchDir.path}\n' : ''}'
       '${locationSummary != null && locationSummary.isNotEmpty ? 'Current user location: $locationSummary\n' : ''}'
+      'Current Date & Time: $dateSummary\n'
       'Filesystem & Output Hygiene:\n'
       '- When creating or saving files (notes, documents, scripts, exports), write them in the active working directory (${currentDir.path}) or subdirectories within it.\n'
       '- NEVER write or dump files directly into storage root (/storage/emulated/0/ or /sdcard/).\n'
@@ -170,12 +209,16 @@ String headlessSystemPromptFor({
   required int taskId,
   String? taskTitle,
   String? locationSummary,
+  DateTime? now,
   bool? isDebug,
 }) {
   final debug = isDebug ?? kDebugMode;
+  final currentTime = now ?? DateTime.now();
+  final dateSummary = _formatCurrentDate(currentTime);
   var prompt = '$kHeadlessSystemPrompt\n'
       'Active Execution Context:\n'
       '- Current Task ID: $taskId${taskTitle != null && taskTitle.trim().isNotEmpty ? ' ("$taskTitle")' : ''}\n'
+      '- Current Date & Time: $dateSummary\n'
       '- Current working directory: ${currentDir.path}\n'
       '- Scratch directory: ${scratchDir.path}\n'
       '${locationSummary != null && locationSummary.isNotEmpty ? '- Current user location: $locationSummary\n' : ''}'

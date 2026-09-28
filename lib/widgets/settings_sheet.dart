@@ -243,56 +243,86 @@ class _SettingsSheetState extends State<_SettingsSheet>
               ],
             ),
             const SizedBox(height: 12),
-            const TabBar(
-              labelColor: kText,
-              unselectedLabelColor: kMuted,
-              indicatorColor: kBubbleUser,
-              dividerColor: Colors.transparent,
-              dividerHeight: 0,
-              tabs: [
-                Tab(text: 'Providers'),
-                Tab(text: 'Tools'),
-                Tab(text: 'Files'),
-              ],
+            Container(
+              height: 40,
+              decoration: BoxDecoration(
+                color: kInputBg,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: kBorder),
+              ),
+              padding: const EdgeInsets.all(3),
+              child: TabBar(
+                labelColor: Colors.white,
+                unselectedLabelColor: kMuted,
+                indicator: BoxDecoration(
+                  color: kBubbleUser,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                indicatorSize: TabBarIndicatorSize.tab,
+                dividerColor: Colors.transparent,
+                dividerHeight: 0,
+                labelStyle: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+                unselectedLabelStyle: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                ),
+                tabs: const [
+                  Tab(text: 'Providers'),
+                  Tab(text: 'Tools'),
+                  Tab(text: 'Files'),
+                ],
+              ),
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 16),
             SizedBox(
               height: 440,
               child: TabBarView(
                 children: [
-                  ProvidersTab(
-                    loaded: _loaded,
-                    onSettingsChanged: () {
-                      if (!mounted) return;
-                      setState(() => _settingsChanged = true);
-                    },
-                  ),
-                  SingleChildScrollView(
-                    child: ToolsTab(
-                      a11ySupported: _a11ySupported,
-                      a11yEnabled: _a11yEnabled,
-                      onA11yChanged: (updated) {
-                        setState(() {
-                          if (_a11yEnabled != updated) {
-                            _a11yEnabled = updated;
-                            _settingsChanged = true;
-                          }
-                        });
-                      },
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    child: ProvidersTab(
                       loaded: _loaded,
-                      hasTavilyKey: _hasTavilyKey,
-                      tavilyController: _tavilyController,
-                      onSaveTavily: _saveTavily,
-                      onClearTavily: _clearTavily,
-                      memories: _memories,
-                      onDeleteMemory: _deleteMemory,
+                      onSettingsChanged: () {
+                        if (!mounted) return;
+                        setState(() => _settingsChanged = true);
+                      },
                     ),
                   ),
-                  FilesTab(
-                    localAttached: _localAttached,
-                    picking: _picking,
-                    onPickFiles: _pickLocalFiles,
-                    onDetachFile: _detachLocal,
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    child: SingleChildScrollView(
+                      child: ToolsTab(
+                        a11ySupported: _a11ySupported,
+                        a11yEnabled: _a11yEnabled,
+                        onA11yChanged: (updated) {
+                          setState(() {
+                            if (_a11yEnabled != updated) {
+                              _a11yEnabled = updated;
+                              _settingsChanged = true;
+                            }
+                          });
+                        },
+                        loaded: _loaded,
+                        hasTavilyKey: _hasTavilyKey,
+                        tavilyController: _tavilyController,
+                        onSaveTavily: _saveTavily,
+                        onClearTavily: _clearTavily,
+                        memories: _memories,
+                        onDeleteMemory: _deleteMemory,
+                      ),
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    child: FilesTab(
+                      localAttached: _localAttached,
+                      picking: _picking,
+                      onPickFiles: _pickLocalFiles,
+                      onDetachFile: _detachLocal,
+                    ),
                   ),
                 ],
               ),

@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:errand/agent/system_prompt.dart';
 import 'package:errand/agent/tool.dart';
 import 'package:errand/agent/tool_registry.dart';
 import 'package:errand/main.dart';
@@ -91,6 +92,32 @@ void main() {
 
       expect(prompt, isNot(contains('Development & Diagnostics (DEBUG MODE)')));
       expect(prompt, isNot(contains('Transparent technical inspection')));
+    });
+
+    test('injects formatted current date and time into system prompt', () {
+      final fixedDate = DateTime(2026, 9, 28, 14, 30);
+      final prompt = systemPromptFor(
+        Directory('/tmp'),
+        now: fixedDate,
+      );
+
+      expect(prompt, contains('Current Date & Time: Monday, September 28, 2026 (14:30'));
+      expect(prompt, contains('Reminders, Alarms & Timers vs. Scheduled Tasks:'));
+      expect(prompt, contains('Personal Reminders, Alarms & Timers (USE INTENT)'));
+      expect(prompt, contains('Autonomous Background Execution (USE SCHEDULE_TASK)'));
+    });
+
+    test('headlessSystemPromptFor injects formatted current date and time', () {
+      final fixedDate = DateTime(2026, 9, 28, 14, 30);
+      final prompt = headlessSystemPromptFor(
+        currentDir: Directory('/tmp'),
+        scratchDir: Directory('/tmp/scratch'),
+        taskId: 42,
+        taskTitle: 'Daily check',
+        now: fixedDate,
+      );
+
+      expect(prompt, contains('- Current Date & Time: Monday, September 28, 2026 (14:30'));
     });
   });
 

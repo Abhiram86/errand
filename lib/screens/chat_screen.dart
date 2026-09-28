@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:uuid/uuid.dart';
 
 import '../agent/agent_loop.dart';
@@ -107,6 +108,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   bool _busy = false;
   String? _workingMessageId;
+  DateTime _sessionStartTime = DateTime.now();
 
   /// Set by the composer stop button; checked between SSE events and at
   /// agent-loop turn boundaries.
@@ -369,9 +371,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           _startVoicePrompt();
         } else if (mounted) {
           // Cold-open autofocus: request focus on the composer after the first
-          // frame so the user can type immediately without tapping. Gated to
-          // cold start only — resume from background never re-focuses.
-          _composerFocusNode.requestFocus();
+          // frame and open the software keyboard so the user can type immediately.
+          // Gated to cold start only — resume from background never re-focuses.
+          Future.delayed(const Duration(milliseconds: 150), () {
+            if (mounted && _composerFocusNode.canRequestFocus) {
+              _composerFocusNode.requestFocus();
+              SystemChannels.textInput.invokeMethod('TextInput.show');
+            }
+          });
         }
       }
       unawaited(InstalledAppsService.instance.initAndRefresh());
@@ -922,6 +929,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      _sessionStartTime = DateTime.now();
       _checkStoragePermission(promptIfMissing: true);
       // Reconcile cached OTA state after returning from the package installer
       // or another external app. The normal interval still limits network use.
@@ -1480,6 +1488,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
 
     setState(() {
+      _sessionStartTime = DateTime.now();
       _messages = welcome;
       _activeConversation = _newDraftConversation();
       _workingMessageId = null;
@@ -1542,6 +1551,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _animatedMessageIds.clear();
     _animatedMessageIds.addAll(loaded.messages.map((m) => m.id));
     setState(() {
+      _sessionStartTime = DateTime.now();
       _activeConversation = loaded;
       _messages = loaded.messages;
       final providerForCheck = AppSettingsService.instance.activeProvider;
@@ -1991,6 +2001,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           _workingDirectory.current,
           scratchDir: Workspace.instance.scratchDir,
           locationSummary: LocationService.instance.lastKnown?.toCoarseSummary(),
+          now: _sessionStartTime,
           screenAccess: _a11yAvailable,
           screenRestricted: _a11yRestricted,
           a11ySupported: _a11ySupported,
@@ -2041,6 +2052,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           _workingDirectory.current,
           scratchDir: Workspace.instance.scratchDir,
           locationSummary: LocationService.instance.lastKnown?.toCoarseSummary(),
+          now: _sessionStartTime,
           screenAccess: _a11yAvailable,
           screenRestricted: _a11yRestricted,
           a11ySupported: _a11ySupported,
