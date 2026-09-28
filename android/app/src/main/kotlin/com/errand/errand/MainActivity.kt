@@ -54,6 +54,7 @@ class MainActivity : FlutterActivity() {
     private val SCHEDULER_CHANNEL = "task_scheduler"
 
     private var widgetChannel: MethodChannel? = null
+    private var pdfPlugin: PdfReaderPlugin? = null
     private var pendingVoicePrompt: Boolean = false
     private var pendingTaskNotification: Map<String, Any>? = null
     private var initialNotificationRoute = false
@@ -255,6 +256,8 @@ class MainActivity : FlutterActivity() {
         widgetChannel = null
         schedulerChannel?.setMethodCallHandler(null)
         schedulerChannel = null
+        pdfPlugin?.closeAll()
+        pdfPlugin = null
         try {
             geocodeExecutor.shutdownNow()
         } catch (_: Exception) {}
@@ -1179,6 +1182,9 @@ class MainActivity : FlutterActivity() {
                 }
             }
         }
+
+        // ---- PDF Reader Channel (P15) ----
+        pdfPlugin = PdfReaderPlugin.registerWith(flutterEngine.dartExecutor.binaryMessenger, this).second
 
         // Check if cold-started with widget voice intent
         checkVoicePromptIntent(intent)

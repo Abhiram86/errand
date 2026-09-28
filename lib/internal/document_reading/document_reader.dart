@@ -15,7 +15,7 @@ Future<LogicalRead?> readStructuredFile(
   required int length,
 }) async {
   final document = await readStructuredDocument(file);
-  return document?.read(offset: offset, length: length);
+  return await document?.read(offset: offset, length: length);
 }
 
 /// Loads a structured document once so callers can paginate the returned

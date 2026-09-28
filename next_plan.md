@@ -404,9 +404,9 @@ Acceptance:
 
 ---
 
-### 🟡 P15 — F-Droid FLOSS Compliance: Native PdfBox Migration (QUEUED)
+### ✅ P15 — F-Droid FLOSS Compliance: Native PdfBox Migration (SHIPPED)
 
-Goal: Replace proprietary `syncfusion_flutter_pdf` with native `PdfBox-Android` via MethodChannel to prepare Errand Lite for F-Droid submission while keeping APK bloat under ~1.2 MB.
+Goal: Replace proprietary `syncfusion_flutter_pdf` with native `PdfBox-Android` via MethodChannel to prepare Errand Lite for F-Droid submission while keeping APK bloat under ~1.2 MB. (SHIPPED — 0 third-party commercial PDF dependencies, pure Apache 2.0 Java DEX bytecode, on-demand page extraction with LRU cache, 692 tests passing).
 
 #### Why Replace Syncfusion with Android PdfBox?
 1. **F-Droid FLOSS / Licensing Barrier:** F-Droid strictly enforces 100% Free and Open Source Software (OSI-approved licenses) and automated build reproducibility. `syncfusion_flutter_pdf` operates under Syncfusion's proprietary Community License / commercial EULA, which triggers immediate rejection by F-Droid metadata scanners (`NonFreeDep`).

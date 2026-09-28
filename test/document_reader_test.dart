@@ -42,7 +42,7 @@ class FakeFileStat implements FileStat {
 }
 
 void main() {
-  test('structured pagination uses logical units and overlaps boundaries', () {
+  test('structured pagination uses logical units and overlaps boundaries', () async {
     const document = LogicalDocument(
       format: 'PPTX',
       units: [
@@ -52,7 +52,7 @@ void main() {
       ],
     );
 
-    final first = document.read(offset: 0, length: 24);
+    final first = await document.read(offset: 0, length: 24);
 
     expect(first.start, 0);
     expect(first.end, 2);

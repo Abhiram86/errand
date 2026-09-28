@@ -2,14 +2,22 @@ import 'dart:collection';
 import 'dart:developer' as developer;
 import 'dart:io';
 
-import 'package:syncfusion_flutter_pdf/pdf.dart';
+import 'package:flutter/services.dart';
 
 import 'document_models.dart';
 
+const _kDefaultChannel = MethodChannel('pdf_reader');
 const _maxPdfBytes = 64 * 1024 * 1024;
 const _maxPageCharacters = 256 * 1024;
 
-Future<LogicalDocument> readPdfDocument(File file) async {
+/// Reads a PDF document using native PdfBox via platform channel.
+///
+/// Keeps the native `PDDocument` alive on Android and fetches pages
+/// on-demand, caching up to 32 pages (8MB) in Dart memory.
+Future<LogicalDocument> readPdfDocument(
+  File file, {
+  MethodChannel? channel,
+}) async {
   final length = await file.length();
   if (length > _maxPdfBytes) {
     throw FormatException(
@@ -17,98 +25,61 @@ Future<LogicalDocument> readPdfDocument(File file) async {
       '(maximum $_maxPdfBytes bytes, got $length).',
     );
   }
-  final bytes = await file.readAsBytes();
-  return PooledPdfDocument(bytes);
+
+  final effectiveChannel = channel ?? _kDefaultChannel;
+  final result = await effectiveChannel.invokeMapMethod<String, dynamic>(
+    'openPdf',
+    {'path': file.path},
+  );
+
+  if (result == null) {
+    throw const FormatException('Failed to open PDF document.');
+  }
+
+  final docId = result['docId'] as String;
+  final pageCount = (result['pageCount'] as num).toInt();
+
+  return PooledPdfDocument(
+    docId: docId,
+    pageCount: pageCount,
+    channel: effectiveChannel,
+    fileBytes: length,
+  );
 }
 
 class PooledPdfDocument extends LogicalDocument {
-  static final _finalizer = Finalizer<PdfDocument>((doc) {
-    try {
-      doc.dispose();
-    } catch (_) {}
-  });
-
-  final PdfDocument _doc;
+  final String docId;
+  final int pageCount;
+  final MethodChannel channel;
   bool _isDisposed = false;
 
-  PooledPdfDocument._(
-    this._doc,
-    List<LogicalDocumentUnit> units, {
-    super.totalExpandedBytes,
-  }) : super(format: 'PDF', units: units);
+  final Map<int, LogicalDocumentUnit> _cache = {};
+  int _cacheBytes = 0;
+  static const int _maxCacheBytes = 8 * 1024 * 1024; // 8MB per PDF
+  static const int _maxCacheEntries = 32;
 
-  factory PooledPdfDocument(List<int> bytes) {
-    PdfDocument doc;
-    try {
-      doc = PdfDocument(inputBytes: bytes);
-    } catch (e) {
-      throw FormatException('Failed to parse PDF: $e');
-    }
-    final extractor = PdfTextExtractor(doc);
-    final pageCount = doc.pages.count;
-
-    late final PooledPdfDocument instance;
-    final lazyUnits = _LazyPdfUnitList(
-      extractor: extractor,
-      pageCount: pageCount,
-      isDisposed: () => instance._isDisposed,
-    );
-
-    instance = PooledPdfDocument._(
-      doc,
-      lazyUnits,
-      totalExpandedBytes: bytes.length,
-    );
-    _finalizer.attach(instance, doc, detach: instance);
-    return instance;
-  }
+  PooledPdfDocument({
+    required this.docId,
+    required this.pageCount,
+    required this.channel,
+    int? fileBytes,
+  }) : super(
+          format: 'PDF',
+          units: _PlaceholderPdfUnitList(pageCount),
+          totalExpandedBytes: fileBytes,
+        );
 
   @override
-  LogicalRead read({required int offset, required int length}) {
+  int get unitCount => pageCount;
+
+  @override
+  Future<LogicalDocumentUnit> getUnit(int index) async {
     if (_isDisposed) {
       throw StateError('Cannot read from a disposed PDF document.');
     }
-    return super.read(offset: offset, length: length);
-  }
-
-  @override
-  void dispose() {
-    if (!_isDisposed) {
-      _isDisposed = true;
-      _finalizer.detach(this);
-      _doc.dispose();
+    if (index < 0 || index >= pageCount) {
+      throw RangeError.range(index, 0, pageCount - 1, 'index');
     }
-  }
-}
-
-class _LazyPdfUnitList extends ListBase<LogicalDocumentUnit> {
-  final PdfTextExtractor extractor;
-  final int pageCount;
-  final bool Function() isDisposed;
-  static const int _maxCacheBytes = 8 * 1024 * 1024; // 8MB per PDF
-  static const int _maxCacheEntries = 32;
-  int _cacheBytes = 0;
-  final Map<int, LogicalDocumentUnit> _cache = {};
-
-  _LazyPdfUnitList({
-    required this.extractor,
-    required this.pageCount,
-    required this.isDisposed,
-  });
-
-  @override
-  int get length => pageCount;
-
-  @override
-  set length(int newLength) =>
-      throw UnsupportedError('Cannot modify length of read-only PDF unit list.');
-
-  @override
-  LogicalDocumentUnit operator [](int index) {
-    if (isDisposed()) {
-      throw StateError('Cannot read from a disposed PDF document.');
-    }
-    RangeError.checkValidIndex(index, this, 'index', pageCount);
 
     final cached = _cache[index];
     if (cached != null) {
@@ -120,9 +91,11 @@ class _LazyPdfUnitList extends ListBase<LogicalDocumentUnit> {
 
     String text;
     try {
-      text = extractor
-          .extractText(startPageIndex: index, endPageIndex: index)
-          .trim();
+      final rawText = await channel.invokeMethod<String>('extractPage', {
+        'docId': docId,
+        'pageIndex': index,
+      });
+      text = rawText?.trim() ?? '';
     } catch (e, stackTrace) {
       developer.log(
         'Failed to extract text from page ${index + 1}',
@@ -158,13 +131,52 @@ class _LazyPdfUnitList extends ListBase<LogicalDocumentUnit> {
       }
     }
 
-    // Oversized single pages bypass the cache rather than evicting it.
-    if (unitBytes > _maxCacheBytes) return unit;
-
-    _cache[index] = unit;
-    _cacheBytes += unitBytes;
+    if (unitBytes <= _maxCacheBytes) {
+      _cache[index] = unit;
+      _cacheBytes += unitBytes;
+    }
 
     return unit;
+  }
+
+  @override
+  Future<LogicalRead> read({required int offset, required int length}) {
+    if (_isDisposed) {
+      throw StateError('Cannot read from a disposed PDF document.');
+    }
+    return super.read(offset: offset, length: length);
+  }
+
+  @override
+  void dispose() {
+    if (!_isDisposed) {
+      _isDisposed = true;
+      _cache.clear();
+      _cacheBytes = 0;
+      channel.invokeMethod('closePdf', {'docId': docId}).catchError((_) {});
+    }
+  }
+}
+
+class _PlaceholderPdfUnitList extends ListBase<LogicalDocumentUnit> {
+  final int pageCount;
+
+  _PlaceholderPdfUnitList(this.pageCount);
+
+  @override
+  int get length => pageCount;
+
+  @override
+  set length(int newLength) =>
+      throw UnsupportedError('Cannot modify length of read-only PDF unit list.');
+
+  @override
+  LogicalDocumentUnit operator [](int index) {
+    RangeError.checkValidIndex(index, this, 'index', pageCount);
+    return LogicalDocumentUnit(
+      label: 'Page ${index + 1}',
+      text: '',
+    );
   }
 
   @override

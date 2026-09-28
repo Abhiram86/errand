@@ -285,7 +285,7 @@ Tool readTool(
         final stat = await file.stat();
         final document = await cache.getOrParse(file: file, stat: stat);
 
-        final structured = document?.read(offset: offset, length: length);
+        final structured = await document?.read(offset: offset, length: length);
         if (structured != null) {
           if (hasGrep) {
             final header =

@@ -488,6 +488,7 @@ class TaskExecutionService : Service() {
 
         setupLocationChannel(engine)
         setupIntentChannel(engine)
+        PdfReaderPlugin.registerWith(engine.dartExecutor.binaryMessenger, applicationContext)
     }
 
     private fun setupLocationChannel(engine: FlutterEngine) {

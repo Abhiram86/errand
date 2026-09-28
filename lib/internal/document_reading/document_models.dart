@@ -1,3 +1,5 @@
+import 'dart:async';
+
 /// A logical unit of a document: a PDF page, a presentation slide, a group
 /// of Word paragraphs, or a spreadsheet row group.
 class LogicalDocumentUnit {
@@ -34,8 +36,15 @@ class LogicalDocument {
   /// Releases any native or package resources held by this document.
   void dispose() {}
 
-  LogicalRead read({required int offset, required int length}) {
-    if (units.isEmpty) {
+  /// Total number of logical units in this document.
+  int get unitCount => units.length;
+
+  /// Retrieves the unit at [index]. Subclasses (such as PDF) can lazily load it.
+  FutureOr<LogicalDocumentUnit> getUnit(int index) => units[index];
+
+  Future<LogicalRead> read({required int offset, required int length}) async {
+    final count = unitCount;
+    if (count == 0) {
       return LogicalRead(
         format: format,
         start: 0,
@@ -50,10 +59,10 @@ class LogicalDocument {
       throw RangeError('Logical offset cannot be negative.');
     }
 
-    if (offset >= units.length) {
+    if (offset >= count) {
       throw RangeError(
         'Logical offset $offset is beyond the end of the document '
-        '(unit count: ${units.length}).',
+        '(unit count: $count).',
       );
     }
 
@@ -62,8 +71,8 @@ class LogicalDocument {
     var characters = 0;
     var end = offset;
 
-    while (end < units.length) {
-      final unit = units[end];
+    while (end < count) {
+      final unit = await getUnit(end);
       final unitSize = unit.text.length + unit.label.length + 2;
 
       if (selected.isNotEmpty && characters + unitSize > maxCharacters) {
@@ -75,7 +84,7 @@ class LogicalDocument {
       end++;
     }
 
-    final hasMore = end < units.length;
+    final hasMore = end < count;
     final nextOffset = hasMore && end - offset > 1 ? end - 1 : end;
 
     final body = selected
@@ -86,7 +95,7 @@ class LogicalDocument {
       format: format,
       start: offset,
       end: end,
-      total: units.length,
+      total: count,
       hasMore: hasMore,
       nextOffset: nextOffset,
       output: body.isEmpty ? 'No readable text was found.' : body,
