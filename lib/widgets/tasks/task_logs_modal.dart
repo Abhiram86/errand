@@ -196,6 +196,7 @@ class _ClearLogsButton extends StatelessWidget {
     }
 
     var deleteFiles = files.isNotEmpty;
+    var filesExpanded = false;
 
     final confirmed = await showDialog<bool>(
       context: context,
@@ -227,26 +228,98 @@ class _ClearLogsButton extends StatelessWidget {
                         border: Border.all(color: const Color(0xFF30363D)),
                       ),
                       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      child: Row(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
                         children: [
-                          Checkbox(
-                            value: deleteFiles,
-                            onChanged: (val) => setDialogState(() => deleteFiles = val ?? false),
-                            activeColor: kBubbleUser,
+                          Row(
+                            children: [
+                              Checkbox(
+                                value: deleteFiles,
+                                onChanged: (val) => setDialogState(() => deleteFiles = val ?? false),
+                                activeColor: kBubbleUser,
+                              ),
+                              Expanded(
+                                child: InkWell(
+                                  onTap: () => setDialogState(() => deleteFiles = !deleteFiles),
+                                  borderRadius: BorderRadius.circular(4),
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(vertical: 4),
+                                    child: Text(
+                                      'Also delete output & linked files (${files.length} file${files.length == 1 ? '' : 's'}, $bytesStr)',
+                                      style: const TextStyle(color: Color(0xFFC9D1D9), fontSize: 12),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              InkWell(
+                                onTap: () => setDialogState(() => filesExpanded = !filesExpanded),
+                                borderRadius: BorderRadius.circular(12),
+                                child: Padding(
+                                  padding: const EdgeInsets.all(6),
+                                  child: Icon(
+                                    filesExpanded ? Icons.expand_less_rounded : Icons.expand_more_rounded,
+                                    color: const Color(0xFF8B949E),
+                                    size: 18,
+                                  ),
+                                ),
+                              ),
+                            ],
                           ),
-                          Expanded(
-                            child: InkWell(
-                              onTap: () => setDialogState(() => deleteFiles = !deleteFiles),
-                              borderRadius: BorderRadius.circular(4),
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(vertical: 4),
-                                child: Text(
-                                  'Also delete output & linked files (${files.length} file${files.length == 1 ? '' : 's'}, $bytesStr)',
-                                  style: const TextStyle(color: Color(0xFFC9D1D9), fontSize: 12),
+                          if (filesExpanded) ...[
+                            const Divider(height: 1, color: Color(0xFF30363D)),
+                            ConstrainedBox(
+                              constraints: const BoxConstraints(maxHeight: 140),
+                              child: Scrollbar(
+                                child: ListView.separated(
+                                  shrinkWrap: true,
+                                  padding: const EdgeInsets.symmetric(vertical: 4),
+                                  itemCount: files.length,
+                                  separatorBuilder: (_, _) => const Divider(
+                                    height: 1,
+                                    color: Color(0xFF21262D),
+                                  ),
+                                  itemBuilder: (context, idx) {
+                                    final f = files[idx];
+                                    final name = f.path.split('/').last;
+                                    var sz = '';
+                                    try {
+                                      sz = _formatBytes(f.lengthSync());
+                                    } catch (_) {}
+                                    return Padding(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 8,
+                                        vertical: 3,
+                                      ),
+                                      child: Row(
+                                        children: [
+                                          Expanded(
+                                            child: Text(
+                                              name,
+                                              style: const TextStyle(
+                                                color: Color(0xFF8B949E),
+                                                fontSize: 11,
+                                                fontFamily: 'monospace',
+                                              ),
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                          ),
+                                          if (sz.isNotEmpty)
+                                            Text(
+                                              sz,
+                                              style: const TextStyle(
+                                                color: Color(0xFF8B949E),
+                                                fontSize: 11,
+                                              ),
+                                            ),
+                                        ],
+                                      ),
+                                    );
+                                  },
                                 ),
                               ),
                             ),
-                          ),
+                          ],
                         ],
                       ),
                     ),

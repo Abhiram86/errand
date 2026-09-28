@@ -207,24 +207,44 @@ class TaskSchedulerService {
         addIfOwned(absPath);
 
         // Also check if `rel` was a scratch link copy (e.g. task-1-123-link-foo.csv)
-        // and check if original file exists in workspace
+        // and check if original file exists in workspace. Guard against innocent
+        // same-named files by verifying size and modification timestamp against task run.
         final base = p.basename(rel);
-        final match = RegExp(r'^task-\d+-\d+-link-(.+)$').firstMatch(base);
+        final match = RegExp(r'^task-(\d+)-(\d+)-link-(.+)$').firstMatch(base);
         if (match != null) {
-          final origName = match.group(1);
+          final origName = match.group(3);
+          final startedAt = int.tryParse(match.group(2) ?? '');
           if (origName != null && origName.isNotEmpty) {
-            final wsFile = p.join(workspace.path, origName);
-            addIfOwned(wsFile);
+            final wsFile = File(p.join(workspace.path, origName));
+            if (wsFile.existsSync()) {
+              final scratchCopy = File(absPath);
+              var isMatch = true;
+              if (scratchCopy.existsSync()) {
+                if (wsFile.lengthSync() != scratchCopy.lengthSync()) {
+                  isMatch = false;
+                }
+              }
+              if (startedAt != null) {
+                final lastMod = wsFile.lastModifiedSync().millisecondsSinceEpoch;
+                // Files modified before task started were not created by this task
+                if (lastMod < startedAt - 5000) {
+                  isMatch = false;
+                }
+              }
+              if (isMatch) {
+                addIfOwned(wsFile.path);
+              }
+            }
           }
         }
       }
     }
 
-    // Also scan scratch for any task-$taskId-* files (both reports and link copies)
+    // Also scan scratch for any task-$taskId-* files (both reports and link copies, recursively)
     try {
       if (scratch.existsSync()) {
         final prefix = 'task-$taskId-';
-        for (final entity in scratch.listSync()) {
+        for (final entity in scratch.listSync(recursive: true)) {
           if (entity is File && p.basename(entity.path).startsWith(prefix)) {
             addIfOwned(entity.path);
           }
