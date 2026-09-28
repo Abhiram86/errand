@@ -357,11 +357,57 @@ void main() {
 
     expect(find.text('Exact alarms disabled. Tasks may be delayed.'), findsOneWidget);
     expect(find.text('Enable'), findsOneWidget);
-    expect(find.text('Exempt'), findsNothing);
+    expect(find.text('Allow'), findsNothing);
 
     await tester.tap(find.text('Enable'));
     await tester.pump();
     expect(calls, contains('openExactAlarmSettings'));
+
+    // Clean up timers
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(milliseconds: 50));
+  });
+
+  testWidgets('Enable shows failure guidance when settings cannot be opened', (tester) async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(const MethodChannel('task_scheduler'), (call) async {
+      if (call.method == 'canScheduleExactAlarms') return false;
+      if (call.method == 'isIgnoringBatteryOptimizations') return true;
+      if (call.method == 'openExactAlarmSettings') return false;
+      return true;
+    });
+
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await db.into(db.schedulerTasks).insert(
+      SchedulerTasksCompanion.insert(
+        title: 'Alarm Task',
+        type: 'recurring',
+        status: 'scheduled',
+        payloadJson: jsonEncode({'prompt': 'Alarm'}),
+        startsAt: now + 60000,
+        nextRunAt: Value(now + 60000),
+        repeatAfter: const Value(3600000),
+        timezone: 'UTC',
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ManageTasksScreen(database: db),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    await tester.tap(find.text('Enable'));
+    await tester.pump();
+    expect(find.byType(SnackBar), findsOneWidget);
+    expect(
+      find.textContaining('Could not open exact alarm settings'),
+      findsOneWidget,
+    );
 
     // Clean up timers
     await tester.pumpWidget(const SizedBox());
@@ -403,10 +449,10 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
 
     expect(find.text('Battery optimization active. Tasks may fail.'), findsOneWidget);
-    expect(find.text('Exempt'), findsOneWidget);
+    expect(find.text('Allow'), findsOneWidget);
     expect(find.text('Enable'), findsNothing);
 
-    await tester.tap(find.text('Exempt'));
+    await tester.tap(find.text('Allow'));
     await tester.pumpAndSettle();
     expect(find.text('Battery Optimization'), findsOneWidget);
     await tester.tap(find.text('Open Settings'));
@@ -455,7 +501,7 @@ void main() {
     expect(find.text('Exact alarms disabled. Tasks may be delayed.'), findsOneWidget);
     expect(find.text('Battery optimization active. Tasks may fail.'), findsOneWidget);
     expect(find.text('Enable'), findsOneWidget);
-    expect(find.text('Exempt'), findsOneWidget);
+    expect(find.text('Allow'), findsOneWidget);
 
     // Clean up timers
     await tester.pumpWidget(const SizedBox());
@@ -482,7 +528,7 @@ void main() {
     expect(find.text('Exact alarms disabled. Tasks may be delayed.'), findsNothing);
     expect(find.text('Battery optimization active. Tasks may fail.'), findsNothing);
     expect(find.text('Enable'), findsNothing);
-    expect(find.text('Exempt'), findsNothing);
+    expect(find.text('Allow'), findsNothing);
 
     // Clean up timers
     await tester.pumpWidget(const SizedBox());

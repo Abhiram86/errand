@@ -141,7 +141,7 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
         try {
           final dir = Directory(scratchPath);
           if (!dir.existsSync()) return [0, 0];
-          for (final entry in dir.listSync()) {
+          for (final entry in dir.listSync(recursive: true)) {
             if (entry is File) {
               try {
                 bytes += entry.lengthSync();
@@ -615,12 +615,15 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
                       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     ),
                     onPressed: () async {
-                      await TaskSchedulerService.instance.openExactAlarmSettings();
+                      final opened = await TaskSchedulerService.instance
+                          .openExactAlarmSettings();
                       if (!context.mounted) return;
                       ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
+                        SnackBar(
                           content: Text(
-                            'Opening exact alarm settings. Return here after granting.',
+                            opened
+                                ? 'Opening exact alarm settings. Return here after granting.'
+                                : 'Could not open exact alarm settings. Open system Settings > Apps > Errand > Alarms manually.',
                           ),
                           behavior: SnackBarBehavior.floating,
                         ),
@@ -673,7 +676,7 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
                     ),
                     onPressed: _showBatteryExemptionDialog,
                     child: const Text(
-                      'Exempt',
+                      'Allow',
                       style: TextStyle(color: Colors.amber, fontWeight: FontWeight.bold, fontSize: 12),
                     ),
                   ),
@@ -693,9 +696,11 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
   }
 
   Future<void> _showBatteryExemptionDialog() async {
+    var promptCopied = false;
     final openSettings = await showDialog<bool>(
       context: context,
-      builder: (dialogCtx) => AlertDialog(
+      builder: (dialogCtx) => StatefulBuilder(
+        builder: (copyCtx, setCopyState) => AlertDialog(
         backgroundColor: const Color(0xFF1E222B),
         insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
         titlePadding: const EdgeInsets.fromLTRB(20, 20, 20, 10),
@@ -743,7 +748,7 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
                   ),
                   SizedBox(height: 6),
                   Text(
-                    '3. Select Dont optimize. On "Optimize Battery Use"',
+                    '3. If you land on a list instead, find Errand and choose "Don\'t optimize".',
                     style: TextStyle(color: kText, fontSize: 12.5, fontWeight: FontWeight.w500),
                   ),
                 ],
@@ -782,26 +787,33 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
                           text: 'Analyze my device model and Android version, then explain how to disable battery optimization and background restrictions specifically for Errand.',
                         ),
                       );
-                      if (mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('Prompt copied to clipboard'),
-                            duration: Duration(seconds: 2),
-                            behavior: SnackBarBehavior.floating,
-                          ),
-                        );
-                      }
+                      // Inline confirmation: a snackbar here would render
+                      // behind the open dialog's modal barrier.
+                      setCopyState(() => promptCopied = true);
+                      Future<void>.delayed(const Duration(seconds: 2), () {
+                        if (dialogCtx.mounted) {
+                          setCopyState(() => promptCopied = false);
+                        }
+                      });
                     },
-                    child: const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 2),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 2),
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Icon(Icons.copy_rounded, color: Colors.amber, size: 13),
-                          SizedBox(width: 6),
+                          Icon(
+                            promptCopied
+                                ? Icons.check_rounded
+                                : Icons.copy_rounded,
+                            color: Colors.amber,
+                            size: 13,
+                          ),
+                          const SizedBox(width: 6),
                           Text(
-                            'Copy prompt to ask in chat',
-                            style: TextStyle(
+                            promptCopied
+                                ? 'Copied to clipboard'
+                                : 'Copy prompt to ask in chat',
+                            style: const TextStyle(
                               color: Colors.amber,
                               fontSize: 11.5,
                               fontWeight: FontWeight.w600,
@@ -833,15 +845,19 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
           ),
         ],
       ),
+      ),
     );
 
     if (openSettings == true && mounted) {
-      await TaskSchedulerService.instance.requestBatteryExemption();
+      final launched =
+          await TaskSchedulerService.instance.requestBatteryExemption();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
+        SnackBar(
           content: Text(
-            'Requested battery optimization exemption. Return here after granting.',
+            launched
+                ? 'Requested battery optimization exemption. Return here after granting.'
+                : 'Could not open battery settings. Open system Settings > Apps > Errand > Battery manually.',
           ),
           behavior: SnackBarBehavior.floating,
         ),

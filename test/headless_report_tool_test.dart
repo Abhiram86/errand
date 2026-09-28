@@ -228,11 +228,65 @@ void main() {
 
       expect(result.ok, isTrue);
       expect(collector.reportPath, isNotNull);
-      expect(collector.linkedFiles, equals(['page1.html']));
+      // Namespaced by task+run so same-basename links never collide.
+      expect(collector.linkedFiles, hasLength(1));
+      expect(
+        collector.linkedFiles.single,
+        equals('task-42-1700000000000-link-page1.html'),
+      );
       // Copied into scratch for log preview
-      final scratchCopy = File(p.join(scratchDir.path, 'page1.html'));
+      final scratchCopy =
+          File(p.join(scratchDir.path, 'task-42-1700000000000-link-page1.html'));
       expect(scratchCopy.existsSync(), isTrue);
       expect(scratchCopy.readAsStringSync(), equals('<h1>From CWD</h1>'));
+    });
+
+    test('same-basename links from different runs do not overwrite', () async {
+      final workDir = Directory(p.join(tempDir.path, 'workspace2'));
+      await workDir.create(recursive: true);
+      File(p.join(workDir.path, 'page1.html')).writeAsStringSync('<h1>v1</h1>');
+
+      final toolA = saveReportTool(
+        scratchDir: scratchDir,
+        taskId: 7,
+        startedAtMillis: 1700000000001,
+        collector: collector,
+        workingDirectory: WorkingDirectory(workDir),
+      );
+      final resA = await toolA.handler(
+        const ToolCall(
+          id: 'c-12a',
+          name: 'save_report',
+          arguments: {'content': 'a', 'linked_files': ['page1.html']},
+        ),
+      );
+      expect(resA.ok, isTrue);
+      final nameA = collector.linkedFiles.single;
+
+      File(p.join(workDir.path, 'page1.html')).writeAsStringSync('<h1>v2</h1>');
+      final collectorB = HeadlessReportCollector();
+      final toolB = saveReportTool(
+        scratchDir: scratchDir,
+        taskId: 8,
+        startedAtMillis: 1700000000002,
+        collector: collectorB,
+        workingDirectory: WorkingDirectory(workDir),
+      );
+      final resB = await toolB.handler(
+        const ToolCall(
+          id: 'c-12b',
+          name: 'save_report',
+          arguments: {'content': 'b', 'linked_files': ['page1.html']},
+        ),
+      );
+      expect(resB.ok, isTrue);
+      final nameB = collectorB.linkedFiles.single;
+
+      expect(nameB, isNot(equals(nameA)));
+      expect(File(p.join(scratchDir.path, nameA)).readAsStringSync(),
+          equals('<h1>v1</h1>'));
+      expect(File(p.join(scratchDir.path, nameB)).readAsStringSync(),
+          equals('<h1>v2</h1>'));
     });
   });
 }

@@ -40,6 +40,11 @@ class SpeechService {
         } else if (status == 'notListening' || status == 'done') {
           listening.value = false;
           soundLevel.value = 0.0;
+        } else {
+          // Unknown terminal-ish statuses must not stick the UI in
+          // "listening" forever; only 'listening' keeps it alive.
+          listening.value = false;
+          soundLevel.value = 0.0;
         }
       },
       onError: (_) {

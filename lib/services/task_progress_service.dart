@@ -80,6 +80,11 @@ class TaskProgressService {
     if (!kDebugMode) return;
 
     _latestEvents[event.taskId] = event;
+    // _latestEvents is keyed by task id with no consumer-side clear; cap it
+    // so a long debug session cannot accumulate unbounded entries.
+    if (_latestEvents.length > 50) {
+      _latestEvents.remove(_latestEvents.keys.first);
+    }
     final list = _history.putIfAbsent(event.taskId, () => []);
     list.add(event);
     if (list.length > 50) {

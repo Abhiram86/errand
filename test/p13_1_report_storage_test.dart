@@ -335,6 +335,146 @@ void main() {
     });
   });
 
+  group('P13.1 deletion containment & failure-proof pruning', () {
+    test('isScratchOwned accepts inside files, rejects outside and traversal', () {
+      expect(
+        TaskSchedulerService.isScratchOwned(
+          p.join(scratchDir.path, 'task-1-a.md'),
+          scratchDir,
+        ),
+        isTrue,
+      );
+      expect(
+        TaskSchedulerService.isScratchOwned(
+          p.join(scratchDir.path, 'sub', 'dir', 'b.md'),
+          scratchDir,
+        ),
+        isTrue,
+      );
+      final sibling = Directory(p.join(scratchDir.parent.path, 'p13_1_sibling_${DateTime.now().millisecondsSinceEpoch}'));
+      try {
+        expect(
+          TaskSchedulerService.isScratchOwned(
+            p.join(sibling.path, 'evil.md'),
+            scratchDir,
+          ),
+          isFalse,
+        );
+        expect(
+          TaskSchedulerService.isScratchOwned(
+            p.join(scratchDir.path, '..', p.basename(sibling.path), 'evil.md'),
+            scratchDir,
+          ),
+          isFalse,
+        );
+      } finally {
+        if (sibling.existsSync()) sibling.deleteSync(recursive: true);
+      }
+    });
+
+    test('getOwnedFilesForTask and deleteTask never touch files outside scratch', () async {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final taskId = await db.into(db.schedulerTasks).insert(
+        SchedulerTasksCompanion.insert(
+          title: 'Rotted Path Task',
+          type: 'one_off',
+          status: 'completed',
+          payloadJson: '{}',
+          startsAt: now,
+          timezone: 'UTC',
+          createdAt: now,
+          updatedAt: now,
+        ),
+      );
+
+      // A legacy absolute row pointing outside scratch (e.g. user file).
+      final outsideDir = await Directory.systemTemp.createTemp('p13_1_outside_');
+      final outsideFile = File(p.join(outsideDir.path, 'precious.md'))
+        ..writeAsStringSync('do not delete');
+      // A traversal-style stored rel escaping scratch.
+      final siblingDir = await Directory.systemTemp.createTemp('p13_1_sib_');
+      final siblingFile = File(p.join(siblingDir.path, 'sib.md'))
+        ..writeAsStringSync('do not delete');
+
+      await db.into(db.schedulerTaskLogs).insert(
+        SchedulerTaskLogsCompanion.insert(
+          schedulerTaskId: taskId,
+          scheduledFor: now,
+          status: 'success',
+          outputFilePath: Value(outsideFile.path),
+          linkedFiles: Value(jsonEncode([
+            p.join('..', p.basename(siblingDir.path), 'sib.md'),
+          ])),
+          createdAt: now,
+          updatedAt: now,
+        ),
+      );
+
+      final owned = await service.getOwnedFilesForTask(taskId, scratchDir);
+      expect(owned, isEmpty);
+
+      final deleted = await service.deleteTask(taskId, deleteFiles: true, scratchDir: scratchDir);
+      expect(deleted, isTrue);
+      expect(outsideFile.existsSync(), isTrue);
+      expect(siblingFile.existsSync(), isTrue);
+
+      outsideDir.deleteSync(recursive: true);
+      siblingDir.deleteSync(recursive: true);
+    });
+
+    test('consecutive failures do not evict older good reports from keep-10', () async {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final taskId = await db.into(db.schedulerTasks).insert(
+        SchedulerTasksCompanion.insert(
+          title: 'Flaky Recurring Task',
+          type: 'recurring',
+          repeatAfter: const Value(60000),
+          retriesPerTurn: const Value(100),
+          status: 'scheduled',
+          payloadJson: '{}',
+          startsAt: now,
+          timezone: 'UTC',
+          createdAt: now,
+          updatedAt: now,
+        ),
+      );
+
+      final goodReports = <File>[];
+      final runner = MockRunner((runNum) {
+        if (runNum <= 2) {
+          final r = File(p.join(scratchDir.path, 'task-$taskId-good$runNum.md'))
+            ..writeAsStringSync('good $runNum');
+          goodReports.add(r);
+          return HeadlessRunResult(
+            ok: true,
+            output: 'Run $runNum success',
+            reportPath: r.path,
+          );
+        }
+        return const HeadlessRunResult(
+          ok: false,
+          output: 'Run failed',
+          errorMessage: 'SocketException: network is unreachable',
+        );
+      });
+
+      for (int i = 1; i <= 14; i++) {
+        await (db.update(db.schedulerTasks)..where((t) => t.id.equals(taskId))).write(
+          const SchedulerTasksCompanion(status: Value('scheduled')),
+        );
+        await service.executeTask(
+          taskId,
+          runner: runner,
+          scratchDirectory: scratchDir,
+        );
+      }
+
+      // Failure rows carry no files, so both good reports survive pruning.
+      expect(goodReports[0].existsSync(), isTrue);
+      expect(goodReports[1].existsSync(), isTrue);
+    });
+  });
+
   group('Speech phrase deduplication', () {
     test('cleanSpeechPhrases deduplicates repeated and prefix phrases', () {
       expect(cleanSpeechPhrases([]), equals(''));

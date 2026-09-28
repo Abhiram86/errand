@@ -2608,6 +2608,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _isTogglingVoice = true;
     speech.listening.value = true;
     if (mounted) setState(() {});
+    // Setup generation: the stop branch bumps _speechSessionId, so capture
+    // before the awaits and abort if a stop tap landed mid-setup. Without
+    // this, the flow below mints a fresh session after the stop and
+    // dictation starts against the user's explicit stop.
+    final setupId = _speechSessionId;
 
     try {
       await _ensureSettingsReady();
@@ -2648,12 +2653,20 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       }
 
       final sessionId = ++_speechSessionId;
+      if (sessionId - 1 != setupId) {
+        // A stop tap landed during setup (permission/locale awaits).
+        speech.listening.value = false;
+        if (mounted) setState(() {});
+        return;
+      }
       try {
         await speech.listen(
           localeId: localeId,
           onResult: (words, isFinal) {
             if (!mounted || sessionId != _speechSessionId) return;
-            final cleanWords = SpeechService.cleanSpeechText(words);
+            // Already cleaned inside SpeechService.listen; applying
+            // cleanSpeechText twice compounds aggressive trims.
+            final cleanWords = words;
             // Cumulative partials replace the composer text; keep the cursor
             // at the end so typing can continue seamlessly.
             _controller.value = TextEditingValue(

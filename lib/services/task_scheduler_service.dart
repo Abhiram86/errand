@@ -88,6 +88,23 @@ class TaskSchedulerService {
     return p.join(scratch.path, pathStr);
   }
 
+  /// Containment guard for destructive paths: true only when [absPath]
+  /// normalizes to a location inside [scratchDir]. Delete/prune/owned-file
+  /// enumeration must refuse anything else — stored rows can hold legacy
+  /// absolute paths outside scratch (or `..` segments), and deleting those
+  /// would destroy user files the task never owned.
+  static bool isScratchOwned(String absPath, [Directory? scratchDir]) {
+    final scratch = scratchDir ?? Workspace.instance.scratchDir;
+    try {
+      return p.isWithin(
+        p.normalize(scratch.path),
+        p.normalize(absPath),
+      );
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// Parses the JSON array in [linkedFilesRaw] into a list of strings.
   static List<String> parseLinkedFiles(String? linkedFilesRaw) {
     if (linkedFilesRaw == null || linkedFilesRaw.trim().isEmpty) return const [];
@@ -112,16 +129,22 @@ class TaskSchedulerService {
     for (final log in logs) {
       if (log.outputFilePath != null && log.outputFilePath!.isNotEmpty) {
         final absPath = resolveReportPath(log.outputFilePath, scratch);
-        final file = File(absPath);
-        if (file.existsSync()) {
-          files[file.path] = file;
+        // Never report (hence never delete) files outside scratch, even
+        // when a legacy absolute row points at one.
+        if (absPath.isNotEmpty && isScratchOwned(absPath, scratch)) {
+          final file = File(absPath);
+          if (file.existsSync()) {
+            files[file.path] = file;
+          }
         }
       }
       for (final rel in parseLinkedFiles(log.linkedFiles)) {
         final absPath = resolveReportPath(rel, scratch);
-        final file = File(absPath);
-        if (file.existsSync()) {
-          files[file.path] = file;
+        if (absPath.isNotEmpty && isScratchOwned(absPath, scratch)) {
+          final file = File(absPath);
+          if (file.existsSync()) {
+            files[file.path] = file;
+          }
         }
       }
     }
@@ -600,8 +623,10 @@ class TaskSchedulerService {
     }
   }
 
-  /// Opens the system battery-optimization exemption prompt for this app.
-  /// Full flavor only (declares the permission); returns false elsewhere.
+  /// Opens the system battery-optimization exemption flow for this app.
+  /// Full flavor fires the direct exemption prompt (declares the permission);
+  /// other flavors fall back to the app-info battery page. Returns true when
+  /// a settings intent was launched — not when the user granted anything.
   Future<bool> requestBatteryExemption() async {
     try {
       final result =
@@ -1232,22 +1257,36 @@ class TaskSchedulerService {
 
       final keepAbs = <String>{};
       if (keepPath != null) {
-        keepAbs.add(resolveReportPath(keepPath, scratch));
+        final keepResolved = resolveReportPath(keepPath, scratch);
+        if (keepResolved.isNotEmpty && isScratchOwned(keepResolved, scratch)) {
+          keepAbs.add(keepResolved);
+        }
       }
 
-      for (final activeLog in logs.take(keep)) {
+      bool logHasFiles(SchedulerTaskLogRow log) =>
+          (log.outputFilePath != null && log.outputFilePath!.isNotEmpty) ||
+          parseLinkedFiles(log.linkedFiles).isNotEmpty;
+
+      // Only runs that actually produced files consume keep slots: failure
+      // rows (null report, no links) must not evict older good reports.
+      final logsWithFiles = logs.where(logHasFiles).toList();
+      for (final activeLog in logsWithFiles.take(keep)) {
         if (activeLog.outputFilePath != null && activeLog.outputFilePath!.isNotEmpty) {
-          keepAbs.add(resolveReportPath(activeLog.outputFilePath!, scratch));
+          final abs = resolveReportPath(activeLog.outputFilePath!, scratch);
+          if (abs.isNotEmpty && isScratchOwned(abs, scratch)) keepAbs.add(abs);
         }
         for (final rel in parseLinkedFiles(activeLog.linkedFiles)) {
-          keepAbs.add(resolveReportPath(rel, scratch));
+          final abs = resolveReportPath(rel, scratch);
+          if (abs.isNotEmpty && isScratchOwned(abs, scratch)) keepAbs.add(abs);
         }
       }
 
-      for (final oldLog in logs.skip(keep)) {
+      for (final oldLog in logsWithFiles.skip(keep)) {
         if (oldLog.outputFilePath != null && oldLog.outputFilePath!.isNotEmpty) {
           final abs = resolveReportPath(oldLog.outputFilePath!, scratch);
-          if (!keepAbs.contains(abs)) {
+          if (abs.isNotEmpty &&
+              isScratchOwned(abs, scratch) &&
+              !keepAbs.contains(abs)) {
             try {
               final f = File(abs);
               if (f.existsSync()) f.deleteSync();
@@ -1256,7 +1295,9 @@ class TaskSchedulerService {
         }
         for (final rel in parseLinkedFiles(oldLog.linkedFiles)) {
           final abs = resolveReportPath(rel, scratch);
-          if (!keepAbs.contains(abs)) {
+          if (abs.isNotEmpty &&
+              isScratchOwned(abs, scratch) &&
+              !keepAbs.contains(abs)) {
             try {
               final f = File(abs);
               if (f.existsSync()) f.deleteSync();

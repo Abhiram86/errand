@@ -47,7 +47,7 @@ class TaskExecutionService : Service() {
         private const val NOTIFICATION_ID = 2_000_000_007
         private val MAIN_ENGINE_TIMEOUT_MS = 12 * 60 * 1000L
         private val BACKGROUND_ENGINE_TIMEOUT_MS = 12 * 60 * 1000L
-        private const val TASK_WAKELOCK_TIMEOUT_MS = (10 * 60 * 1000L) + 60_000L // 10 min task timeout + 60s margin = 11 minutes
+        private const val TASK_WAKELOCK_TIMEOUT_MS = (12 * 60 * 1000L) + 60_000L // 12 min main-engine timeout + 60s margin = 13 minutes
 
         const val ACTION_EXECUTE_TASK = "com.errand.ACTION_EXECUTE_TASK"
         const val ACTION_RESCHEDULE_ALL = "com.errand.ACTION_RESCHEDULE_ALL"

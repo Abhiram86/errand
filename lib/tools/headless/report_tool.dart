@@ -150,14 +150,20 @@ Tool saveReportTool({
         if (p.isWithin(scratchDir.path, file.path)) {
           collector.linkedFiles.add(p.relative(file.path, from: scratchDir.path));
         } else {
-          // If file was created outside scratchDir (e.g. In working dir), copy into scratchDir
+          // If file was created outside scratchDir (e.g. in working dir), copy into scratchDir
           // so task log preview & report cleanup work deterministically.
-          final scratchCopy = File(p.join(scratchDir.path, p.basename(file.path)));
+          // Copy name is namespaced by task+run so two runs linking the
+          // same basename (e.g. page1.html) never overwrite each other.
+          final linkBase = sanitizeReportName(p.basenameWithoutExtension(file.path));
+          final linkExt = p.extension(file.path).replaceAll(RegExp(r'[^A-Za-z0-9.]'), '');
+          final linkName =
+              'task-$taskId-$startedAtMillis-link-${linkBase.isNotEmpty ? linkBase : 'file'}$linkExt';
+          final scratchCopy = File(p.join(scratchDir.path, linkName));
           try {
             if (!scratchCopy.existsSync() || scratchCopy.path != file.path) {
               await file.copy(scratchCopy.path);
             }
-            collector.linkedFiles.add(p.basename(file.path));
+            collector.linkedFiles.add(linkName);
           } catch (_) {
             collector.linkedFiles.add(entry.originalPath);
           }
