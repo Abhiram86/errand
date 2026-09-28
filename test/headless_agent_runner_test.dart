@@ -1171,5 +1171,52 @@ void main() {
       final logs = await (midDb.select(midDb.schedulerTaskLogs)).get();
       expect(logs, isEmpty);
     });
+
+    test('preserves mid-run repeatAfter edit using freshTask upon completion', () async {
+      final scheduler = makeScheduler();
+      final started = Completer<void>();
+      final proceed = Completer<void>();
+      final runner = makeRunner(started, proceed);
+
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final taskId = await midDb.into(midDb.schedulerTasks).insert(
+        SchedulerTasksCompanion.insert(
+          title: 'Recurring Mid-edit Task',
+          type: 'recurring',
+          status: 'scheduled',
+          payloadJson: '{}',
+          startsAt: now,
+          repeatAfter: const Value(3600000), // Initially 1 hour
+          timezone: 'UTC',
+          createdAt: now,
+          updatedAt: now,
+        ),
+      );
+
+      final future = scheduler.executeTask(
+        taskId,
+        runner: runner,
+        scratchDirectory: midScratchDir,
+      );
+      await started.future;
+
+      // User changes repeatAfter to 2 hours while the task is executing
+      await (midDb.update(midDb.schedulerTasks)..where((t) => t.id.equals(taskId))).write(
+        const SchedulerTasksCompanion(
+          repeatAfter: Value(7200000), // Edited to 2 hours
+        ),
+      );
+
+      proceed.complete();
+      expect(await future, isTrue);
+
+      final updatedTask = await (midDb.select(midDb.schedulerTasks)
+            ..where((t) => t.id.equals(taskId)))
+          .getSingle();
+
+      expect(updatedTask.repeatAfter, equals(7200000));
+      // nextRunAt should be calculated using the edited 7200000 interval
+      expect(updatedTask.nextRunAt, greaterThanOrEqualTo(now + 7200000));
+    });
   });
 }

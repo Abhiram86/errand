@@ -529,12 +529,35 @@ class AgentLoop {
             'role': 'user',
             'content': '$kCompactedContextMarker\n$summaryContent',
           });
-          messages.add(const {
-            'role': 'assistant',
-            'content':
-                'I have incorporated the compacted conversation history and previous tool execution state. '
-                'Continuing with the task.',
-          });
+
+          // Check if the next message in effectiveHistory will emit an 'assistant' role.
+          // If so, omit the synthetic assistant ack so we never generate consecutive
+          // 'assistant' roles (which causes HTTP 400 on strict providers like Anthropic/Gemini).
+          var nextWillBeAssistant = false;
+          for (var k = index + 1; k < effectiveHistory.length; k++) {
+            final nextMsg = effectiveHistory[k];
+            if (nextMsg.id == 'init') continue;
+            if (nextMsg is AssistantMessage || nextMsg is ToolMessage) {
+              nextWillBeAssistant = true;
+              break;
+            }
+            if (nextMsg is UserMessage &&
+                (nextMsg.text.trim().isNotEmpty || nextMsg.attachedUris.isNotEmpty)) {
+              break;
+            }
+            if (nextMsg is ErrorMessage) {
+              break;
+            }
+          }
+
+          if (!nextWillBeAssistant) {
+            messages.add(const {
+              'role': 'assistant',
+              'content':
+                  'I have incorporated the compacted conversation history and previous tool execution state. '
+                  'Continuing with the task.',
+            });
+          }
         case UserMessage():
           final text = message.text.trim();
           final content = text.isNotEmpty

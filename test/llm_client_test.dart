@@ -953,4 +953,104 @@ void main() {
       'HTTP 401: Unauthorized',
     );
   });
+
+  test('chatStream aborts when accumulated bytes exceed maxStreamAccumulatedBytes', () async {
+    Stream<List<int>> createOversizedStream() async* {
+      yield utf8.encode(_sseEvent({
+        'choices': [
+          {'delta': {'content': 'A' * 60}},
+        ],
+      }));
+      yield utf8.encode(_sseEvent({
+        'choices': [
+          {'delta': {'content': 'B' * 60}},
+        ],
+      }));
+    }
+
+    final client = LlmClient(
+      config: const LlmConfig(
+        baseUrl: 'https://example.test/v1',
+        apiKey: 'test-key',
+        model: 'test-model',
+      ),
+      backoffDuration: (_) => Duration.zero,
+      maxAttempts: 1,
+      maxStreamAccumulatedBytes: 100, // Budget 100 bytes; 120 bytes sent
+      client: _StreamingClient((request) async {
+        return http.StreamedResponse(
+          createOversizedStream(),
+          200,
+          headers: const {'content-type': 'text/event-stream'},
+        );
+      }),
+    );
+
+    await expectLater(
+      client.chatStream(
+        messages: const [
+          {'role': 'user', 'content': 'Hi'},
+        ],
+        onTextDelta: (_) {},
+      ),
+      throwsA(
+        isA<LlmException>().having(
+          (e) => e.message,
+          'message',
+          contains('exceeded maximum size limit'),
+        ),
+      ),
+    );
+  });
+
+  test('chatStream aborts when stream total duration exceeds streamTotalTimeout', () async {
+    Stream<List<int>> createSlowStream() async* {
+      yield utf8.encode(_sseEvent({
+        'choices': [
+          {'delta': {'content': 'Hello'}},
+        ],
+      }));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      yield utf8.encode(_sseEvent({
+        'choices': [
+          {'delta': {'content': ' World'}},
+        ],
+      }));
+    }
+
+    final client = LlmClient(
+      config: const LlmConfig(
+        baseUrl: 'https://example.test/v1',
+        apiKey: 'test-key',
+        model: 'test-model',
+      ),
+      backoffDuration: (_) => Duration.zero,
+      maxAttempts: 1,
+      streamTotalTimeout: const Duration(milliseconds: 50), // 50ms cap; 100ms elapsed
+      client: _StreamingClient((request) async {
+        return http.StreamedResponse(
+          createSlowStream(),
+          200,
+          headers: const {'content-type': 'text/event-stream'},
+        );
+      }),
+    );
+
+    await expectLater(
+      client.chatStream(
+        messages: const [
+          {'role': 'user', 'content': 'Hi'},
+        ],
+        onTextDelta: (_) {},
+      ),
+      throwsA(
+        isA<LlmException>().having(
+          (e) => e.message,
+          'message',
+          contains('exceeded maximum total duration'),
+        ),
+      ),
+    );
+  });
 }
+

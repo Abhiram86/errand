@@ -342,26 +342,36 @@ class TaskExecutionService : Service() {
             return
         }
 
+        var engine: FlutterEngine? = null
         try {
             Log.d(TAG, "Initializing new background FlutterEngine")
             val loader = FlutterInjector.instance().flutterLoader()
             loader.startInitialization(applicationContext)
             loader.ensureInitializationComplete(applicationContext, null)
 
-            val engine = FlutterEngine(applicationContext)
-            backgroundEngine = engine
-            GeneratedPluginRegistrant.registerWith(engine)
+            val newEngine = FlutterEngine(applicationContext)
+            engine = newEngine
+            GeneratedPluginRegistrant.registerWith(newEngine)
 
-            setupEngineChannels(engine)
+            setupEngineChannels(newEngine)
 
             val entrypoint = DartExecutor.DartEntrypoint(
                 loader.findAppBundlePath(),
                 "backgroundTaskMain"
             )
-            engine.dartExecutor.executeDartEntrypoint(entrypoint)
-            onReady(engine)
+            newEngine.dartExecutor.executeDartEntrypoint(entrypoint)
+
+            // Only cache as backgroundEngine once entrypoint execution succeeds (H2)
+            backgroundEngine = newEngine
+            onReady(newEngine)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to initialize background Flutter engine", e)
+            try {
+                engine?.destroy()
+            } catch (destroyEx: Exception) {
+                Log.w(TAG, "Error destroying failed FlutterEngine", destroyEx)
+            }
+            destroyBackgroundEngine()
             processNextRequest()
         }
     }

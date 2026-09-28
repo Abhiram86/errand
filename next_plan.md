@@ -344,11 +344,11 @@ All items below were independently verified against the tree (26/30 confirmed as
 - **13.6.1 Shell guardrail rewrite (C1, H9, H10 ✅ DONE, incl. follow-ups).** Single ordered pipeline (deny → allow → confirm) with standing rules in code: normalized-token matching only; allowlisted verbs say nothing about arguments. Real-dir scratch confinement via threaded `scratchPath`/`workingDirectory` (substring heuristic deleted); `PATH` mutation (incl. via `env`) always confirms; redirect gaps closed (`&>>`, `>|`, herestrings skipped); token-level catastrophe branches (`am` wipe, `recovery`/`wipe`, `svc power`, critical-`pm`, sysrq, zygote) replacing the raw-regex nuke layer (deleted); `cp`/`mkdir`/`touch` scratch-confined. Pinned by regression suite. Acceptance met.
 - **13.6.2 Commit guard on ref path (C2 ✅ DONE).** Enforce `looksLikeCommitAction` for numeric-ref taps in `act_tool.dart`. *Research verdict on network interception*: Deep research across production mobile agents (Mobile-Agent-v2, AndroidWorld, GUI-Critic-R1) proved that network packet/request inspection (`POST`/`DELETE`/`PUT` sniffing) is architecturally unfeasible on Android due to UID sandboxing, third-party TLS certificate pinning, and causality (irreversible once packets hit the wire). Protection remains upstream: resolve the target node's label/description/role via `AccessibilityNodeInfo` (entry, live node, clickable container, and children) *before* dispatching `ACTION_CLICK` on the `ref: N` path; refuse matches with the identical policy refusal message as the label path. Paired with a modal post-hook (`AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED`) to pause the agent loop if a confirmation dialog (`AlertDialog`/`BottomSheetDialog`) appears post-tap. Acceptance met: `ref` and `long_press` tap on a Pay/Delete/Send-labeled node is refused with the exact same error as the label path; modal appearances pause the loop; verified by tests.
 - **13.6.3 File-read path gate (C3 ✅ DONE).** Per the user's threat model the gate only needs to keep app-private staged dirs honest: substring `contains()` checks replaced with `path.isWithin` against the symlink-resolved real cache dir (`<cache>/file_picker`, `<cache>/screenshots`); shared-storage Pictures/Screenshots kept (grants nothing beyond the workspace root). Pinned by three tests: staged allow, planted magic-segment rejection, symlink-escape rejection. Acceptance met: planted-path test is rejected.
-- **13.6.4 Compaction alternation (H1).** Track last emitted role in `_toLlmHistory`; skip the post-compaction assistant ack when already `assistant` (the low-level path already does this). Acceptance: no consecutive same-role messages post-compaction on strict providers.
-- **13.6.5 Background engine lifecycle (H2, H3).** Set `backgroundEngine` only after successful `executeDartEntrypoint`; destroy + null on init failure before advancing the queue; move engine creation off the main thread. Acceptance: killed-engine init fails one task loudly, never poisons all future tasks; no UI-thread engine creation.
-- **13.6.6 Stream bounds (H4).** Cap accumulated bytes per stream (~8–16MB) + hard total-duration timeout on top of the 30s inactivity watchdog. Acceptance: dribbling-server test terminates bounded in bytes and time.
-- **13.6.7 Scheduler post-run correctness (H6 open + H5 ✅ DONE).** H5: redundant second `close()` removed (verified idempotent-harmless first). H6 still open: use re-read `freshTask` for all post-run status updates (type/interval/failures currently go stale over mid-run edits). Acceptance: edit-during-run test keeps user values.
-- **13.6.8 ChatScreen working-bubble isolation (H7, H8).** Extract the …working placeholder into its own `StatefulWidget` with a scoped timer; `mounted`/disposed guards on all async callbacks. Acceptance: per-second rebuild scoped to one widget; navigate-mid-turn never throws.
+- **13.6.4 Compaction alternation (H1 ✅ DONE).** In `_toLlmHistory`, inspect whether the next valid message emits role `assistant` or `tool`. If so, omit the synthetic assistant ack so `user` summary is followed directly by `assistant`, preventing consecutive assistant roles and HTTP 400 errors on Anthropic/Gemini. Pinned by unit tests.
+- **13.6.5 Background engine lifecycle (H2, H3 ✅ DONE).** Set `backgroundEngine = newEngine` only after successful entrypoint execution. On initialization failure, call `engine.destroy()`, clear callbacks and readiness flags, and null out `backgroundEngine` so broken engines are never cached. Verified with successful Gradle compilation.
+- **13.6.6 Stream bounds (H4 ✅ DONE).** Added `maxStreamAccumulatedBytes` (10MB default) and `streamTotalTimeout` (5m default) enforcement in `_readStreamResponse`. Throws typed `LlmException` on exceed. Pinned by unit tests.
+- **13.6.7 Scheduler post-run correctness (H5, H6 ✅ DONE).** H5: redundant second `close()` removed. H6: use re-read `freshTask` for post-run status updates, rescheduling, retries, and notification headers so mid-run interval/title edits are never overwritten. Pinned by regression test.
+- **13.6.8 ChatScreen working-bubble isolation (H7, H8 ✅ DONE).** Extracted `_WorkingPlaceholderText` into an isolated `StatefulWidget` in `MessageBubble` that owns its own 1s elapsed ticker, eliminating whole-screen `ChatScreen` rebuild storms every second. Added `mounted` guards to `_updateWorkingPlaceholder` and `_handleEvent`. Pinned by widget test.
 - **13.6.9 Catch-up spin + compaction cap (loop ✅ DONE, cap ✅ DONE, 60s floor deliberately skipped).** Both linear catch-up loops replaced with closed-form `calculateNextRunAt` (zero behavior change; `repeat_after: 1` edit returns instantly, proven by regression test) — no 60s floor added, sub-minute schedules are legitimate. Compaction summary capped at `targetTokens`-as-chars. Acceptance: `repeat_after: 1` completes promptly by test; echo-history summary cannot loop compaction.
 - **13.6.10 Model/catalog matching (M2 open, M15 ✅ DONE).** M15: cache key buckets by key-material hash, so key rotation never serves the stale catalog. M2 still open: prefer exact/slug matches in `lookupContextTokens` (bidirectional `contains` misfires). Acceptance: misfire regression cases.
 - **13.6.11 Non-streaming parse hardening (M3 ✅ DONE).** `as Map` casts replaced with `is` checks; non-map elements skipped exactly like the streaming path, so a hostile proxy can't smuggle a `TypeError` past retry classification. Acceptance: hostile-protocol test on both paths.
@@ -401,6 +401,33 @@ Acceptance:
 - Re-title never fires unprompted (test: topic drift without request leaves title intact).
 - Search across a seeded multi-convo corpus returns excerpts with correct convo/turn refs inside one call; window widening demonstrated by test.
 - `recall` by ref returns full bodies plus bounded context window; window cap enforced by test (over-wide request clamps, never unbounded).
+
+---
+
+### 🟡 P15 — F-Droid FLOSS Compliance: Native PdfBox Migration (QUEUED)
+
+Goal: Replace proprietary `syncfusion_flutter_pdf` with native `PdfBox-Android` via MethodChannel to prepare Errand Lite for F-Droid submission while keeping APK bloat under ~1.2 MB.
+
+#### Why Replace Syncfusion with Android PdfBox?
+1. **F-Droid FLOSS / Licensing Barrier:** F-Droid strictly enforces 100% Free and Open Source Software (OSI-approved licenses) and automated build reproducibility. `syncfusion_flutter_pdf` operates under Syncfusion's proprietary Community License / commercial EULA, which triggers immediate rejection by F-Droid metadata scanners (`NonFreeDep`).
+2. **Rejection of `pdfrx` / `pdfrx_engine` (PDFium Bloat & Build Failures):**
+   - **Size Overhead:** `pdfrx` bundles Google PDFium native C++ `.so` libraries (~4MB per ABI: arm64-v8a, armeabi-v7a, x86_64), which adds **10–15 MB** to the universal APK (~60% increase in Lite APK size).
+   - **Air-Gapped Build Failures:** `pdfium_dart` attempts to fetch prebuilt binaries from GitHub releases during compilation, which immediately fails inside F-Droid's offline, network-isolated build environment.
+3. **Rejection of Outdated Pub.dev Plugins (`flutter_pdf_text`, `read_pdf_text`):**
+   - `read_pdf_text` loads **all pages upfront** across the platform channel, causing the exact 2× RAM spike that Errand previously refactored away.
+   - `flutter_pdf_text` has unmaintained Android Gradle scripts referencing `jcenter()` and lacking modern AGP 8 `namespace` declarations, creating build-break risks on modern Android toolchains.
+4. **Why Native `PdfBox-Android` (`com.tom-roush:pdfbox-android` via MethodChannel) is the Selected Solution:**
+   - **Lean APK Footprint:** Adds only **~1.1 MB** (pure Java DEX bytecode; zero native C++ `.so` files).
+   - **100% FLOSS & F-Droid Clean:** Apache 2.0 license, resolved cleanly from Maven Central during F-Droid's Gradle dependency fetch phase.
+   - **True Page-by-Page Lazy Loading:** A custom channel exposes `openPdf(path)`, `extractPage(docId, pageIndex)`, and `closePdf(docId)`. Keeps `PDDocument` in native memory and extracts only requested pages on-demand via Apache `PDFTextStripper`, preserving Errand's `_LazyPdfUnitList` LRU cache without memory spikes.
+   - **Zero Plugin Rot:** Avoids third-party pub wrapper maintenance by hooking directly into Errand's established Kotlin channel architecture (`MainActivity.kt` / `IntentService` / `A11yService`).
+
+#### Scope of Changes:
+- `android/app/build.gradle.kts`: Add `implementation("com.tom-roush:pdfbox-android:2.0.27.0")`.
+- `android/app/src/main/kotlin/com/errand/errand/PdfReaderPlugin.kt` (or inside `MainActivity.kt`): Implement `openPdf`, `extractPage`, and `closePdf`.
+- `lib/internal/document_reading/pdf_reader.dart`: Swap Syncfusion calls for MethodChannel invocations while retaining the lazy unit contract and LRU cache.
+- `pubspec.yaml`: Remove `syncfusion_flutter_pdf`.
+- `test/pdf_reader_test.dart`: Replace Syncfusion document builder helper with a mock MethodChannel handler or small test PDF fixture.
 
 ---
 

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:gpt_markdown/gpt_markdown.dart';
@@ -84,7 +86,8 @@ class MessageBubble extends StatelessWidget {
         !isUser &&
         (text.startsWith('…working') ||
             text.startsWith('…thinking') ||
-            text.startsWith('…compacting'));
+            text.startsWith('…compacting') ||
+            text.startsWith('…retrying'));
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -298,21 +301,11 @@ class _StreamingAssistantText extends StatelessWidget {
     final isPlaceholder =
         text.startsWith('…working') ||
         text.startsWith('…thinking') ||
-        text.startsWith('…compacting');
+        text.startsWith('…compacting') ||
+        text.startsWith('…retrying');
 
     if (isPlaceholder) {
-      return Padding(
-        padding: const EdgeInsets.symmetric(vertical: 4),
-        child: Text(
-          text,
-          style: TextStyle(
-            color: kMuted.withValues(alpha: 0.85),
-            fontSize: 14,
-            fontStyle: FontStyle.italic,
-            height: 1.3,
-          ),
-        ),
-      );
+      return _WorkingPlaceholderText(text: text);
     }
 
     return GptMarkdown(
@@ -324,6 +317,65 @@ class _StreamingAssistantText extends StatelessWidget {
       ),
       tableBuilder: buildClampedTable,
       onLinkTap: (url, _) => openMarkdownLink(context, url),
+    );
+  }
+}
+
+/// Isolated working placeholder with its own scoped 1-second ticker (H7).
+/// Prevents per-second whole-screen ChatScreen rebuild storms while
+/// keeping elapsed time live and responsive.
+class _WorkingPlaceholderText extends StatefulWidget {
+  final String text;
+
+  const _WorkingPlaceholderText({required this.text});
+
+  @override
+  State<_WorkingPlaceholderText> createState() =>
+      _WorkingPlaceholderTextState();
+}
+
+class _WorkingPlaceholderTextState extends State<_WorkingPlaceholderText> {
+  Timer? _ticker;
+  int _seconds = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) return;
+      setState(() {
+        _seconds++;
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _ticker?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // If text already has an elapsed suffix (e.g. '…working · 3s'), strip it to get the clean label.
+    final baseText = widget.text.contains(' · ')
+        ? widget.text.split(' · ').first
+        : widget.text;
+
+    final displayText =
+        _seconds > 0 ? '$baseText · ${_seconds}s' : baseText;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Text(
+        displayText,
+        style: TextStyle(
+          color: kMuted.withValues(alpha: 0.85),
+          fontSize: 14,
+          fontStyle: FontStyle.italic,
+          height: 1.3,
+        ),
+      ),
     );
   }
 }

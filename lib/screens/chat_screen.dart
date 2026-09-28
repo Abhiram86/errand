@@ -129,10 +129,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _workingTail = '';
   }
 
-  /// Elapsed-seconds ticker for the …working placeholder (see
-  /// [_startWorkingElapsedTimer]).
-  Timer? _workingElapsedTimer;
-  int _workingElapsedSeconds = 0;
+  /// Elapsed-seconds ticker for the …working placeholder is now managed
+  /// locally by _WorkingPlaceholderText inside MessageBubble (H7).
 
   /// Flipped true when reasoning deltas stream for the current turn —
   /// switches the placeholder label …working → …thinking. Single-writer
@@ -901,7 +899,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _composerFocusNode.removeListener(_onComposerFocusChange);
     _composerFocusNode.dispose();
     _workingFlushTimer?.cancel();
-    _workingElapsedTimer?.cancel();
     _a11yToastTimer?.cancel();
     unawaited(_intentService.stopWorkIndicator());
     // Flush any pending debounced persistence synchronously into fire-and-forget
@@ -2107,23 +2104,16 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   /// models spend 30–90s before the first token, and a static placeholder is
   /// indistinguishable from a hung request. The ticker is the ONLY writer of
   /// the elapsed suffix; [_handleReasoningDelta] just flips the label flag.
-  /// Stops updating once real text deltas arrive (streamed content takes
-  /// over the bubble).
+  /// Elapsed timer is now scoped locally inside _WorkingPlaceholderText (H7),
+  /// eliminating the per-second ChatScreen rebuild storm.
   void _startWorkingElapsedTimer() {
-    _workingElapsedTimer?.cancel();
-    _workingElapsedSeconds = 0;
-    _workingElapsedTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (!mounted || _workingMessageId == null) return;
-      if (_workingText.isNotEmpty) return; // streamed text owns the bubble now
-      _workingElapsedSeconds++;
-      _updateWorkingPlaceholder();
-    });
+    // Elapsed ticker is now scoped locally inside _WorkingPlaceholderText (H7).
   }
 
   /// Single writer for the …working/…thinking placeholder. Every other
-  /// state change (reasoning start, new turn) goes through here, so the
-  /// label and the elapsed suffix can never be written out of sync.
+  /// state change (reasoning start, new turn) goes through here.
   void _updateWorkingPlaceholder() {
+    if (!mounted) return;
     final id = _workingMessageId;
     if (id == null || _workingText.isNotEmpty) return;
     final index = _messages.indexWhere((message) => message.id == id);
@@ -2141,7 +2131,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     setState(() {
       _messages[index] = AssistantMessage(
         id: id,
-        text: '$label · ${_workingElapsedSeconds}s',
+        text: label,
         model: _selectedModel,
         provider:
             _activeConversation.provider ??
@@ -2155,7 +2145,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   void _failWorking(String message) {
     _workingFlushTimer?.cancel();
     _workingFlushTimer = null;
-    _workingElapsedTimer?.cancel();
     _workingCompacting = false;
     _workingRetryAttempt = null;
     unawaited(_intentService.stopWorkIndicator());
@@ -2192,6 +2181,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   void _handleEvent(AgentEvent event) {
+    if (!mounted) return;
     switch (event) {
       case AgentThinking():
         break;
@@ -2502,7 +2492,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   void _replaceWorking(String text) {
     _workingFlushTimer?.cancel();
     _workingFlushTimer = null;
-    _workingElapsedTimer?.cancel();
     _workingCompacting = false;
     _workingRetryAttempt = null;
     unawaited(_intentService.stopWorkIndicator());

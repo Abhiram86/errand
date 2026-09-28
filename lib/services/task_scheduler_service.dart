@@ -1094,8 +1094,8 @@ class TaskSchedulerService {
           taskId: taskId,
           stage: isSuccess ? TaskExecutionStage.completed : TaskExecutionStage.failed,
           message: isSuccess
-              ? 'Task #${task.id} completed successfully'
-              : (result.errorMessage ?? 'Task #${task.id} failed'),
+              ? 'Task #${freshTask.id} completed successfully'
+              : (result.errorMessage ?? 'Task #${freshTask.id} failed'),
           isError: !isSuccess,
         ),
       );
@@ -1106,10 +1106,10 @@ class TaskSchedulerService {
     } catch (_) {}
 
     if (isSuccess) {
-      if (task.type == 'recurring' && task.repeatAfter != null && task.repeatAfter! > 0) {
+      if (freshTask.type == 'recurring' && freshTask.repeatAfter != null && freshTask.repeatAfter! > 0) {
         final nextRun = calculateNextRunAt(
-          startsAt: task.startsAt,
-          repeatAfter: task.repeatAfter!,
+          startsAt: freshTask.startsAt,
+          repeatAfter: freshTask.repeatAfter!,
           nowMillis: finishMillis,
         );
         await (db.update(db.schedulerTasks)..where((t) => t.id.equals(taskId))).write(
@@ -1142,11 +1142,11 @@ class TaskSchedulerService {
           isTimeout: isTimeout,
         ));
       }
-      final newFailures = task.failures + 1;
-      final maxRetries = task.retriesPerTurn;
+      final newFailures = freshTask.failures + 1;
+      final maxRetries = freshTask.retriesPerTurn;
       final hasExceededRetries = maxRetries > 0 && newFailures >= maxRetries;
 
-      if (task.type == 'recurring' && task.repeatAfter != null && task.repeatAfter! > 0) {
+      if (freshTask.type == 'recurring' && freshTask.repeatAfter != null && freshTask.repeatAfter! > 0) {
         if (hasExceededRetries) {
           // Exceeded max consecutive retries; mark as failed until user intervenes
           await (db.update(db.schedulerTasks)..where((t) => t.id.equals(taskId))).write(
@@ -1160,8 +1160,8 @@ class TaskSchedulerService {
         } else {
           // Reschedule for next regular interval so transient network glitches do not kill recurring tasks
           final nextRun = calculateNextRunAt(
-            startsAt: task.startsAt,
-            repeatAfter: task.repeatAfter!,
+            startsAt: freshTask.startsAt,
+            repeatAfter: freshTask.repeatAfter!,
             nowMillis: finishMillis,
           );
           await (db.update(db.schedulerTasks)..where((t) => t.id.equals(taskId))).write(
@@ -1186,13 +1186,13 @@ class TaskSchedulerService {
       }
     }
 
-    if (task.notify && !suppressNotification) {
+    if (freshTask.notify && !suppressNotification) {
       bool shown = false;
       String skipReason = '';
       try {
         final notifTitle = isSuccess
-            ? 'Task Completed: ${task.title}'
-            : 'Task Failed: ${task.title}';
+            ? 'Task Completed: ${freshTask.title}'
+            : 'Task Failed: ${freshTask.title}';
         final notifBody = summary.length > 250
             ? '${summary.substring(0, 247)}...'
             : summary;

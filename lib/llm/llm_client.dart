@@ -128,13 +128,29 @@ class LlmClient {
   /// because no human is around to tap retry.
   final int maxAttempts;
 
+  static const _timeout = Duration(seconds: 30);
+  static const _streamTimeout = Duration(seconds: 60);
+  static const _streamInactivityTimeout = Duration(seconds: 30);
+  static const _streamTotalTimeout = Duration(minutes: 5);
+  static const int kMaxStreamAccumulatedBytes = 10 * 1024 * 1024; // 10 MB
+  static const _defaultMaxAttempts = 3;
+  static const _maxTotalAttempts = 10;
+
+  final Duration streamTotalTimeout;
+  final int maxStreamAccumulatedBytes;
+
   LlmClient({
     required this.config,
     http.Client? client,
     this.backoffDuration,
     this.maxAttempts = _defaultMaxAttempts,
+    Duration? streamTotalTimeout,
+    int? maxStreamAccumulatedBytes,
   })  : _injectedClient = client,
-        _ownsClient = client == null {
+        _ownsClient = client == null,
+        streamTotalTimeout = streamTotalTimeout ?? _streamTotalTimeout,
+        maxStreamAccumulatedBytes =
+            maxStreamAccumulatedBytes ?? kMaxStreamAccumulatedBytes {
     assert(maxAttempts >= 1, 'maxAttempts must be at least 1');
   }
 
@@ -142,12 +158,6 @@ class LlmClient {
   /// lifecycle, otherwise the injected instance.
   http.Client _clientForCall() =>
       _injectedClient ?? http.Client();
-
-  static const _timeout = Duration(seconds: 30);
-  static const _streamTimeout = Duration(seconds: 60);
-  static const _streamInactivityTimeout = Duration(seconds: 30);
-  static const _defaultMaxAttempts = 3;
-  static const _maxTotalAttempts = 10;
 
   Uri _chatCompletionsUri() {
     final base = config.baseUrl.endsWith('/')
@@ -581,6 +591,8 @@ class LlmClient {
     final reasoningDetails = <Map<String, dynamic>>[];
     final streamedToolCalls = <int, _StreamToolCall>{};
     var lastToolCallIndex = 0;
+    var totalAccumulatedBytes = 0;
+    final streamStart = DateTime.now();
 
     await for (final event in _sseDataEvents(
       response.stream,
@@ -588,6 +600,12 @@ class LlmClient {
     )) {
       if (cancelToken?.isCancelled ?? false) {
         throw const LlmStoppedException();
+      }
+      if (DateTime.now().difference(streamStart) > streamTotalTimeout) {
+        throw LlmException(
+          'Streaming response exceeded maximum total duration of ${streamTotalTimeout.inSeconds}s',
+          transport: true,
+        );
       }
       if (event == '[DONE]') break;
 
@@ -652,6 +670,7 @@ class LlmClient {
         delta['reasoning_details'],
       );
       if (reasoningDelta != null && reasoningDelta.isNotEmpty) {
+        totalAccumulatedBytes += reasoningDelta.length;
         reasoning.write(reasoningDelta);
         onProgress?.call(reasoningDelta.length);
       }
@@ -663,6 +682,7 @@ class LlmClient {
 
       final text = delta['content'];
       if (text is String && text.isNotEmpty) {
+        totalAccumulatedBytes += text.length;
         content.write(text);
         onTextDelta(text);
       }
@@ -693,9 +713,20 @@ class LlmClient {
         accumulated.name ??= function['name'] as String?;
         final arguments = function['arguments'] as String?;
         if (arguments != null) {
+          totalAccumulatedBytes += arguments.length;
           accumulated.arguments.write(arguments);
           onProgress?.call(arguments.length);
         }
+      }
+
+      if (totalAccumulatedBytes > maxStreamAccumulatedBytes) {
+        final budgetStr = maxStreamAccumulatedBytes >= 1024 * 1024
+            ? '${maxStreamAccumulatedBytes ~/ (1024 * 1024)}MB'
+            : '$maxStreamAccumulatedBytes bytes';
+        throw LlmException(
+          'Streaming response exceeded maximum size limit of $budgetStr',
+          transport: true,
+        );
       }
     }
 

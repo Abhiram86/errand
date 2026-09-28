@@ -651,7 +651,84 @@ void main() {
       expect(content[1]['type'], 'image_url');
       expect((content[1]['image_url'] as Map)['url'], contains('AAAA'));
     });
+
+    test('CompactedNoticeMessage followed by AssistantMessage omits synthetic ack to prevent consecutive assistant roles', () async {
+      final mockLlm = MockLlmClient();
+      mockLlm.onChat = (_) => const LlmMessage(content: 'Final done');
+
+      final loop = AgentLoop(
+        llm: mockLlm,
+        registry: ToolRegistry([]),
+      );
+
+      await loop.run(Conversation(
+        id: 'c-compact-assistant',
+        messages: [
+          const CompactedNoticeMessage(
+            id: 'c1',
+            text: 'Compacted context',
+            summary: 'Previous conversation summary.',
+          ),
+          const AssistantMessage(
+            id: 'a1',
+            text: 'I previously found the user file.',
+          ),
+          const UserMessage(
+            id: 'u2',
+            text: 'Now summarize it.',
+          ),
+        ],
+        currentDir: Directory('/'),
+      ));
+
+      final sentMessages = mockLlm.receivedMessages.first;
+      // Filter out system message to inspect conversation roles
+      final nonSystemRoles = sentMessages
+          .where((m) => m['role'] != 'system')
+          .map((m) => m['role'] as String)
+          .toList();
+
+      // Expected: user (compacted summary) -> assistant (a1) -> user (u2)
+      // Must NOT contain consecutive assistant messages!
+      expect(nonSystemRoles, equals(['user', 'assistant', 'user']));
+    });
+
+    test('CompactedNoticeMessage followed by UserMessage includes synthetic ack to maintain alternation', () async {
+      final mockLlm = MockLlmClient();
+      mockLlm.onChat = (_) => const LlmMessage(content: 'Final done');
+
+      final loop = AgentLoop(
+        llm: mockLlm,
+        registry: ToolRegistry([]),
+      );
+
+      await loop.run(Conversation(
+        id: 'c-compact-user',
+        messages: [
+          const CompactedNoticeMessage(
+            id: 'c1',
+            text: 'Compacted context',
+            summary: 'Previous conversation summary.',
+          ),
+          const UserMessage(
+            id: 'u2',
+            text: 'Continue with next step.',
+          ),
+        ],
+        currentDir: Directory('/'),
+      ));
+
+      final sentMessages = mockLlm.receivedMessages.first;
+      final nonSystemRoles = sentMessages
+          .where((m) => m['role'] != 'system')
+          .map((m) => m['role'] as String)
+          .toList();
+
+      // Expected: user (compacted summary) -> assistant (synthetic ack) -> user (u2)
+      expect(nonSystemRoles, equals(['user', 'assistant', 'user']));
+    });
   });
 }
+
 
 

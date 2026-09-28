@@ -1,9 +1,12 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:drift/drift.dart' hide Column;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:path/path.dart' as p;
 
+import '../../screens/task_file_preview_screen.dart';
 import '../../services/database.dart';
 import '../../services/task_progress_service.dart';
 import '../../services/task_scheduler_service.dart';
@@ -17,6 +20,7 @@ class SpaceyTaskRow extends StatefulWidget {
   final ErrandDatabase db;
   final VoidCallback onViewLogs;
   final VoidCallback? onEditModel;
+  final TaskSchedulerService? scheduler;
 
   const SpaceyTaskRow({
     super.key,
@@ -25,6 +29,7 @@ class SpaceyTaskRow extends StatefulWidget {
     required this.db,
     required this.onViewLogs,
     this.onEditModel,
+    this.scheduler,
   });
 
   @override
@@ -32,6 +37,7 @@ class SpaceyTaskRow extends StatefulWidget {
 }
 
 class _SpaceyTaskRowState extends State<SpaceyTaskRow> {
+  TaskSchedulerService get _scheduler => widget.scheduler ?? TaskSchedulerService.instance;
   bool _executing = false;
   StreamSubscription<TaskProgressEvent>? _progressSub;
 
@@ -366,16 +372,25 @@ class _SpaceyTaskRowState extends State<SpaceyTaskRow> {
   }
 
   Future<void> _deleteTask(int taskId) async {
-    final stats = await TaskSchedulerService.instance.getTaskFileStats(taskId);
+    final List<File> files = await _scheduler.getOwnedFilesForTask(taskId);
     if (!mounted) return;
 
-    var deleteFiles = stats.count > 0;
+    var totalBytes = 0;
+    for (final f in files) {
+      try {
+        totalBytes += f.lengthSync();
+      } catch (_) {}
+    }
+
+    var deleteFiles = files.isNotEmpty;
+    var filesExpanded = false;
+
     final confirm = await showDialog<bool>(
       context: context,
       builder: (dialogCtx) {
         return StatefulBuilder(
           builder: (context, setDialogState) {
-            final bytesStr = _formatBytes(stats.bytes);
+            final bytesStr = _formatBytes(totalBytes);
             return AlertDialog(
               backgroundColor: const Color(0xFF1E222B),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
@@ -388,24 +403,121 @@ class _SpaceyTaskRowState extends State<SpaceyTaskRow> {
                     'Are you sure you want to delete "${widget.task.title}"?',
                     style: const TextStyle(color: Color(0xFFC9D1D9), fontSize: 14),
                   ),
-                  if (stats.count > 0) ...[
+                  if (files.isNotEmpty) ...[
                     const SizedBox(height: 16),
-                    InkWell(
-                      onTap: () => setDialogState(() => deleteFiles = !deleteFiles),
-                      borderRadius: BorderRadius.circular(8),
-                      child: Row(
+                    Container(
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF161B22),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: const Color(0xFF30363D)),
+                      ),
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
                         children: [
-                          Checkbox(
-                            value: deleteFiles,
-                            onChanged: (val) => setDialogState(() => deleteFiles = val ?? false),
-                            activeColor: kBubbleUser,
+                          Row(
+                            children: [
+                              Checkbox(
+                                value: deleteFiles,
+                                onChanged: (val) => setDialogState(() => deleteFiles = val ?? false),
+                                activeColor: kBubbleUser,
+                              ),
+                              Expanded(
+                                child: InkWell(
+                                  onTap: () => setDialogState(() => deleteFiles = !deleteFiles),
+                                  borderRadius: BorderRadius.circular(4),
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(vertical: 4),
+                                    child: Text(
+                                      'Also delete ${files.length} report ${files.length == 1 ? 'file' : 'files'} ($bytesStr)?',
+                                      style: const TextStyle(color: Color(0xFFE6EDF3), fontSize: 13),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              InkWell(
+                                onTap: () => setDialogState(() => filesExpanded = !filesExpanded),
+                                borderRadius: BorderRadius.circular(12),
+                                child: Padding(
+                                  padding: const EdgeInsets.all(6),
+                                  child: Icon(
+                                    filesExpanded ? Icons.expand_less_rounded : Icons.expand_more_rounded,
+                                    color: const Color(0xFF8B949E),
+                                    size: 18,
+                                  ),
+                                ),
+                              ),
+                            ],
                           ),
-                          Expanded(
-                            child: Text(
-                              'Also delete ${stats.count} report ${stats.count == 1 ? 'file' : 'files'} ($bytesStr)?',
-                              style: const TextStyle(color: Color(0xFFE6EDF3), fontSize: 13),
+                          if (filesExpanded) ...[
+                            const Divider(height: 1, color: Color(0xFF30363D)),
+                            ConstrainedBox(
+                              constraints: const BoxConstraints(maxHeight: 160),
+                              child: Scrollbar(
+                                child: ListView.separated(
+                                  shrinkWrap: true,
+                                  padding: const EdgeInsets.symmetric(vertical: 4),
+                                  itemCount: files.length,
+                                  separatorBuilder: (context, index) => const Divider(
+                                    height: 1,
+                                    color: Color(0xFF21262D),
+                                  ),
+                                  itemBuilder: (context, index) {
+                                    final file = files[index];
+                                    final relPath = TaskSchedulerService.toScratchRelative(file.path);
+                                    int fileBytes = 0;
+                                    try {
+                                      fileBytes = file.existsSync() ? file.lengthSync() : 0;
+                                    } catch (_) {}
+                                    return InkWell(
+                                      onTap: () {
+                                        TaskFilePreviewScreen.show(
+                                          dialogCtx,
+                                          filePath: file.path,
+                                          title: p.basename(file.path),
+                                        );
+                                      },
+                                      borderRadius: BorderRadius.circular(4),
+                                      child: Padding(
+                                        padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
+                                        child: Row(
+                                          children: [
+                                            Icon(
+                                              _iconForPath(relPath),
+                                              color: const Color(0xFF58A6FF),
+                                              size: 14,
+                                            ),
+                                            const SizedBox(width: 8),
+                                            Expanded(
+                                              child: Text(
+                                                relPath,
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                                style: const TextStyle(
+                                                  color: Color(0xFF58A6FF),
+                                                  fontSize: 12,
+                                                  decoration: TextDecoration.underline,
+                                                  decorationColor: Color(0xFF58A6FF),
+                                                ),
+                                              ),
+                                            ),
+                                            const SizedBox(width: 8),
+                                            Text(
+                                              _formatBytes(fileBytes),
+                                              style: const TextStyle(
+                                                color: Color(0xFF8B949E),
+                                                fontSize: 11,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                ),
+                              ),
                             ),
-                          ),
+                          ],
                         ],
                       ),
                     ),
@@ -430,7 +542,7 @@ class _SpaceyTaskRowState extends State<SpaceyTaskRow> {
 
     if (confirm != true || !mounted) return;
 
-    final deleted = await TaskSchedulerService.instance.deleteTask(
+    final deleted = await _scheduler.deleteTask(
       taskId,
       deleteFiles: deleteFiles,
     );
@@ -438,6 +550,32 @@ class _SpaceyTaskRowState extends State<SpaceyTaskRow> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Task not found — already deleted')),
       );
+    }
+  }
+
+  static IconData _iconForPath(String filePath) {
+    final ext = p.extension(filePath).toLowerCase();
+    switch (ext) {
+      case '.md':
+      case '.txt':
+        return Icons.description_outlined;
+      case '.html':
+      case '.htm':
+        return Icons.html_rounded;
+      case '.csv':
+      case '.json':
+        return Icons.table_chart_outlined;
+      case '.png':
+      case '.jpg':
+      case '.jpeg':
+      case '.webp':
+      case '.gif':
+      case '.svg':
+        return Icons.image_outlined;
+      case '.pdf':
+        return Icons.picture_as_pdf_outlined;
+      default:
+        return Icons.insert_drive_file_outlined;
     }
   }
 
