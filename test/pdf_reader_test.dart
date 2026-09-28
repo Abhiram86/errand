@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
@@ -98,5 +99,114 @@ void main() {
     final read = await document.read(offset: 0, length: 512);
     expect(read.output, contains('scanned images'));
     document.dispose();
+  });
+
+  test('desktop fallback extracts text from uncompressed and FlateDecode streams when channel is missing', () async {
+    final tempDir = await Directory.systemTemp.createTemp('pdf_desktop_test');
+    addTearDown(() => tempDir.deleteSync(recursive: true));
+    final file = File('${tempDir.path}/desktop.pdf');
+
+    // Create a PDF with uncompressed stream
+    final pdfContent = '''
+%PDF-1.4
+1 0 obj
+<< /Length 60 >>
+stream
+BT
+/F1 12 Tf
+(Fallback text from pure Dart reader) Tj
+[( Array) 10 ( text)] TJ
+ET
+endstream
+endobj
+trailer
+<< /Root 1 0 R >>
+%%EOF
+''';
+    await file.writeAsString(pdfContent);
+
+    // Call with a dummy channel that throws MissingPluginException to trigger fallback
+    const missingChannel = MethodChannel('missing_channel');
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(missingChannel, (MethodCall call) async {
+      throw MissingPluginException();
+    });
+
+    final document = await readPdfDocument(file, channel: missingChannel);
+    expect(document.units, isNotEmpty);
+
+    final read = await document.read(offset: 0, length: 512);
+    expect(read.output, contains('Fallback text from pure Dart reader'));
+    expect(read.output, contains('Array text'));
+    document.dispose();
+  });
+
+  test('desktop fallback throws FormatException when PDF has no readable text stream', () async {
+    final tempDir = await Directory.systemTemp.createTemp('pdf_empty_stream');
+    addTearDown(() => tempDir.deleteSync(recursive: true));
+    final file = File('${tempDir.path}/empty.pdf');
+    await file.writeAsString('%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF');
+
+    const missingChannel = MethodChannel('missing_empty_channel');
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(missingChannel, (MethodCall call) async {
+      throw MissingPluginException();
+    });
+
+    expect(
+      () => readPdfDocument(file, channel: missingChannel),
+      throwsA(isA<FormatException>()),
+    );
+  });
+
+  test('PooledPdfDocument dispose invokes closePdf method on channel', () async {
+    var closeCalled = false;
+    const testChannel = MethodChannel('test_close_channel');
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(testChannel, (MethodCall call) async {
+      if (call.method == 'openPdf') {
+        return {'docId': 'close_doc_1', 'pageCount': 1};
+      }
+      if (call.method == 'closePdf') {
+        closeCalled = true;
+        return true;
+      }
+      return null;
+    });
+
+    final tempDir = await Directory.systemTemp.createTemp('pdf_close_test');
+    addTearDown(() => tempDir.deleteSync(recursive: true));
+    final file = File('${tempDir.path}/close_test.pdf');
+    await file.writeAsString('pdf data');
+
+    final doc = await readPdfDocument(file, channel: testChannel);
+    expect(closeCalled, isFalse);
+    doc.dispose();
+    expect(closeCalled, isTrue);
+  });
+
+  test('desktop fallback extracts text from compressed FlateDecode stream', () async {
+    final tempDir = await Directory.systemTemp.createTemp('pdf_flate_test');
+    addTearDown(() => tempDir.deleteSync(recursive: true));
+    final file = File('${tempDir.path}/flate.pdf');
+
+    final streamContent = 'BT (Compressed Flate Text Here) Tj ET';
+    final compressed = zlib.encode(utf8.encode(streamContent));
+    final header = utf8.encode('1 0 obj\n<< /Length ${compressed.length} /Filter /FlateDecode >>\nstream\n');
+    final footer = utf8.encode('\nendstream\nendobj\n');
+    final fullBytes = <int>[...header, ...compressed, ...footer];
+
+    await file.writeAsBytes(fullBytes);
+
+    const missingChannel = MethodChannel('missing_flate_channel');
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(missingChannel, (MethodCall call) async {
+      throw MissingPluginException();
+    });
+
+    final doc = await readPdfDocument(file, channel: missingChannel);
+    final read = await doc.read(offset: 0, length: 512);
+    expect(read.output, contains('Compressed Flate Text Here'));
+    doc.dispose();
   });
 }

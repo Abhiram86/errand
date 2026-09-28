@@ -1,4 +1,5 @@
 import 'dart:collection';
+import 'dart:convert';
 import 'dart:developer' as developer;
 import 'dart:io';
 
@@ -10,7 +11,17 @@ const _kDefaultChannel = MethodChannel('pdf_reader');
 const _maxPdfBytes = 64 * 1024 * 1024;
 const _maxPageCharacters = 256 * 1024;
 
-/// Reads a PDF document using native PdfBox via platform channel.
+/// Token passed to the [Finalizer] to close the native PDF document
+/// on GC if the document is not explicitly disposed.
+class _PdfFinalizerToken {
+  final MethodChannel channel;
+  final String docId;
+
+  _PdfFinalizerToken(this.channel, this.docId);
+}
+
+/// Reads a PDF document using native PdfBox via platform channel on Android,
+/// or using pure-Dart stream text extraction on desktop / non-Android platforms.
 ///
 /// Keeps the native `PDDocument` alive on Android and fetches pages
 /// on-demand, caching up to 32 pages (8MB) in Dart memory.
@@ -27,30 +38,48 @@ Future<LogicalDocument> readPdfDocument(
   }
 
   final effectiveChannel = channel ?? _kDefaultChannel;
-  final result = await effectiveChannel.invokeMapMethod<String, dynamic>(
-    'openPdf',
-    {'path': file.path},
-  );
 
-  if (result == null) {
-    throw const FormatException('Failed to open PDF document.');
+  try {
+    final result = await effectiveChannel.invokeMapMethod<String, dynamic>(
+      'openPdf',
+      {'path': file.path},
+    );
+
+    if (result == null) {
+      throw const FormatException('Failed to open PDF document.');
+    }
+
+    final docId = result['docId'] as String;
+    final pageCount = (result['pageCount'] as num).toInt();
+
+    return PooledPdfDocument(
+      docId: docId,
+      pageCount: pageCount,
+      channel: effectiveChannel,
+      fileBytes: length,
+    );
+  } on MissingPluginException {
+    // Platform channel missing (e.g. desktop runner without native PdfBox handler)
+    return _readPdfDesktopFallback(file, length);
+  } catch (e) {
+    if (!Platform.isAndroid) {
+      return _readPdfDesktopFallback(file, length);
+    }
+    rethrow;
   }
-
-  final docId = result['docId'] as String;
-  final pageCount = (result['pageCount'] as num).toInt();
-
-  return PooledPdfDocument(
-    docId: docId,
-    pageCount: pageCount,
-    channel: effectiveChannel,
-    fileBytes: length,
-  );
 }
 
 class PooledPdfDocument extends LogicalDocument {
+  static final _finalizer = Finalizer<_PdfFinalizerToken>((token) {
+    try {
+      token.channel.invokeMethod('closePdf', {'docId': token.docId}).catchError((_) {});
+    } catch (_) {}
+  });
+
   final String docId;
   final int pageCount;
   final MethodChannel channel;
+  final _PdfFinalizerToken _finalizerToken;
   bool _isDisposed = false;
 
   final Map<int, LogicalDocumentUnit> _cache = {};
@@ -63,11 +92,14 @@ class PooledPdfDocument extends LogicalDocument {
     required this.pageCount,
     required this.channel,
     int? fileBytes,
-  }) : super(
+  })  : _finalizerToken = _PdfFinalizerToken(channel, docId),
+        super(
           format: 'PDF',
           units: _PlaceholderPdfUnitList(pageCount),
           totalExpandedBytes: fileBytes,
-        );
+        ) {
+    _finalizer.attach(this, _finalizerToken, detach: this);
+  }
 
   @override
   int get unitCount => pageCount;
@@ -151,6 +183,7 @@ class PooledPdfDocument extends LogicalDocument {
   void dispose() {
     if (!_isDisposed) {
       _isDisposed = true;
+      _finalizer.detach(this);
       _cache.clear();
       _cacheBytes = 0;
       channel.invokeMethod('closePdf', {'docId': docId}).catchError((_) {});
@@ -182,4 +215,142 @@ class _PlaceholderPdfUnitList extends ListBase<LogicalDocumentUnit> {
   @override
   void operator []=(int index, LogicalDocumentUnit value) =>
       throw UnsupportedError('Cannot modify read-only PDF unit list.');
+}
+
+Future<LogicalDocument> _readPdfDesktopFallback(File file, int fileBytes) async {
+  try {
+    final bytes = await file.readAsBytes();
+    final units = _extractSimplePdfUnits(bytes);
+    if (units.isNotEmpty) {
+      return LogicalDocument(
+        format: 'PDF',
+        units: units,
+        totalExpandedBytes: fileBytes,
+      );
+    }
+  } catch (e) {
+    developer.log(
+      'Fallback PDF text extraction failed for "${file.path}"',
+      error: e,
+      name: 'readPdfDocument',
+    );
+  }
+
+  throw FormatException(
+    'Native PDF reading via PdfBox is only supported on Android. '
+    'On ${Platform.operatingSystem}, pure-Dart text extraction found no readable text '
+    '(file may contain scanned images, graphics, or unsupported encodings).',
+  );
+}
+
+List<LogicalDocumentUnit> _extractSimplePdfUnits(Uint8List bytes) {
+  final rawString = latin1.decode(bytes);
+  final streamRegex = RegExp(r'stream[\r\n]+([\s\S]*?)[\r\n]+endstream');
+  final matches = streamRegex.allMatches(rawString);
+  final units = <LogicalDocumentUnit>[];
+
+  var pageNum = 1;
+  for (final match in matches) {
+    final streamStart = match.start +
+        rawString.substring(match.start, match.end).indexOf('stream') +
+        6;
+    var actualStart = streamStart;
+    if (actualStart < bytes.length && bytes[actualStart] == 13) actualStart++;
+    if (actualStart < bytes.length && bytes[actualStart] == 10) actualStart++;
+
+    final endStreamPos = match.end - 9;
+    var actualEnd = endStreamPos;
+    while (actualEnd > actualStart &&
+        (bytes[actualEnd - 1] == 13 || bytes[actualEnd - 1] == 10)) {
+      actualEnd--;
+    }
+    if (actualEnd <= actualStart) continue;
+
+    final streamData = bytes.sublist(actualStart, actualEnd);
+    final dictStart = match.start > 300 ? match.start - 300 : 0;
+    final dictBefore = rawString.substring(dictStart, match.start);
+    final isFlate = dictBefore.contains('/FlateDecode');
+
+    List<int>? uncompressed;
+    if (isFlate) {
+      try {
+        uncompressed = zlib.decode(streamData);
+      } catch (_) {
+        try {
+          uncompressed = ZLibCodec(raw: true).decode(streamData);
+        } catch (_) {}
+      }
+    } else {
+      uncompressed = streamData;
+    }
+
+    if (uncompressed != null) {
+      final streamStr = latin1.decode(uncompressed);
+      final sb = StringBuffer();
+      _extractTextFromStreamString(streamStr, sb);
+      final text = sb.toString().trim();
+      if (text.isNotEmpty) {
+        units.add(LogicalDocumentUnit(
+          label: 'Page $pageNum',
+          text: text,
+        ));
+        pageNum++;
+      }
+    }
+  }
+
+  return units;
+}
+
+void _extractTextFromStreamString(String content, StringBuffer out) {
+  final btEtRegex = RegExp(r'BT([\s\S]*?)ET');
+  for (final block in btEtRegex.allMatches(content)) {
+    final blockText = block.group(1) ?? '';
+    final tjRegex = RegExp(r'\((.*?)\)\s*Tj');
+    for (final m in tjRegex.allMatches(blockText)) {
+      final t = m.group(1);
+      if (t != null && t.isNotEmpty) {
+        out.write(_unescapePdfString(t));
+        out.write(' ');
+      }
+    }
+    final tjArrayRegex = RegExp(r'\[(.*?)\]\s*TJ');
+    for (final m in tjArrayRegex.allMatches(blockText)) {
+      final inner = m.group(1) ?? '';
+      final strInArray = RegExp(r'\((.*?)\)');
+      for (final sm in strInArray.allMatches(inner)) {
+        final t = sm.group(1);
+        if (t != null && t.isNotEmpty) {
+          out.write(_unescapePdfString(t));
+        }
+      }
+      out.write(' ');
+    }
+    final hexRegex = RegExp(r'<([0-9a-fA-F\s]+)>\s*Tj');
+    for (final m in hexRegex.allMatches(blockText)) {
+      final hex = (m.group(1) ?? '').replaceAll(RegExp(r'\s'), '');
+      final chars = <int>[];
+      for (var i = 0; i < hex.length - 1; i += 2) {
+        final byte = int.tryParse(hex.substring(i, i + 2), radix: 16);
+        if (byte != null && byte >= 32 && byte <= 126) {
+          chars.add(byte);
+        }
+      }
+      if (chars.isNotEmpty) {
+        out.write(String.fromCharCodes(chars));
+        out.write(' ');
+      }
+    }
+    out.writeln();
+  }
+}
+
+String _unescapePdfString(String s) {
+  return s
+      .replaceAll(r'\(', '(')
+      .replaceAll(r'\)', ')')
+      .replaceAll(r'\\', r'\')
+      .replaceAll(r'\n', '\n')
+      .replaceAll(r'\r', '\r')
+      .replaceAll(r'\t', '\t');
 }
