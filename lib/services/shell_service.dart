@@ -53,48 +53,34 @@ class ShellSafetyCheck {
   bool get needsConfirmation => level == ShellSafetyLevel.needsConfirmation;
   bool get isBlocked => level == ShellSafetyLevel.blocked;
 
-  /// Analyzes a command line for dangerous operations and destructive mutations.
-  ///
-  /// Decision pipeline (in order — do not add new layers, extend the matching
-  /// section instead):
-  ///   1. HARD BLOCK: dangerous constructs, catastrophic expressions,
-  ///      destructive binaries, system/block-device/protected targets.
-  ///      Blocked means tool failure, never a permission prompt.
-  ///   2. ALLOW: scratch-confined mutations and known read-only verbs.
-  ///   3. CONFIRM: everything else fails closed into Draft confirmation.
-  ///
-  /// Standing rules:
-  /// - Match on normalized tokens ([_unquoteToken]), never raw text, so
-  ///   quoting/backslash tricks cannot dodge a check.
-  /// - A verb being allowlisted says nothing about its arguments; any
-  ///   allowlisted verb that gains an argument-interpreting mode needs
-  ///   re-review (see the `echo`/payload note at the allowlist).
-  /// - [scratchPath]/[workingDirectory] confine scratch checks to real dirs.
-  ///   When absent, scratch checks fail closed (confirmation, never safe).
   static ShellSafetyCheck _worst(ShellSafetyCheck a, ShellSafetyCheck b) =>
       b.level.index > a.level.index ? b : a; // safe < confirm < blocked
 
   /// Bodies of top-level $(...) spans, for recursive analysis. Balanced
   /// scan (not a flat regex) so nested substitutions resolve
   /// innermost-first instead of being misread or missed.
+  /// Only single quotes suppress expansion: `"$(...)"` executes in shell
+  /// and must be scanned; skipping it was a real bypass.
   static List<String> _substitutionBodies(String cmd) {
     final bodies = <String>[];
     var i = 0;
     final n = cmd.length;
+    var inDouble = false;
     while (i < n) {
       final c = cmd[i];
       if (c == '\\') {
         i += 2;
         continue;
       }
-      if (c == "'" || c == '"') {
-        final q = c;
+      if (c == '"') {
+        inDouble = !inDouble;
         i++;
-        while (i < n && cmd[i] != q) {
-          if (cmd[i] == '\\' && q == '"') i++;
-          i++;
-        }
-        i++;
+        continue;
+      }
+      if (c == "'" && !inDouble) {
+        final end = cmd.indexOf("'", i + 1);
+        if (end == -1) break;
+        i = end + 1;
         continue;
       }
       if (c == r'$' && i + 1 < n && cmd[i + 1] == '(') {
@@ -145,6 +131,24 @@ class ShellSafetyCheck {
     return bodies;
   }
 
+  /// Analyzes a command line for dangerous operations and destructive mutations.
+  ///
+  /// Decision pipeline (in order — do not add new layers, extend the matching
+  /// section instead):
+  ///   1. HARD BLOCK: dangerous constructs, catastrophic expressions,
+  ///      destructive binaries, system/block-device/protected targets.
+  ///      Blocked means tool failure, never a permission prompt.
+  ///   2. ALLOW: scratch-confined mutations and known read-only verbs.
+  ///   3. CONFIRM: everything else fails closed into Draft confirmation.
+  ///
+  /// Standing rules:
+  /// - Match on normalized tokens ([_unquoteToken]), never raw text, so
+  ///   quoting/backslash tricks cannot dodge a check.
+  /// - A verb being allowlisted says nothing about its arguments; any
+  ///   allowlisted verb that gains an argument-interpreting mode needs
+  ///   re-review (see the `echo`/payload note at the allowlist).
+  /// - [scratchPath]/[workingDirectory] confine scratch checks to real dirs.
+  ///   When absent, scratch checks fail closed (confirmation, never safe).
   static ShellSafetyCheck analyze(
     String command, {
     String? scratchPath,
@@ -247,6 +251,9 @@ class ShellSafetyCheck {
     final result = <String>[];
     var start = 0;
     var quote = '';
+    // Group depth: separators inside (...) / {...} do not split, so a
+    // group reaches _analyzeCommand whole for payload analysis.
+    var depth = 0;
 
     for (var i = 0; i < command.length; i++) {
       final c = command[i];
@@ -266,6 +273,15 @@ class ShellSafetyCheck {
         continue;
       }
 
+      if (c == '(' || c == '{' || c == '[') {
+        depth++;
+        continue;
+      }
+      if ((c == ')' || c == '}' || c == ']') && depth > 0) {
+        depth--;
+        continue;
+      }
+
       // If '&' is part of '>&' or '&>', it's a redirect, not a command separator.
       if (c == '&' &&
           ((i > 0 && command[i - 1] == '>') ||
@@ -279,10 +295,11 @@ class ShellSafetyCheck {
         continue;
       }
 
-      final isSeparator = c == ';' ||
-          c == '\n' ||
-          c == '|' ||
-          c == '&';
+      final isSeparator = depth == 0 &&
+          (c == ';' ||
+              c == '\n' ||
+              c == '|' ||
+              c == '&');
 
       if (isSeparator) {
         final part = command.substring(start, i).trim();
@@ -349,6 +366,25 @@ class ShellSafetyCheck {
         ShellSafetyLevel.safe,
         'Environment assignment only',
       );
+    }
+
+    // Redirects are checked here — not in _analyzeDirectCommand — so
+    // keywords (`done > /protected/x`), wrappers, and `sh -c` cannot
+    // smuggle a write past verb analysis. Returns early on any hit.
+    final redirectHit = _checkRedirects(
+      words,
+      scratchPath: scratchPath,
+      workingDirectory: workingDirectory,
+    );
+    if (redirectHit != null) return redirectHit;
+
+    // Group/subshell contents execute, so analyze them directly:
+    // `(rm ...)` and `{ rm ...; }` classify by payload, while benign
+    // groups like `(cd /tmp && echo hi)` stay usable.
+    final inner = _stripGroup(command.trim());
+    if (inner != null) {
+      return analyze(inner,
+          scratchPath: scratchPath, workingDirectory: workingDirectory);
     }
 
     // Shell control keywords (for, do, done, if, then, else, elif, fi, while,
@@ -703,47 +739,9 @@ class ShellSafetyCheck {
     }
 
     // Redirecting into a system path, protected dir, block device, or the
-    // kernel sysrq trigger. Targets resolve against the cwd when known.
-    // Ordinary output writes outside scratch need confirmation (input
-    // redirects and `[`/`[[`/`test` comparisons do not write).
-    for (final redirect in _redirectTargets(words)) {
-      final target = redirect.target;
-      final resolved = _resolveTarget(target, workingDirectory) ?? _normalizePath(target);
-      if (resolved == '/proc/sysrq-trigger') {
-        return const ShellSafetyCheck(
-          ShellSafetyLevel.blocked,
-          'Triggering kernel sysrq commands is strictly prohibited',
-          'sysrq trigger',
-        );
-      }
-      if (_isBlockDevice(resolved)) {
-        return const ShellSafetyCheck(
-          ShellSafetyLevel.blocked,
-          'Redirect writes directly to a block device',
-          '> /dev/block',
-        );
-      }
-
-      if (_isSystemPath(resolved) || _isProtectedPath(resolved)) {
-        return const ShellSafetyCheck(
-          ShellSafetyLevel.blocked,
-          'Writing to a system or protected path is not allowed',
-          'system/protected path write',
-        );
-      }
-
-      if (redirect.output &&
-          command != '[' &&
-          command != '[[' &&
-          command != 'test' &&
-          !_isScratchOnlyList([resolved], scratchPath)) {
-        return const ShellSafetyCheck(
-          ShellSafetyLevel.needsConfirmation,
-          'Redirect writes a file outside scratch (">")',
-          'redirect outside scratch',
-        );
-      }
-    }
+    // kernel sysrq trigger is handled by _checkRedirects inside
+    // _analyzeCommand (before verb dispatch), so keywords, wrappers, and
+    // `sh -c` cannot bypass it.
 
     // File deletion (rm / rmdir)
     if (command == 'rm' || command == 'rmdir') {
@@ -994,9 +992,12 @@ class ShellSafetyCheck {
           'pm mutate',
         );
       }
+      // Unknown verbs (grant, remove-user, set-installer, ...) fail closed:
+      // pm can do far more than list, and silence is not inspection.
       return const ShellSafetyCheck(
-        ShellSafetyLevel.safe,
-        'Package manager inspection',
+        ShellSafetyLevel.needsConfirmation,
+        'Unrecognized package manager verb',
+        'pm unknown',
       );
     }
 
@@ -1052,15 +1053,23 @@ class ShellSafetyCheck {
       );
     }
 
-    // awk: the `system()` escape hatch executes commands, and
-    // print/printf redirects write files. Plain text processing stays safe.
+    // awk: several program forms escape into shell or files. Plain text
+    // processing stays safe; comparisons like `$1>5` must not confirm.
     if (command == 'awk') {
       final program = args.join(' ');
-      if (program.contains('system(')) {
+      if (RegExp(r'system\s*\(').hasMatch(program)) {
         return const ShellSafetyCheck(
           ShellSafetyLevel.needsConfirmation,
           'awk program can execute shell commands ("system()")',
           'awk system',
+        );
+      }
+      if (args.any((a) => a == '-f' || a == '--file')) {
+        // Program comes from a file: invisible to static analysis.
+        return const ShellSafetyCheck(
+          ShellSafetyLevel.needsConfirmation,
+          'awk program read from a file ("-f")',
+          'awk file',
         );
       }
       if (RegExp(r'(print|printf)\s*>>?\s*[^0-9\s=]').hasMatch(program)) {
@@ -1068,6 +1077,19 @@ class ShellSafetyCheck {
           ShellSafetyLevel.needsConfirmation,
           'awk program may write files ("print >")',
           'awk redirect',
+        );
+      }
+      // Pipes execute commands (`"cmd" | getline`, `print | "sort"`).
+      // Strip double-quoted strings first so `||` and comparisons stay
+      // safe; any remaining lone `|` is a pipe operator. (A literal "|"
+      // inside quotes was already stripped by the tokenizer, so it
+      // conservatively confirms — rare and fail-closed.)
+      final dequoted = program.replaceAll(RegExp(r'"[^"]*"'), '');
+      if (RegExp(r'(?<!\|)\|(?!\|)').hasMatch(dequoted)) {
+        return const ShellSafetyCheck(
+          ShellSafetyLevel.needsConfirmation,
+          'awk program may pipe to shell commands ("|")',
+          'awk pipe',
         );
       }
       return const ShellSafetyCheck(
@@ -1316,6 +1338,111 @@ class ShellSafetyCheck {
     }
 
     return result;
+  }
+
+  /// Redirect verdict for one segment: blocked on system/protected/block/
+  /// sysrq targets, confirmation on ordinary output writes outside scratch.
+  /// Input redirects and `[`/`[[`/`test` comparisons never write. Null
+  /// means "no hit" — the caller continues with verb analysis.
+  static ShellSafetyCheck? _checkRedirects(
+    List<String> words, {
+    String? scratchPath,
+    String? workingDirectory,
+  }) {
+    if (words.isEmpty) return null;
+    final command = _basename(words.first);
+    for (final redirect in _redirectTargets(words)) {
+      final target = redirect.target;
+      final resolved =
+          _resolveTarget(target, workingDirectory) ?? _normalizePath(target);
+      if (resolved == '/proc/sysrq-trigger') {
+        return const ShellSafetyCheck(
+          ShellSafetyLevel.blocked,
+          'Triggering kernel sysrq commands is strictly prohibited',
+          'sysrq trigger',
+        );
+      }
+      if (_isBlockDevice(resolved)) {
+        return const ShellSafetyCheck(
+          ShellSafetyLevel.blocked,
+          'Redirect writes directly to a block device',
+          '> /dev/block',
+        );
+      }
+
+      if (_isSystemPath(resolved) || _isProtectedPath(resolved)) {
+        return const ShellSafetyCheck(
+          ShellSafetyLevel.blocked,
+          'Writing to a system or protected path is not allowed',
+          'system/protected path write',
+        );
+      }
+
+      if (redirect.output &&
+          command != '[' &&
+          command != '[[' &&
+          command != 'test' &&
+          // awk/expr comparisons (`$1>5`, `\(a \> b`) are not writes;
+          // a bare numeric target there is a comparison operand.
+          !(RegExp(r'^\d').hasMatch(target) &&
+              (command == 'awk' || command == 'expr')) &&
+          !_isScratchOnlyList([resolved], scratchPath)) {
+        return const ShellSafetyCheck(
+          ShellSafetyLevel.needsConfirmation,
+          'Redirect writes a file outside scratch (">")',
+          'redirect outside scratch',
+        );
+      }
+    }
+    return null;
+  }
+
+  /// Strips one outer group layer — `( ... )` or `{ ...; }` — returning the
+  /// inner text for direct analysis, or null when not a clean group.
+  /// Groups execute their contents, so payload decides: destructive groups
+  /// block, benign ones stay usable (no blanket block on subshells).
+  static String? _stripGroup(String cmd) {
+    if (cmd.length < 3) return null;
+    final first = cmd[0];
+    if (first != '(' && first != '{') return null;
+    var depth = 0;
+    var quote = '';
+    var i = 0;
+    final n = cmd.length;
+    while (i < n) {
+      final c = cmd[i];
+      if (quote.isNotEmpty) {
+        if (c == '\\' && quote == '"') {
+          i += 2;
+          continue;
+        }
+        if (c == quote) quote = '';
+        i++;
+        continue;
+      }
+      if (c == '\\') {
+        i += 2;
+        continue;
+      }
+      if (c == "'" || c == '"') {
+        quote = c;
+        i++;
+        continue;
+      }
+      if (c == '(' || c == '{') depth++;
+      if (c == ')' || c == '}') {
+        depth--;
+        if (depth == 0) {
+          final rest = cmd.substring(i + 1).trim();
+          if (rest.isEmpty || rest == ';') {
+            return cmd.substring(1, i).trim();
+          }
+          return null;
+        }
+      }
+      i++;
+    }
+    return null;
   }
 
   static bool _isSystemPath(String path) {

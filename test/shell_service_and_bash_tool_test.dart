@@ -364,6 +364,123 @@ void main() {
       expect(check.isBlocked, isFalse);
     });
 
+    test('double-quoted substitutions are scanned (no quote bypass)', () {
+      // Exact protected root inside dq substitution: blocked.
+      var check = ShellSafetyCheck.analyze(
+        'echo "\$(rm -rf /sdcard/DCIM)"',
+        scratchPath: testScratch,
+        workingDirectory: testCwd,
+      );
+      expect(check.isBlocked, isTrue);
+
+      // Subdir payload inside dq substitution: scanned (confirm-tier),
+      // which is what the bypass would have downgraded to safe.
+      check = ShellSafetyCheck.analyze(
+        'echo "\$(rm -rf /sdcard/DCIM/x)"',
+        scratchPath: testScratch,
+        workingDirectory: testCwd,
+      );
+      expect(check.needsConfirmation, isTrue);
+
+      // Single quotes genuinely suppress expansion.
+      check = ShellSafetyCheck.analyze(
+        'echo \'\$(rm -rf /sdcard/DCIM/x)\'',
+        scratchPath: testScratch,
+        workingDirectory: testCwd,
+      );
+      expect(check.isSafe, isTrue);
+
+      check = ShellSafetyCheck.analyze(
+        'echo "nested \$(echo \$(rm -rf /sdcard/DCIM/x)) done"',
+        scratchPath: testScratch,
+        workingDirectory: testCwd,
+      );
+      expect(check.needsConfirmation, isTrue);
+    });
+
+    test('pm unknown verbs fail closed', () {
+      for (final cmd in [
+        'pm grant com.foo.bar android.permission.CAMERA',
+        'pm remove-user 10',
+        'pm set-installer com.foo.bar com.other.app',
+        'pm',
+      ]) {
+        final check = ShellSafetyCheck.analyze(cmd);
+        expect(check.needsConfirmation, isTrue,
+            reason: '"$cmd" should require confirmation');
+        expect(check.isSafe, isFalse);
+      }
+    });
+
+    test('awk exec forms: getline pipes, print pipes, -f confirm', () {
+      ShellSafetyCheck check;
+      check = ShellSafetyCheck.analyze('awk \'BEGIN{"rm x" | getline}\'');
+      expect(check.needsConfirmation, isTrue);
+      check = ShellSafetyCheck.analyze('awk \'{print | "sort"}\'');
+      expect(check.needsConfirmation, isTrue);
+      check = ShellSafetyCheck.analyze('awk -f prog.awk data.txt');
+      expect(check.needsConfirmation, isTrue);
+      // Comparisons and logical-or stay safe.
+      check = ShellSafetyCheck.analyze("awk '\$1>5'");
+      expect(check.isSafe, isTrue);
+      check = ShellSafetyCheck.analyze("awk '\$1==1 || \$2==2'");
+      expect(check.isSafe, isTrue);
+    });
+
+    test('redirects cannot hide behind keywords, wrappers, or sh -c', () {
+      var check = ShellSafetyCheck.analyze(
+        'for f in *; do echo \$f; done > /sdcard/DCIM/x',
+        scratchPath: testScratch,
+        workingDirectory: testCwd,
+      );
+      // Subdir of a protected root: confirm-tier (exact roots block).
+      expect(check.needsConfirmation, isTrue);
+      expect(check.isBlocked, isFalse);
+
+      check = ShellSafetyCheck.analyze(
+        'for f in *; do echo \$f; done > /sdcard/DCIM',
+        scratchPath: testScratch,
+        workingDirectory: testCwd,
+      );
+      expect(check.isBlocked, isTrue);
+
+      check = ShellSafetyCheck.analyze(
+        'sh -c \'echo hi\' > /system/etc/foo',
+        scratchPath: testScratch,
+        workingDirectory: testCwd,
+      );
+      expect(check.isBlocked, isTrue);
+
+      check = ShellSafetyCheck.analyze(
+        'done > .scratch/x',
+        scratchPath: testScratch,
+        workingDirectory: testCwd,
+      );
+      expect(check.isSafe, isTrue);
+    });
+
+    test('groups classify by payload: destructive blocked, benign usable', () {
+      var check = ShellSafetyCheck.analyze(
+        '{ rm -rf /sdcard/DCIM; }',
+        scratchPath: testScratch,
+        workingDirectory: testCwd,
+      );
+      expect(check.isBlocked, isTrue);
+
+      check = ShellSafetyCheck.analyze(
+        '(rm -rf /sdcard/DCIM)',
+        scratchPath: testScratch,
+        workingDirectory: testCwd,
+      );
+      expect(check.isBlocked, isTrue);
+
+      check = ShellSafetyCheck.analyze('(cd /tmp && echo hi)');
+      expect(check.isBlocked, isFalse);
+
+      check = ShellSafetyCheck.analyze('{ echo hi; }');
+      expect(check.isSafe, isTrue);
+    });
+
     test('blocks fork bombs', () {
       final forkBombs = [
         ':(){ :|:& };:',
