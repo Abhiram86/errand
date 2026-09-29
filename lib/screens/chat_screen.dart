@@ -27,6 +27,7 @@ import '../services/models_dev_service.dart';
 import '../services/speech_service.dart';
 import '../services/update_service.dart';
 import '../services/widget_service.dart';
+import '../services/streaming_assistant_service.dart';
 import '../services/workspace.dart';
 import '../theme/app_colors.dart';
 import '../tools/file_tools.dart';
@@ -117,34 +118,41 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   /// When set, the next send replaces this user message (and everything
   /// after it) instead of appending — the edit-resend flow.
   String? _editingMessageId;
-  final _workingText = StringBuffer();
-  Timer? _workingFlushTimer;
+  late final StreamingAssistantService _streamingService =
+      StreamingAssistantService(onUpdate: _handleStreamingUpdate);
 
-  /// Incremental streaming-table state (avoids O(n²) `toString`/`split`
-  /// scans on every delta): fence parity + text after the last newline.
-  int _workingFenceCount = 0;
-  String _workingTail = '';
+  void _handleStreamingUpdate(StreamingSnapshot snapshot) {
+    if (!mounted || _workingMessageId == null) return;
+    final id = _workingMessageId!;
+    final index = _messages.indexWhere((m) => m.id == id);
+    if (index == -1) return;
 
-  void _resetWorkingStreamState() {
-    _workingText.clear();
-    _workingFenceCount = 0;
-    _workingTail = '';
+    setState(() {
+      if (!snapshot.hasContent) {
+        _messages[index] = AssistantMessage(
+          id: id,
+          text: snapshot.placeholderLabel,
+          model: _selectedModel,
+          provider: _activeConversation.provider ??
+              AppSettingsService.instance.activeProvider.name,
+        );
+      } else {
+        _messages[index] = AssistantMessage(
+          id: id,
+          text: snapshot.fullPristineText,
+          model: _selectedModel,
+          provider: _activeConversation.provider ??
+              AppSettingsService.instance.activeProvider.name,
+        );
+        _touchConversation();
+      }
+    });
+
+    if (snapshot.hasContent) {
+      _schedulePersist();
+      _scrollToBottom(animated: true);
+    }
   }
-
-  /// Elapsed-seconds ticker for the …working placeholder is now managed
-  /// locally by _WorkingPlaceholderText inside MessageBubble (H7).
-
-  /// Flipped true when reasoning deltas stream for the current turn —
-  /// switches the placeholder label …working → …thinking. Single-writer
-  /// rule: this flag + [_updateWorkingPlaceholder] own the placeholder
-  /// text so writers can't fight each other (that used to flicker).
-  bool _workingReasoning = false;
-  bool _workingCompacting = false;
-
-  /// Set when a mid-stream retry redials (see [_handleStreamRetry]): the
-  /// working placeholder shows …retrying instead of …working until fresh
-  /// text renders or the turn ends. Null when not retrying.
-  int? _workingRetryAttempt;
 
   /// Debug override: set to a positive number (e.g. 8000) during testing to force early compaction.
   /// Set to 0 to use native model context budgets.
@@ -905,7 +913,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     _composerFocusNode.removeListener(_onComposerFocusChange);
     _composerFocusNode.dispose();
-    _workingFlushTimer?.cancel();
+    _streamingService.dispose();
     _a11yToastTimer?.cancel();
     unawaited(_intentService.stopWorkIndicator());
     // Flush any pending debounced persistence synchronously into fire-and-forget
@@ -1449,8 +1457,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     if (!mounted) return;
     await _ensureSettingsReady(requireCatalog: true);
     if (!mounted) return;
-    _workingFlushTimer?.cancel();
-    _workingFlushTimer = null;
+    _streamingService.reset();
     _controller.clear();
     _pendingAttachments.clear();
     _workingDirectory.current = Workspace.instance.defaultDir;
@@ -1492,7 +1499,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _messages = welcome;
       _activeConversation = _newDraftConversation();
       _workingMessageId = null;
-      _resetWorkingStreamState();
+      _streamingService.reset();
       _editingMessageId = null;
       _hasOlderMessages = false;
       _updateEstimatedTokens();
@@ -1580,7 +1587,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _llm.close();
       _llm = _createLlmClient(_selectedModel);
       _workingMessageId = null;
-      _resetWorkingStreamState();
+      _streamingService.reset();
       _editingMessageId = null;
       // A short page means the whole history fit in the first window.
       _hasOlderMessages = loaded.messages.length == _messagePageSize;
@@ -1764,9 +1771,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       if (!_scroll.hasClients) return;
       final distance =
           _scroll.position.maxScrollExtent - _scroll.position.pixels;
-      // "Force" jumps are for opening a fresh view (new chat / conversation):
-      // they must land at the newest message no matter how far away it is.
-      if (!animated && !force && distance > 160) return;
+      // If the user has scrolled up to read history (>160px), do not yank
+      // their viewport down unless force is explicitly set.
+      if (!force && distance > 160) return;
       if (animated) {
         _scroll.animateTo(
           _scroll.position.maxScrollExtent,
@@ -1970,8 +1977,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
     final workingId = 'working-${DateTime.now().microsecondsSinceEpoch}';
     _workingMessageId = workingId;
-    _resetWorkingStreamState();
-    _workingReasoning = false;
+    _streamingService.reset();
     _externalAppWorkDone = false;
     _externalIntentLaunched = false;
     _cancelToken.reset();
@@ -1992,7 +1998,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     unawaited(_intentService.startWorkIndicator());
     _startWorkingElapsedTimer();
     _persistNow();
-    _scrollToBottom();
+    _scrollToBottom(force: true);
 
     try {
       final conversation = Conversation(
@@ -2100,8 +2106,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           _workingMessageId = null;
         }
       }
-      _workingFlushTimer?.cancel();
-      _workingFlushTimer = null;
+      _streamingService.cancel();
       unawaited(_intentService.stopWorkIndicator());
     }
   }
@@ -2121,23 +2126,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   void _updateWorkingPlaceholder() {
     if (!mounted) return;
     final id = _workingMessageId;
-    if (id == null || _workingText.isNotEmpty) return;
+    if (id == null || _streamingService.hasContent) return;
     final index = _messages.indexWhere((message) => message.id == id);
     if (index == -1) return;
-    final String label;
-    if (_workingCompacting) {
-      label = '…compacting context';
-    } else if (_workingRetryAttempt != null) {
-      label = '…retrying · attempt $_workingRetryAttempt';
-    } else if (_workingReasoning) {
-      label = '…thinking';
-    } else {
-      label = '…working';
-    }
     setState(() {
       _messages[index] = AssistantMessage(
         id: id,
-        text: label,
+        text: _streamingService.placeholderLabel,
         model: _selectedModel,
         provider:
             _activeConversation.provider ??
@@ -2149,16 +2144,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   /// Removes the working placeholder and surfaces [message] as a snackbar.
   /// Used for infra-level failures that must not enter model context.
   void _failWorking(String message) {
-    _workingFlushTimer?.cancel();
-    _workingFlushTimer = null;
-    _workingCompacting = false;
-    _workingRetryAttempt = null;
+    _streamingService.reset();
     unawaited(_intentService.stopWorkIndicator());
     if (_externalAppWorkDone || _externalIntentLaunched) {
       unawaited(_intentService.bringToFront());
     }
     final id = _workingMessageId;
-    _resetWorkingStreamState();
     if (!mounted) return;
     setState(() {
       final index = id == null
@@ -2194,19 +2185,17 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       case AgentToolCallStarting():
         break;
       case AgentCompacting():
-        _workingCompacting = true;
-        _updateWorkingPlaceholder();
+        _streamingService.setCompacting(true);
       case AgentCompacted(:final summary, :final tailBlockCount):
-        _workingCompacting = false;
+        _streamingService.setCompacting(false);
         _handleCompacted(summary, tailBlockCount: tailBlockCount);
-        _updateWorkingPlaceholder();
       case AgentToolCall(
         call: final call,
         result: final result,
         reasoning: final reasoning,
         reasoningDetails: final reasoningDetails,
       ):
-        _workingCompacting = false;
+        _streamingService.setCompacting(false);
         if (call.name == 'screen' ||
             call.name == 'act' ||
             call.name == 'screen_act') {
@@ -2299,8 +2288,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   void _appendToolMessage(ToolMessage message) {
     if (!mounted) return;
-    _workingFlushTimer?.cancel();
-    _workingFlushTimer = null;
+    _streamingService.cancel();
 
     setState(() {
       final workingId = _workingMessageId;
@@ -2308,8 +2296,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           ? -1
           : _messages.indexWhere((current) => current.id == workingId);
 
-      final currentText = _workingText.toString();
-      _resetWorkingStreamState();
+      final currentText = _streamingService.currentPristineText;
+      _streamingService.reset();
 
       if (workingIndex == -1) {
         _messages.add(message);
@@ -2330,8 +2318,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
       final nextWorkingId = 'working-${DateTime.now().microsecondsSinceEpoch}';
       _workingMessageId = nextWorkingId;
-      _workingReasoning = false; // next step starts as …working again
-      _workingRetryAttempt = null;
       _messages.insert(
         nextWorkingIndex + 1,
         AssistantMessage(id: nextWorkingId, text: '…working'),
@@ -2347,96 +2333,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   void _handleTextDelta(String delta) {
     if (!mounted || _workingMessageId == null) return;
-    if (delta.isEmpty) return;
-    _workingText.write(delta);
-
-    // Incremental code-fence tracking: count ``` occurrences in this delta
-    // only (O(delta), not O(buffer)).
-    var fenceHits = 0;
-    var idx = 0;
-    while (true) {
-      final found = delta.indexOf('```', idx);
-      if (found == -1) break;
-      fenceHits++;
-      idx = found + 3;
-    }
-    _workingFenceCount += fenceHits;
-    final isInCodeBlock = _workingFenceCount % 2 == 1;
-
-    String? completedTableLine;
-    if (delta.contains('\n')) {
-      // Maintain the tail (text after last newline) without scanning the
-      // whole buffer; capture the last completed line for table flush.
-      final combined = _workingTail + delta;
-      final lastNl = combined.lastIndexOf('\n');
-      // When the delta starts with a newline, [lastNl] can be zero. Passing
-      // -1 as the start position to String.lastIndexOf throws RangeError.
-      final prevNl = lastNl > 0
-          ? combined.lastIndexOf('\n', lastNl - 1)
-          : -1;
-      final completed = prevNl == -1
-          ? combined.substring(0, lastNl)
-          : combined.substring(prevNl + 1, lastNl);
-      if (completed.trimLeft().startsWith('|') &&
-          !completed.trimLeft().startsWith('|-') &&
-          completed.trim().length > 1) {
-        completedTableLine = completed;
-      }
-      _workingTail = combined.substring(lastNl + 1);
-      // Cap the tail so a single huge line can't grow unbounded.
-      if (_workingTail.length > 4096) {
-        _workingTail = _workingTail.substring(
-          _workingTail.length - 4096,
-        );
-      }
-    } else {
-      _workingTail += delta;
-      if (_workingTail.length > 4096) {
-        _workingTail = _workingTail.substring(
-          _workingTail.length - 4096,
-        );
-      }
-    }
-
-    if (!isInCodeBlock) {
-      final tailTrim = _workingTail.trimLeft();
-      final isTableRow = tailTrim.startsWith('|') &&
-          !tailTrim.startsWith('|-') &&
-          _workingTail.trim().length > 1;
-
-      if (isTableRow) {
-        // We are currently in an incomplete table row. Hold off flushing so the
-        // UI does not jitter between raw text and table cells. Set a fallback
-        // timer in case the model stalls or omits a trailing newline.
-        _workingFlushTimer?.cancel();
-        _workingFlushTimer = Timer(
-          const Duration(milliseconds: 250),
-          _flushWorkingText,
-        );
-        return;
-      }
-
-      // If a row just completed with a newline, flush immediately
-      if (completedTableLine != null) {
-        _workingFlushTimer?.cancel();
-        _flushWorkingText();
-        return;
-      }
-    }
-
-    if (_workingFlushTimer?.isActive ?? false) return;
-    _workingFlushTimer = Timer(
-      const Duration(milliseconds: 65),
-      _flushWorkingText,
-    );
+    _streamingService.appendDelta(delta);
   }
 
   void _handleStreamReset() {
     if (!mounted || _workingMessageId == null) return;
-    _workingFlushTimer?.cancel();
-    _workingFlushTimer = null;
-    _resetWorkingStreamState();
-    _workingReasoning = false;
+    _streamingService.reset();
     _updateWorkingPlaceholder();
     _schedulePersist(const Duration(milliseconds: 150));
   }
@@ -2445,61 +2347,20 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   /// working bubble (…retrying · attempt N) and toast the reason. The bubble
   /// keeps the stale partial until [_handleStreamReset] clears it once the
   /// next attempt establishes a stream; the flag clears when fresh text
-  /// renders ([_flushWorkingText]) or the turn ends.
+  /// renders or the turn ends.
   void _handleStreamRetry(int attempt, String reason) {
     if (!mounted || _workingMessageId == null) return;
-    _workingRetryAttempt = attempt;
-    _updateWorkingPlaceholder();
+    _streamingService.setRetry(attempt);
     _showToast('Interrupted ($reason) — retrying (attempt $attempt)…');
   }
 
   void _handleReasoningDelta() {
-    if (!mounted || _workingMessageId == null || _workingText.isNotEmpty) {
-      return;
-    }
-    // Flip the label once; the 1s ticker owns the elapsed suffix from here.
-    // Writing the bubble per-delta used to fight the ticker's
-    // '…working · Ns' write and made the placeholder flicker.
-    if (_workingReasoning) return;
-    _workingReasoning = true;
-    _updateWorkingPlaceholder();
-  }
-
-  void _flushWorkingText() {
-    _workingFlushTimer = null;
-    // A successful render means the stream recovered — drop the retry label.
-    _workingRetryAttempt = null;
-    // Whitespace-only deltas (some models open with "\n") must not blank
-    // out the …working placeholder.
-    if (!mounted ||
-        _workingMessageId == null ||
-        _workingText.toString().trim().isEmpty) {
-      return;
-    }
-    final index = _messages.indexWhere(
-      (message) => message.id == _workingMessageId,
-    );
-    if (index == -1) return;
-    setState(() {
-      _messages[index] = AssistantMessage(
-        id: _workingMessageId!,
-        text: _workingText.toString(),
-        model: _selectedModel,
-        provider:
-            _activeConversation.provider ??
-            AppSettingsService.instance.activeProvider.name,
-      );
-      _touchConversation();
-    });
-    _schedulePersist();
-    _scrollToBottom(animated: false);
+    if (!mounted || _workingMessageId == null) return;
+    _streamingService.startReasoning();
   }
 
   void _replaceWorking(String text) {
-    _workingFlushTimer?.cancel();
-    _workingFlushTimer = null;
-    _workingCompacting = false;
-    _workingRetryAttempt = null;
+    _streamingService.finalize();
     unawaited(_intentService.stopWorkIndicator());
     final trimmed = text.trim();
     if (_externalAppWorkDone ||
@@ -2507,7 +2368,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       unawaited(_intentService.bringToFront());
     }
     final id = _workingMessageId;
-    _resetWorkingStreamState();
+    _streamingService.reset();
     if (!mounted) return;
     // Some models return an empty/whitespace final answer (content-only
     // tool turns, stray "\n"). Trim it; if nothing is left, drop the
@@ -2726,8 +2587,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   /// Finalizes a stopped turn: partial streamed text becomes the final
   /// answer (marked "(stopped)"); nothing streamed → drop the bubble.
   void _finishStopped() {
-    final partial = _workingText.toString().trim();
-    _replaceWorking(partial.isEmpty ? '' : '$partial\n\n_(stopped)_');
+    final stopped = _streamingService.finalizeStopped();
+    _replaceWorking(stopped);
   }
 
   @override
@@ -3086,7 +2947,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             final Widget bubbleWidget;
             if (item is ToolGroupDisplayItem) {
               final isLatestActive = index == latestActiveToolGroupIndex;
-              final isRunning = _busy && isLatestActive && _workingText.isEmpty;
+              final isRunning = _busy && isLatestActive && !_streamingService.hasContent;
               bubbleWidget = ToolGroupBubble(
                 key: ValueKey(item.id),
                 tools: item.tools,
@@ -3110,6 +2971,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                 bubbleWidget = MessageBubble(
                   key: ValueKey(message.id),
                   message: message,
+                  isStreaming: _busy && message.id == _workingMessageId,
                   onEdit: message is UserMessage
                       ? () => _editUserMessage(message)
                       : null,

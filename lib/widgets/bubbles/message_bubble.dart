@@ -65,12 +65,16 @@ class MessageBubble extends StatelessWidget {
   /// and re-run. Only wired for the last message of a completed turn.
   final VoidCallback? onRegenerate;
 
+  /// Whether this assistant message is actively receiving streaming tokens.
+  final bool isStreaming;
+
   const MessageBubble({
     super.key,
     required this.message,
     this.onEdit,
     this.onRetry,
     this.onRegenerate,
+    this.isStreaming = false,
   });
 
   @override

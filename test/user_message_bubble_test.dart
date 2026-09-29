@@ -100,4 +100,75 @@ void main() {
     ScaffoldMessenger.of(tester.element(find.byType(Scaffold))).clearSnackBars();
     await tester.pump(const Duration(milliseconds: 300));
   });
+
+  // NOTE (render revert): paragraph-block rendering was tried and
+  // reverted — full-text streaming is the OG behavior. Tests below pin it.
+  testWidgets('MessageBubble renders full assistant text without ShaderMask',
+      (tester) async {
+    const assistantMessage = AssistantMessage(
+      id: 'a1',
+      text: 'First paragraph\n\nSecond paragraph',
+    );
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: MessageBubble(
+            message: assistantMessage,
+            isStreaming: true,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byType(ShaderMask), findsNothing);
+    expect(find.text('First paragraph\n\nSecond paragraph'), findsOneWidget);
+  });
+
+  testWidgets('MessageBubble sizes with AnimatedSize',
+      (tester) async {
+    const assistantMessage = AssistantMessage(
+      id: 'a2',
+      text: 'Completed paragraph text',
+    );
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: MessageBubble(
+            message: assistantMessage,
+            isStreaming: false,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byType(AnimatedSize), findsOneWidget);
+    expect(find.byType(ShaderMask), findsNothing);
+  });
+
+  testWidgets('MessageBubble falls back to full text without blocks',
+      (tester) async {
+    const placeholderMessage = AssistantMessage(
+      id: 'a3',
+      text: 'Completed without blocks',
+    );
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: MessageBubble(
+            message: placeholderMessage,
+            isStreaming: false,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Completed without blocks'), findsOneWidget);
+    expect(find.byType(ShaderMask), findsNothing);
+  });
 }
