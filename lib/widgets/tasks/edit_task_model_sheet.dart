@@ -40,6 +40,7 @@ class _EditTaskModelSheetState extends State<EditTaskModelSheet> {
   bool _customModelMode = false;
   late final TextEditingController _customModelController;
   late final TextEditingController _titleController;
+  late final TextEditingController _promptController;
   bool _saving = false;
   // Set once the user picks anything; guards the settings-ready refresh
   // below from clobbering an in-progress choice.
@@ -82,6 +83,16 @@ class _EditTaskModelSheetState extends State<EditTaskModelSheet> {
     _repeatAfter = widget.task.repeatAfter ?? (15 * 60 * 1000);
     _notify = widget.task.notify;
     _titleController = TextEditingController(text: widget.task.title);
+
+    String initialPrompt = '';
+    try {
+      final payload = jsonDecode(widget.task.payloadJson) as Map<String, dynamic>;
+      initialPrompt = (payload['prompt'] as String?)?.trim() ?? '';
+    } catch (_) {}
+    if (initialPrompt.isEmpty) {
+      initialPrompt = widget.task.title;
+    }
+    _promptController = TextEditingController(text: initialPrompt);
 
     _resolveInitialSelection();
     _customModelController = TextEditingController(text: _selectedModel);
@@ -147,6 +158,7 @@ class _EditTaskModelSheetState extends State<EditTaskModelSheet> {
   void dispose() {
     _customModelController.dispose();
     _titleController.dispose();
+    _promptController.dispose();
     super.dispose();
   }
 
@@ -231,6 +243,18 @@ class _EditTaskModelSheetState extends State<EditTaskModelSheet> {
       return;
     }
 
+    final newPrompt = _promptController.text.trim();
+    if (newPrompt.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Task prompt cannot be empty'),
+          backgroundColor: kDanger,
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+
     setState(() => _saving = true);
     final messenger = ScaffoldMessenger.of(context);
     final now = DateTime.now().millisecondsSinceEpoch;
@@ -258,6 +282,7 @@ class _EditTaskModelSheetState extends State<EditTaskModelSheet> {
       payload = jsonDecode(freshTask.payloadJson) as Map<String, dynamic>;
     } catch (_) {}
 
+    payload['prompt'] = newPrompt;
     payload['model'] = finalModel;
     if (_selectedProviderId != null && _selectedProviderId!.isNotEmpty) {
       payload['providerId'] = _selectedProviderId;
@@ -443,6 +468,35 @@ class _EditTaskModelSheetState extends State<EditTaskModelSheet> {
                     hintStyle: TextStyle(color: kMuted.withValues(alpha: 0.5), fontSize: 12.5),
                     isDense: true,
                     contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 11),
+                    border: InputBorder.none,
+                    enabledBorder: InputBorder.none,
+                    focusedBorder: InputBorder.none,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+
+              // Task Prompt
+              const Text(
+                'Task Prompt',
+                style: TextStyle(color: kMuted, fontSize: 11, fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 4),
+              Container(
+                decoration: BoxDecoration(
+                  color: kInputBg.withValues(alpha: 0.5),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: TextField(
+                  controller: _promptController,
+                  minLines: 1,
+                  maxLines: 3,
+                  style: const TextStyle(color: kText, fontSize: 12.5),
+                  decoration: InputDecoration(
+                    hintText: 'Enter task prompt (instructions for agent)...',
+                    hintStyle: TextStyle(color: kMuted.withValues(alpha: 0.5), fontSize: 12.5),
+                    isDense: true,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
                     border: InputBorder.none,
                     enabledBorder: InputBorder.none,
                     focusedBorder: InputBorder.none,
