@@ -19,6 +19,10 @@ enum ShellSafetyLevel {
   blocked,
 }
 
+/// Redirect target plus whether the operator writes (`>`, `>>`, `&>`,
+/// `&>>`, `>|`) as opposed to reading (`<`, `<<`, heredoc delimiters).
+typedef _ShellRedirect = ({String target, bool output});
+
 /// Evaluation result from analyzing a shell command.
 class ShellSafetyCheck {
   final ShellSafetyLevel level;
@@ -67,6 +71,80 @@ class ShellSafetyCheck {
   ///   re-review (see the `echo`/payload note at the allowlist).
   /// - [scratchPath]/[workingDirectory] confine scratch checks to real dirs.
   ///   When absent, scratch checks fail closed (confirmation, never safe).
+  static ShellSafetyCheck _worst(ShellSafetyCheck a, ShellSafetyCheck b) =>
+      b.level.index > a.level.index ? b : a; // safe < confirm < blocked
+
+  /// Bodies of top-level $(...) spans, for recursive analysis. Balanced
+  /// scan (not a flat regex) so nested substitutions resolve
+  /// innermost-first instead of being misread or missed.
+  static List<String> _substitutionBodies(String cmd) {
+    final bodies = <String>[];
+    var i = 0;
+    final n = cmd.length;
+    while (i < n) {
+      final c = cmd[i];
+      if (c == '\\') {
+        i += 2;
+        continue;
+      }
+      if (c == "'" || c == '"') {
+        final q = c;
+        i++;
+        while (i < n && cmd[i] != q) {
+          if (cmd[i] == '\\' && q == '"') i++;
+          i++;
+        }
+        i++;
+        continue;
+      }
+      if (c == r'$' && i + 1 < n && cmd[i + 1] == '(') {
+        var depth = 1;
+        var j = i + 2;
+        var q2 = '';
+        var closed = -1;
+        while (j < n) {
+          final d = cmd[j];
+          if (q2.isNotEmpty) {
+            if (d == '\\' && q2 == '"') {
+              j += 2;
+              continue;
+            }
+            if (d == q2) q2 = '';
+            j++;
+            continue;
+          }
+          if (d == '\\') {
+            j += 2;
+            continue;
+          }
+          if (d == "'" || d == '"') {
+            q2 = d;
+            j++;
+            continue;
+          }
+          if (d == '(') depth++;
+          if (d == ')') {
+            depth--;
+            if (depth == 0) {
+              closed = j;
+              break;
+            }
+          }
+          j++;
+        }
+        if (closed != -1) {
+          bodies.add(cmd.substring(i + 2, closed));
+          i = closed + 1;
+          continue;
+        }
+        // Unbalanced: stop here; outer analysis fails closed on the fragment.
+        break;
+      }
+      i++;
+    }
+    return bodies;
+  }
+
   static ShellSafetyCheck analyze(
     String command, {
     String? scratchPath,
@@ -89,36 +167,46 @@ class ShellSafetyCheck {
       );
     }
 
-    // Inspect command substitutions $(...) and `...`
-    final subcmdMatches = RegExp(r'\$\(([^)]+)\)|`([^`]+)`').allMatches(cmd);
-    for (final m in subcmdMatches) {
-      final inner = (m.group(1) ?? m.group(2) ?? '').trim();
-      if (inner.isNotEmpty) {
-        final innerResult = analyze(
-          inner,
-          scratchPath: scratchPath,
-          workingDirectory: workingDirectory,
-        );
-        if (innerResult.isBlocked) return innerResult;
-        if (innerResult.needsConfirmation) return innerResult;
-      }
-    }
+    // Worst result wins across substitutions and segments: an early
+    // confirm must never shadow a later blocked verdict.
+    var worst = const ShellSafetyCheck.safe();
 
-    for (final segment in _splitCommands(cmd)) {
-      final result = _analyzeCommand(
-        segment,
-        scratchPath: scratchPath,
-        workingDirectory: workingDirectory,
+    // Command substitutions $(...) — balanced scan, innermost-first via recursion.
+    for (final inner in _substitutionBodies(cmd)) {
+      if (inner.trim().isEmpty) continue;
+      worst = _worst(
+        worst,
+        analyze(inner,
+            scratchPath: scratchPath, workingDirectory: workingDirectory),
       );
-
-      if (result.isBlocked) return result;
-      if (result.needsConfirmation) return result;
+      if (worst.isBlocked) return worst;
     }
 
-    return const ShellSafetyCheck(
-      ShellSafetyLevel.safe,
-      'Command appears safe',
-    );
+    // Backticks do not nest (POSIX); flat scan suffices.
+    for (final m in RegExp(r'`([^`]+)`').allMatches(cmd)) {
+      final inner = (m.group(1) ?? '').trim();
+      if (inner.isEmpty) continue;
+      worst = _worst(
+        worst,
+        analyze(inner,
+            scratchPath: scratchPath, workingDirectory: workingDirectory),
+      );
+      if (worst.isBlocked) return worst;
+    }
+
+    // After any cd/pushd/popd the real cwd is unknown, so later relative
+    // paths must not resolve against the original one (fail closed).
+    String? cwd = workingDirectory;
+    for (final segment in _splitCommands(cmd)) {
+      worst = _worst(
+        worst,
+        _analyzeCommand(segment,
+            scratchPath: scratchPath, workingDirectory: cwd),
+      );
+      if (worst.isBlocked) return worst;
+      if (RegExp(r'\b(?:cd|pushd|popd)\b').hasMatch(segment)) cwd = null;
+    }
+    return worst;
   }
 
   static bool _hasDangerousShellConstruct(String cmd) {
@@ -163,7 +251,7 @@ class ShellSafetyCheck {
     for (var i = 0; i < command.length; i++) {
       final c = command[i];
 
-      if (c == '\\') {
+      if (c == '\\' && quote != "'") { // backslash is literal inside '...'
         i++;
         continue;
       }
@@ -237,9 +325,12 @@ class ShellSafetyCheck {
     // PATH mutation poisons every lookup later in the segment (e.g.
     // `PATH=/evil ls` would otherwise analyze as harmless `ls`). Always
     // confirm; plain `export FOO=bar` stays on the allowlist path.
+    // Generalized: loader and shell-option assignments (LD_PRELOAD,
+    // BASH_ENV, IFS, ...) are equally lookup-poisoning.
+    final leading = words.takeWhile(_isAssignment);
     final pathMutated = words.first == 'export'
-        ? words.skip(1).any((w) => w.startsWith('PATH='))
-        : words.first.startsWith('PATH=');
+        ? words.skip(1).any(_isDangerousAssign)
+        : leading.any(_isDangerousAssign);
     if (pathMutated) {
       return const ShellSafetyCheck(
         ShellSafetyLevel.needsConfirmation,
@@ -260,9 +351,11 @@ class ShellSafetyCheck {
       );
     }
 
-    // Shell control keywords (for, do, done, if, then, else, fi, while, until)
+    // Shell control keywords (for, do, done, if, then, else, elif, fi, while,
+  // until, !). Chain words recurse into the remainder so `then rm -rf /`
+  // still blocks; bare keywords are inert.
     final firstWord = words.first;
-    if (firstWord == 'done' || firstWord == 'then' || firstWord == 'else' || firstWord == 'fi') {
+    if (firstWord == 'done' || firstWord == 'fi') {
       return const ShellSafetyCheck(
         ShellSafetyLevel.safe,
         'Shell syntax keyword',
@@ -275,7 +368,8 @@ class ShellSafetyCheck {
         'Shell loop header',
       );
     }
-    if (firstWord == 'do' || firstWord == 'if' || firstWord == 'while' || firstWord == 'until') {
+    const chain = {'do', 'if', 'while', 'until', 'then', 'else', 'elif', '!'};
+    if (chain.contains(firstWord)) {
       if (words.length > 1) {
         return _analyzeCommand(words.sublist(1).join(' '), scratchPath: scratchPath, workingDirectory: workingDirectory);
       }
@@ -343,9 +437,9 @@ class ShellSafetyCheck {
         }
       }
       if (idx < words.length) {
-        // PATH smuggled through env still poisons lookup — the recursion
-        // below would otherwise see only the remainder.
-        if (words.sublist(1, idx).any((w) => w.startsWith('PATH='))) {
+        // Loader/shell-option assignments smuggled through env still poison
+        // lookup — the recursion below would otherwise see only the remainder.
+        if (words.sublist(1, idx).any(_isDangerousAssign)) {
           return const ShellSafetyCheck(
             ShellSafetyLevel.needsConfirmation,
             'PATH mutation can redirect subsequent command lookups',
@@ -387,19 +481,10 @@ class ShellSafetyCheck {
       final cIndex = words.indexOf('-c');
 
       if (cIndex >= 0 && cIndex + 1 < words.length) {
-        final nested = words[cIndex + 1];
-
-        for (final part in _splitCommands(nested)) {
-          final result = _analyzeCommand(part, scratchPath: scratchPath, workingDirectory: workingDirectory);
-
-          if (result.isBlocked) return result;
-          if (result.needsConfirmation) return result;
-        }
-
-        return const ShellSafetyCheck(
-          ShellSafetyLevel.safe,
-          'Nested shell command appears safe',
-        );
+        // Full re-analysis: the nested string gets substitution scanning,
+        // splitting, and worst-of treatment exactly like a top-level command.
+        return analyze(words[cIndex + 1],
+            scratchPath: scratchPath, workingDirectory: workingDirectory);
       }
 
       return const ShellSafetyCheck(
@@ -454,10 +539,12 @@ class ShellSafetyCheck {
     'cat', 'head', 'tail', 'more', 'less', 'strings', 'nl', 'tac', 'rev',
     'od', 'hexdump', 'xxd', 'base64',
 
-    // Searching, text processing & filtering
-    'grep', 'egrep', 'fgrep', 'awk', 'cut', 'sort', 'uniq', 'wc',
+    // Searching, text processing & filtering.
+    // `awk` has its own branch (system()/redirect modes); `dos2unix` /
+    // `unix2dos` rewrite files in place and fail closed into confirmation.
+    'grep', 'egrep', 'fgrep', 'cut', 'sort', 'uniq', 'wc',
     'tr', 'fold', 'paste', 'column', 'comm', 'cmp', 'diff', 'join', 'fmt',
-    'pr', 'expand', 'unexpand', 'dos2unix', 'unix2dos',
+    'pr', 'expand', 'unexpand',
 
     // Printing, flow, logic & math
     'echo', 'printf', 'true', 'false', 'test', '[', 'expr', 'seq', 'sleep',
@@ -468,13 +555,16 @@ class ShellSafetyCheck {
     'md5sum', 'sha1sum', 'sha224sum', 'sha256sum', 'sha384sum', 'sha512sum',
     'cksum', 'crc32',
 
-    // Dates, times & system / network inspection (heavily used on Android)
+    // Dates, times & system inspection (heavily used on Android).
+    // Network verbs (`ip`, `ifconfig`, `arp`, `route`) and archive verbs
+    // have their own branches: read-only modes stay safe, mutating or
+    // file-writing modes fail closed into confirmation.
     'date', 'cal', 'uptime', 'uname', 'hostname', 'arch', 'df', 'du',
-    'ps', 'top', 'free', 'vmstat', 'iostat', 'netstat', 'ss', 'ip',
-    'ifconfig', 'arp', 'route', 'printenv', 'export',
+    'ps', 'top', 'free', 'vmstat', 'iostat', 'netstat', 'ss',
+    'printenv', 'export',
 
-    // Safe compression / archiving
-    'tar', 'gzip', 'gunzip', 'bzip2', 'bunzip2', 'xz', 'unxz', 'zip', 'unzip', 'zcat',
+    // Decompress-to-stdout only; everything else has its own branch.
+    'zcat',
 
     // Android-specific system inspection
     'getprop', 'dumpsys', 'logcat',
@@ -517,6 +607,16 @@ class ShellSafetyCheck {
       'sfdisk',
       'mkswap',
     }.contains(command) || command.startsWith('mkfs.')) {
+      return ShellSafetyCheck(
+        ShellSafetyLevel.blocked,
+        '$command is not allowed',
+        command,
+      );
+    }
+
+    // eval/exec/source/. in any reachable command position (e.g. after
+    // do/then via keyword recursion) hide arbitrary commands — block outright.
+    if (const {'eval', 'exec', 'source', '.'}.contains(command)) {
       return ShellSafetyCheck(
         ShellSafetyLevel.blocked,
         '$command is not allowed',
@@ -604,7 +704,10 @@ class ShellSafetyCheck {
 
     // Redirecting into a system path, protected dir, block device, or the
     // kernel sysrq trigger. Targets resolve against the cwd when known.
-    for (final target in _redirectTargets(words)) {
+    // Ordinary output writes outside scratch need confirmation (input
+    // redirects and `[`/`[[`/`test` comparisons do not write).
+    for (final redirect in _redirectTargets(words)) {
+      final target = redirect.target;
       final resolved = _resolveTarget(target, workingDirectory) ?? _normalizePath(target);
       if (resolved == '/proc/sysrq-trigger') {
         return const ShellSafetyCheck(
@@ -626,6 +729,18 @@ class ShellSafetyCheck {
           ShellSafetyLevel.blocked,
           'Writing to a system or protected path is not allowed',
           'system/protected path write',
+        );
+      }
+
+      if (redirect.output &&
+          command != '[' &&
+          command != '[[' &&
+          command != 'test' &&
+          !_isScratchOnlyList([resolved], scratchPath)) {
+        return const ShellSafetyCheck(
+          ShellSafetyLevel.needsConfirmation,
+          'Redirect writes a file outside scratch (">")',
+          'redirect outside scratch',
         );
       }
     }
@@ -651,13 +766,13 @@ class ShellSafetyCheck {
         );
       }
 
-      final recursive = args.any(
-        (x) => x == '--recursive' || x.contains('r') || x.contains('R'),
-      );
-
-      final wildcard = targets.any(
-        (x) => x.contains('*') || x.contains('?'),
-      );
+      final recursive = args.any((x) =>
+          x == '--recursive' ||
+          (x.startsWith('-') &&
+              !x.startsWith('--') &&
+              (x.contains('r') || x.contains('R'))));
+      final wildcard = args.any(
+          (x) => !x.startsWith('-') && (x.contains('*') || x.contains('?')));
 
       if (recursive || wildcard) {
         return ShellSafetyCheck(
@@ -738,8 +853,13 @@ class ShellSafetyCheck {
 
     // In-place sed editing
     if (command == 'sed') {
-      if (args.contains('-i')) {
-        final targets = resolved(args.where((x) => !x.startsWith('-') && !x.startsWith('s/')));
+      final inPlace = args.any((a) =>
+          a == '--in-place' ||
+          a.startsWith('--in-place=') ||
+          (a.startsWith('-') && !a.startsWith('--') && a.contains('i')));
+      if (inPlace) {
+        final targets = resolved(
+            args.where((x) => !x.startsWith('-') && !x.startsWith('s/')));
         if (targets.isNotEmpty && _isScratchOnlyList(targets, scratchPath)) {
           return const ShellSafetyCheck(
             ShellSafetyLevel.safe,
@@ -750,6 +870,19 @@ class ShellSafetyCheck {
           ShellSafetyLevel.needsConfirmation,
           'In-place file editing ("sed -i")',
           'sed -i',
+        );
+      }
+      // `w file` writes files, `e [command]` executes shell commands.
+      // Fail closed; anchored so s/a/e/ and s/x/w/ (replacement text)
+      // stay safe: a real w/e command is never followed by '/'.
+      final scriptWrites = args.any((a) =>
+          !a.startsWith('-') &&
+          RegExp(r'(?:^|[;{}/])\s*[we](?:\s|$)').hasMatch(a));
+      if (scriptWrites) {
+        return const ShellSafetyCheck(
+          ShellSafetyLevel.needsConfirmation,
+          'sed script may write files or execute commands',
+          'sed w/e',
         );
       }
       return const ShellSafetyCheck(
@@ -783,9 +916,13 @@ class ShellSafetyCheck {
       );
     }
 
-    // date system time modification check
+    // date system time modification check (flags and positional set)
     if (command == 'date') {
-      if (args.any((a) => a == '-s' || a.startsWith('-s') || a.startsWith('--set'))) {
+      if (args.any((a) =>
+          a == '-s' ||
+          a.startsWith('-s') ||
+          a.startsWith('--set') ||
+          RegExp(r'^\d{8,12}(\.\d\d)?$').hasMatch(a))) {
         return const ShellSafetyCheck(
           ShellSafetyLevel.needsConfirmation,
           'Setting system date/time requires confirmation',
@@ -798,26 +935,45 @@ class ShellSafetyCheck {
       );
     }
 
-    // Android package manager (pm)
-    if (command == 'pm') {
-      // Disabling/uninstalling critical packages bricks the device or the
-      // app itself — blocked outright, never confirmable (token-level, so
-      // `"disable"` quoting variants are covered too).
+    // Android package manager (pm), including `cmd package` spellings.
+    // Disabling/uninstalling critical packages bricks the device or the
+    // app itself — blocked outright, never confirmable (token-level, so
+    // `"disable"` quoting variants are covered too).
+    final isPm = command == 'pm' ||
+        (command == 'cmd' && args.isNotEmpty && args.first == 'package');
+    if (isPm) {
+      // `enable` is excluded: re-enabling a critical package is restore, not harm.
       const criticalPackages = {
         'com.android.settings',
         'com.google.android.gms',
         'com.android.systemui',
         'com.errand.errand',
       };
-      // `enable` is excluded: re-enabling a critical package is restore, not harm.
-      final criticalMutating = args.any((a) =>
-          a == 'install' ||
-          a == 'uninstall' ||
-          a == 'clear' ||
-          a == 'disable' ||
-          a == 'disable-user');
-      final mutating = criticalMutating || args.contains('enable');
-      if (criticalMutating &&
+      const harmful = {
+        'install',
+        'uninstall',
+        'clear',
+        'disable',
+        'disable-user',
+        'disable-until-used',
+        'hide',
+        'suspend',
+        'revoke',
+        'reset-permissions',
+        'trim-caches',
+      };
+      const readVerbs = {
+        'list',
+        'path',
+        'dump',
+        'resolve-activity',
+        'get-install-location',
+        'has-feature',
+      };
+      final hitsHarmful = args.any(harmful.contains);
+      bool isMutatingWord(String a) => harmful.contains(a) || a == 'enable';
+      final mutating = args.any(isMutatingWord);
+      if (hitsHarmful &&
           args.any((a) => criticalPackages.any((pkg) => a.contains(pkg)))) {
         return const ShellSafetyCheck(
           ShellSafetyLevel.blocked,
@@ -825,31 +981,39 @@ class ShellSafetyCheck {
           'system package tamper',
         );
       }
+      if (!hitsHarmful && args.any(readVerbs.contains)) {
+        return const ShellSafetyCheck(
+          ShellSafetyLevel.safe,
+          'Package manager inspection',
+        );
+      }
       if (mutating) {
         return ShellSafetyCheck(
           ShellSafetyLevel.needsConfirmation,
-          'Package modification ("pm ${args.firstWhere((a) => a == 'install' || a == 'uninstall' || a == 'clear' || a == 'disable' || a == 'disable-user' || a == 'enable')}")',
+          'Package modification ("pm ${args.firstWhere(isMutatingWord, orElse: () => 'mutate')}")',
           'pm mutate',
         );
       }
       return const ShellSafetyCheck(
         ShellSafetyLevel.safe,
-        'Package manager inspection ("pm")',
+        'Package manager inspection',
       );
     }
 
-    // Android settings
+    // Android settings: read verbs only stay safe; put/delete/reset
+    // (previously only put/delete were caught) need confirmation.
     if (command == 'settings') {
-      if (args.any((a) => a == 'put' || a == 'delete')) {
+      if (args.any(const {'get', 'list', 'help'}.contains) &&
+          !args.any(const {'put', 'delete', 'reset'}.contains)) {
         return const ShellSafetyCheck(
-          ShellSafetyLevel.needsConfirmation,
-          'Modifying system settings ("settings put/delete")',
-          'settings put',
+          ShellSafetyLevel.safe,
+          'Settings inspection ("settings")',
         );
       }
       return const ShellSafetyCheck(
-        ShellSafetyLevel.safe,
-        'Settings inspection ("settings")',
+        ShellSafetyLevel.needsConfirmation,
+        'Modifying system settings',
+        'settings',
       );
     }
 
@@ -865,6 +1029,203 @@ class ShellSafetyCheck {
         ShellSafetyLevel.needsConfirmation,
         'Android service command ("cmd")',
         'cmd',
+      );
+    }
+
+    // Stateful or file-writing options on otherwise read-only verbs.
+    const statefulArgs = {
+      'logcat': {'-c', '--clear', '-f'},
+      'dumpsys': {'set', 'reset', 'unplug'},
+    };
+    final bad = statefulArgs[command];
+    if ((bad != null && args.any(bad.contains)) ||
+        (command == 'sort' &&
+            args.any((a) =>
+                a.startsWith('--output') ||
+                (a.startsWith('-') &&
+                    !a.startsWith('--') &&
+                    a.contains('o'))))) {
+      return ShellSafetyCheck(
+        ShellSafetyLevel.needsConfirmation,
+        '$command with a state-changing or file-writing option',
+        command,
+      );
+    }
+
+    // awk: the `system()` escape hatch executes commands, and
+    // print/printf redirects write files. Plain text processing stays safe.
+    if (command == 'awk') {
+      final program = args.join(' ');
+      if (program.contains('system(')) {
+        return const ShellSafetyCheck(
+          ShellSafetyLevel.needsConfirmation,
+          'awk program can execute shell commands ("system()")',
+          'awk system',
+        );
+      }
+      if (RegExp(r'(print|printf)\s*>>?\s*[^0-9\s=]').hasMatch(program)) {
+        return const ShellSafetyCheck(
+          ShellSafetyLevel.needsConfirmation,
+          'awk program may write files ("print >")',
+          'awk redirect',
+        );
+      }
+      return const ShellSafetyCheck(
+        ShellSafetyLevel.safe,
+        'Streaming text processing ("awk")',
+      );
+    }
+
+    // Archive tools: extraction/overwrite modes fail closed; explicit
+    // read-only modes (list, test, decompress-to-stdout) stay safe.
+    if (const {
+      'tar',
+      'gzip',
+      'gunzip',
+      'bzip2',
+      'bunzip2',
+      'xz',
+      'unxz',
+      'zip',
+      'unzip',
+    }.contains(command)) {
+      var extracting = false;
+      var readOnly = false;
+      // unzip inspect modes (-l/-t/-Z/-p/-c) make operands pure inputs;
+      // without one, a bare archive operand means extract.
+      final unzipInspect = command == 'unzip' &&
+          args.any((b) =>
+              b == '-l' || b == '-t' || b == '-Z' || b == '-p' || b == '-c');
+      for (final a in args) {
+        if (command == 'tar') {
+          if (a == '--extract' || a == '--delete') {
+            extracting = true;
+            break;
+          }
+          if (a.startsWith('-') && !a.startsWith('--')) {
+            final flags = a.substring(1);
+            // Bundled short flags: -x/-c create or extract, -t lists.
+            // Extract wins on mixed bundles (fail closed).
+            if (RegExp(r'[xcdruA]').hasMatch(flags) &&
+                !flags.contains('t')) {
+              extracting = true;
+              break;
+            }
+            if (flags.contains('t')) readOnly = true;
+          } else if (a == '--list' || a == '--diff' || a == '--compare') {
+            readOnly = true;
+          }
+        } else if (command == 'unzip') {
+          if (a == '-o' ||
+              a == '-n' ||
+              a == '-f' ||
+              a == '-u' ||
+              a == '-j') {
+            extracting = true;
+            break;
+          }
+          if (unzipInspect) {
+            // Inspect mode: operands and other flags are inputs only.
+            readOnly = true;
+          } else if (!a.startsWith('-')) {
+            // Archive operand alone means extract.
+            extracting = true;
+            break;
+          } else {
+            // Unknown unzip flag without inspect mode: fail closed.
+            extracting = true;
+            break;
+          }
+        } else if (command == 'zip') {
+          // zip always writes/updates an archive file.
+          extracting = true;
+          break;
+        } else {
+          // gzip/bzip2/xz family: bare -d deletes originals; -c/-t/-l/-k
+          // preserve them (stdout/test/list/keep). Bundled flags honored:
+          // preserve wins, since decompress-to-stdout never deletes.
+          if (a == '-d' || a == '--decompress' || a == '--uncompress') {
+            extracting = true;
+            break;
+          }
+          if (a.startsWith('-') && !a.startsWith('--')) {
+            final flags = a.substring(1);
+            if (flags.contains('c') ||
+                flags.contains('t') ||
+                flags.contains('l') ||
+                flags.contains('k')) {
+              readOnly = true;
+              continue;
+            }
+            if (flags.contains('d')) {
+              extracting = true;
+              break;
+            }
+          }
+          if (a == '-c' ||
+              a == '--stdout' ||
+              a == '--to-stdout' ||
+              a == '-t' ||
+              a == '--test' ||
+              a == '-l' ||
+              a == '--list' ||
+              a == '--keep') {
+            readOnly = true;
+          }
+        }
+      }
+      if (extracting) {
+        return ShellSafetyCheck(
+          ShellSafetyLevel.needsConfirmation,
+          'Archive extraction or modification ("$command")',
+          command,
+        );
+      }
+      if (readOnly) {
+        return ShellSafetyCheck(
+          ShellSafetyLevel.safe,
+          'Archive inspection ("$command")',
+          command,
+        );
+      }
+      return ShellSafetyCheck(
+        ShellSafetyLevel.needsConfirmation,
+        'Archive operation ("$command")',
+        command,
+      );
+    }
+
+    // Network tools: read-only inspection stays safe; anything that
+    // reconfigures interfaces, addresses, or routes needs confirmation.
+    // (`up`/`down` count only for ifconfig, where they are the mutation
+    // verbs — `ip link show up` is a read-only filter and stays safe.)
+    if (const {'ip', 'ifconfig', 'arp', 'route'}.contains(command)) {
+      const mutate = {
+        'add',
+        'del',
+        'delete',
+        'set',
+        'change',
+        'replace',
+        'flush',
+        'tunnel',
+        '-s',
+        '-d',
+      };
+      final reconfigures = args.any(mutate.contains) ||
+          (command == 'ifconfig' &&
+              args.any((a) => a == 'up' || a == 'down'));
+      if (reconfigures) {
+        return ShellSafetyCheck(
+          ShellSafetyLevel.needsConfirmation,
+          'Network reconfiguration ("$command")',
+          command,
+        );
+      }
+      return ShellSafetyCheck(
+        ShellSafetyLevel.safe,
+        'Network inspection ("$command")',
+        command,
       );
     }
 
@@ -890,7 +1251,7 @@ class ShellSafetyCheck {
   }
 
   static List<String> _tokenize(String command) {
-    final matches = RegExp(r'''(?:[^\s"'\\]+|\\.|"[^"]*"|'[^']*')+''')
+    final matches = RegExp(r'''(?:[^\s"'\\]+|\\.|"(?:[^"\\]|\\.)*"|'[^']*')+''')
         .allMatches(command);
 
     return matches
@@ -899,8 +1260,15 @@ class ShellSafetyCheck {
         .toList();
   }
 
-  static List<String> _redirectTargets(List<String> words) {
-    final result = <String>[];
+  /// Device-null sinks: redirecting here discards output and is inert.
+  static const _redirectSinks = {'/dev/null', '/dev/stdout', '/dev/stderr'};
+
+  /// Redirect target plus whether the operator writes (`>`, `>>`, `&>`,
+  /// `&>>`, `>|`) as opposed to reading (`<`, `<<`, heredoc delimiters).
+  static List<_ShellRedirect> _redirectTargets(List<String> words) {
+    final result = <_ShellRedirect>[];
+
+    bool isOutputOp(String op) => op != '<' && op != '<<';
 
     for (var i = 0; i < words.length; i++) {
       final word = words[i];
@@ -911,9 +1279,13 @@ class ShellSafetyCheck {
           word == '<<' ||
           word == '&>' ||
           word == '&>>' ||
-          word == '>|') {
+          word == '>|' ||
+          RegExp(r'^\d+(&>>|&>|>>|>)$').hasMatch(word)) {
         if (i + 1 < words.length) {
-          result.add(_unquoteToken(words[i + 1]));
+          final next = _unquoteToken(words[i + 1]);
+          if (!_redirectSinks.contains(next)) {
+            result.add((target: next, output: isOutputOp(word)));
+          }
         }
         continue;
       }
@@ -923,12 +1295,22 @@ class ShellSafetyCheck {
         continue;
       }
 
-      if (RegExp(r'^\d*(&>>|>>|>|<|<<)').hasMatch(word)) {
-        final match = RegExp(r'^\d*(?:&>>|>>|>|<|<<)(.+)$')
-            .firstMatch(word);
-
-        if (match != null) {
-          result.add(_unquoteToken(match.group(1)!));
+      // Glued forms: `x>/f`, `2>file`, `x&>f`, `x>|f`. A token containing
+      // a literal space came from quotes (`echo "a > b"`) and is skipped.
+      if (!word.contains(' ')) {
+        final glued =
+            RegExp(r'^(.*?)(\d*)(&>>|&>|>>|>\||>|<|<<)(.+)$')
+                .firstMatch(word);
+        if (glued != null) {
+          final op = glued.group(3)!;
+          final target = _unquoteToken(glued.group(4)!);
+          // `>&N` / `2>&N` / `>&-`: fd duplication/close, not a file write.
+          // (A real filename never takes the `&N` shape unquoted.)
+          if (RegExp(r'^&(\d+|-)$').hasMatch(target)) {
+            continue;
+          }
+          if (_redirectSinks.contains(target)) continue;
+          result.add((target: target, output: isOutputOp(op)));
         }
       }
     }
@@ -1025,7 +1407,13 @@ class ShellSafetyCheck {
       }
     }
 
-    return '/${parts.join('/')}';
+    final out = '/${parts.join('/')}';
+    // Canonicalize Android storage aliases so /storage/emulated/0/...,
+    // /mnt/sdcard, etc. hit the same /sdcard/... protected roots.
+    return out.replaceFirst(
+      RegExp(r'^/(?:storage/(?:emulated/\d+|self/primary)|mnt/sdcard|mnt/user/\d+/primary)(?=/|$)'),
+      '/sdcard',
+    );
   }
 
   static String _basename(String path) {
@@ -1084,6 +1472,12 @@ class ShellSafetyCheck {
     return RegExp(r'^[A-Za-z_][A-Za-z0-9_]*=').hasMatch(value);
   }
 
+  /// Loader and shell-option assignments poison command lookup exactly
+  /// like PATH mutations (LD_PRELOAD, BASH_ENV, IFS, ...).
+  static bool _isDangerousAssign(String w) => RegExp(
+          r'^(?:PATH|IFS|ENV|BASH_ENV|SHELLOPTS|LD_[A-Z_]+)=')
+      .hasMatch(w);
+
   static bool _looksLikeWrapperValue(String value) {
     return RegExp(r'^\d+(?:\.\d+)?(?:ms|s|m|h)?$').hasMatch(value);
   }
@@ -1094,6 +1488,8 @@ class ShellSafetyCheck {
   /// ".scratch" used to pass).
   static bool _isScratchOnlyList(List<String> targets, String? scratchPath) {
     if (targets.isEmpty) return false;
+    // Unresolvable expansions cannot be confined statically — fail closed.
+    if (targets.any((t) => RegExp(r'[$`~{(]').hasMatch(t))) return false;
     final scratch = scratchPath?.trim();
     if (scratch == null || scratch.isEmpty) return false;
     final scratchAbs = p.normalize(scratch);

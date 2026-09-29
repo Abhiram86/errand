@@ -32,7 +32,16 @@ void main() {
         'rm -rf .scratch',
         'df -h',
         'ps -ef',
-        'tar -czf archive.tar.gz file.txt',
+        'tar -tzf archive.tar.gz',
+        'unzip -l archive.zip',
+        'gzip -dc file.gz',
+        "awk '{print \$2}'",
+        'ip addr show',
+        'ip link show up',
+        'ifconfig',
+        'ls 2>&1',
+        'echo "a > b"',
+        'sed s/a/e/ file.txt',
       ];
 
       for (final cmd in safeCommands) {
@@ -78,6 +87,281 @@ void main() {
         expect(check.isSafe, isTrue,
             reason: 'Scratch-confined mutation "$cmd" must be safe');
       }
+    });
+
+    test('worst-of: early confirm never shadows later blocked verdict', () {
+      ShellSafetyCheck check;
+      check = ShellSafetyCheck.analyze(
+        'touch outside.txt; rm -rf /sdcard/DCIM',
+        scratchPath: testScratch,
+        workingDirectory: testCwd,
+      );
+      expect(check.isBlocked, isTrue);
+
+      // Confirm inside a substitution plus blocked in a later segment.
+      check = ShellSafetyCheck.analyze(
+        'echo \$(touch outside.txt); rm -rf /sdcard/DCIM',
+        scratchPath: testScratch,
+        workingDirectory: testCwd,
+      );
+      expect(check.isBlocked, isTrue);
+    });
+
+    test('balanced substitution scan: nested payloads blocked, benign nesting safe', () {
+      var check = ShellSafetyCheck.analyze(
+        'echo \$(echo \$(rm -rf /sdcard/DCIM))',
+        scratchPath: testScratch,
+        workingDirectory: testCwd,
+      );
+      expect(check.isBlocked, isTrue);
+
+      check = ShellSafetyCheck.analyze(
+        'echo \$(echo hi)',
+        scratchPath: testScratch,
+        workingDirectory: testCwd,
+      );
+      expect(check.isSafe, isTrue);
+
+      check = ShellSafetyCheck.analyze(
+        'sh -c \'echo \$(rm -rf /sdcard/DCIM)\'',
+        scratchPath: testScratch,
+        workingDirectory: testCwd,
+      );
+      expect(check.isBlocked, isTrue);
+    });
+
+    test('cd nulls cwd: later relative paths fail closed, lone cd stays safe', () {
+      var check = ShellSafetyCheck.analyze(
+        'cd /tmp && rm -rf someday',
+        scratchPath: testScratch,
+        workingDirectory: testCwd,
+      );
+      expect(check.needsConfirmation, isTrue);
+      expect(check.isSafe, isFalse);
+
+      check = ShellSafetyCheck.analyze(
+        'cd /tmp',
+        scratchPath: testScratch,
+        workingDirectory: testCwd,
+      );
+      expect(check.isSafe, isTrue);
+    });
+
+    test('chain keywords recurse: then/!/do cannot smuggle blocked verbs', () {
+      for (final cmd in [
+        'then rm -rf /sdcard/DCIM',
+        '! rm -rf /sdcard/DCIM',
+        'do eval echo hi',
+      ]) {
+        final check = ShellSafetyCheck.analyze(cmd);
+        expect(check.isBlocked, isTrue, reason: '"$cmd" should be blocked');
+      }
+      expect(ShellSafetyCheck.analyze('then').isSafe, isTrue);
+      expect(ShellSafetyCheck.analyze('for').isSafe, isTrue);
+    });
+
+    test('loader env assignments confirm like PATH mutations', () {
+      for (final cmd in [
+        'LD_PRELOAD=/x ls',
+        'LD_LIBRARY_PATH=/x ls',
+        'BASH_ENV=/x bash -c true',
+        'ENV=/x sh -c true',
+        'export LD_PRELOAD=/x',
+        'export PATH=/evil',
+      ]) {
+        final check = ShellSafetyCheck.analyze(cmd);
+        expect(check.needsConfirmation, isTrue,
+            reason: '"$cmd" should require confirmation');
+      }
+      expect(ShellSafetyCheck.analyze('export FOO=bar').isSafe, isTrue);
+    });
+
+    test('storage aliases resolve to protected roots', () {
+      for (final cmd in [
+        'rm -rf /storage/emulated/0/DCIM',
+        'rm -rf /mnt/sdcard/DCIM',
+        'rm -rf /storage/self/primary/DCIM',
+      ]) {
+        final check = ShellSafetyCheck.analyze(cmd);
+        expect(check.isBlocked, isTrue, reason: '"$cmd" should be blocked');
+      }
+    });
+
+    test('rm flag parsing: targets are not recursive, -R is', () {
+      var check = ShellSafetyCheck.analyze(
+        'rm mybar',
+        scratchPath: testScratch,
+        workingDirectory: testCwd,
+      );
+      expect(check.needsConfirmation, isTrue);
+      expect(check.reason ?? '', isNot(contains('Recursive')));
+
+      check = ShellSafetyCheck.analyze(
+        'rm -R mybar',
+        scratchPath: testScratch,
+        workingDirectory: testCwd,
+      );
+      expect(check.needsConfirmation, isTrue);
+      expect(check.reason ?? '', contains('Recursive'));
+    });
+
+    test('sed in-place variants and script writes', () {
+      ShellSafetyCheck check;
+      check = ShellSafetyCheck.analyze('sed -i.bak s/a/b/ f.txt');
+      expect(check.needsConfirmation, isTrue);
+      check = ShellSafetyCheck.analyze('sed --in-place s/a/b/ f.txt');
+      expect(check.needsConfirmation, isTrue);
+      check = ShellSafetyCheck.analyze('sed --in-place= s/a/b/ f.txt');
+      expect(check.needsConfirmation, isTrue);
+      // Pure streaming substitutions stay safe, even with e/w letters.
+      check = ShellSafetyCheck.analyze('sed s/a/e/ f.txt');
+      expect(check.isSafe, isTrue);
+      // w/e script commands fail closed.
+      check = ShellSafetyCheck.analyze('sed /pat/w /tmp/out.txt');
+      expect(check.needsConfirmation, isTrue);
+      check = ShellSafetyCheck.analyze('sed s/a/b/e f.txt');
+      expect(check.needsConfirmation, isTrue);
+    });
+
+    test('date positional clock-set needs confirmation', () {
+      expect(ShellSafetyCheck.analyze('date').isSafe, isTrue);
+      expect(ShellSafetyCheck.analyze('date -u').isSafe, isTrue);
+      expect(
+          ShellSafetyCheck.analyze('date 090112302026').needsConfirmation,
+          isTrue);
+    });
+
+    test('pm/cmd-package verbs: reads safe, mutates confirm, critical blocked', () {
+      expect(ShellSafetyCheck.analyze('pm list packages').isSafe, isTrue);
+      expect(ShellSafetyCheck.analyze('cmd package list packages').isSafe,
+          isTrue);
+      expect(
+          ShellSafetyCheck.analyze('pm revoke com.foo.bar').needsConfirmation,
+          isTrue);
+      expect(
+          ShellSafetyCheck.analyze('cmd package install x.apk')
+              .needsConfirmation,
+          isTrue);
+      expect(
+          ShellSafetyCheck.analyze('pm disable com.errand.errand').isBlocked,
+          isTrue);
+    });
+
+    test('settings: reads safe, put/delete/reset confirm', () {
+      expect(
+          ShellSafetyCheck.analyze('settings get global x').isSafe, isTrue);
+      expect(ShellSafetyCheck.analyze('settings list global').isSafe, isTrue);
+      expect(
+          ShellSafetyCheck.analyze('settings put global x 1')
+              .needsConfirmation,
+          isTrue);
+      expect(ShellSafetyCheck.analyze('settings reset global x')
+          .needsConfirmation, isTrue);
+    });
+
+    test('stateful logcat/dumpsys/sort options confirm, reads stay safe', () {
+      expect(ShellSafetyCheck.analyze('logcat').isSafe, isTrue);
+      expect(ShellSafetyCheck.analyze('logcat -c').needsConfirmation, isTrue);
+      expect(
+          ShellSafetyCheck.analyze('logcat -f /tmp/x').needsConfirmation,
+          isTrue);
+      expect(
+          ShellSafetyCheck.analyze('dumpsys battery set x').needsConfirmation,
+          isTrue);
+      expect(ShellSafetyCheck.analyze('sort -n f').isSafe, isTrue);
+      expect(
+          ShellSafetyCheck.analyze('sort -o out f').needsConfirmation, isTrue);
+    });
+
+    test('awk: system() and file redirects confirm, processing stays safe', () {
+      expect(
+          ShellSafetyCheck.analyze('awk \'BEGIN{system("id")}\'')
+              .needsConfirmation,
+          isTrue);
+      expect(
+          ShellSafetyCheck.analyze('awk \'{print > "f"}\'').needsConfirmation,
+          isTrue);
+      expect(
+          ShellSafetyCheck.analyze("awk '{print \$1}'").isSafe, isTrue);
+    });
+
+    test('archives: extraction confirms, inspection stays safe', () {
+      ShellSafetyCheck check;
+      check = ShellSafetyCheck.analyze('tar -xzf a.tgz');
+      expect(check.needsConfirmation, isTrue);
+      check = ShellSafetyCheck.analyze('tar -tzf a.tgz');
+      expect(check.isSafe, isTrue);
+      check = ShellSafetyCheck.analyze('tar -cf a.tar f');
+      expect(check.needsConfirmation, isTrue);
+      check = ShellSafetyCheck.analyze('unzip -o a.zip');
+      expect(check.needsConfirmation, isTrue);
+      check = ShellSafetyCheck.analyze('unzip a.zip');
+      expect(check.needsConfirmation, isTrue);
+      check = ShellSafetyCheck.analyze('unzip -l a.zip');
+      expect(check.isSafe, isTrue);
+      check = ShellSafetyCheck.analyze('gunzip a.gz');
+      expect(check.needsConfirmation, isTrue);
+      check = ShellSafetyCheck.analyze('gzip -dc a.gz');
+      expect(check.isSafe, isTrue);
+      check = ShellSafetyCheck.analyze('gzip f');
+      expect(check.needsConfirmation, isTrue);
+      check = ShellSafetyCheck.analyze('zip a.zip f');
+      expect(check.needsConfirmation, isTrue);
+    });
+
+    test('network verbs: reconfiguration confirms, inspection stays safe', () {
+      ShellSafetyCheck check;
+      check = ShellSafetyCheck.analyze('ip link set wlan0 down');
+      expect(check.needsConfirmation, isTrue);
+      check = ShellSafetyCheck.analyze('ip addr');
+      expect(check.isSafe, isTrue);
+      check = ShellSafetyCheck.analyze('ip link show up');
+      expect(check.isSafe, isTrue);
+      check = ShellSafetyCheck.analyze('ifconfig wlan0 up');
+      expect(check.needsConfirmation, isTrue);
+      check = ShellSafetyCheck.analyze('ifconfig');
+      expect(check.isSafe, isTrue);
+      check = ShellSafetyCheck.analyze('route -n');
+      expect(check.isSafe, isTrue);
+      check = ShellSafetyCheck.analyze('route add default gw 1.2.3.4');
+      expect(check.needsConfirmation, isTrue);
+    });
+
+    test('redirects: outside-scratch writes confirm, sinks/fd-dups/tests stay safe', () {
+      ShellSafetyCheck check;
+      check = ShellSafetyCheck.analyze(
+        'echo hi > /sdcard/Download/n.txt',
+        scratchPath: testScratch,
+        workingDirectory: testCwd,
+      );
+      expect(check.needsConfirmation, isTrue);
+      check = ShellSafetyCheck.analyze(
+        'echo hi>out.txt',
+        scratchPath: testScratch,
+        workingDirectory: testCwd,
+      );
+      expect(check.needsConfirmation, isTrue);
+      check = ShellSafetyCheck.analyze(
+        'echo hi > .scratch/n.txt',
+        scratchPath: testScratch,
+        workingDirectory: testCwd,
+      );
+      expect(check.isSafe, isTrue);
+      check = ShellSafetyCheck.analyze('ls 2>&1');
+      expect(check.isSafe, isTrue);
+      check = ShellSafetyCheck.analyze('echo x > /dev/null');
+      expect(check.isSafe, isTrue);
+      check = ShellSafetyCheck.analyze('echo "a > b"');
+      expect(check.isSafe, isTrue);
+      check = ShellSafetyCheck.analyze('[ "\$a" > "\$b" ]');
+      expect(check.isSafe, isTrue);
+    });
+
+    test('heredocs and subshells stay usable (confirm, never blocked)', () {
+      var check = ShellSafetyCheck.analyze('cat <<EOF');
+      expect(check.isBlocked, isFalse);
+      check = ShellSafetyCheck.analyze('(cd /tmp && echo hi)');
+      expect(check.isBlocked, isFalse);
     });
 
     test('blocks fork bombs', () {
