@@ -150,6 +150,44 @@ void main() {
     expect(result.toolCalls.single.arguments, {'path': 'README.md'});
   });
 
+  test('chatStream backoff wakes promptly on cancel instead of polling', () async {
+    var attempts = 0;
+    final client = LlmClient(
+      config: const LlmConfig(
+        baseUrl: 'https://example.test/v1/',
+        apiKey: 'test-key',
+        model: 'test-model',
+      ),
+      client: _StreamingClient((request) async {
+        attempts++;
+        return http.StreamedResponse(
+          Stream.value(utf8.encode('Too many requests')),
+          429,
+          headers: const {'retry-after': '30'},
+        );
+      }),
+    );
+
+    final token = CancelToken();
+    // Cancel mid-backoff: the 30s server hint must not be waited out.
+    unawaited(Future<void>.delayed(const Duration(milliseconds: 200))
+        .then((_) => token.cancel()));
+    final sw = Stopwatch()..start();
+    await expectLater(
+      client.chatStream(
+        messages: const [
+          {'role': 'user', 'content': 'Hi'},
+        ],
+        onTextDelta: (_) {},
+        cancelToken: token,
+      ),
+      throwsA(isA<LlmStoppedException>()),
+    );
+    sw.stop();
+    expect(attempts, 1);
+    expect(sw.elapsed, lessThan(const Duration(seconds: 10)));
+  });
+
   test('chatStream retries on 429 and succeeds on subsequent attempt', () async {
     var attempts = 0;
     final successChunks = [

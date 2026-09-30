@@ -341,16 +341,20 @@ class LlmClient {
             : _backoffBase * (1 << (attempt - 1) >= 30 ? 30 : attempt - 1));
     // Clamp rather than trust: honour a short server hint, cap a hostile one.
     final bounded = delay > _backoffMax ? _backoffMax : delay;
-    final stopwatch = Stopwatch()..start();
-    while (stopwatch.elapsed < bounded) {
-      if (cancelToken?.isCancelled ?? false) throw const LlmStoppedException();
-      final remaining = bounded - stopwatch.elapsed;
-      // Coarse steps (not 100ms) with a short final sleep: the old 100ms poll
-      // meant a 2-hour wait issued ~72,000 timers on the UI isolate.
-      final step = remaining < const Duration(milliseconds: 250)
-          ? remaining
-          : const Duration(milliseconds: 250);
-      await Future<void>.delayed(step);
+    // Single cancellable sleep registered on the CancelToken: a stop wakes
+    // immediately instead of polling in 250ms steps for the whole wait.
+    final woken = Completer<void>();
+    void onCancel() {
+      if (!woken.isCompleted) woken.complete();
+    }
+    cancelToken?.addListener(onCancel);
+    try {
+      await Future.any([
+        Future<void>.delayed(bounded),
+        woken.future,
+      ]);
+    } finally {
+      cancelToken?.removeListener(onCancel);
     }
     if (cancelToken?.isCancelled ?? false) throw const LlmStoppedException();
   }

@@ -51,8 +51,8 @@ Fix in this order. Each row is independently shippable.
 | 6 | `R2-H4` | HIGH | Background engine blocks the platform thread up to 8s on geocoding |
 | 7 | `R2-H5` | HIGH | Boot alarm restore reads a credential-encrypted WAL DB in direct boot |
 | 8 | `R2-H6` | HIGH | Inexact-alarm fallback can't legally start an FGS → tasks never run |
-| 9 | `R2-H7` | HIGH | `_runAgentTurn` has no re-entrancy guard → double agent turn |
-| 10 | `R2-H8` | HIGH | `DocumentLruCache` double-inserts → inflated accounting + disposed-PDF use |
+| 9 | `R2-H8` | HIGH | `_runAgentTurn` has no re-entrancy guard → double agent turn |
+| 10 | `R2-H9` | HIGH | `DocumentLruCache` double-inserts → inflated accounting + disposed-PDF use |
 | 11 | `R2-H10` | HIGH | `dispose()` saves outside `CoalescingWriter` → lost final answer |
 | 12 | `R2-H11` | HIGH | Single-task Resume never recomputes `nextRunAt` |
 | 13 | `R2-R1` | HIGH* | 657-line shell-safety method — unreviewable, and it guards `rm -rf` |
