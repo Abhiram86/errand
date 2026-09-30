@@ -59,6 +59,65 @@ class MainActivity : FlutterActivity() {
     private var pendingTaskNotification: Map<String, Any>? = null
     private var initialNotificationRoute = false
 
+    /**
+     * Fire-and-forget: needed to SHOW the foreground-service notification on
+     * API 33+. The service itself runs either way — without the grant the
+     * notification is just hidden.
+     */
+    private fun requestPostNotificationsPermission() {
+        if (Build.VERSION.SDK_INT >= 33) {
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                NOTIFICATION_PERMISSION_CODE
+            )
+        }
+    }
+
+    /**
+     * Resolves [rawPath] and enforces that it stays inside an allowed root.
+     *
+     * The path is attacker-influenced: `open_file` and `installApk` both take a
+     * string that originates from the LLM, which in turn may have read it from a
+     * prompt-injected web page. Handing such a path to FileProvider and granting
+     * FLAG_GRANT_READ_URI_PERMISSION would let a tool result exfiltrate any file
+     * this process can read, so containment is checked here rather than trusting
+     * the caller. Canonicalization resolves `..` and symlinks before the check.
+     *
+     * @return the canonical File, or null when the path escapes every allowed root.
+     */
+    private fun resolveContainedFile(rawPath: String): File? {
+        val candidate = try {
+            File(rawPath).canonicalFile
+        } catch (_: Exception) {
+            return null
+        }
+        val roots = mutableListOf<File>()
+        // Shared user storage: the user-facing workspace, Documents, Downloads, etc.
+        @Suppress("DEPRECATION")
+        Environment.getExternalStorageDirectory()?.let { roots.add(it) }
+        // App-private dirs. Required for the OTA installer, which hands over a file
+        // downloaded into the app's own cache directory. The external variants are
+        // nullable on newer SDKs; a null there is simply skipped, since guessing a
+        // substitute would widen the allowed set.
+        roots.add(filesDir)
+        roots.add(cacheDir)
+        externalCacheDir?.let { roots.add(it) }
+        getExternalFilesDir(null)?.let { roots.add(it) }
+        for (root in roots) {
+            val canonicalRoot = try {
+                root.canonicalFile
+            } catch (_: Exception) {
+                continue
+            }
+            // Compare path segments, not string prefixes: "/data/data/com.app-evil"
+            // must not pass a check against "/data/data/com.app".
+            if (candidate.path == canonicalRoot.path) return candidate
+            if (candidate.path.startsWith(canonicalRoot.path + File.separator)) return candidate
+        }
+        return null
+    }
+
     private fun taskNotificationInitialRoute(incomingIntent: Intent?): String? {
         if (incomingIntent == null) return null
         val taskId = incomingIntent.getIntExtra("task_id", -1)
@@ -247,11 +306,11 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
-        if (isFinishing) {
-            try {
-                ErrandAccessibilityService.instance?.disableSelf()
-            } catch (_: Exception) {}
-        }
+        // Deliberately does NOT disable the accessibility service here. Pressing
+        // Back (isFinishing) must not revoke a grant the user made in Settings;
+        // that silently broke screen reading until the user re-enabled it, and it
+        // made the explicit a11y/disable channel method below redundant. Use the
+        // Settings screen or the disable channel method to turn it off.
         widgetChannel?.setMethodCallHandler(null)
         widgetChannel = null
         schedulerChannel?.setMethodCallHandler(null)
@@ -459,7 +518,15 @@ class MainActivity : FlutterActivity() {
                                 } else {
                                     rawPath
                                 }
-                                val file = File(filePath)
+                                val file = resolveContainedFile(filePath)
+                                if (file == null) {
+                                    result.error(
+                                        "PATH_NOT_ALLOWED",
+                                        "Path is outside the allowed storage roots: $filePath",
+                                        null,
+                                    )
+                                    return@setMethodCallHandler
+                                }
                                 if (!file.exists()) {
                                     result.error("FILE_NOT_FOUND", "File does not exist: ${file.absolutePath}", null)
                                     return@setMethodCallHandler
@@ -770,16 +837,7 @@ class MainActivity : FlutterActivity() {
                 }
 
                 "requestNotificationPermission" -> {
-                    // Fire-and-forget: needed to SHOW the foreground-service
-                    // notification on API 33+. The service itself runs either
-                    // way — without the grant the notification is just hidden.
-                    if (Build.VERSION.SDK_INT >= 33) {
-                        ActivityCompat.requestPermissions(
-                            this,
-                            arrayOf(Manifest.permission.POST_NOTIFICATIONS),
-                            NOTIFICATION_PERMISSION_CODE
-                        )
-                    }
+                    requestPostNotificationsPermission()
                     result.success(null)
                 }
 
@@ -1062,6 +1120,36 @@ class MainActivity : FlutterActivity() {
             APP_INFO_CHANNEL
         ).setMethodCallHandler { call, result ->
             when (call.method) {
+                // NotificationService targets this channel. Without these three the
+                // foreground engine's hasPermission() returns false, and
+                // showNotification() then bails before its own fallback — so
+                // notification_sent is never recorded for foreground-originated runs.
+                "showNotification" -> {
+                    val id = call.argument<Int>("id") ?: 1000
+                    val title = call.argument<String>("title") ?: "Errand Task"
+                    val body = call.argument<String>("body") ?: ""
+                    val channelId = call.argument<String>("channelId") ?: "scheduled_tasks"
+                    val channelName = call.argument<String>("channelName") ?: "Scheduled Tasks"
+                    val isSuccess = call.argument<Boolean>("isSuccess")
+                    val ok = NotificationHelper.showNotification(
+                        this, id, title, body, channelId, channelName, isSuccess
+                    )
+                    result.success(ok)
+                }
+                "cancelNotification" -> {
+                    val id = call.argument<Int>("id") ?: -1
+                    // Same contract as the background engine's handler (id > 0).
+                    val ok = if (id > 0) NotificationHelper.cancelNotification(this, id) else false
+                    result.success(ok)
+                }
+                "hasNotificationPermission" -> {
+                    result.success(NotificationHelper.hasPermission(this))
+                }
+                // Also reachable from NotificationService, which targets this channel.
+                "requestNotificationPermission" -> {
+                    requestPostNotificationsPermission()
+                    result.success(null)
+                }
                 "getVersion" -> {
                     try {
                         val packageInfo = packageManager.getPackageInfo(packageName, 0)
@@ -1097,7 +1185,15 @@ class MainActivity : FlutterActivity() {
                         result.error("NO_PATH", "filePath is required", null)
                         return@setMethodCallHandler
                     }
-                    val file = File(path)
+                    val file = resolveContainedFile(path)
+                    if (file == null) {
+                        result.error(
+                            "PATH_NOT_ALLOWED",
+                            "APK path is outside the allowed storage roots: $path",
+                            null,
+                        )
+                        return@setMethodCallHandler
+                    }
                     if (!file.exists()) {
                         result.error("FILE_NOT_FOUND", "APK file does not exist: $path", null)
                         return@setMethodCallHandler

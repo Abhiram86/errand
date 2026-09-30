@@ -236,6 +236,10 @@ class _ErrandAppState extends State<ErrandApp> {
   }
 
   void _navigateToUpcomingTasks() {
+    // Without this guard every live notification tap stacked another identical
+    // ManageTasksScreen, and a manual tap could double up with one.
+    if (_notificationRouteOpened) return;
+    _notificationRouteOpened = true;
     rootScaffoldMessengerKey.currentState?.hideCurrentSnackBar();
     AppProfile.mark('upcoming_route_push');
     appNavigatorKey.currentState?.push(
@@ -244,10 +248,13 @@ class _ErrandAppState extends State<ErrandApp> {
         reverseTransitionDuration: Duration.zero,
         pageBuilder: (_, _, _) => const ManageTasksScreen(initialTabIndex: 0),
       ),
-    );
+    ).whenComplete(() => _notificationRouteOpened = false);
   }
 
   void _navigateToUnreadTasks({String initialLogFilter = 'all'}) {
+    // Same guard as _navigateToUpcomingTasks: the flag was set here but never
+    // read, so repeated taps pushed the same screen over and over.
+    if (_notificationRouteOpened) return;
     _notificationRouteOpened = true;
     if (mounted) {
       setState(() => _showStartupUnreadBanner = false);
@@ -263,7 +270,7 @@ class _ErrandAppState extends State<ErrandApp> {
           initialLogFilter: initialLogFilter,
         ),
       ),
-    );
+    ).whenComplete(() => _notificationRouteOpened = false);
   }
 
   static const _manageTasksUnreadRoute = '/manage_tasks_unread';

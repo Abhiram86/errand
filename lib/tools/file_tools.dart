@@ -53,6 +53,16 @@ class _CachedStructuredDocument {
   final int cachedBytes;
   final LogicalDocument document;
 
+  /// Number of cache keys currently pointing at this same [document] instance.
+  ///
+  /// Two distinct paths can resolve to one document (a caller-supplied [parser]
+  /// may intern documents, and the same file can be reached by two keys). If one
+  /// key is evicted, disposing the shared document would leave the other key
+  /// holding a disposed handle — for a pooled PDF that closes the native
+  /// PDDocument and makes any concurrent read throw StateError. The document is
+  /// disposed only when the last key drops.
+  int refCount = 1;
+
   _CachedStructuredDocument({
     required this.lastModified,
     required this.fileLength,
@@ -124,13 +134,18 @@ class DocumentLruCache {
       }
     }
 
-    if (document != null) {
-      // Enforce the LRU ceiling against expanded bytes to protect against zip bombs
+    if (document != null && isInitiator) {
+      // Only the initiator touches cache state. Every awaiter of a shared
+      // in-flight parse would otherwise re-run this block: _currentBytes would
+      // be incremented N times for one document (permanently inflating the
+      // accounting until the eviction loop discards the whole cache), and
+      // eviction could dispose a document other keys still reference.
       final entrySize = max(stat.size, document.estimatedByteSize);
 
       // A single entry larger than the whole budget bypasses the cache
       // entirely: it would evict everything for one read. The parse result
-      // is still returned to the caller.
+      // is still returned to the caller, and it is not cached — so nothing
+      // else holds it and there is nothing to refcount.
       if (entrySize > maxBytes) return document;
 
       // Evict least-recently used entries until under byte and count bounds
@@ -141,25 +156,48 @@ class DocumentLruCache {
         final evicted = _entries.remove(oldestKey);
         if (evicted != null) {
           _currentBytes -= evicted.cachedBytes;
-          evicted.document.dispose();
+          _releaseDocument(evicted);
         }
       }
 
-      _entries[key] = _CachedStructuredDocument(
-        lastModified: stat.modified,
-        fileLength: stat.size,
-        cachedBytes: entrySize,
-        document: document,
-      );
-      _currentBytes += entrySize;
+      // Reuse an existing entry that already holds this exact document instance
+      // under a different key, so the instance stays refcounted.
+      final existing = _entries.values
+          .where((e) => identical(e.document, document))
+          .firstOrNull;
+      if (existing != null) {
+        existing.refCount++;
+      } else {
+        _entries[key] = _CachedStructuredDocument(
+          lastModified: stat.modified,
+          fileLength: stat.size,
+          cachedBytes: entrySize,
+          document: document,
+        );
+        _currentBytes += entrySize;
+      }
     }
 
     return document;
   }
 
+  /// Drops one reference to a cached document, disposing it only when the last
+  /// key pointing at the same instance goes away.
+  void _releaseDocument(_CachedStructuredDocument entry) {
+    entry.refCount--;
+    if (entry.refCount <= 0) {
+      entry.document.dispose();
+    }
+  }
+
   void dispose() {
+    // Dispose each distinct document instance once, regardless of how many
+    // keys reference it.
+    final seen = <LogicalDocument>{};
     for (final cached in _entries.values) {
-      cached.document.dispose();
+      if (seen.add(cached.document)) {
+        cached.document.dispose();
+      }
     }
     _entries.clear();
     _currentBytes = 0;

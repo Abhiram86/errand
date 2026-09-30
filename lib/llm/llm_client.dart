@@ -191,7 +191,17 @@ class LlmClient {
       );
     }
 
-    final dynamic rawData = jsonDecode(res.body);
+    // A 200 can still carry an HTML error page or a truncated body. Without this
+    // guard the FormatException is not an LlmException, so it is never classified
+    // as transport and never retried — the user just sees "Unexpected error:
+    // FormatException". Treated as transport because a malformed body usually
+    // means an intermediary problem that a retry can clear.
+    final dynamic rawData;
+    try {
+      rawData = jsonDecode(res.body);
+    } on FormatException catch (e) {
+      throw LlmException('Malformed response: ${e.message}', transport: true);
+    }
     if (rawData is! Map<String, dynamic>) {
       throw LlmException('Invalid response: expected JSON object');
     }
@@ -305,6 +315,18 @@ class LlmClient {
     }
   }
 
+  /// Upper bound on any single backoff wait.
+  ///
+  /// A server-supplied `Retry-After` is treated as a hint, not an instruction:
+  /// an endpoint returning `Retry-After: 7200` must not park a background task
+  /// for two hours on battery. The exponential fallback is capped here for the
+  /// same reason — with 5 attempts it otherwise reaches ~25s per redial.
+  static const Duration _backoffMax = Duration(seconds: 60);
+
+  /// Base for the exponential fallback. Doubles per attempt, capped by
+  /// [_backoffMax].
+  static const Duration _backoffBase = Duration(milliseconds: 800);
+
   Future<void> _backoff(
     int attempt,
     String? retryAfter,
@@ -316,14 +338,18 @@ class LlmClient {
     final delay = backoffDuration?.call(attempt) ??
         (seconds != null && seconds >= 0
             ? Duration(seconds: seconds)
-            : Duration(milliseconds: 800 * (1 << (attempt - 1))));
+            : _backoffBase * (1 << (attempt - 1) >= 30 ? 30 : attempt - 1));
+    // Clamp rather than trust: honour a short server hint, cap a hostile one.
+    final bounded = delay > _backoffMax ? _backoffMax : delay;
     final stopwatch = Stopwatch()..start();
-    while (stopwatch.elapsed < delay) {
+    while (stopwatch.elapsed < bounded) {
       if (cancelToken?.isCancelled ?? false) throw const LlmStoppedException();
-      final remaining = delay - stopwatch.elapsed;
-      final step = remaining < const Duration(milliseconds: 100)
+      final remaining = bounded - stopwatch.elapsed;
+      // Coarse steps (not 100ms) with a short final sleep: the old 100ms poll
+      // meant a 2-hour wait issued ~72,000 timers on the UI isolate.
+      final step = remaining < const Duration(milliseconds: 250)
           ? remaining
-          : const Duration(milliseconds: 100);
+          : const Duration(milliseconds: 250);
       await Future<void>.delayed(step);
     }
     if (cancelToken?.isCancelled ?? false) throw const LlmStoppedException();
@@ -638,9 +664,16 @@ class LlmClient {
         throw LlmException(messageField, transport: true);
       }
 
-      final choices = data['choices'] as List<dynamic>? ?? const [];
-      if (choices.isEmpty) continue;
-      final choice = choices.first as Map<String, dynamic>;
+      // Hostile or non-conforming proxies send malformed shapes here. A raw cast
+      // would raise a TypeError that is not an LlmException, so it skips retry
+      // classification and surfaces as "Unexpected error" with no diagnosis.
+      // Skip the frame instead, exactly like the element guard further down.
+      final rawChoices = data['choices'];
+      if (rawChoices is! List) continue;
+      if (rawChoices.isEmpty) continue;
+      final rawChoice = rawChoices.first;
+      if (rawChoice is! Map<String, dynamic>) continue;
+      final choice = rawChoice;
 
       final choiceError = choice['error'];
       if (choiceError is Map<String, dynamic>) {
@@ -706,11 +739,13 @@ class LlmClient {
           index,
           _StreamToolCall.new,
         );
-        accumulated.id ??= toolCall['id'] as String?;
+        final rawId = toolCall['id'];
+        accumulated.id ??= rawId is String ? rawId : null;
 
-        final function = toolCall['function'] as Map<String, dynamic>?;
+        final function = toolCall['function'];
         if (function == null) continue;
-        accumulated.name ??= function['name'] as String?;
+        final rawName = function['name'];
+        accumulated.name ??= rawName is String ? rawName : null;
         final arguments = function['arguments'] as String?;
         if (arguments != null) {
           totalAccumulatedBytes += arguments.length;

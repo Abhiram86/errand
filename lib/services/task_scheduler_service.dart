@@ -51,7 +51,6 @@ class TaskSchedulerService {
   static const MethodChannel _channel = MethodChannel('task_scheduler');
 
   final Map<int, CancelToken> _runningTokens = {};
-
   /// Checks if a task is currently executing in-process.
   bool isTaskRunning(int taskId) => _runningTokens.containsKey(taskId);
 
@@ -667,21 +666,7 @@ class TaskSchedulerService {
     if (pausedTasks.isEmpty) return 0;
 
     for (final task in pausedTasks) {
-      int? nextRun = task.nextRunAt ?? task.startsAt;
-      if (nextRun <= nowMillis) {
-        if (task.type == 'recurring' &&
-            task.repeatAfter != null &&
-            task.repeatAfter! > 0) {
-          nextRun = calculateNextRunAt(
-            startsAt: task.startsAt,
-            repeatAfter: task.repeatAfter!,
-            nowMillis: nowMillis,
-          );
-        } else {
-          nextRun = nowMillis + 60000;
-        }
-      }
-
+      final nextRun = resumedNextRunAt(task, nowMillis: nowMillis);
       await (db.update(db.schedulerTasks)..where((t) => t.id.equals(task.id)))
           .write(
         SchedulerTasksCompanion(
@@ -694,6 +679,63 @@ class TaskSchedulerService {
     }
 
     return pausedTasks.length;
+  }
+
+  /// The next run time for a task being resumed from 'paused'.
+  ///
+  /// Shared by [resumeAllTasks] and [setPaused] so the single-task and
+  /// resume-all paths cannot drift. Recomputing is required because pausing
+  /// leaves `nextRunAt` untouched: a task paused for a week would otherwise
+  /// resume onto a timestamp already in the past, and [scheduleTask] would
+  /// clamp that to `now + 1s` — firing immediately instead of at the next
+  /// cadence slot.
+  static int resumedNextRunAt(SchedulerTaskRow task, {required int nowMillis}) {
+    final nextRun = task.nextRunAt ?? task.startsAt;
+    if (nextRun > nowMillis) return nextRun;
+    if (task.type == 'recurring' &&
+        task.repeatAfter != null &&
+        task.repeatAfter! > 0) {
+      return calculateNextRunAt(
+        startsAt: task.startsAt,
+        repeatAfter: task.repeatAfter!,
+        nowMillis: nowMillis,
+      );
+    }
+    // One-off task whose moment passed while paused: run shortly, not instantly.
+    return nowMillis + 60000;
+  }
+
+  /// Pauses or resumes a single task, keeping [nextRunAt] and the registered
+  /// alarm in sync. Single source of truth for the pause/resume transition;
+  /// callers should not hand-roll the status write.
+  Future<void> setPaused(int taskId, {required bool paused}) async {
+    final nowMillis = DateTime.now().millisecondsSinceEpoch;
+    if (paused) {
+      await (db.update(db.schedulerTasks)..where((t) => t.id.equals(taskId)))
+          .write(
+        SchedulerTasksCompanion(
+          status: const Value('paused'),
+          updatedAt: Value(nowMillis),
+        ),
+      );
+      await cancelTask(taskId);
+      return;
+    }
+
+    final task =
+        await (db.select(db.schedulerTasks)..where((t) => t.id.equals(taskId)))
+            .getSingleOrNull();
+    if (task == null) return;
+    final nextRun = resumedNextRunAt(task, nowMillis: nowMillis);
+    await (db.update(db.schedulerTasks)..where((t) => t.id.equals(taskId)))
+        .write(
+      SchedulerTasksCompanion(
+        status: const Value('scheduled'),
+        nextRunAt: Value(nextRun),
+        updatedAt: Value(nowMillis),
+      ),
+    );
+    await scheduleTask(taskId);
   }
 
   /// In-flight reschedule guard: concurrent triggers (app start plus

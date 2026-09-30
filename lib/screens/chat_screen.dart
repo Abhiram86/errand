@@ -108,6 +108,17 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   bool _loadingOlderMessages = false;
 
   bool _busy = false;
+
+  /// Re-entrancy latch for [_runAgentTurn].
+  ///
+  /// `_busy` alone is not enough: callers such as [_regenerate] check it, then
+  /// `await` real async work (message deletion in [_truncateFrom]) before
+  /// reaching [_runAgentTurn], and `_busy` is not set until this method's own
+  /// `setState` runs. Two taps in that window both pass the caller's guard and
+  /// would start two concurrent [AgentLoop]s against the same `_messages` and
+  /// `_cancelToken` — two streams writing one working-message id, two final
+  /// answers, last write wins. This flag is set synchronously before any await.
+  bool _turnInFlight = false;
   String? _workingMessageId;
   DateTime _sessionStartTime = DateTime.now();
 
@@ -916,13 +927,19 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _streamingService.dispose();
     _a11yToastTimer?.cancel();
     unawaited(_intentService.stopWorkIndicator());
-    // Flush any pending debounced persistence synchronously into fire-and-forget
-    // database write so pending conversation turns are never dropped on unmount.
+    // Flush any pending debounced persistence into fire-and-forget database write
+    // so pending conversation turns are never dropped on unmount.
+    //
+    // This MUST go through _persistWriter like every other save: writing directly
+    // races any in-flight coalesced write for the same conversation, and if this
+    // newer snapshot lands first the older in-flight snapshot overwrites it —
+    // silently losing the final streamed answer.
     _persistTimer?.cancel();
     _persistTimer = null;
     final currentId = _activeConversation.id;
     if (currentId != null) {
-      unawaited(database.saveConversation(_snapshotConversation()));
+      final snapshot = _snapshotConversation();
+      unawaited(_persistWriter.run(() => database.saveConversation(snapshot)));
     }
     _conversationsSub?.cancel();
     _pinnedConversationsSub?.cancel();
@@ -1722,6 +1739,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         ],
       ),
     );
+    // The controller outlives the dialog unless released here; every rename
+    // otherwise leaked one (with its listeners/selection state) for the session.
+    controller.dispose();
     if (title == null || title.isEmpty || !mounted) return;
 
     await database.renameConversation(id, title);
@@ -1963,6 +1983,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   /// Shared tail of send / edit-resend / regenerate: adds the …working
   /// bubble and runs the agent loop over the current history.
   Future<void> _runAgentTurn() async {
+    // Synchronous latch: see [_turnInFlight]. Must precede every await below.
+    if (_turnInFlight || _busy) return;
+    _turnInFlight = true;
     final settings = AppSettingsService.instance;
     final provider = settings.activeProvider;
     final hasKey = provider.id == ProviderPresetType.openRouter.id
@@ -1972,6 +1995,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       final pName = provider.name;
       _showToast('Add an API key for $pName in Settings to start chatting.');
       await _openSettings();
+      _turnInFlight = false;
       return;
     }
 
@@ -2108,6 +2132,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       }
       _streamingService.cancel();
       unawaited(_intentService.stopWorkIndicator());
+      _turnInFlight = false;
     }
   }
 

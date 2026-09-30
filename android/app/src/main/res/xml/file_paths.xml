@@ -1,10 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Provider surface for the FileProvider-backed share/open/install paths.
+
+  NOTE: <root-path> is deliberately absent. It would map every path on the
+  device into this provider's namespace; combined with the open_file intent
+  handler (which builds a content:// URI from an agent-supplied path) that
+  turns LLM output into an arbitrary-file read-and-share primitive. Every
+  entry below is scoped, and MainActivity additionally enforces canonical
+  containment before calling getUriForFile.
+-->
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Shared user storage: Documents, Downloads, Music, Pictures, ... -->
     <external-path name="external_files" path="." />
+    <!-- App-private dirs. cache_files is what the OTA updater writes into. -->
     <files-path name="internal_files" path="." />
     <cache-path name="cache_files" path="." />
     <external-files-path name="external_files_path" path="." />
     <external-cache-path name="external_cache_path" path="." />
-    <root-path name="root" path="." />
 </paths>
 

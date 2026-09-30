@@ -10,6 +10,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Log
 import androidx.core.content.ContextCompat
+import com.errand.errand.R
 
 /**
  * Shared utility for dispatching and canceling native Android notifications
@@ -72,11 +73,10 @@ object NotificationHelper {
                 Notification.Builder(context)
             }
 
-            val iconRes = when (isSuccess) {
-                true -> android.R.drawable.checkbox_on_background
-                false -> android.R.drawable.stat_notify_error
-                null -> if (context.applicationInfo.icon != 0) context.applicationInfo.icon else android.R.drawable.ic_dialog_info
-            }
+            // Success/failure is conveyed by setColor() + the title text, not by the
+            // icon: every branch must still be a valid monochrome small icon, and the
+            // adaptive launcher icon (applicationInfo.icon) is not one.
+            val iconRes = R.drawable.ic_stat_errand
 
             val notifColor = when (isSuccess) {
                 true -> 0xFF238636.toInt() // Green

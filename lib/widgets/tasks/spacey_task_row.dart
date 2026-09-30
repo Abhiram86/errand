@@ -1,16 +1,15 @@
 import 'dart:async';
-import 'dart:io';
-import 'package:drift/drift.dart' hide Column;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 
-import '../../screens/task_file_preview_screen.dart';
 import '../../services/database.dart';
 import '../../services/task_progress_service.dart';
 import '../../services/task_scheduler_service.dart';
 import '../../theme/app_colors.dart';
+import '../../utils/format.dart';
+import 'confirm_destructive_with_files_sheet.dart';
 import 'task_action_button.dart';
 import 'task_timing_info.dart';
 
@@ -350,201 +349,41 @@ class _SpaceyTaskRowState extends State<SpaceyTaskRow> {
   }
 
   Future<void> _togglePause(SchedulerTaskRow task) async {
-    final db = widget.db;
-    final now = DateTime.now().millisecondsSinceEpoch;
-    if (task.status == 'paused') {
-      await (db.update(db.schedulerTasks)..where((t) => t.id.equals(task.id))).write(
-        SchedulerTasksCompanion(
-          status: const Value('scheduled'),
-          updatedAt: Value(now),
-        ),
-      );
-      await TaskSchedulerService.instance.scheduleTask(task.id);
-    } else {
-      await (db.update(db.schedulerTasks)..where((t) => t.id.equals(task.id))).write(
-        SchedulerTasksCompanion(
-          status: const Value('paused'),
-          updatedAt: Value(now),
-        ),
-      );
-      await TaskSchedulerService.instance.cancelTask(task.id);
-    }
+    // Routed through the service so nextRunAt is recomputed on resume; a
+    // hand-rolled status write left the stale timestamp in place and the task
+    // fired 1s after resuming.
+    await TaskSchedulerService.instance.setPaused(
+      task.id,
+      paused: task.status != 'paused',
+    );
   }
 
   Future<void> _deleteTask(int taskId) async {
-    final List<File> files = await _scheduler.getOwnedFilesForTask(taskId);
+    final ownedFiles = await _scheduler.getOwnedFilesForTask(taskId);
     if (!mounted) return;
+    // Sizes are resolved here, once, rather than per row inside the dialog's
+    // build (two synchronous stats per file, re-run on every checkbox toggle).
+    final files = measureFiles(ownedFiles);
+    final count = files.length;
 
-    var totalBytes = 0;
-    for (final f in files) {
-      try {
-        totalBytes += f.lengthSync();
-      } catch (_) {}
-    }
-
-    var deleteFiles = files.isNotEmpty;
-    var filesExpanded = false;
-
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (dialogCtx) {
-        return StatefulBuilder(
-          builder: (context, setDialogState) {
-            final bytesStr = _formatBytes(totalBytes);
-            return AlertDialog(
-              backgroundColor: const Color(0xFF1E222B),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-              title: const Text('Delete Task?', style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w600)),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Are you sure you want to delete "${widget.task.title}"?',
-                    style: const TextStyle(color: Color(0xFFC9D1D9), fontSize: 14),
-                  ),
-                  if (files.isNotEmpty) ...[
-                    const SizedBox(height: 16),
-                    Container(
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF161B22),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: const Color(0xFF30363D)),
-                      ),
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Row(
-                            children: [
-                              Checkbox(
-                                value: deleteFiles,
-                                onChanged: (val) => setDialogState(() => deleteFiles = val ?? false),
-                                activeColor: kBubbleUser,
-                              ),
-                              Expanded(
-                                child: InkWell(
-                                  onTap: () => setDialogState(() => deleteFiles = !deleteFiles),
-                                  borderRadius: BorderRadius.circular(4),
-                                  child: Padding(
-                                    padding: const EdgeInsets.symmetric(vertical: 4),
-                                    child: Text(
-                                      'Also delete ${files.length} report ${files.length == 1 ? 'file' : 'files'} ($bytesStr)?',
-                                      style: const TextStyle(color: Color(0xFFE6EDF3), fontSize: 13),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                              InkWell(
-                                onTap: () => setDialogState(() => filesExpanded = !filesExpanded),
-                                borderRadius: BorderRadius.circular(12),
-                                child: Padding(
-                                  padding: const EdgeInsets.all(6),
-                                  child: Icon(
-                                    filesExpanded ? Icons.expand_less_rounded : Icons.expand_more_rounded,
-                                    color: const Color(0xFF8B949E),
-                                    size: 18,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                          if (filesExpanded) ...[
-                            const Divider(height: 1, color: Color(0xFF30363D)),
-                            ConstrainedBox(
-                              constraints: const BoxConstraints(maxHeight: 160),
-                              child: Scrollbar(
-                                child: ListView.separated(
-                                  shrinkWrap: true,
-                                  padding: const EdgeInsets.symmetric(vertical: 4),
-                                  itemCount: files.length,
-                                  separatorBuilder: (context, index) => const Divider(
-                                    height: 1,
-                                    color: Color(0xFF21262D),
-                                  ),
-                                  itemBuilder: (context, index) {
-                                    final file = files[index];
-                                    final relPath = TaskSchedulerService.toScratchRelative(file.path);
-                                    int fileBytes = 0;
-                                    try {
-                                      fileBytes = file.existsSync() ? file.lengthSync() : 0;
-                                    } catch (_) {}
-                                    return InkWell(
-                                      onTap: () {
-                                        TaskFilePreviewScreen.show(
-                                          dialogCtx,
-                                          filePath: file.path,
-                                          title: p.basename(file.path),
-                                        );
-                                      },
-                                      borderRadius: BorderRadius.circular(4),
-                                      child: Padding(
-                                        padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
-                                        child: Row(
-                                          children: [
-                                            Icon(
-                                              _iconForPath(relPath),
-                                              color: const Color(0xFF58A6FF),
-                                              size: 14,
-                                            ),
-                                            const SizedBox(width: 8),
-                                            Expanded(
-                                              child: Text(
-                                                relPath,
-                                                maxLines: 1,
-                                                overflow: TextOverflow.ellipsis,
-                                                style: const TextStyle(
-                                                  color: Color(0xFF58A6FF),
-                                                  fontSize: 12,
-                                                  decoration: TextDecoration.underline,
-                                                  decorationColor: Color(0xFF58A6FF),
-                                                ),
-                                              ),
-                                            ),
-                                            const SizedBox(width: 8),
-                                            Text(
-                                              _formatBytes(fileBytes),
-                                              style: const TextStyle(
-                                                color: Color(0xFF8B949E),
-                                                fontSize: 11,
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    );
-                                  },
-                                ),
-                              ),
-                            ),
-                          ],
-                        ],
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.of(dialogCtx).pop(false),
-                  child: const Text('Cancel', style: TextStyle(color: Color(0xFF8B949E))),
-                ),
-                TextButton(
-                  onPressed: () => Navigator.of(dialogCtx).pop(true),
-                  child: const Text('Delete', style: TextStyle(color: kDanger, fontWeight: FontWeight.w600)),
-                ),
-              ],
-            );
-          },
-        );
-      },
+    final result = await showDestructiveWithFilesDialog(
+      context,
+      title: 'Delete Task?',
+      message: 'Are you sure you want to delete "${widget.task.title}"?',
+      confirmLabel: 'Delete',
+      files: files,
+      checkboxLabel: count == 1
+          ? 'Also delete 1 report file (${formatBytes(totalBytesOf(files))})?'
+          : 'Also delete $count report files (${formatBytes(totalBytesOf(files))})?',
+      iconForPath: _iconForPath,
+      tapToPreview: true,
     );
 
-    if (confirm != true || !mounted) return;
+    if (result == null || !result.confirmed || !mounted) return;
 
     final deleted = await _scheduler.deleteTask(
       taskId,
-      deleteFiles: deleteFiles,
+      deleteFiles: result.deleteFiles,
     );
     if (!deleted && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -577,12 +416,6 @@ class _SpaceyTaskRowState extends State<SpaceyTaskRow> {
       default:
         return Icons.insert_drive_file_outlined;
     }
-  }
-
-  static String _formatBytes(int bytes) {
-    if (bytes < 1024) return '$bytes B';
-    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
   }
 }
 

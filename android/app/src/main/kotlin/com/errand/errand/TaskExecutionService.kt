@@ -9,6 +9,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.location.Geocoder
 import android.location.Location
 import android.location.LocationManager
@@ -19,7 +20,9 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
 import android.util.Log
+import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import com.errand.errand.R
 import io.flutter.FlutterInjector
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.engine.dart.DartExecutor
@@ -27,6 +30,10 @@ import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugins.GeneratedPluginRegistrant
 import java.util.ArrayDeque
 import java.util.Locale
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 
 /**
  * Foreground service that guarantees process survival and CPU wake-lock while background
@@ -48,6 +55,7 @@ class TaskExecutionService : Service() {
         private val MAIN_ENGINE_TIMEOUT_MS = 12 * 60 * 1000L
         private val BACKGROUND_ENGINE_TIMEOUT_MS = 12 * 60 * 1000L
         private const val TASK_WAKELOCK_TIMEOUT_MS = (12 * 60 * 1000L) + 60_000L // 12 min main-engine timeout + 60s margin = 13 minutes
+        private const val GEOCODE_TIMEOUT_SECONDS = 8L
 
         const val ACTION_EXECUTE_TASK = "com.errand.ACTION_EXECUTE_TASK"
         const val ACTION_RESCHEDULE_ALL = "com.errand.ACTION_RESCHEDULE_ALL"
@@ -104,6 +112,13 @@ class TaskExecutionService : Service() {
     private val engineReadyCallbacks = ArrayList<() -> Unit>()
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    /**
+     * Long-lived geocode executor. Reverse-geocoding is network I/O, so it must
+     * never run on the platform thread: MethodChannel handlers execute there, and
+     * blocking them for the 8s timeout freezes the whole app.
+     */
+    private val geocodeExecutor: ExecutorService = Executors.newCachedThreadPool()
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -127,7 +142,12 @@ class TaskExecutionService : Service() {
         val taskId = intent?.getIntExtra(TaskAlarmManager.EXTRA_TASK_ID, -1) ?: -1
         val title = intent?.getStringExtra(TaskAlarmManager.EXTRA_TASK_TITLE) ?: "Task in progress"
 
-        startForeground(NOTIFICATION_ID, buildForegroundNotification(title))
+        // Type-qualified overload: the legacy 2-arg form leaves the running service
+        // without a declared type, which matters from Android 14.
+        ServiceCompat.startForeground(
+            this, NOTIFICATION_ID, buildForegroundNotification(title),
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+        )
 
         val request = ServiceRequest(action, taskId, title, startId)
         requestQueue.addLast(request)
@@ -139,6 +159,33 @@ class TaskExecutionService : Service() {
         return START_NOT_STICKY
     }
 
+    /**
+     * Android 15+ calls this once the app's 6h/24h dataSync budget is spent. Not
+     * overriding it means the framework default does not stop the service and the
+     * system raises `RemoteServiceException` instead. Runs are already bounded by
+     * their own watchdogs, so tearing down is always safe here.
+     */
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        super.onTimeout(startId, fgsType)
+        Log.e(TAG, "dataSync foreground budget exhausted; stopping service")
+        requestQueue.clear()
+        destroyBackgroundEngine()
+        releaseWakeLockQuietly()
+        ServiceCompat.stopForeground(this, Service.STOP_FOREGROUND_REMOVE)
+        stopSelf(lastStartId.takeIf { it > 0 } ?: startId)
+    }
+
+    private fun releaseWakeLockQuietly() {
+        try {
+            if (wakeLock?.isHeld == true) {
+                wakeLock?.release()
+            }
+            wakeLock = null
+        } catch (e: Exception) {
+            Log.e(TAG, "Error releasing wake lock", e)
+        }
+    }
+
     private fun processNextRequest() {
         mainHandler.post {
             if (requestQueue.isEmpty()) {
@@ -146,16 +193,9 @@ class TaskExecutionService : Service() {
                 isProcessing = false
                 destroyBackgroundEngine()
 
-                try {
-                    if (wakeLock?.isHeld == true) {
-                        wakeLock?.release()
-                    }
-                    wakeLock = null
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error releasing wake lock", e)
-                }
+                releaseWakeLockQuietly()
 
-                stopForeground(true)
+                ServiceCompat.stopForeground(this, Service.STOP_FOREGROUND_REMOVE)
                 stopSelf(lastStartId)
                 return@post
             }
@@ -548,18 +588,18 @@ class TaskExecutionService : Service() {
                         return@setMethodCallHandler
                     }
 
-                    // Geocoder does network I/O: bound it so a hung lookup
-                    // cannot leak a thread or stall the result forever.
-                    val geocodeExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
-                    try {
-                        val geocodeFuture = geocodeExecutor.submit<Map<String, Any?>> {
-                            reverseGeocode(location)
-                        }
+                    // Geocoder does network I/O and MethodChannel handlers run on the
+                    // platform thread, so the whole lookup is offloaded. Blocking
+                    // here would freeze the main looper for the full 8s timeout.
+                    // MainActivity already follows this shape (dispatchLocationResult).
+                    geocodeExecutor.execute {
                         val addressMap = try {
-                            geocodeFuture.get(8, java.util.concurrent.TimeUnit.SECONDS)
-                        } catch (_: Exception) {
-                            geocodeFuture.cancel(true)
-                            emptyMap<String, Any?>()
+                            geocodeExecutor.submit<Map<String, Any?>> { reverseGeocode(location) }
+                                .get(GEOCODE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                        } catch (_: TimeoutException) {
+                            mapOf("error" to "Geocoding timed out after ${GEOCODE_TIMEOUT_SECONDS}s")
+                        } catch (e: Exception) {
+                            mapOf("error" to (e.message ?: "Geocoding failed"))
                         }
                         val data = mapOf(
                             "latitude" to location.latitude,
@@ -575,10 +615,10 @@ class TaskExecutionService : Service() {
                         mainHandler.post {
                             try {
                                 result.success(data)
-                            } catch (_: Exception) {}
+                            } catch (_: Exception) {
+                                // Second reply after a timeout race — already answered.
+                            }
                         }
-                    } finally {
-                        geocodeExecutor.shutdownNow()
                     }
                 }
                 else -> result.notImplemented()
@@ -762,14 +802,8 @@ class TaskExecutionService : Service() {
 
     override fun onDestroy() {
         destroyBackgroundEngine()
-        try {
-            if (wakeLock?.isHeld == true) {
-                wakeLock?.release()
-            }
-            wakeLock = null
-        } catch (e: Exception) {
-            Log.e(TAG, "Error releasing wake lock", e)
-        }
+        releaseWakeLockQuietly()
+        geocodeExecutor.shutdownNow()
         super.onDestroy()
     }
 
@@ -803,12 +837,10 @@ class TaskExecutionService : Service() {
             Notification.Builder(this)
         }
 
-        val iconRes = if (applicationInfo.icon != 0) applicationInfo.icon else android.R.drawable.ic_dialog_info
-
         return builder
             .setContentTitle("Errand Scheduled Task")
             .setContentText("Executing: $taskTitle")
-            .setSmallIcon(iconRes)
+            .setSmallIcon(R.drawable.ic_stat_errand)
             .setContentIntent(pendingTap)
             .setOngoing(true)
             .build()

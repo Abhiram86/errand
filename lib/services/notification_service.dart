@@ -79,7 +79,17 @@ class NotificationService {
           await _methodChannel.invokeMethod<bool>('hasNotificationPermission');
       return res ?? false;
     } catch (_) {
-      return false;
+      // The primary channel may not implement the method on this engine. Try the
+      // fallback channel before concluding permission is absent: returning false
+      // here makes showNotification() bail out before its own fallback runs, which
+      // silently records every run as notification_sent = 0.
+      try {
+        final res = await const MethodChannel('task_scheduler')
+            .invokeMethod<bool>('hasNotificationPermission');
+        return res ?? false;
+      } catch (_) {
+        return false;
+      }
     }
   }
 

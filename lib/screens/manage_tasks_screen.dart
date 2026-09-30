@@ -11,6 +11,7 @@ import '../services/task_toast_service.dart';
 import '../services/workspace.dart';
 import '../theme/app_colors.dart';
 import '../utils/app_profile.dart';
+import '../utils/format.dart';
 import '../widgets/tasks/tasks_widgets.dart';
 
 /// Full-screen management page for scheduled tasks, logs, and autonomous background runs.
@@ -170,7 +171,7 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
         _orphanBytes = oBytes;
         _storageSummary = count == 0
             ? 'Scratch empty'
-            : 'Scratch ${_formatBytes(bytes)} · $count ${count == 1 ? 'file' : 'files'}';
+            : 'Scratch ${formatBytes(bytes)} · $count ${count == 1 ? 'file' : 'files'}';
       });
     } catch (_) {}
   }
@@ -180,16 +181,10 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text('Cleared ${result.count} orphaned files (${_formatBytes(result.bytes)})'),
+        content: Text('Cleared ${result.count} orphaned files (${formatBytes(result.bytes)})'),
       ),
     );
     await _loadStorageSummary();
-  }
-
-  static String _formatBytes(int bytes) {
-    if (bytes < 1024) return '$bytes B';
-    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
   }
 
   Widget _buildStorageFooter() {
@@ -222,7 +217,7 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
                 if (_orphanCount > 0) ...[
                   const SizedBox(width: 6),
                   Text(
-                    '· Orphaned: $_orphanCount (${_formatBytes(_orphanBytes)})',
+                    '· Orphaned: $_orphanCount (${formatBytes(_orphanBytes)})',
                     style: const TextStyle(color: Color(0xFFD29922), fontSize: 11.5),
                   ),
                   const SizedBox(width: 4),

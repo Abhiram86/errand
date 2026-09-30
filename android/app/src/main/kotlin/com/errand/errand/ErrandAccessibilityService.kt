@@ -113,9 +113,10 @@ class ErrandAccessibilityService : AccessibilityService() {
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         super.onTaskRemoved(rootIntent)
-        try {
-            disableSelf()
-        } catch (_: Exception) {}
+        // Deliberately does NOT call disableSelf(). Swiping Errand out of recents
+        // must not switch off a service the user explicitly enabled in Settings;
+        // it stays enabled until they turn it off themselves. The agent still has
+        // the explicit `a11y`/`disable` channel method for that.
     }
 
     override fun onInterrupt() {}

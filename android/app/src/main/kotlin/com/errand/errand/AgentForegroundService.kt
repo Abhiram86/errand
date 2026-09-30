@@ -7,8 +7,13 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
+import androidx.core.app.ServiceCompat
+import com.errand.errand.R
 
 /**
  * Short-lived foreground service held ONLY while an agent turn is running.
@@ -30,6 +35,14 @@ class AgentForegroundService : Service() {
         private const val CHANNEL_ID = "agent_work"
         private const val NOTIFICATION_ID = 4711
 
+        /**
+         * Backstop for a Dart side that never calls [stop]. A leaked service here
+         * would hold the shared 6h/24h dataSync budget (see [onTimeout]) and
+         * eventually break every future turn *and* every scheduled task. Generous
+         * relative to a real turn, but far below the budget it would otherwise eat.
+         */
+        private const val SELF_TIMEOUT_MS = 15 * 60_000L
+
         fun start(context: Context) {
             val intent = Intent(context, AgentForegroundService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -44,11 +57,43 @@ class AgentForegroundService : Service() {
         }
     }
 
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val selfTimeout = Runnable { stopSelfSafely() }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForeground(NOTIFICATION_ID, buildNotification())
+        // Type-qualified overload: the legacy 2-arg form leaves the running
+        // service without a declared type, which matters from Android 14.
+        ServiceCompat.startForeground(
+            this, NOTIFICATION_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+        )
+        // Re-arm on every start so a restart cannot shorten the backstop.
+        mainHandler.removeCallbacks(selfTimeout)
+        mainHandler.postDelayed(selfTimeout, SELF_TIMEOUT_MS)
         return START_NOT_STICKY
+    }
+
+    /**
+     * Android 15+ calls this once the app's 6h/24h dataSync budget is spent. Not
+     * overriding it means the framework default does not stop the service and the
+     * system raises `RemoteServiceException` instead.
+     */
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        super.onTimeout(startId, fgsType)
+        mainHandler.removeCallbacks(selfTimeout)
+        stopSelfSafely()
+    }
+
+    override fun onDestroy() {
+        mainHandler.removeCallbacks(selfTimeout)
+        super.onDestroy()
+    }
+
+    private fun stopSelfSafely() {
+        mainHandler.removeCallbacks(selfTimeout)
+        ServiceCompat.stopForeground(this, Service.STOP_FOREGROUND_REMOVE)
+        stopSelf()
     }
 
     private fun buildNotification(): Notification {
@@ -78,7 +123,7 @@ class AgentForegroundService : Service() {
         return builder
             .setContentTitle("Errand is working")
             .setContentText("Agent turn in progress — tap to return")
-            .setSmallIcon(applicationInfo.icon)
+            .setSmallIcon(R.drawable.ic_stat_errand)
             .setContentIntent(pendingTap)
             .setOngoing(true)
             .build()
