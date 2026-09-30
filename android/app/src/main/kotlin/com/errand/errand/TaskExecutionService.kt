@@ -108,6 +108,12 @@ class TaskExecutionService : Service() {
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var backgroundEngine: FlutterEngine? = null
+    /**
+     * PDF plugin bound to the background engine. Destroying the engine does not
+     * dispose the plugin's native PDDocuments or its executor, so without an
+     * explicit [PdfReaderPlugin.closeAll] every engine cycle leaks them.
+     */
+    private var backgroundPdfPlugin: PdfReaderPlugin? = null
     private var isEngineReady = false
     private val engineReadyCallbacks = ArrayList<() -> Unit>()
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -528,7 +534,9 @@ class TaskExecutionService : Service() {
 
         setupLocationChannel(engine)
         setupIntentChannel(engine)
-        PdfReaderPlugin.registerWith(engine.dartExecutor.binaryMessenger, applicationContext)
+        backgroundPdfPlugin = PdfReaderPlugin.registerWith(
+            engine.dartExecutor.binaryMessenger, applicationContext
+        ).second
     }
 
     private fun setupLocationChannel(engine: FlutterEngine) {
@@ -793,6 +801,14 @@ class TaskExecutionService : Service() {
         try {
             isEngineReady = false
             engineReadyCallbacks.clear()
+            // Release native PDDocuments and the plugin executor before the
+            // engine goes away (CI-gated: Kotlin does not compile locally).
+            try {
+                backgroundPdfPlugin?.closeAll()
+            } catch (e: Exception) {
+                Log.w(TAG, "Error closing background PDF plugin", e)
+            }
+            backgroundPdfPlugin = null
             backgroundEngine?.destroy()
             backgroundEngine = null
         } catch (e: Exception) {

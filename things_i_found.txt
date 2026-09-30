@@ -1,0 +1,9 @@
+1. Some times when agent finishes The composer still is disabled it maybe the service fault of completion token but still worth checking
+2. There is no spacing between settings tabs/sections like i have screenshot attached if not ask me i will attach
+3. Autofocus is working but the vision i though was autofocus + keyboard currently just autofocus
+4. Need to refine system prompts to have latest dates in start of a new session/chat and update it dynamically on every launch/new chat (prompt caching must be broken so accordingly needed to be edited) cuz the model searches or does old things
+also one more thing i found previously before scheduled tasks when i ask to set a reminder it would set a reminder in alarm but now when i ask it sets a scheduled task? which is very annoying cause I just want to be reminded not to do a task.
+5. [DONE] A ux instead of token by token rendering need to establish a paragh by paragh rendering like in `t3code` (copying implementation) an oss tool does which makes less renders and smoother transitions.
+6. [DONE] In manage tasks settings on task item also need a prompt editor current its already packed, Yeah need some ui assistance first and then must decide to do something based on that
+7. I guess linked files arent getting deleted? report i feel like gest deleted
+Also if possible inside logs sheet where we show all logs for a specific task add clear logs/files button

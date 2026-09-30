@@ -327,6 +327,46 @@ void main() {
       expect(check.needsConfirmation, isTrue);
     });
 
+    test('ifconfig positional mutation confirms, display stays safe', () {
+      ShellSafetyCheck check;
+      check = ShellSafetyCheck.analyze('ifconfig eth0 192.168.1.5');
+      expect(check.needsConfirmation, isTrue);
+      check = ShellSafetyCheck.analyze('ifconfig eth0 netmask 255.255.255.0');
+      expect(check.needsConfirmation, isTrue);
+      check = ShellSafetyCheck.analyze('ifconfig eth0 hw ether 00:11:22:33:44:55');
+      expect(check.needsConfirmation, isTrue);
+      check = ShellSafetyCheck.analyze('ifconfig eth0');
+      expect(check.isSafe, isTrue);
+    });
+
+    test('arithmetic expansion is not a command substitution', () {
+      ShellSafetyCheck check;
+      check = ShellSafetyCheck.analyze(r'echo $((1+2))');
+      expect(check.isSafe, isTrue);
+      check = ShellSafetyCheck.analyze(r'echo $((a > b))');
+      expect(check.isSafe, isTrue);
+      check = ShellSafetyCheck.analyze(r'echo "total: $((3*4))"');
+      expect(check.isSafe, isTrue);
+      // Command substitution nested in arithmetic still runs, so the payload
+      // must not be swallowed by the arithmetic strip.
+      check = ShellSafetyCheck.analyze(r'echo $(( $(rm -rf /) ))');
+      expect(check.isSafe, isFalse);
+    });
+
+    test('heredoc bodies are literal input, not analyzed commands', () {
+      ShellSafetyCheck check;
+      check = ShellSafetyCheck.analyze('cat <<EOF\nrm -rf /\nEOF');
+      expect(check.isSafe, isTrue);
+      check = ShellSafetyCheck.analyze("cat <<'EOF'\nrm -rf /\nEOF");
+      expect(check.isSafe, isTrue);
+      check = ShellSafetyCheck.analyze('cat <<< "rm -rf /"');
+      expect(check.isSafe, isTrue);
+      // Unterminated heredoc: content is never proven literal, so the body
+      // is still analyzed and fails closed.
+      check = ShellSafetyCheck.analyze('cat <<EOF\nrm -rf /\n');
+      expect(check.isSafe, isFalse);
+    });
+
     test('redirects: outside-scratch writes confirm, sinks/fd-dups/tests stay safe', () {
       ShellSafetyCheck check;
       check = ShellSafetyCheck.analyze(

@@ -56,11 +56,18 @@ class ShellSafetyCheck {
   static ShellSafetyCheck _worst(ShellSafetyCheck a, ShellSafetyCheck b) =>
       b.level.index > a.level.index ? b : a; // safe < confirm < blocked
 
-  /// Bodies of top-level $(...) spans, for recursive analysis. Balanced
+  /// Removes `$((...))` arithmetic spans (replaced with `0`): arithmetic
+  /// evaluates math, never commands, and the shipped headless prompt blesses
+  /// `echo $((expr))` for on-device math. Without this, `$((1+2))` scans as
+  /// a substitution of unknown command `1+2`, and `$((a > b))` misreads as
+  /// a redirect write. Unbalanced spans are left for fail-closed handling.
   /// scan (not a flat regex) so nested substitutions resolve
   /// innermost-first instead of being misread or missed.
   /// Only single quotes suppress expansion: `"$(...)"` executes in shell
   /// and must be scanned; skipping it was a real bypass.
+  ///
+  /// `$((...))` arithmetic is deliberately NOT collected here (see
+  /// [_stripArithmetic]): it evaluates math, never commands.
   static List<String> _substitutionBodies(String cmd) {
     final bodies = <String>[];
     var i = 0;
@@ -131,6 +138,127 @@ class ShellSafetyCheck {
     return bodies;
   }
 
+  /// Re-emits any `$(...)` command substitutions found inside an arithmetic
+  /// body, wrapped so downstream scanning treats them as real substitutions.
+  static String _nestedSubstitutions(String body) {
+    final out = StringBuffer();
+    var i = 0;
+    final n = body.length;
+    while (i < n) {
+      if (body[i] == r'$' && i + 1 < n && body[i + 1] == '(') {
+        var depth = 0;
+        var j = i + 1;
+        var closed = -1;
+        while (j < n) {
+          if (body[j] == '(') depth++;
+          if (body[j] == ')') {
+            depth--;
+            if (depth == 0) {
+              closed = j;
+              break;
+            }
+          }
+          j++;
+        }
+        if (closed != -1) {
+          out.write(body.substring(i, closed + 1));
+          i = closed + 1;
+          continue;
+        }
+      }
+      i++;
+    }
+    return out.toString();
+  }
+
+  static String _stripArithmetic(String cmd) {
+    final out = StringBuffer();
+    var i = 0;
+    final n = cmd.length;
+    var inDouble = false;
+    while (i < n) {
+      final c = cmd[i];
+      if (c == '\\') {
+        out.write(c);
+        if (i + 1 < n) out.write(cmd[i + 1]);
+        i += 2;
+        continue;
+      }
+      if (c == '"') {
+        inDouble = !inDouble;
+        out.write(c);
+        i++;
+        continue;
+      }
+      if (c == "'" && !inDouble) {
+        final end = cmd.indexOf("'", i + 1);
+        if (end == -1) {
+          out.write(cmd.substring(i));
+          break;
+        }
+        out.write(cmd.substring(i, end + 1));
+        i = end + 1;
+        continue;
+      }
+      if (c == r'$' &&
+          i + 2 < n &&
+          cmd[i + 1] == '(' &&
+          cmd[i + 2] == '(') {
+        // Balanced scan from the first paren; drop the whole span on success.
+        var depth = 0;
+        var j = i + 1;
+        var q2 = '';
+        var closed = -1;
+        while (j < n) {
+          final d = cmd[j];
+          if (q2.isNotEmpty) {
+            if (d == '\\' && q2 == '"') {
+              j += 2;
+              continue;
+            }
+            if (d == q2) q2 = '';
+            j++;
+            continue;
+          }
+          if (d == '\\') {
+            j += 2;
+            continue;
+          }
+          if (d == "'" || d == '"') {
+            q2 = d;
+            j++;
+            continue;
+          }
+          if (d == '(') depth++;
+          if (d == ')') {
+            depth--;
+            if (depth == 0) {
+              closed = j;
+              break;
+            }
+          }
+          j++;
+        }
+        if (closed != -1) {
+          // Arithmetic itself evaluates no commands, but bash *does* run
+          // command substitutions nested inside it (`$(( $(rm -rf /) ))`).
+          // Re-emit those spans so the substitution scanner still sees them,
+          // then replace the math with `0`.
+          out.write('0');
+          out.write(_nestedSubstitutions(cmd.substring(i + 2, closed)));
+          i = closed + 1;
+          continue;
+        }
+        out.write(c);
+        i++;
+        continue;
+      }
+      out.write(c);
+      i++;
+    }
+    return out.toString();
+  }
+
   /// Analyzes a command line for dangerous operations and destructive mutations.
   ///
   /// Decision pipeline (in order — do not add new layers, extend the matching
@@ -154,7 +282,7 @@ class ShellSafetyCheck {
     String? scratchPath,
     String? workingDirectory,
   }) {
-    final cmd = command.trim();
+    final cmd = _stripArithmetic(command.trim());
 
     if (cmd.isEmpty) {
       return const ShellSafetyCheck(
@@ -247,6 +375,25 @@ class ShellSafetyCheck {
     return false;
   }
 
+  /// Index just past the heredoc terminator line (`delim` alone on a line),
+  /// or -1 when unterminated. Search starts at [from].
+  static int _heredocEnd(String command, int from, String delim) {
+    var lineStart = command.indexOf('\n', from);
+    while (lineStart != -1) {
+      lineStart++;
+      var lineEnd = command.indexOf('\n', lineStart);
+      final line = lineEnd == -1
+          ? command.substring(lineStart)
+          : command.substring(lineStart, lineEnd);
+      if (line == delim || line == '$delim\r') {
+        return lineEnd == -1 ? command.length : lineEnd + 1;
+      }
+      if (lineEnd == -1) break;
+      lineStart = lineEnd;
+    }
+    return -1;
+  }
+
   static List<String> _splitCommands(String command) {
     final result = <String>[];
     var start = 0;
@@ -280,6 +427,56 @@ class ShellSafetyCheck {
       if ((c == ')' || c == '}' || c == ']') && depth > 0) {
         depth--;
         continue;
+      }
+
+      // Heredoc `<<DELIM` (but not `<<<` herestring): content lines up to
+      // the delimiter line are literal input, not commands. Skip ahead so
+      // body text is never analyzed as verbs; the `<<DELIM` operator itself
+      // stays in the segment for redirect handling. Unclosed heredocs are
+      // left alone (fail closed downstream).
+      if (c == '<' &&
+          i + 1 < command.length &&
+          command[i + 1] == '<' &&
+          !(i + 2 < command.length && command[i + 2] == '<')) {
+        var j = i + 2;
+        if (j < command.length && command[j] == '-') j++; // <<- strips tabs
+        while (j < command.length &&
+            (command[j] == ' ' || command[j] == '\t')) {
+          j++;
+        }
+        String? delim;
+        if (j < command.length &&
+            (command[j] == "'" || command[j] == '"')) {
+          final q = command[j];
+          final end = command.indexOf(q, j + 1);
+          if (end != -1) {
+            delim = command.substring(j + 1, end);
+            j = end + 1;
+          }
+        } else {
+          var k = j;
+          while (k < command.length &&
+              command[k] != ' ' &&
+              command[k] != '\t' &&
+              command[k] != '\n' &&
+              command[k] != ';' &&
+              command[k] != '&' &&
+              command[k] != '|') {
+            k++;
+          }
+          if (k > j) {
+            delim = command.substring(j, k);
+            j = k;
+          }
+        }
+        if (delim != null && delim.isNotEmpty) {
+          final closeIdx = _heredocEnd(command, j, delim);
+          if (closeIdx != -1) {
+            // -1: the for-loop increment lands exactly on closeIdx.
+            i = closeIdx - 1;
+            continue;
+          }
+        }
       }
 
       // If '&' is part of '>&' or '&>', it's a redirect, not a command separator.
@@ -1236,7 +1433,16 @@ class ShellSafetyCheck {
       };
       final reconfigures = args.any(mutate.contains) ||
           (command == 'ifconfig' &&
-              args.any((a) => a == 'up' || a == 'down'));
+              (args.any((a) => a == 'up' || a == 'down') ||
+                  // Classic positional mutation: `ifconfig eth0 192.168.1.5`,
+                  // `ifconfig eth0 netmask ...`. Bare `ifconfig [<iface>]`
+                  // only displays.
+                  args.where((a) => !a.startsWith('-')).length > 1 ||
+                  args.any((a) =>
+                      RegExp(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}')
+                          .hasMatch(a) ||
+                      const {'netmask', 'broadcast', 'hw', 'ether', 'mtu'}
+                          .contains(a))));
       if (reconfigures) {
         return ShellSafetyCheck(
           ShellSafetyLevel.needsConfirmation,
