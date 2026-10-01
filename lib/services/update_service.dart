@@ -17,6 +17,8 @@ class UpdateService {
       'https://api.github.com/repos/Abhiram86/errand/releases/latest';
   static const String _dbKey = 'pref.app_update_info';
   static const String _kLastSeenVersionKey = 'pref.last_seen_version';
+  static const String _kNeverAskKey = 'pref.update_never_ask';
+  static const String _kInformedKey = 'pref.update_informed';
   static const Duration checkInterval = Duration(hours: 2);
   static const Duration defaultDownloadInactivityTimeout =
       Duration(seconds: 30);
@@ -57,6 +59,8 @@ class UpdateService {
     // Dismissal is intentionally session-scoped. A new app open must surface
     // an update again while that release is still newer than the installed app.
     _dismissedVersionThisSession = null;
+    _neverAskAgain = (await _db.getSetting(_kNeverAskKey)) == 'true';
+    _hasBeenInformed = (await _db.getSetting(_kInformedKey)) == 'true';
     final cached = await loadPersistedInfo();
     if (cached != null) {
       final platformInfo = await _appInfo.getAppInfo();
@@ -103,10 +107,49 @@ class UpdateService {
             0;
   }
 
+  /// Whether the user has opted out of update prompts permanently.
+  ///
+  /// F-Droid Inclusion Policy §5 requires that an in-app updater's download be
+  /// an explicit, opt-in act, defaulting to declining. The user makes that
+  /// choice by un-ticking "Never ask again"; once set, no prompt is surfaced
+  /// again and the automatic check still runs (it only reads JSON metadata —
+  /// no binary is ever fetched without the user pressing Update).
+  bool get neverAskAgain => _neverAskAgain;
+  bool _neverAskAgain = false;
+
+  /// Whether the one-time "in-app updating exists" disclosure has been shown.
+  ///
+  /// An F-Droid maintainer (fdroiddata#3113) asks that the user be informed
+  /// that in-app updating exists *before* it acts, not merely consent each
+  /// time. Shown once, then never again.
+  bool get hasBeenInformed => _hasBeenInformed;
+  bool _hasBeenInformed = false;
+
+  Future<void> markInformed() async {
+    if (_hasBeenInformed) return;
+    _hasBeenInformed = true;
+    await _db.setSetting(_kInformedKey, 'true');
+  }
+
+  /// Sets or clears the permanent opt-out. Clearing re-enables prompts
+  /// immediately, which is what makes the Settings/sidebar escape hatch
+  /// meaningful rather than one-way.
+  Future<void> setNeverAskAgain(bool value) async {
+    _neverAskAgain = value;
+    await _db.setSetting(_kNeverAskKey, value ? 'true' : 'false');
+    if (value) {
+      activeUpdate.value = null;
+    } else {
+      // Re-check so the user is not left with a silently stale state.
+      unawaited(checkUpdate(force: true));
+    }
+  }
+
   void _publishActiveUpdate(AppUpdateInfo? info) {
     if (info != null &&
         info.hasUpdate &&
         info.hasCompatibleApk &&
+        !_neverAskAgain &&
         !_isDismissedThisSession(info)) {
       activeUpdate.value = info;
     } else {
@@ -435,13 +478,10 @@ class UpdateService {
       if (!force && cached != null) {
         final elapsed = now.difference(cached.lastPing);
         if (elapsed < checkInterval) {
-          if (cached.hasUpdate &&
-              cached.hasCompatibleApk &&
-              !_isDismissedThisSession(cached)) {
-            activeUpdate.value = cached;
-          } else {
-            activeUpdate.value = null;
-          }
+          // Routed through _publishActiveUpdate so the permanent opt-out is
+          // honoured here too; this path used to publish directly and would
+          // resurface a prompt the user had switched off.
+          _publishActiveUpdate(cached);
           return cached;
         }
       }

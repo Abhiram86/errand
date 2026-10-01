@@ -210,6 +210,17 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   Timer? _persistTimer;
   String? _pendingPersistConversationId;
   final CoalescingWriter _persistWriter = CoalescingWriter();
+
+  /// Session-owned structured-document cache, injected into every turn's
+  /// [ToolRegistry].
+  ///
+  /// Previously each turn built its own `DocumentLruCache` and tore it down on
+  /// `registry.dispose()`, so the in-flight dedup and the 64MB/16-entry bounds
+  /// only ever applied within a single turn. Any PDF or Office file read on one
+  /// turn was fully re-opened — including re-creating the native PDDocument — on
+  /// the next, and a multi-turn document task re-parsed every turn. Owned here
+  /// so the bounds mean something across the conversation, and disposed once.
+  final DocumentLruCache _documentCache = DocumentLruCache();
   Completer<void>? _appConfigCoreReady;
   Future<void>? _loadAppConfigFuture;
   int _estimatedActiveTokens = 0;
@@ -380,6 +391,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       if (mounted) {
         await UpdateService.instance.initialize();
         if (mounted) {
+          await _maybeShowUpdateDisclosure();
           await _checkReleaseNotes();
         }
       }
@@ -402,6 +414,69 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       }
       unawaited(InstalledAppsService.instance.initAndRefresh());
     });
+  }
+
+  /// One-time disclosure that in-app updating exists, shown before the app
+  /// ever surfaces an update prompt.
+  ///
+  /// F-Droid's Inclusion Policy §5 permits an in-app updater provided the
+  /// download is an explicit opt-in act, and an F-Droid maintainer asks
+  /// (fdroiddata#3113) that the user additionally be *informed* that in-app
+  /// updating exists before it acts, defaulting to declining. This dialog is
+  /// that disclosure. It is informational only — declining here does not opt
+  /// out of future prompts, and it never triggers a download.
+  ///
+  /// Only shown once ever; the pref lives in the database alongside the rest of
+  /// the update state so it survives reinstalls-without-data-clear.
+  Future<void> _maybeShowUpdateDisclosure() async {
+    final service = UpdateService.instance;
+    if (service.hasBeenInformed) return;
+    // Never stack on top of the storage or release-notes dialogs.
+    if (!mounted) return;
+    try {
+      await showDialog<void>(
+        context: context,
+        builder: (dialogCtx) => AlertDialog(
+          backgroundColor: const Color(0xFF1E222B),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          title: const Text(
+            'Updates',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 17,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          content: const Text(
+            'Errand can check GitHub for new releases. When one is found you '
+            'choose whether to install it.\n\n'
+            'Errand never downloads anything on its own, and it never sends '
+            'your conversations, keys or usage anywhere to do so.\n\n'
+            'If you install an update yourself, Errand will stop receiving '
+            'updates from your app store or F-Droid for that install. You can '
+            'always check manually from the sidebar.',
+            style: TextStyle(color: Color(0xFFC9D1D9), fontSize: 13.5),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogCtx).pop(),
+              child: const Text(
+                'Got it',
+                style: TextStyle(
+                  color: kMuted,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    } catch (_) {
+      // A dialog during teardown is not worth surfacing to the user.
+    }
+    // Marked after the dialog, not before: if teardown wins the race and the
+    // dialog never displays, the user was never actually informed.
+    if (mounted) await service.markInformed();
   }
 
   Future<void> _checkReleaseNotes({bool force = false}) async {
@@ -944,6 +1019,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _conversationsSub?.cancel();
     _pinnedConversationsSub?.cancel();
     _widgetVoiceSub?.cancel();
+    // Session-owned; every ToolRegistry got it by reference, so none of them
+    // may dispose it. Closes the native PDDocuments it holds.
+    _documentCache.dispose();
     _modelCatalog.close();
     _llm.close();
     _controller.dispose();
@@ -2070,6 +2148,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         currentConversationIdResolver: () => _activeConversation.id,
         onConfirmCommand: _handleConfirmCommand,
         isSessionTrusted: _isCurrentSessionTrusted,
+        documentCache: _documentCache,
       );
 
       final budget = _getActiveBudget();

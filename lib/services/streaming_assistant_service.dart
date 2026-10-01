@@ -86,6 +86,26 @@ class StreamingAssistantService {
   bool _isReasoning = false;
 
   final StringBuffer _fullPristineBuffer = StringBuffer();
+
+  /// Whether any non-whitespace character has been appended this turn.
+  /// Maintained incrementally in [appendDelta]; see [hasContent].
+  bool _hasNonWhitespace = false;
+
+  /// Matches `String.trim()`'s notion of whitespace closely enough for a
+  /// has-content check. Dart's own whitespace set is Unicode-defined, so this
+  /// covers the ASCII range plus the common Unicode space separators.
+  static bool _isWhitespace(int codeUnit) {
+    if (codeUnit == 0x20 || codeUnit == 0x09 || codeUnit == 0x0A ||
+        codeUnit == 0x0B || codeUnit == 0x0C || codeUnit == 0x0D) {
+      return true;
+    }
+    // NBSP, OGHAM SPACE MARK, and the Unicode space separators.
+    return codeUnit == 0xA0 || codeUnit == 0x1680 ||
+        (codeUnit >= 0x2000 && codeUnit <= 0x200A) ||
+        codeUnit == 0x2028 || codeUnit == 0x2029 ||
+        codeUnit == 0x202F || codeUnit == 0x205F || codeUnit == 0x3000 ||
+        codeUnit == 0xFEFF;
+  }
   final List<String> _finalizedBlocks = [];
   String _activeTail = '';
 
@@ -104,7 +124,7 @@ class StreamingAssistantService {
 
   StreamingAssistantStatus get status => _status;
   int? get retryAttempt => _retryAttempt;
-  bool get hasContent => _fullPristineBuffer.toString().trim().isNotEmpty;
+  bool get hasContent => _hasNonWhitespace;
   String get currentPristineText => _fullPristineBuffer.toString();
 
   /// Finalized blocks (valid after [finalize] moves the tail in).
@@ -155,6 +175,19 @@ class StreamingAssistantService {
   void appendDelta(String delta) {
     if (delta.isEmpty) return;
     _fullPristineBuffer.write(delta);
+    // Incremental "has any non-whitespace" tracking. Previously `hasContent`
+    // called `_fullPristineBuffer.toString().trim()`, which allocates a copy of
+    // the whole accumulated turn — and it is read once per visible tool-group
+    // row, per frame, from chat_screen's itemBuilder. For a 200KB answer with
+    // 20 tool groups that is ~20 x 200KB of garbage per rebuild.
+    if (!_hasNonWhitespace) {
+      for (var i = 0; i < delta.length; i++) {
+        if (!_isWhitespace(delta.codeUnitAt(i))) {
+          _hasNonWhitespace = true;
+          break;
+        }
+      }
+    }
 
     // Any fresh text clears the retry label
     _retryAttempt = null;
@@ -420,6 +453,7 @@ class StreamingAssistantService {
     _isCompacting = false;
     _isReasoning = false;
     _fullPristineBuffer.clear();
+    _hasNonWhitespace = false;
     _finalizedBlocks.clear();
     _activeTail = '';
     _fenceCount = 0;

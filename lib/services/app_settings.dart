@@ -5,6 +5,7 @@ import 'package:meta/meta.dart';
 import '../models/llm_provider.dart';
 import '../models/model_option.dart';
 import 'database.dart';
+import 'model_catalog.dart';
 import 'secret_store.dart';
 
 /// Typed access layer over the app-settings key/value table.
@@ -231,6 +232,11 @@ final class AppSettingsService {
         _openRouterKey = null;
         await _writeSecret(_kOpenRouterKey, null);
       }
+      // Wiping the key invalidates the catalog too: entries fetched under the
+      // old key must not be served to keyless readers (review R2-X2).
+      if (provider.apiKey != null) {
+        ModelCatalogService.clearCache();
+      }
     } else if (apiKey != null) {
       final trimmed = apiKey.trim();
       resolvedKey = trimmed.isEmpty ? null : trimmed;
@@ -238,6 +244,19 @@ final class AppSettingsService {
       if (provider.id == ProviderPresetType.openRouter.id) {
         _openRouterKey = resolvedKey;
         await _writeSecret(_kOpenRouterKey, resolvedKey);
+      }
+      // Every key change invalidates the model catalog (review R2-X2).
+      //
+      // ModelCatalogService stores the fetched catalog under both an
+      // auth-scoped key and an unscoped base-URL alias, and all nine production
+      // readers call getCachedModels(baseUrl) without a key, so they resolve
+      // through that alias. Nothing on the read path can tell which key a
+      // given entry came from, so a rotated key would otherwise be served the
+      // previous key's catalog — exactly what the cache-key comment claims to
+      // prevent. Clearing here is the honest fix: a key change invalidates
+      // everything, and the next read refetches.
+      if (resolvedKey != provider.apiKey) {
+        ModelCatalogService.clearCache();
       }
     } else {
       resolvedKey = provider.apiKey;

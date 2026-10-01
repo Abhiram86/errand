@@ -491,6 +491,77 @@ void main() {
         );
       },
     );
+
+    test(
+      'saveConversation skips unchanged rows but still applies edits (perf diff)',
+      () async {
+        // Persists fire every 600ms while streaming, so an unchanged window must
+        // not rewrite multi-KB tool results. Correctness is unchanged; this
+        // pins that an edit to ONE message is still persisted, and that a
+        // changed assistant text is not skipped by a stale fingerprint.
+        await db.saveConversation(
+          makeConversation(messages: numberedMessages(10)),
+        );
+
+        final loaded = await db.loadConversation('conv-1', messageLimit: 6);
+        expect(loaded, isNotNull);
+        final window = loaded!;
+        // messageLimit returns the NEWEST 6 of the 20 (u7,a7,u8,a8,u9,a9).
+        expect(window.messages.first.id, 'u7');
+        // Save the identical window repeatedly — all no-ops for message rows.
+        for (var i = 0; i < 3; i++) {
+          await db.saveConversation(window);
+        }
+
+        // Editing one message INSIDE the window must land despite the other
+        // five being fingerprint-identical to what is already stored.
+        final edited = Conversation(
+          id: window.id,
+          localSystemPrompt: window.localSystemPrompt,
+          messages: [
+            for (final m in window.messages)
+              if (m.id == 'a8')
+                AssistantMessage(id: 'a8', text: 'edited by diff test')
+              else
+                m,
+          ],
+          currentDir: window.currentDir,
+          attachedFileUris: window.attachedFileUris,
+          title: window.title,
+          createdAt: window.createdAt,
+          updatedAt: window.updatedAt,
+        );
+        await db.saveConversation(edited);
+
+        final reloaded = await db.loadConversation('conv-1');
+        expect(reloaded!.messages, hasLength(20));
+        expect(
+          reloaded.messages.firstWhere((m) => m.id == 'a8'),
+          isA<AssistantMessage>()
+              .having((m) => m.text, 'text', 'edited by diff test'),
+        );
+        // An in-window sibling that was NOT edited keeps its original text.
+        expect(
+          reloaded.messages.firstWhere((m) => m.id == 'a7'),
+          isA<AssistantMessage>().having((m) => m.text, 'text', 'answer 7'),
+        );
+        // Rows outside the window survive untouched.
+        expect(
+          reloaded.messages.firstWhere((m) => m.id == 'a4'),
+          isA<AssistantMessage>().having((m) => m.text, 'text', 'answer 4'),
+        );
+
+        // An out-of-band delete must invalidate the fingerprint cache: saving a
+        // window that still lists the row re-inserts it from the merge rather
+        // than being skipped as "unchanged".
+        await db.deleteMessage('conv-1', 'a9');
+        final shrunk = await db.loadConversation('conv-1', messageLimit: 6);
+        expect(shrunk!.messages.map((m) => m.id), isNot(contains('a9')));
+        await db.saveConversation(shrunk);
+        final finalState = await db.loadConversation('conv-1');
+        expect(finalState!.messages, hasLength(19));
+      },
+    );
   });
 
   group('Memories table (schema v6)', () {

@@ -188,6 +188,62 @@ final class ErrandDatabase extends _$ErrandDatabase {
 
   static final ErrandDatabase instance = ErrandDatabase._();
 
+  /// Per-conversation content fingerprints of the last persisted message
+  /// window, used by [saveConversation] to skip unchanged rows.
+  ///
+  /// Persists fire every 600ms while streaming (and every 150ms on tool
+  /// batches), so a full upsert of the window rewrote N multi-KB messages N
+  /// times per second for content that almost never changed. The cache is
+  /// session-local and therefore advisory, not authoritative: every path that
+  /// mutates `conversation_messages` outside [saveConversation] drops the
+  /// affected conversation's entry, so the worst a stale entry can cause is one
+  /// redundant write, never a lost one.
+  final Map<String, Map<String, int>> _messageFingerprints = {};
+
+  /// Drops cached fingerprints for [conversationId], forcing the next
+  /// [saveConversation] to re-read and rewrite those rows.
+  void _invalidateFingerprints(String conversationId) {
+    _messageFingerprints.remove(conversationId);
+  }
+
+  /// Content hash for a persisted message.
+  ///
+  /// Covers every field [saveConversation] writes, so a change to any of them
+  /// forces the update. `Object.hash` over the runtime values rather than
+  /// `identityHashCode`: the latter is per-run, so every process restart would
+  /// treat every row as changed and rewrite the whole window (harmless, but
+  /// exactly the cost this diff removes).
+  static int _fingerprintOf(Message message) => Object.hashAll([
+        message.runtimeType,
+        message.id,
+        message.text,
+        switch (message) {
+          UserMessage(:final attachedUris) => Object.hashAll(attachedUris),
+          AssistantMessage(:final model, :final provider) =>
+            Object.hash(model, provider),
+          ToolMessage(
+            :final tool,
+            :final result,
+            :final reasoning,
+            :final reasoningDetails
+          ) =>
+            Object.hash(
+              tool.name,
+              tool.args.length,
+              result,
+              reasoning,
+              reasoningDetails.length,
+            ),
+          ErrorMessage(:final error) => Object.hashAll([error]),
+          CompactedNoticeMessage(
+            :final summary,
+            :final beforeTokens,
+            :final afterTokens
+          ) =>
+            Object.hashAll([summary, beforeTokens, afterTokens]),
+        },
+      ]);
+
   /// Creates an isolated in-memory database for tests.
   @visibleForTesting
   factory ErrandDatabase.inMemory() =>
@@ -348,22 +404,52 @@ final class ErrandDatabase extends _$ErrandDatabase {
         (maxSoFar, row) => math.max(maxSoFar, row.sortOrder),
       );
 
+      // Diff before writing. This ran a full upsert of every loaded message on
+      // every persist, and persists fire every 600ms while streaming (and every
+      // 150ms on tool batches), so an N-message window with M multi-KB tool
+      // results rewrote N * M KB of text N times per second. Only rows whose
+      // content actually changed are touched now.
+      //
+      // The content fingerprint cache is keyed by conversation id and cleared
+      // whenever a row is inserted, updated or deleted outside this method, so
+      // it cannot go stale relative to the database.
+      final fingerprints = _messageFingerprints[id] ??= {};
+      final inserts = <ConversationMessagesCompanion>[];
+      final updates = <({int localId, ConversationMessagesCompanion data})>[];
+
+      for (final message in conversation.messages) {
+        final existingRow = rowByMessageId[message.id];
+        if (existingRow == null) {
+          nextSortOrder += 1;
+          final companion = _messageCompanion(id, nextSortOrder, message);
+          inserts.add(companion);
+          fingerprints[message.id] = _fingerprintOf(message);
+          continue;
+        }
+        final fingerprint = _fingerprintOf(message);
+        if (fingerprints[message.id] == fingerprint) continue; // unchanged
+        fingerprints[message.id] = fingerprint;
+        updates.add((
+          localId: existingRow.localId,
+          data: _messageCompanion(id, existingRow.sortOrder, message),
+        ));
+      }
+
+      // NOTE: rows present in the DB but absent from `conversation.messages`
+      // are intentionally left alone. The in-memory window is paginated
+      // (see watchConversationSummaries / loadOlderConversations), so older
+      // pages are not loaded and must survive a save. Deleting them would
+      // silently truncate history whenever a paginated window was persisted.
       await batch((b) {
-        for (final message in conversation.messages) {
-          final existingRow = rowByMessageId[message.id];
-          if (existingRow == null) {
-            nextSortOrder += 1;
-            b.insert(
-              conversationMessages,
-              _messageCompanion(id, nextSortOrder, message),
-            );
-          } else {
-            b.update(
-              conversationMessages,
-              _messageCompanion(id, existingRow.sortOrder, message),
-              where: (tbl) => tbl.localId.equals(existingRow.localId),
-            );
-          }
+        for (final companion in inserts) {
+          b.insert(conversationMessages, companion);
+        }
+        for (final update in updates) {
+          b.update(
+            conversationMessages,
+            update.data,
+            where: (tbl) => tbl.localId.equals(update.localId),
+          );
         }
       });
 
@@ -399,6 +485,7 @@ final class ErrandDatabase extends _$ErrandDatabase {
   /// thanks to the effective-history slice). Kept for a future explicit
   /// DB-hygiene pass.
   Future<void> replaceAllMessages(String conversationId, List<Message> messages) async {
+    _invalidateFingerprints(conversationId);
     await transaction(() async {
       await (delete(conversationMessages)
             ..where((m) => m.conversationId.equals(conversationId)))
@@ -564,6 +651,7 @@ final class ErrandDatabase extends _$ErrandDatabase {
       final row = await query.getSingle();
 
       final nextSortOrder = (row.read(maxId) ?? -1) + 1;
+      _invalidateFingerprints(conversationId);
       await into(conversationMessages)
           .insert(_messageCompanion(conversationId, nextSortOrder, message));
     });
@@ -587,6 +675,7 @@ final class ErrandDatabase extends _$ErrandDatabase {
       await insertMessage(conversationId, message);
       return;
     }
+    _invalidateFingerprints(conversationId);
     await (update(conversationMessages)
           ..where((m) => m.localId.equals(existing.localId)))
         .write(_messageCompanion(conversationId, existing.sortOrder, message));
@@ -594,6 +683,7 @@ final class ErrandDatabase extends _$ErrandDatabase {
 
   /// Removes a single message from a conversation.
   Future<void> deleteMessage(String conversationId, String messageId) async {
+    _invalidateFingerprints(conversationId);
     await (delete(conversationMessages)..where(
           (m) =>
               m.conversationId.equals(conversationId) &

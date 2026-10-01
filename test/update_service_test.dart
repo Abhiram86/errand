@@ -407,6 +407,57 @@ void main() {
     );
 
     test(
+      'never-ask-again suppresses prompts permanently, and can be undone',
+      () async {
+        final release = jsonEncode({
+          'tag_name': 'v0.6.1',
+          'assets': [
+            {
+              'name': 'Errand-v0.6.1-full-arm64-v8a.apk',
+              'size': 10,
+              'browser_download_url': 'https://example.com/update.apk',
+            },
+          ],
+        });
+        final service = UpdateService(
+          client: MockClient((_) async => http.Response(release, 200)),
+          appInfo: FakeAppInfoService(),
+          database: db,
+          cacheDirProvider: () async => tempDir,
+        );
+
+        await service.checkUpdate(force: true);
+        expect(service.activeUpdate.value, isNotNull);
+
+        // F-Droid Inclusion Policy §5: default is to decline. Opting out must
+        // stop prompts on EVERY path, including the interval-throttled branch
+        // that used to publish directly and bypass _publishActiveUpdate.
+        await service.setNeverAskAgain(true);
+        expect(service.neverAskAgain, isTrue);
+        expect(service.activeUpdate.value, isNull);
+
+        await service.checkUpdate(force: true);
+        expect(service.activeUpdate.value, isNull);
+
+        // And it must survive an app restart.
+        final reopened = UpdateService(
+          client: MockClient((_) async => http.Response(release, 200)),
+          appInfo: FakeAppInfoService(version: '0.6.0'),
+          database: db,
+          cacheDirProvider: () async => tempDir,
+        );
+        await reopened.initialize();
+        expect(reopened.neverAskAgain, isTrue);
+        expect(reopened.activeUpdate.value, isNull);
+
+        // The escape hatch: turning it back on re-checks and prompts again.
+        await reopened.setNeverAskAgain(false);
+        expect(reopened.neverAskAgain, isFalse);
+        expect(reopened.activeUpdate.value, isNotNull);
+      },
+    );
+
+    test(
       'initialize re-surfaces a dismissed release on a new app open',
       () async {
         final release = jsonEncode({

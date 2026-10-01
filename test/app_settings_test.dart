@@ -1,7 +1,13 @@
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+import 'package:errand/models/llm_provider.dart';
 import 'package:errand/models/model_option.dart';
 import 'package:errand/services/app_settings.dart';
 import 'package:errand/services/database.dart';
+import 'package:errand/services/model_catalog.dart';
 import 'package:errand/services/secret_store.dart';
 
 void main() {
@@ -132,5 +138,90 @@ void main() {
     ]);
     expect(resolved, equals(3));
     expect(fresh.isLoaded, isTrue);
+  });
+
+  test('rotating a provider key invalidates the model catalog (R2-X2)', () async {
+    // Readers call getCachedModels(baseUrl) without a key and resolve through
+    // the unscoped alias, so a rotated key would be served the previous key's
+    // catalog unless the write path invalidates. Seed the static cache under
+    // the old key, rotate via saveProvider, and assert the alias is gone (the
+    // next read refetches instead of serving stale models).
+    const baseUrl = 'https://x2-rotation-test.invalid/api/v1/';
+    ModelCatalogService.clearCache();
+    try {
+      final catalog = ModelCatalogService(
+        client: MockClient((request) async => http.Response(
+          jsonEncode({
+            'data': [
+              {'id': 'test/old-model', 'name': 'Old Model'},
+            ],
+          }),
+          200,
+        )),
+      );
+      await catalog.load(baseUrl: baseUrl, apiKey: 'old-key');
+      catalog.close();
+      expect(
+        ModelCatalogService.getCachedModels(baseUrl),
+        isNotNull,
+        reason: 'seeded catalog must resolve through the unscoped alias',
+      );
+
+      final now = DateTime.now();
+      final provider = LlmProvider(
+        id: 'x2-provider',
+        name: 'X2',
+        baseUrl: baseUrl,
+        apiKey: 'old-key',
+        createdAt: now,
+        updatedAt: now,
+      );
+      await settings.saveProvider(provider, apiKey: 'new-key');
+      expect(
+        ModelCatalogService.getCachedModels(baseUrl),
+        isNull,
+        reason: 'key rotation must invalidate the catalog',
+      );
+
+      // Same-key saves must NOT invalidate: re-seed, save the identical key,
+      // and assert the cache survives.
+      final catalog2 = ModelCatalogService(
+        client: MockClient((request) async => http.Response(
+          jsonEncode({
+            'data': [
+              {'id': 'test/old-model', 'name': 'Old Model'},
+            ],
+          }),
+          200,
+        )),
+      );
+      await catalog2.load(baseUrl: baseUrl, apiKey: 'new-key');
+      catalog2.close();
+      final rotated = LlmProvider(
+        id: 'x2-provider',
+        name: 'X2',
+        baseUrl: baseUrl,
+        apiKey: 'new-key',
+        createdAt: now,
+        updatedAt: now,
+      );
+      await settings.saveProvider(rotated, apiKey: 'new-key');
+      expect(
+        ModelCatalogService.getCachedModels(baseUrl),
+        isNotNull,
+        reason: 'unchanged key must keep the cache',
+      );
+
+      // Wiping the key invalidates too: entries fetched under the old key must
+      // not be served to keyless readers.
+      await settings.saveProvider(rotated, clearKey: true);
+      expect(
+        ModelCatalogService.getCachedModels(baseUrl),
+        isNull,
+        reason: 'clearing the key must invalidate the catalog',
+      );
+    } finally {
+      ModelCatalogService.clearCache();
+    }
   });
 }

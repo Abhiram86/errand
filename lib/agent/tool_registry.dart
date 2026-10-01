@@ -54,6 +54,7 @@ class ToolRegistry {
       String? reason,
     })? onConfirmCommand,
     bool Function()? isSessionTrusted,
+    DocumentLruCache? documentCache,
   }) {
     final directory = workingDirectory ?? WorkingDirectory(currentDir);
     return ToolRegistry([
@@ -61,6 +62,7 @@ class ToolRegistry {
         directory,
         supportsInput: supportsInput,
         getAttachedFiles: getAttachedFiles,
+        documentCache: documentCache,
       ),
       bashTool(
         workingDirectory: directory,

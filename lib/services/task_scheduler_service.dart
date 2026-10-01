@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:drift/drift.dart';
 import 'package:flutter/foundation.dart';
@@ -239,17 +240,29 @@ class TaskSchedulerService {
       }
     }
 
-    // Also scan scratch for any task-$taskId-* files (both reports and link copies, recursively)
-    try {
-      if (scratch.existsSync()) {
-        final prefix = 'task-$taskId-';
-        for (final entity in scratch.listSync(recursive: true)) {
+    // Also scan scratch for any task-$taskId-* files (both reports and link
+    // copies, recursively). The walk is offloaded: this runs on a user tap
+    // (the delete dialog, clear-logs), and a recursive listSync on the UI
+    // isolate stalls the frame for the whole tree.
+    final scratchPath = scratch.path;
+    final prefix = 'task-$taskId-';
+    final matches = await Isolate.run(() {
+      final found = <String>[];
+      try {
+        final dir = Directory(scratchPath);
+        if (!dir.existsSync()) return found;
+        for (final entity
+            in dir.listSync(recursive: true, followLinks: false)) {
           if (entity is File && p.basename(entity.path).startsWith(prefix)) {
-            addIfOwned(entity.path);
+            found.add(entity.path);
           }
         }
-      }
-    } catch (_) {}
+      } catch (_) {}
+      return found;
+    });
+    for (final path in matches) {
+      addIfOwned(path);
+    }
 
     return files.values.toList();
   }
@@ -276,31 +289,54 @@ class TaskSchedulerService {
     final scratch = scratchDir ?? Workspace.instance.scratchDir;
     if (!scratch.existsSync()) return const [];
 
-    final logs = await db.select(db.schedulerTaskLogs).get();
+    // Only the two columns the sweep needs, with no LIMIT. A limit would
+    // misclassify files referenced only by older log rows as orphans, and
+    // the clear-orphans path deletes on tap without a per-file review.
+    // The scan stays cheap as a two-column selectOnly; the directory walk
+    // and the stat/unlink pass are the expensive parts and both run off
+    // the UI isolate below.
+    final logs = await (db.selectOnly(db.schedulerTaskLogs)
+          ..addColumns([db.schedulerTaskLogs.outputFilePath, db.schedulerTaskLogs.linkedFiles]))
+        .get();
     final referencedNames = <String>{};
 
-    for (final log in logs) {
-      if (log.outputFilePath != null && log.outputFilePath!.isNotEmpty) {
-        final rel = toScratchRelative(log.outputFilePath!, scratch);
+    for (final row in logs) {
+      final outputPath = row.read(db.schedulerTaskLogs.outputFilePath);
+      if (outputPath != null && outputPath.isNotEmpty) {
+        final rel = toScratchRelative(outputPath, scratch);
         referencedNames.add(rel);
         referencedNames.add(p.basename(rel));
       }
-      for (final rel in parseLinkedFiles(log.linkedFiles)) {
+      for (final rel in parseLinkedFiles(row.read(db.schedulerTaskLogs.linkedFiles))) {
         final relPath = toScratchRelative(rel, scratch);
         referencedNames.add(relPath);
         referencedNames.add(p.basename(relPath));
       }
     }
 
+    // The recursive directory walk is synchronous, unbounded disk IO on the UI
+    // isolate — it runs on a user tap (storage summary, clear-orphans, the
+    // delete dialog). Offload it; only paths cross the isolate boundary.
+    final scratchPath = scratch.path;
+    final candidates = await Isolate.run(() {
+      final found = <String>[];
+      try {
+        final dir = Directory(scratchPath);
+        if (!dir.existsSync()) return found;
+        for (final entity in dir.listSync(recursive: true, followLinks: false)) {
+          if (entity is File) found.add(entity.path);
+        }
+      } catch (_) {}
+      return found;
+    });
+
     final orphans = <File>[];
     try {
-      for (final entity in scratch.listSync(recursive: true)) {
-        if (entity is File) {
-          final rel = p.relative(entity.path, from: scratch.path);
-          final base = p.basename(entity.path);
-          if (!referencedNames.contains(rel) && !referencedNames.contains(base)) {
-            orphans.add(entity);
-          }
+      for (final path in candidates) {
+        final rel = p.relative(path, from: scratch.path);
+        final base = p.basename(path);
+        if (!referencedNames.contains(rel) && !referencedNames.contains(base)) {
+          orphans.add(File(path));
         }
       }
     } catch (_) {}
@@ -310,19 +346,26 @@ class TaskSchedulerService {
   /// Deletes all orphaned files in [scratchDir] and returns count and bytes cleared.
   Future<({int count, int bytes})> sweepOrphanFiles([Directory? scratchDir]) async {
     final orphans = await getOrphanedFiles(scratchDir);
-    var count = 0;
-    var bytes = 0;
-    for (final file in orphans) {
-      try {
-        if (file.existsSync()) {
-          final len = file.lengthSync();
-          file.deleteSync();
-          count++;
-          bytes += len;
-        }
-      } catch (_) {}
-    }
-    return (count: count, bytes: bytes);
+    // stat + unlink per orphan is unbounded synchronous disk IO on the UI
+    // isolate, reached from a "Clear orphaned files" tap. Offload it.
+    final paths = orphans.map((f) => f.path).toList(growable: false);
+    final result = await Isolate.run(() {
+      var count = 0;
+      var bytes = 0;
+      for (final path in paths) {
+        try {
+          final file = File(path);
+          if (file.existsSync()) {
+            final len = file.lengthSync();
+            file.deleteSync();
+            count++;
+            bytes += len;
+          }
+        } catch (_) {}
+      }
+      return (count: count, bytes: bytes);
+    });
+    return result;
   }
 
   /// Deletes a task and everything tied to it: stops an in-flight run first

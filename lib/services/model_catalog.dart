@@ -106,9 +106,11 @@ class ModelCatalogService {
   static List<ModelOption>? getCachedModels(String baseUrl, {String? apiKey}) {
     if (apiKey != null) return _cache[_cacheKey(baseUrl, apiKey)];
     final normalized = _normalizeBaseUrl(baseUrl);
-    return _cache['$normalized|auth'] ??
-        _cache['$normalized|anon'] ??
-        _cache[normalized];
+    // Only `|anon` and the bare alias are ever written. The `|auth` branch is
+    // dead: _cacheKey buckets by the key-material HASH, so no authenticated
+    // entry lands on a literal 'auth' suffix. Kept out deliberately (review
+    // R2-X2) — drop it so a reader cannot mistake it for a real lookup.
+    return _cache['$normalized|anon'] ?? _cache[normalized];
   }
 
   /// Whether models are currently cached for the given base URL.
@@ -409,8 +411,15 @@ class ModelCatalogService {
       models.sort(ModelOption.compareByReleaseDate);
 
       final result = List<ModelOption>.unmodifiable(models);
-      // Store under the auth-scoped key; keep a legacy base-URL alias so
-      // callers without a key still resolve the newest fetch.
+      // Store under the auth-scoped key, plus an unscoped base-URL alias.
+      //
+      // The alias exists because every production reader calls
+      // getCachedModels(baseUrl) without a key and would otherwise never hit
+      // the cache. It cannot be key-scoped from the read side, so key
+      // correctness is maintained by INVALIDATION instead: AppSettingsService
+      // calls clearCache() on every key write (review R2-X2). Do not read this
+      // as "the alias is safe" — it is only safe because nothing survives a
+      // key change.
       final scoped = _cacheKey(baseUrl, apiKey);
       _cache[scoped] = result;
       _cache[_normalizeBaseUrl(baseUrl)] = result;

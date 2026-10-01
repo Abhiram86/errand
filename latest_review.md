@@ -136,7 +136,8 @@ feature* silently do nothing, whereas the FGS items degrade an already-running t
 
 ## 1. Security
 
-### [ ] R2-C1 — CRITICAL — `FileProvider` exposes the entire device filesystem, driven by LLM output
+### [~] R2-C1 — CRITICAL — `FileProvider` exposes the entire device filesystem, driven by LLM output
+> Partial: handler-side containment is in, but `<root-path name="root" path="." />` is still in `file_paths.xml` and the `"*/*"` MIME fallthrough (`MainActivity.kt:655`) remains. Fix steps 1 and 3 still open.
 
 **Files:** `android/app/src/main/res/xml/file_paths.xml:8` · `MainActivity.kt:455-503` · `MainActivity.kt:1094-1118`
 
@@ -171,7 +172,7 @@ main manifest widens the readable set further.
 **Acceptance:** a test asserting `/data/data/com.errand.errand/...` and `/etc/hosts` are rejected by
 `open_file`, and that `FileProvider` no longer resolves a path outside the allowed roots.
 
-### [ ] R2-S1 — HIGH — OTA install has no native integrity re-check and fails open
+### [x] R2-S1 — HIGH — OTA install has no native integrity re-check and fails open
 
 **Files:** `MainActivity.kt:1094-1118` · `lib/services/update_service.dart:560-564, 642-655, 704-708`
 
@@ -196,7 +197,7 @@ at F-Droid review or Play review. Note the app already declares a rich `<queries
 **Fix:** try removing `QUERY_ALL_PACKAGES` and measure what breaks — the `<queries>` block likely
 already covers the needed visibility. Whatever remains, document in the F-Droid metadata.
 
-### [ ] R2-S3 — MEDIUM — Adaptive launcher icon used as notification small icon
+### [x] R2-S3 — MEDIUM — Adaptive launcher icon used as notification small icon
 
 **Files:** `AgentForegroundService.kt:81` · `TaskExecutionService.kt:806` · `NotificationHelper.kt:78`
 
@@ -213,7 +214,7 @@ it in all three builders.
 
 ## 2. Platform / Android API correctness
 
-### [ ] R2-H1 — HIGH — Neither `dataSync` foreground service implements `onTimeout()`
+### [x] R2-H1 — HIGH — Neither `dataSync` foreground service implements `onTimeout()`
 
 **Files:** `AgentForegroundService.kt:49-52` · `TaskExecutionService.kt:120-140` · `AndroidManifest.xml:92, 123`
 
@@ -242,7 +243,7 @@ override fun onTimeout(startId: Int, fgsType: Int) {
 ```
 Also surface the "exhausted" exception to Dart instead of swallowing it. See `R2-H2` for the other half.
 
-### [ ] R2-H2 — HIGH — `AgentForegroundService` has no self-timeout and never calls `stopForeground`
+### [x] R2-H2 — HIGH — `AgentForegroundService` has no self-timeout and never calls `stopForeground`
 
 **File:** `AgentForegroundService.kt:33-52` · driven from `lib/services/intent_service.dart:91-101`
 (called at `chat_screen.dart:918, 1998, 2110, 2148, 2364`)
@@ -258,7 +259,7 @@ budget from `R2-H1`, after which every future turn *and* every scheduled task fa
 `ServiceCompat.stopForeground(this, Service.STOP_FOREGROUND_REMOVE)` on the exit path.
 `TaskExecutionService` is better behaved (bounded by watchdogs) but shares the missing `onTimeout`.
 
-### [ ] R2-H3 — HIGH — Foreground engine cannot post notifications (`app_info` channel gap)
+### [x] R2-H3 — HIGH — Foreground engine cannot post notifications (`app_info` channel gap)
 
 **Files:** `MainActivity.kt:1063-1120` · `lib/services/notification_service.dart:5, 26, 76-91`
 
@@ -287,7 +288,7 @@ is gated on `!suppressNotification`, and the one foreground caller
 `TaskExecutionService` does. Better: point `NotificationService` at a single channel that both
 engines implement identically — this class of bug is structural.
 
-### [ ] R2-H4 — HIGH — Background engine blocks the platform thread up to 8s on geocoding
+### [x] R2-H4 — HIGH — Background engine blocks the platform thread up to 8s on geocoding
 
 **File:** `TaskExecutionService.kt:553-582`
 
@@ -386,7 +387,7 @@ redundant.
 
 **Fix:** remove both `disableSelf()` calls; keep the explicit user-initiated `disable` method.
 
-### [ ] R2-M2 — MEDIUM — `goAsync()` broadcast does unbounded DB + N-alarm work
+### [x] R2-M2 — MEDIUM — `goAsync()` broadcast does unbounded DB + N-alarm work
 
 **Files:** `TaskBootReceiver.kt:31-51` · `TaskAlarmRestorer.kt:83-104`
 
@@ -404,7 +405,7 @@ which on Android 14+ also blocks boot.
 
 Implemented on both engines, never called from the schedule path. See `R2-H6`.
 
-### [ ] R2-M4 — MEDIUM — One shared `PendingIntent` (requestCode 0 + `FLAG_UPDATE_CURRENT`) per launch
+### [x] R2-M4 — MEDIUM — One shared `PendingIntent` (requestCode 0 + `FLAG_UPDATE_CURRENT`) per launch
 
 **Files:** `MainActivity.kt:612-618, 669-675`
 
@@ -416,7 +417,7 @@ delivery. Concretely: two `mailto:` to the same address with different bodies, b
 **Fix:** use a monotonic `AtomicInteger` request code, or a unique data URI
 (`Uri.parse("errand://launch/$n")`), per launch.
 
-### [ ] R2-M5 — MEDIUM — `PendingIntent`s for background activity starts are never cancelled
+### [x] R2-M5 — MEDIUM — `PendingIntent`s for background activity starts are never cancelled
 
 **Files:** `MainActivity.kt:612, 669` · `AgentForegroundService.kt:67-70` · `TaskExecutionService.kt:790-797`
 
@@ -437,7 +438,7 @@ is unattributed and billed entirely to the app's uid. The 13-minute ceiling also
 **Fix:** drive the work through `WorkManager` (which sets the source), or shorten the timeout to the
 Dart cap and add `acquire(…, WorkSource)` where the API allows.
 
-### [ ] R2-M7 — MEDIUM — `LocationListener` + 8s `Runnable` outlive the activity
+### [x] R2-M7 — MEDIUM — `LocationListener` + 8s `Runnable` outlive the activity
 
 **File:** `MainActivity.kt:1305-1338`
 
@@ -482,7 +483,7 @@ and detect the role via `Settings.Secure.DEFAULT_INPUT_METHOD` so the UI can pro
 
 ## 3. Dart bugs
 
-### [ ] R2-H8 — HIGH — `_runAgentTurn` has no re-entrancy guard → double agent turn
+### [x] R2-H8 — HIGH — `_runAgentTurn` has no re-entrancy guard → double agent turn
 
 **Files:** `chat_screen.dart:1857-1872` (`_regenerate`) · `:1965-1995` (`_runAgentTurn`)
 
@@ -504,7 +505,7 @@ _turnInFlight = true;
 try { /* … */ } finally { _turnInFlight = false; }
 ```
 
-### [ ] R2-H9 — HIGH — `DocumentLruCache` double-inserts on the in-flight dedup path
+### [x] R2-H9 — HIGH — `DocumentLruCache` double-inserts on the in-flight dedup path
 
 **File:** `lib/tools/file_tools.dart:109-158`
 
@@ -522,7 +523,7 @@ Every one then falls through to the insertion block (`:127-155`) unconditionally
 **Fix:** only the initiator inserts/evicts/accounts — guard the block with `if (isInitiator)`. Add a
 `refCount` to `_CachedStructuredDocument` so `dispose()` runs only when the last reference drops.
 
-### [ ] R2-H10 — HIGH — `dispose()` saves the final snapshot outside `CoalescingWriter`
+### [x] R2-H10 — HIGH — `dispose()` saves the final snapshot outside `CoalescingWriter`
 
 **File:** `chat_screen.dart:909-935` (specifically `:919-926`)
 
@@ -539,7 +540,7 @@ snapshot overwrites it and the final streamed answer is lost from SQLite.
 
 **Fix:** `unawaited(_persistWriter.run(() => database.saveConversation(_snapshotConversation())));`
 
-### [ ] R2-H11 — HIGH — Single-task "Resume" never recomputes `nextRunAt`
+### [x] R2-H11 — HIGH — Single-task "Resume" never recomputes `nextRunAt`
 
 **Files:** `spacey_task_row.dart:352-372` · correct reference impl `task_scheduler_service.dart:665-690`
 
@@ -552,7 +553,7 @@ handles exactly this case with `calculateNextRunAt`; the single-task path does n
 **Fix:** recompute `nextRunAt` in the resume branch the same way `resumeAllTasks` does — or, better,
 delete both hand-rolled versions and add `TaskSchedulerService.setPaused(taskId, bool)` (see `R2-D7`).
 
-### [ ] R2-M10 — MEDIUM — SSE stream parsing uses unchecked casts that crash the turn with a raw `TypeError`
+### [x] R2-M10 — MEDIUM — SSE stream parsing uses unchecked casts that crash the turn with a raw `TypeError`
 
 **File:** `lib/llm/llm_client.dart:641, 643, 709, 713`
 
@@ -573,7 +574,7 @@ throws a `TypeError` that is **not** a `LlmException`, so it is not retried and 
 **Fix:** `if (choices.isEmpty) continue; final raw = choices.first; if (raw is! Map<String, dynamic>) continue;`
 and `toolCall['id'] is String ? … : null`.
 
-### [ ] R2-M11 — MEDIUM — `LlmClient.chat` `jsonDecode` is unguarded
+### [x] R2-M11 — MEDIUM — `LlmClient.chat` `jsonDecode` is unguarded
 
 **File:** `lib/llm/llm_client.dart:194`
 
@@ -584,7 +585,7 @@ is properly validated.
 
 **Fix:** wrap in `try { … } on FormatException catch (e) { throw LlmException('Malformed response: $e', transport: true); }`.
 
-### [ ] R2-M12 — MEDIUM — `_backoff` polls in 100ms steps with an uncapped `Retry-After`
+### [x] R2-M12 — MEDIUM — `_backoff` polls in 100ms steps with an uncapped `Retry-After`
 
 **File:** `lib/llm/llm_client.dart:308-330`
 
@@ -606,7 +607,7 @@ repeatedly, on battery.
 constant, and use a single cancellable delay registered on the `CancelToken` (which already has
 listeners) instead of the polling loop. Respect `Retry-After` as an upper bound, not only a lower one.
 
-### [ ] R2-M13 — MEDIUM — `CoalescingWriter` silently drops the trailing write if `write()` throws
+### [x] R2-M13 — MEDIUM — `CoalescingWriter` silently drops the trailing write if `write()` throws
 
 **File:** `lib/utils/coalescing_writer.dart:19-36`
 
@@ -624,7 +625,7 @@ This compounds `R2-H10`.
 **Fix:** catch inside the loop, reset `_needsTrailing = false` in the `finally`, and record
 `lastError` so `run()` can rethrow to the caller that owned the write.
 
-### [ ] R2-M14 — MEDIUM — Native `PDDocument` leak: the `Finalizer` safety net cannot work
+### [x] R2-M14 — MEDIUM — Native `PDDocument` leak: the `Finalizer` safety net cannot work
 
 **Files:** `lib/internal/document_reading/pdf_reader.dart:73-77, 101, 189` · `PdfReaderPlugin.kt:82, 138`
 
@@ -644,7 +645,7 @@ engine — which is destroyed and recreated every task-batch cycle.
 **Fix:** drop the `Finalizer` (dead weight), bound the native side instead — cap `openDocuments.size`
 and close the LRU entry in `openPdf` — and call `closeAll()` from engine teardown.
 
-### [ ] R2-M15 — MEDIUM — `repeat_after` is unvalidated → int64 overflow → 1-second task loop
+### [x] R2-M15 — MEDIUM — `repeat_after` is unvalidated → int64 overflow → 1-second task loop
 
 **Files:** `schedule_task_tool.dart:152-158` · `task_scheduler_service.dart:846-856, 600-603`
 
@@ -657,7 +658,7 @@ row and a scratch report.
 **Fix:** clamp at the tool boundary (`repeatAfter.clamp(60_000, 366 * 24 * 3600 * 1000)`) and add a
 defensive floor `if (nextRun <= nowMillis) return nowMillis + 60000;` in `calculateNextRunAt`.
 
-### [ ] R2-M16 — MEDIUM — Race in tool-output spill: shared `.part` temp file
+### [x] R2-M16 — MEDIUM — Race in tool-output spill: shared `.part` temp file
 
 **File:** `lib/services/tool_output_file_service.dart:150-152`
 
@@ -675,7 +676,7 @@ throws `FileSystemException` because the source is gone, failing the whole tool 
 **Fix:** make the temp name unique (`.${DateTime.now().microsecondsSinceEpoch}.part`) or serialise per
 `callId` behind an in-flight map.
 
-### [ ] R2-M17 — MEDIUM — Repeated notification taps push duplicate `ManageTasksScreen` routes
+### [x] R2-M17 — MEDIUM — Repeated notification taps push duplicate `ManageTasksScreen` routes
 
 **File:** `lib/main.dart:154-170, 250-267`
 
@@ -686,7 +687,7 @@ route (`:143-150` vs `:154`), stacks multiple identical screens.
 
 **Fix:** guard both with `if (_notificationRouteOpened) return;`.
 
-### [ ] R2-M18 — MEDIUM — Unread-count semantics diverge between badge and service
+### [x] R2-M18 — MEDIUM — Unread-count semantics diverge between badge and service
 
 **Files:** `task_scheduler_service.dart:397-411` · `manage_tasks_screen.dart:94-100`
 
@@ -697,7 +698,7 @@ the tab badge.
 
 **Fix:** extract one shared predicate/SQL fragment and use it in both places.
 
-### [ ] R2-L2 — LOW — Smaller correctness nits
+### [x] R2-L2 — LOW — Smaller correctness nits
 
 - **`TextEditingController` leaked on every rename.** `chat_screen.dart:1701` creates it, hands it to a
   `TextField`, never disposes. Dispose after the `await showDialog(...)` returns.
@@ -731,7 +732,7 @@ generated table costs a full O(rows×cols) intrinsic layout several times per se
 `IntrinsicColumnWidth` with a horizontally-scrolling `Row` of fixed-width `Column`s, or wrap in a
 `RepaintBoundary` and re-render only the trailing block.
 
-### [ ] R2-P2 — MED-HIGH — Orphan/owned-file scans do synchronous recursive disk I/O on the UI isolate
+### [x] R2-P2 — MED-HIGH — Orphan/owned-file scans do synchronous recursive disk I/O on the UI isolate
 
 **Files:** `manage_tasks_screen.dart:159-166` → `task_scheduler_service.dart:276-309, 177-256, 312-327`
 
@@ -749,7 +750,7 @@ half does. The remainder runs on the main isolate:
 **Fix:** move the whole body into `Isolate.run(() …)` (as `_loadStorageSummary` already does for its
 first half), pass plain path data across, and add `..limit(N)` to the log query.
 
-### [ ] R2-P3 — MED-HIGH — `saveConversation` rewrites the entire message window on every persist
+### [x] R2-P3 — MED-HIGH — `saveConversation` rewrites the entire message window on every persist
 
 **File:** `lib/services/database.dart:351-368`
 
@@ -770,7 +771,8 @@ multi-KB tool results causes N `UPDATE`s rewriting M×KB of text, N times, insid
 **Fix:** diff against a cached "last persisted message id → content hash" map held in the writer, and
 only insert/update rows whose content actually changed. Cache the `rowByMessageId` map alongside it.
 
-### [ ] R2-P4 — MED-HIGH — A new `DocumentLruCache` (and `ShellService`) per agent turn
+### [~] R2-P4 — MED-HIGH — A new `DocumentLruCache` (and `ShellService`) per agent turn
+> Partial: the cache is now session-owned via `ToolRegistry.defaults(documentCache:)`, but the per-turn `ShellService` half is untouched.
 
 **Files:** `tool_registry.dart:59-96` · `chat_screen.dart:2028-2049, 2084` · `file_tools.dart:178-189`
 
@@ -787,7 +789,7 @@ allocates a fresh `DocumentLruCache` with `ownsCache = true`; `registry.dispose(
 **Fix:** own a single `DocumentLruCache` and `ShellService` in `ChatScreen` and pass them via
 `ToolRegistry.defaults(documentCache: …, shellService: …)`; only build the tool *wrappers* per turn.
 
-### [ ] R2-P5 — MEDIUM — `hasContent` copies the whole buffer, per row, per frame
+### [x] R2-P5 — MEDIUM — `hasContent` copies the whole buffer, per row, per frame
 
 **Files:** `streaming_assistant_service.dart:107` · `chat_screen.dart:2950`
 
@@ -890,7 +892,7 @@ persist (~600ms during streaming) and on every pin toggle. Rendered as a full no
 
 Ranked by payoff. The first two are clear, mechanical wins.
 
-### [ ] R2-D1 — Delete-with-files dialog duplicated verbatim (~140 lines)
+### [x] R2-D1 — Delete-with-files dialog duplicated verbatim (~140 lines)
 
 **Locations:** `spacey_task_row.dart:374-554` (`_deleteTask`) · `task_logs_modal.dart:186-359`
 (`_ClearLogsButton._handleClear`)
@@ -928,7 +930,7 @@ across the two files.
 **Fix:** extract `lib/services/model_resolution.dart` with `isFreeRouterId`, `pickInitialModel`,
 `resolveModelForProvider`, `isStaleModel`. Both callers collapse to one-liners.
 
-### [ ] R2-D3 — `formatBytes` triplicated byte-for-byte
+### [x] R2-D3 — `formatBytes` triplicated byte-for-byte
 
 `manage_tasks_screen.dart:189-193` · `spacey_task_row.dart:582-586` · `task_logs_modal.dart:180-184` —
 verified byte-identical. A 4th variant `_formatSize` lives at `file_tools.dart:429-446`.
@@ -964,7 +966,8 @@ multi-line guidance strings are **character-identical**. `screen_tool.dart:255-2
 
 **Fix:** one `commitRefusal(res, knownLabel)` helper + a single `_postActionProbe(svc, message)`.
 
-### [ ] R2-D7 — Task status transitions hand-rolled in 4 places
+### [~] R2-D7 — Task status transitions hand-rolled in 4 places
+> Partial: `TaskSchedulerService.setPaused` exists, but the hand-rolled versions in `spacey_task_row.dart`, `edit_task_model_sheet.dart`, and `schedule_task_tool.dart` were not deleted or rerouted.
 
 `spacey_task_row.dart:352-372` (`_togglePause`) · `edit_task_model_sheet.dart:291-325` ·
 `schedule_task_tool.dart:358-461` (`update` action) — all three bypass
@@ -1183,7 +1186,7 @@ lower-level `ShellService.run(...)` that does no analysis.
 **Read this before trusting `P13.6.*` in `next_plan.md`.** Two items are marked ✅ DONE but the fix
 landed on only one of the two code paths. Both were re-verified at `93c8c51`.
 
-### [ ] R2-X1 — `P13.6.15` (geocoding) — fixed in the foreground engine only
+### [x] R2-X1 — `P13.6.15` (geocoding) — fixed in the foreground engine only
 
 `P13.6.15` claims *"Shared `ExecutorService` + timed `Future.get` (8s limit) with cancellation on
 timeout for geocoding"*. `MainActivity.kt:46` does declare
@@ -1199,7 +1202,7 @@ geocodeExecutor.shutdownNow()                // line 581
 The background engine allocates an executor per call *and* blocks the platform thread. This is
 `R2-H4`. Reopen `P13.6.15` or close it by fixing `TaskExecutionService`.
 
-### [ ] R2-X2 — `P13.6.10` (M15, model catalog cache key) — bypassed by all 9 call sites
+### [x] R2-X2 — `P13.6.10` (M15, model catalog cache key) — bypassed by all 9 call sites
 
 `P13.6.10` claims *"cache key buckets by key-material hash, so key rotation never serves the stale
 catalog"*. The hash is there — `model_catalog.dart:455-461` returns
@@ -1223,7 +1226,7 @@ more), `model_picker_dialog.dart:86, 204, 236, 325`, `edit_task_model_sheet.dart
 `apiKey`; or (b) drop the hash and store `Map<String, Map<String, List<ModelOption>>>` (baseUrl → keyHash).
 Remove the `|auth` lookup. Add a test that rotates the key and asserts a refetch.
 
-### [ ] R2-X3 — `P13.6.11` (non-streaming parse hardening) — streaming path still unguarded
+### [x] R2-X3 — `P13.6.11` (non-streaming parse hardening) — streaming path still unguarded
 
 `P13.6.11` claims *"`as Map` casts replaced with `is` checks … on both paths"*, and the **non-streaming**
 path is indeed fixed. The **streaming** path still has four unchecked casts at

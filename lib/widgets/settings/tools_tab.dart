@@ -17,6 +17,10 @@ class ToolsTab extends StatefulWidget {
   final List<UserMemory> memories;
   final ValueChanged<String> onDeleteMemory;
 
+  /// Whether update prompts are allowed to appear.
+  final bool updatePromptsEnabled;
+  final ValueChanged<bool> onUpdatePromptsChanged;
+
   const ToolsTab({
     super.key,
     required this.a11ySupported,
@@ -29,6 +33,8 @@ class ToolsTab extends StatefulWidget {
     required this.onClearTavily,
     required this.memories,
     required this.onDeleteMemory,
+    required this.updatePromptsEnabled,
+    required this.onUpdatePromptsChanged,
   });
 
   @override
@@ -100,6 +106,38 @@ class _ToolsTabState extends State<ToolsTab> {
                           FilledButton.styleFrom(backgroundColor: kBubbleUser),
                     ),
                 ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 20),
+          const Divider(color: kBorder),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              const Icon(Icons.system_update_alt_rounded,
+                  size: 18, color: kMuted),
+              const SizedBox(width: 10),
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Ask me about updates',
+                        style: TextStyle(color: kText, fontSize: 13)),
+                    SizedBox(height: 3),
+                    Text(
+                      'Errand checks GitHub for releases. Nothing is ever '
+                      'downloaded unless you press Update. Turning this off '
+                      'stops the prompts; you can still check manually from '
+                      'the sidebar.',
+                      style: TextStyle(color: kMuted, fontSize: 11.5),
+                    ),
+                  ],
+                ),
+              ),
+              Switch(
+                value: widget.updatePromptsEnabled,
+                onChanged: widget.onUpdatePromptsChanged,
+                activeThumbColor: kBubbleUser,
               ),
             ],
           ),

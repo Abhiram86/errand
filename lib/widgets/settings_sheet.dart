@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../services/a11y_service.dart';
 import '../services/app_settings.dart';
 import '../services/memory_service.dart';
+import '../services/update_service.dart';
 import '../theme/app_colors.dart';
 import '../types/memory.dart';
 import 'settings/files_tab.dart';
@@ -312,6 +313,12 @@ class _SettingsSheetState extends State<_SettingsSheet>
                         onClearTavily: _clearTavily,
                         memories: _memories,
                         onDeleteMemory: _deleteMemory,
+                        updatePromptsEnabled: !UpdateService.instance.neverAskAgain,
+                        onUpdatePromptsChanged: (enabled) async {
+                          await UpdateService.instance
+                              .setNeverAskAgain(!enabled);
+                          if (mounted) setState(() {});
+                        },
                       ),
                     ),
                   ),
