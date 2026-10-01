@@ -29,6 +29,14 @@ object TaskAlarmRestorer {
     private const val SCHEDULER_TABLE = "scheduler_task"
     private const val RETRY_JOB_ID = 41_017
 
+    /**
+     * Ceiling on alarms registered inside one broadcast. A BroadcastReceiver has
+     * roughly a 10s budget before the system ANRs it, and an ANR during
+     * BOOT_COMPLETED blocks the boot. Anything beyond this is deferred to
+     * [scheduleRetry], which runs in a JobService off the critical path.
+     */
+    private const val MAX_ALARMS_PER_BROADCAST = 200
+
     data class Result(
         val taskCount: Int,
         val exactAlarmCount: Int,
@@ -66,6 +74,7 @@ object TaskAlarmRestorer {
                 SQLiteDatabase.OPEN_READONLY,
             )
 
+            var deferredCount = 0
             database.query(
                 SCHEDULER_TABLE,
                 arrayOf("id", "title", "status", "starts_at", "next_run_at"),
@@ -94,6 +103,17 @@ object TaskAlarmRestorer {
                     }
                     val triggerAt = maxOf(storedTrigger, System.currentTimeMillis() + 1_000L)
 
+                    // Broadcast receivers get roughly a 10s window before the
+                    // system ANRs them, and an ANR during BOOT_COMPLETED blocks
+                    // the boot itself. Registering one AlarmManager alarm per
+                    // task sequentially can exceed that on a large task table,
+                    // so cap the work here and hand the rest to scheduleRetry,
+                    // which already runs off the critical path.
+                    if (taskCount > MAX_ALARMS_PER_BROADCAST) {
+                        deferredCount++
+                        continue
+                    }
+
                     // A false return means exact permission was unavailable and
                     // an inexact alarm was registered instead — not a failure.
                     if (TaskAlarmManager.scheduleExactAlarm(context, taskId, triggerAt, title)) {
@@ -102,11 +122,18 @@ object TaskAlarmRestorer {
                         inexactCount++
                     }
                 }
+                if (deferredCount > 0) {
+                    Log.w(
+                        TAG,
+                        "Deferred $deferredCount alarms past the per-broadcast cap; scheduling retry"
+                    )
+                    scheduleRetry(context, "deferred")
+                }
             }
 
             val elapsed = System.currentTimeMillis() - startedAt
-            Log.i(TAG, "Restored ${exactCount + inexactCount}/$taskCount alarms in ${elapsed}ms")
-            Log.i(P10_TAG, "boot_reschedule_done count=$taskCount exact=$exactCount inexact=$inexactCount duration_ms=$elapsed")
+            Log.i(TAG, "Restored ${exactCount + inexactCount}/$taskCount alarms in ${elapsed}ms deferred=$deferredCount")
+            Log.i(P10_TAG, "boot_reschedule_done count=$taskCount exact=$exactCount inexact=$inexactCount deferred=$deferredCount duration_ms=$elapsed")
             Result(taskCount, exactCount, inexactCount, retryable = false)
         } catch (error: SQLiteException) {
             val message = error.message.orEmpty()

@@ -17,6 +17,7 @@ class FakeAppInfoService extends AppInfoService {
   final String pkg;
   final String abiType;
   String? installedPath;
+  String? installedSha;
 
   FakeAppInfoService({
     this.version = '0.6.0',
@@ -32,8 +33,9 @@ class FakeAppInfoService extends AppInfoService {
       AppPlatformInfo(versionName: version, packageName: pkg, abi: abiType);
 
   @override
-  Future<bool> installApk(String filePath) async {
+  Future<bool> installApk(String filePath, {required String sha256}) async {
     installedPath = filePath;
+    installedSha = sha256;
     return true;
   }
 }
@@ -278,6 +280,13 @@ void main() {
           cacheDirProvider: () async => tempDir,
         );
 
+        // Publish a real SHA-256: downloadApk now fails closed without one, so
+        // the fixture exercises the production path rather than opting out.
+        final expectedSha = (await Sha256().hash(apkBytes))
+            .bytes
+            .map((b) => b.toRadixString(16).padLeft(2, '0'))
+            .join();
+
         final updateInfo = AppUpdateInfo(
           currentVersion: '0.6.0',
           latestVersion: '0.6.1',
@@ -285,6 +294,7 @@ void main() {
           apkUrl: 'https://github.com/download/update.apk',
           apkName: 'Errand-v0.6.1-full-arm64-v8a.apk',
           apkSize: apkBytes.length,
+          sha256: expectedSha,
         );
 
         final downloadedPath = await service.downloadApk(updateInfo);
@@ -303,7 +313,49 @@ void main() {
         );
         expect(installSuccess, isTrue);
         expect(appInfo.installedPath, finalFile.path);
+        // The expected digest must reach the platform so installApk can
+        // re-verify the bytes immediately before launching the installer.
+        expect(appInfo.installedSha, expectedSha);
         expect(service.activeUpdate.value, isNull);
+      },
+    );
+
+    test(
+      'rejects a download when the release publishes no SHA-256',
+      () async {
+        final apkBytes = List<int>.generate(256, (i) => i % 256);
+        final mockClient = MockClient((request) async {
+          if (request.url.toString() ==
+              'https://github.com/download/update.apk') {
+            return http.Response.bytes(
+              apkBytes,
+              200,
+              headers: {'content-length': '${apkBytes.length}'},
+            );
+          }
+          return http.Response('Not found', 404);
+        });
+
+        final service = UpdateService(
+          client: mockClient,
+          appInfo: FakeAppInfoService(),
+          database: db,
+          cacheDirProvider: () async => tempDir,
+        );
+
+        final hashless = AppUpdateInfo(
+          currentVersion: '0.6.0',
+          latestVersion: '0.6.1',
+          lastPing: DateTime.now(),
+          apkUrl: 'https://github.com/download/update.apk',
+          apkName: 'Errand-v0.6.1-full-arm64-v8a.apk',
+          apkSize: apkBytes.length,
+        );
+
+        // Fails closed: a size match is not integrity.
+        expect(await service.downloadApk(hashless), isNull);
+        // And install refuses too, so the installer is never opened.
+        expect(await service.installUpdate(hashless), isFalse);
       },
     );
 

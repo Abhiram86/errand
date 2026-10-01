@@ -393,18 +393,46 @@ class TaskSchedulerService {
 
   /// Returns the number of execution logs that still have an unseen
   /// completion notification.
+  /// Log statuses that represent a finished run and can therefore carry an
+  /// unread completion notification.
+  ///
+  /// Single source of truth: `unreadNotificationCount` and the Manage Tasks
+  /// badge previously used different predicates (`isIn([...])` here versus
+  /// `status != 'running'` in the screen's raw SQL), so any status not in this
+  /// list counted for the badge but not for the service. "Mark all as read"
+  /// and the startup banner then disagreed with the tab count.
+  static const List<String> terminalLogStatuses = [
+    'success',
+    'failed',
+    'timeout',
+    'cancelled',
+  ];
+
+  /// SQL fragment matching the same set as [terminalLogStatuses].
+  ///
+  /// Kept as a literal string list so the badge's raw SQL cannot drift from the
+  /// Drift expression above. Kept in sync by the test that asserts this
+  /// fragment contains exactly these statuses.
+  static String get terminalLogStatusesSql {
+    final quoted = terminalLogStatuses.map((s) => "'$s'").join(', ');
+    return 'status IN ($quoted)';
+  }
+
+  /// Drift expression matching the same set as [terminalLogStatuses].
+  ///
+  /// Used by [unreadNotificationCount]; the Manage Tasks badge uses the raw-SQL
+  /// form [terminalLogStatusesSql] via `customSelect` so the COUNT stays a
+  /// single index-backed statement.
+  Expression<bool> terminalLogStatusPredicate() =>
+      db.schedulerTaskLogs.status.isIn(terminalLogStatuses);
+
   Future<int> unreadNotificationCount() async {
     final count = db.schedulerTaskLogs.id.count();
     final row = await (db.selectOnly(db.schedulerTaskLogs)
           ..addColumns([count])
           ..where(db.schedulerTaskLogs.notificationSeen.equals(0) &
               db.schedulerTaskLogs.notificationSent.equals(1) &
-              db.schedulerTaskLogs.status.isIn(const [
-                'success',
-                'failed',
-                'timeout',
-                'cancelled',
-              ])))
+              terminalLogStatusPredicate()))
         .getSingle();
     return row.read(count) ?? 0;
   }
@@ -894,7 +922,15 @@ class TaskSchedulerService {
     if (nowMillis < startsAt) return startsAt;
     final elapsed = nowMillis - startsAt;
     final n = (elapsed ~/ repeatAfter) + 1;
-    return startsAt + (n * repeatAfter);
+    // Overflow guard. `startsAt + n * repeatAfter` wraps negative for an
+    // absurd repeat_after, which would be stored as a negative epoch; the
+    // `targetTime > nowMillis` check in scheduleTask then fails and the task
+    // fires every second forever, writing a log row and a scratch report each
+    // time. The interval is also clamped at the tool boundary, but this is the
+    // last line of defence for rows that predate that clamp.
+    final next = startsAt + (n * repeatAfter);
+    if (next <= nowMillis) return nowMillis + 60000;
+    return next;
   }
 
   /// Sweeps tasks that were left in `running` status due to process crashes or kills.

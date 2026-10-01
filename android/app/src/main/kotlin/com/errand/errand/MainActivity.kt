@@ -45,6 +45,25 @@ class MainActivity : FlutterActivity() {
 
     private val geocodeExecutor = Executors.newCachedThreadPool()
 
+    /**
+     * Monotonic request codes for activity-launch PendingIntents.
+     *
+     * PendingIntent equality ignores extras, so a constant request code makes
+     * every launch with the same action+data resolve to one pending intent.
+     */
+    private val launchRequestCodes = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /** In-flight single-shot location request, torn down in [onDestroy]. */
+    private var pendingLocationListener: LocationListener? = null
+    private var pendingLocationRunnable: Runnable? = null
+    private val locationHandler = Handler(Looper.getMainLooper())
+
+    private fun clearPendingLocationRequest() {
+        pendingLocationListener = null
+        pendingLocationRunnable?.let { locationHandler.removeCallbacks(it) }
+        pendingLocationRunnable = null
+    }
+
     private val STORAGE_CHANNEL = "storage_access"
     private val INTENT_CHANNEL = "intent"
     private val A11Y_CHANNEL = "a11y"
@@ -116,6 +135,70 @@ class MainActivity : FlutterActivity() {
             if (candidate.path.startsWith(canonicalRoot.path + File.separator)) return candidate
         }
         return null
+    }
+
+    /** Streams [file] through SHA-256, or null if it cannot be read. */
+    private fun sha256Of(file: File): String? = try {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(16 * 1024)
+            while (true) {
+                val read = input.read(buffer)
+                if (read <= 0) break
+                digest.update(buffer, 0, read)
+            }
+        }
+        digest.digest().joinToString("") { "%02x".format(it) }
+    } catch (e: Exception) {
+        Log.e("ErrandInstall", "SHA-256 failed for ${file.path}", e)
+        null
+    }
+
+    /**
+     * `versionCode` of an installed package, or null when unavailable.
+     * Uses [PackageInfoFlags] on API 33+ to avoid the deprecated flags form.
+     */
+    private fun apkVersionCodeOf(pkg: String): Long? = try {
+        val info = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            packageManager.getPackageInfo(pkg, PackageManager.PackageInfoFlags.of(0))
+        } else {
+            @Suppress("DEPRECATION")
+            packageManager.getPackageInfo(pkg, 0)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            info.longVersionCode
+        } else {
+            @Suppress("DEPRECATION")
+            info.versionCode.toLong()
+        }
+    } catch (e: Exception) {
+        null
+    }
+
+    /**
+     * `versionCode` of a candidate APK file, or null when unreadable/not an APK.
+     *
+     * Parsed via [PackageManager.getPackageArchiveInfo], which only reads the
+     * manifest — it does not install or execute anything.
+     */
+    private fun apkVersionCodeOf(file: File): Long? = try {
+        val info = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            packageManager.getPackageArchiveInfo(
+                file.absolutePath, PackageManager.PackageInfoFlags.of(0)
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            packageManager.getPackageArchiveInfo(file.absolutePath, 0)
+        } ?: return null
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            info.longVersionCode
+        } else {
+            @Suppress("DEPRECATION")
+            info.versionCode.toLong()
+        }
+    } catch (e: Exception) {
+        Log.e("ErrandInstall", "Could not read archive info for ${file.path}", e)
+        null
     }
 
     private fun taskNotificationInitialRoute(incomingIntent: Intent?): String? {
@@ -311,6 +394,18 @@ class MainActivity : FlutterActivity() {
         // that silently broke screen reading until the user re-enabled it, and it
         // made the explicit a11y/disable channel method below redundant. Use the
         // Settings screen or the disable channel method to turn it off.
+
+        // Release any in-flight location request: the LocationManager listener
+        // and the 8s timeout outlived the activity otherwise, keeping the
+        // system binding alive and replying to a dead engine.
+        try {
+            pendingLocationListener?.let { l ->
+                (getSystemService(Context.LOCATION_SERVICE) as? LocationManager)
+                    ?.removeUpdates(l)
+            }
+        } catch (_: Exception) {}
+        clearPendingLocationRequest()
+
         widgetChannel?.setMethodCallHandler(null)
         widgetChannel = null
         schedulerChannel?.setMethodCallHandler(null)
@@ -676,13 +771,30 @@ class MainActivity : FlutterActivity() {
                             options.setPendingIntentBackgroundActivityStartMode(
                                 ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED
                             )
+                            // A distinct request code per launch. PendingIntent
+                            // equality ignores extras, so a constant 0 made two
+                            // launches with the same action+data resolve to the
+                            // SAME pending intent, and FLAG_UPDATE_CURRENT
+                            // overwrote the first one's extras before delivery —
+                            // e.g. two mailto: to one address with different
+                            // bodies, where the first could arrive with the
+                            // second's payload. send() is async on API 34+, so
+                            // the window is real.
+                            val requestCode = launchRequestCodes.incrementAndGet()
                             val pi = PendingIntent.getActivity(
                                 launchContext,
-                                0,
+                                requestCode,
                                 intent,
                                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
                             )
-                            pi.send(launchContext, 0, null, null, null, null, options.toBundle())
+                            try {
+                                pi.send(launchContext, 0, null, null, null, null, options.toBundle())
+                            } finally {
+                                // Release the system-side reference; without
+                                // this each launch leaks a PendingIntent that
+                                // keeps the target component alive.
+                                pi.cancel()
+                            }
                         } else {
                             launchContext.startActivity(intent)
                         }
@@ -1198,6 +1310,53 @@ class MainActivity : FlutterActivity() {
                         result.error("FILE_NOT_FOUND", "APK file does not exist: $path", null)
                         return@setMethodCallHandler
                     }
+
+                    // Verify the candidate before handing it to the package
+                    // installer. Android enforces the signing key on install, so
+                    // this is not an arbitrary-code path — but the file itself is
+                    // still untrusted input, and a Dart-side bypass of the
+                    // download-time checks must not be able to skip verification.
+                    val expectedSha = call.argument<String>("sha256")
+                    if (!expectedSha.isNullOrBlank()) {
+                        val actual = sha256Of(file)
+                        if (actual == null) {
+                            result.error("VERIFY_ERR", "Could not read $path for verification", null)
+                            return@setMethodCallHandler
+                        }
+                        if (!actual.equals(expectedSha.trim(), ignoreCase = true)) {
+                            Log.e("ErrandInstall", "SHA-256 mismatch for $path; refusing to install")
+                            result.error("SHA_MISMATCH", "APK checksum does not match; refusing to install", null)
+                            return@setMethodCallHandler
+                        }
+                    } else {
+                        Log.e("ErrandInstall", "installApk called without an expected sha256; refusing")
+                        result.error(
+                            "NO_CHECKSUM",
+                            "Refusing to install without a published SHA-256 to verify against",
+                            null,
+                        )
+                        return@setMethodCallHandler
+                    }
+
+                    // Anti-rollback: never hand the installer a build older than
+                    // the one running. Without this, a validly-signed historical
+                    // APK could downgrade the app (and re-introduce old bugs or
+                    // vulns) even though the platform would accept it.
+                    val newVersion = apkVersionCodeOf(file)
+                    val currentVersion = apkVersionCodeOf(this.packageName)
+                    if (newVersion != null && currentVersion != null && newVersion < currentVersion) {
+                        Log.e(
+                            "ErrandInstall",
+                            "Refusing downgrade: candidate $newVersion < installed $currentVersion"
+                        )
+                        result.error(
+                            "DOWNGRADE_BLOCKED",
+                            "Refusing to install an older build ($newVersion < $currentVersion)",
+                            null,
+                        )
+                        return@setMethodCallHandler
+                    }
+
                     try {
                         val authority = "$packageName.fileprovider"
                         val contentUri = FileProvider.getUriForFile(this, authority, file)
@@ -1409,6 +1568,7 @@ class MainActivity : FlutterActivity() {
                 }
                 handler.removeCallbacks(timeoutRunnable)
                 try { lm.removeUpdates(this) } catch (_: Exception) {}
+                clearPendingLocationRequest()
                 dispatchLocationResult(loc, result)
             }
             override fun onProviderDisabled(p: String) {}
@@ -1423,6 +1583,7 @@ class MainActivity : FlutterActivity() {
                 dispatched = true
             }
             try { lm.removeUpdates(listener) } catch (_: Exception) {}
+            clearPendingLocationRequest()
             if (bestLocation != null) {
                 dispatchLocationResult(bestLocation, result)
             } else {
@@ -1431,6 +1592,13 @@ class MainActivity : FlutterActivity() {
                 } catch (_: Exception) {}
             }
         }
+
+        // Track the in-flight request so onDestroy can tear it down. These were
+        // locals, so a destroyed activity left the LocationManager binding
+        // alive and the 8s timeout still fired — replying to a MethodChannel
+        // Result whose engine was already gone.
+        pendingLocationListener = listener
+        pendingLocationRunnable = timeoutRunnable
         handler.postDelayed(timeoutRunnable, 8000)
 
         try {

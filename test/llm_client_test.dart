@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:errand/llm/llm_client.dart';
+import 'package:fake_async/fake_async.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter_test/flutter_test.dart';
 
@@ -186,6 +187,71 @@ void main() {
     sw.stop();
     expect(attempts, 1);
     expect(sw.elapsed, lessThan(const Duration(seconds: 10)));
+  });
+
+  test('backoff delay is clamped to 60s regardless of source', () {
+    // A hostile `Retry-After: 7200` must not park a background task for two
+    // hours on battery, and the injected backoffDuration is clamped too — it
+    // feeds the same `delay` expression. Driven under fakeAsync so the
+    // assertion costs no wall-clock time.
+    fakeAsync((async) {
+      var attempts = 0;
+      final client = LlmClient(
+        config: const LlmConfig(
+          baseUrl: 'https://example.test/v1/',
+          apiKey: 'test-key',
+          model: 'test-model',
+        ),
+        backoffDuration: (_) => const Duration(hours: 2),
+        client: _StreamingClient((request) async {
+          attempts++;
+          return http.StreamedResponse(
+            Stream.value(utf8.encode('Too many requests')),
+            429,
+            headers: const {'retry-after': '7200'},
+          );
+        }),
+      );
+
+      // Drive the call; it will keep failing (429 forever), which is fine —
+      // we only care about when the retries happen, not the final error.
+      unawaited(
+        client
+            .chatStream(
+              messages: const [
+                {'role': 'user', 'content': 'Hi'},
+              ],
+              onTextDelta: (_) {},
+            )
+            .then<void>((_) {}, onError: (Object _) {}),
+      );
+
+      // The first attempt's failure should already be in flight synchronously.
+      async.flushMicrotasks();
+      async.elapse(const Duration(milliseconds: 10));
+      async.flushMicrotasks();
+      expect(attempts, 1);
+
+      // Well under the clamp: still waiting.
+      async.elapse(const Duration(seconds: 59));
+      async.flushMicrotasks();
+      expect(
+        attempts,
+        1,
+        reason: 'backoff must not fire before the 60s clamp',
+      );
+
+      // Crossing the clamp boundary releases the wait and the retry happens.
+      async.elapse(const Duration(seconds: 2));
+      async.flushMicrotasks();
+      expect(
+        attempts,
+        greaterThanOrEqualTo(2),
+        reason: 'backoff must fire by the 60s clamp, not after 2 hours',
+      );
+      client.close();
+      async.flushTimers();
+    });
   });
 
   test('chatStream retries on 429 and succeeds on subsequent attempt', () async {

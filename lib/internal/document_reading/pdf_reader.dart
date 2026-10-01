@@ -11,14 +11,15 @@ const _kDefaultChannel = MethodChannel('pdf_reader');
 const _maxPdfBytes = 64 * 1024 * 1024;
 const _maxPageCharacters = 256 * 1024;
 
-/// Token passed to the [Finalizer] to close the native PDF document
-/// on GC if the document is not explicitly disposed.
-class _PdfFinalizerToken {
-  final MethodChannel channel;
-  final String docId;
+/// Historical Finalizer token type, removed along with the [Finalizer] itself.
+///
+/// A Dart `Finalizer` callback runs on a non-root-isolate finalizer thread with
+/// no `BinaryMessenger` binding, so `invokeMethod` was a no-op or threw and the
+/// native `PDDocument` (a memory-mapped file handle, up to 64MB) leaked for the
+/// process lifetime. Cleanup is now deterministic instead of GC-dependent:
+/// `dispose()` is the only path that closes a document, the native plugin caps
+/// its open set with bounded eviction, and `closeAll()` runs on engine teardown.
 
-  _PdfFinalizerToken(this.channel, this.docId);
-}
 
 /// Reads a PDF document using native PdfBox via platform channel on Android,
 /// or using pure-Dart stream text extraction on desktop / non-Android platforms.
@@ -70,16 +71,9 @@ Future<LogicalDocument> readPdfDocument(
 }
 
 class PooledPdfDocument extends LogicalDocument {
-  static final _finalizer = Finalizer<_PdfFinalizerToken>((token) {
-    try {
-      token.channel.invokeMethod('closePdf', {'docId': token.docId}).catchError((_) {});
-    } catch (_) {}
-  });
-
   final String docId;
   final int pageCount;
   final MethodChannel channel;
-  final _PdfFinalizerToken _finalizerToken;
   bool _isDisposed = false;
 
   final Map<int, LogicalDocumentUnit> _cache = {};
@@ -92,14 +86,11 @@ class PooledPdfDocument extends LogicalDocument {
     required this.pageCount,
     required this.channel,
     int? fileBytes,
-  })  : _finalizerToken = _PdfFinalizerToken(channel, docId),
-        super(
+  }) : super(
           format: 'PDF',
           units: _PlaceholderPdfUnitList(pageCount),
           totalExpandedBytes: fileBytes,
-        ) {
-    _finalizer.attach(this, _finalizerToken, detach: this);
-  }
+        );
 
   @override
   int get unitCount => pageCount;
@@ -183,9 +174,10 @@ class PooledPdfDocument extends LogicalDocument {
   void dispose() {
     if (!_isDisposed) {
       _isDisposed = true;
-      _finalizer.detach(this);
       _cache.clear();
       _cacheBytes = 0;
+      // The only path that actually closes the native handle. Deterministic,
+      // not GC-dependent — see [_PdfFinalizerToken].
       channel.invokeMethod('closePdf', {'docId': docId}).catchError((_) {});
     }
   }

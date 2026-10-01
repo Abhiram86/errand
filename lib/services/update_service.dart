@@ -551,17 +551,21 @@ class UpdateService {
 
   /// Downloads the APK file to cache with atomic rename and progress reporting.
   ///
-  /// Verification contract: exact byte length (when the server reports one)
-  /// plus SHA-256 when the release notes publish a checksum for the APK
-  /// (see [extractSha256]). Releases MUST publish hashes for full
-  /// verification; a hashless download is size-checked only and logs a
-  /// warning. Pass [requireSha256] to fail closed (reject hashless
-  /// downloads) once the release process guarantees published checksums.
+  /// Verification contract, fail-closed: exact byte length (when the server
+  /// reports one) AND a published SHA-256 for the APK (see [extractSha256]).
+  /// A release with no checksum is rejected — a size match is not integrity,
+  /// and this APK is about to replace the running app. Android does enforce
+  /// the signing key on install, so this is not an arbitrary-code path, but a
+  /// corrupted or truncated binary is undetectable by size alone, and there is
+  /// no anti-rollback without the hash either.
+  ///
+  /// [requireSha256] is retained for tests that want to exercise the
+  /// size-only path; production callers should leave it at the default.
   Future<String?> downloadApk(
     AppUpdateInfo info, {
     Duration inactivityTimeout = defaultDownloadInactivityTimeout,
     Duration totalTimeout = defaultDownloadTotalTimeout,
-    bool requireSha256 = false,
+    bool requireSha256 = true,
     void Function(double progress)? onProgress,
   }) async {
     if (info.apkUrl == null || info.apkUrl!.isEmpty) return null;
@@ -701,6 +705,11 @@ class UpdateService {
   }
 
   /// Installs the update by either launching the cached APK or downloading then installing.
+  ///
+  /// The expected SHA-256 is passed to the platform so `installApk` re-verifies
+  /// the bytes immediately before handing them to the package installer. Doing it
+  /// only at download time would let a Dart-side bypass — or a file replaced
+  /// between download and install — skip verification entirely.
   Future<bool> installUpdate(AppUpdateInfo info) async {
     String? apkPath = info.apkLocation;
     if (!info.isCachedApkValid) {
@@ -709,7 +718,14 @@ class UpdateService {
     if (apkPath == null || !File(apkPath).existsSync()) {
       return false;
     }
-    final installed = await _appInfo.installApk(apkPath);
+    final expectedSha = info.sha256?.trim();
+    if (expectedSha == null || expectedSha.isEmpty) {
+      // Fail closed: without a published checksum the native side refuses too,
+      // but refusing here gives a clean reason and never opens the installer.
+      debugPrint('[UpdateService] Refusing install: ${info.apkName} has no published SHA-256');
+      return false;
+    }
+    final installed = await _appInfo.installApk(apkPath, sha256: expectedSha);
     if (installed) {
       // The package installer takes over from here. Hide this session's toast;
       // initialize/checkUpdate will reconcile the persisted state on relaunch.

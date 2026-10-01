@@ -156,6 +156,13 @@ Tool scheduleTaskTool({
               'Action "create" for recurring tasks requires a positive "repeat_after" interval in milliseconds (e.g. 900000 for 15m, 3600000 for 1h).',
             );
           }
+          if (repeatAfter != null && !_isRepeatAfterSane(repeatAfter)) {
+            return ToolCallResult.failure(
+              call.id,
+              'Invalid "repeat_after": $repeatAfter ms. Must be a positive '
+              'value no greater than $_maxRepeatAfterMs ms (1 year).',
+            );
+          }
 
           final nowMillis = DateTime.now().millisecondsSinceEpoch;
           int startsAtMillis;
@@ -291,6 +298,13 @@ Tool scheduleTaskTool({
             return ToolCallResult.failure(
               call.id,
               'Action "edit" for recurring tasks requires a valid "repeat_after" interval.',
+            );
+          }
+          if (newRepeatAfter != null && !_isRepeatAfterSane(newRepeatAfter)) {
+            return ToolCallResult.failure(
+              call.id,
+              'Invalid "repeat_after": $newRepeatAfter ms. Must be a positive '
+              'value no greater than $_maxRepeatAfterMs ms (1 year).',
             );
           }
 
@@ -637,6 +651,23 @@ int? _parseId(dynamic raw) {
   if (raw is String) return int.tryParse(raw.trim());
   return null;
 }
+
+/// Upper bound on a recurring task's interval.
+///
+/// This is the real fix: `calculateNextRunAt` computes
+/// `startsAt + n * repeatAfter`, which overflows to a negative epoch for an
+/// absurd interval. The negative timestamp then fails scheduleTask's
+/// `targetTime > nowMillis` check, which clamps the alarm to `now + 1s` — the
+/// task re-runs every second forever, writing a log row and a scratch report
+/// on each pass.
+///
+/// Deliberately NO lower bound. `P13.6.9` recorded the decision that sub-minute
+/// schedules are legitimate and a 60s floor must not be reintroduced; the
+/// catch-up spin that made `repeat_after: 1` pathological is already fixed by
+/// the closed-form `calculateNextRunAt`, which is covered by a regression test.
+const int _maxRepeatAfterMs = 366 * 24 * 60 * 60 * 1000; // 1 year
+
+bool _isRepeatAfterSane(int ms) => ms > 0 && ms <= _maxRepeatAfterMs;
 
 /// Lenient int coercion for LLM arguments (accepts doubles and numeric strings).
 int? _parseIntArg(dynamic raw) {

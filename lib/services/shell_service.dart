@@ -472,6 +472,18 @@ class ShellSafetyCheck {
         if (delim != null && delim.isNotEmpty) {
           final closeIdx = _heredocEnd(command, j, delim);
           if (closeIdx != -1) {
+            // Emit the command that owns the heredoc (`cat <<EOF`) as its own
+            // segment, then resume scanning AFTER the terminator line.
+            //
+            // Both halves are required. Emitting first keeps `start` correct;
+            // resuming after the terminator keeps the body out of the segment
+            // text. Jumping over the terminator's own newline without doing this
+            // swallowed everything after it into the `cat` segment, so
+            // `cat <<EOF ... EOF` + newline + `rm -rf /` was analysed as a
+            // single `cat` display command and scored safe.
+            final head = command.substring(start, i).trim();
+            if (head.isNotEmpty) result.add(head);
+            start = closeIdx;
             // -1: the for-loop increment lands exactly on closeIdx.
             i = closeIdx - 1;
             continue;
@@ -1442,7 +1454,24 @@ class ShellSafetyCheck {
                       RegExp(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}')
                           .hasMatch(a) ||
                       const {'netmask', 'broadcast', 'hw', 'ether', 'mtu'}
-                          .contains(a))));
+                          .contains(a)) ||
+                  // Dash-flag mutations, e.g. `ifconfig eth0 -promisc`,
+                  // `-allmulti`, `-txqueuelen`. The positional count above only
+                  // sees non-dash args, so `ifconfig eth0 -promisc` looked like
+                  // a display command and scored safe.
+                  args.any((a) => const {
+                        '-promisc',
+                        '-allmulti',
+                        '-multicast',
+                        '-broadcast',
+                        '-arp',
+                        '-trailers',
+                        '-txqueuelen',
+                        '-mtu',
+                        '-hw',
+                        '-ether',
+                        '-netmask',
+                      }.contains(a))));
       if (reconfigures) {
         return ShellSafetyCheck(
           ShellSafetyLevel.needsConfirmation,

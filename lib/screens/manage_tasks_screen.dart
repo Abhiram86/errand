@@ -15,6 +15,17 @@ import '../utils/format.dart';
 import '../widgets/tasks/tasks_widgets.dart';
 
 /// Full-screen management page for scheduled tasks, logs, and autonomous background runs.
+/// Whether a log row counts toward the unread badge.
+///
+/// Mirrors the SQL in [TaskSchedulerService.terminalLogStatusesSql] and the
+/// Drift expression in [TaskSchedulerService.unreadNotificationCount]. Kept as
+/// one Dart predicate so the in-window fallback counts and the exact COUNT(*)
+/// agree — they previously used different status sets.
+bool _isUnreadLog(SchedulerTaskLogRow l) =>
+    l.notificationSeen == 0 &&
+    l.notificationSent == 1 &&
+    TaskSchedulerService.terminalLogStatuses.contains(l.status);
+
 class ManageTasksScreen extends StatefulWidget {
   final ErrandDatabase? database;
   final int initialTabIndex;
@@ -92,9 +103,11 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
         .watch();
     // Separate COUNT(*) so the Unread badge stays exact even when the log
     // window caps the loaded rows. Backed by idx_scheduler_task_log_unseen_created.
+    // The status set is interpolated from the service's single source of truth
+    // so this cannot drift from unreadNotificationCount().
     _unreadCountStream = _db
         .customSelect(
-          "SELECT COUNT(*) AS c FROM scheduler_task_log WHERE notification_seen = 0 AND notification_sent = 1 AND status != 'running'",
+          "SELECT COUNT(*) AS c FROM scheduler_task_log WHERE notification_seen = 0 AND notification_sent = 1 AND ${TaskSchedulerService.terminalLogStatusesSql}",
           readsFrom: {_db.schedulerTaskLogs},
         )
         .watchSingle()
@@ -361,20 +374,10 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
 
             return StreamBuilder<int>(
               stream: _unreadCountStream,
-              initialData: allLogs
-                  .where((l) =>
-                      l.notificationSeen == 0 &&
-                      l.notificationSent == 1 &&
-                      l.status != 'running')
-                  .length,
+              initialData: allLogs.where(_isUnreadLog).length,
               builder: (context, unreadSnapshot) {
-                final unreadCount = unreadSnapshot.data ??
-                    allLogs
-                        .where((l) =>
-                            l.notificationSeen == 0 &&
-                            l.notificationSent == 1 &&
-                            l.status != 'running')
-                        .length;
+                final unreadCount =
+                    unreadSnapshot.data ?? allLogs.where(_isUnreadLog).length;
 
                 return Scaffold(
               backgroundColor: kDarkBg,
@@ -1013,13 +1016,7 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
 
     // Exact badge from COUNT(*); window-derived counts below cover only the
     // loaded page and are labeled as such by the Load-more row.
-    final unreadCount = exactUnreadCount ??
-        allLogs
-            .where((l) =>
-                l.notificationSeen == 0 &&
-                l.notificationSent == 1 &&
-                l.status != 'running')
-            .length;
+    final unreadCount = exactUnreadCount ?? allLogs.where(_isUnreadLog).length;
     final failedCount = allLogs.where((l) => l.status == 'failed' || l.status == 'timeout').length;
     final successCount = allLogs.where((l) => l.status == 'success').length;
     final displayedLogs = _logLimit > 0 ? filtered.take(_logLimit).toList() : filtered;

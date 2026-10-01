@@ -225,6 +225,14 @@ class TaskExecutionService : Service() {
                 try {
                     if (wakeLock?.isHeld == true) wakeLock?.release()
                 } catch (_: Exception) {}
+                // Note on attribution (review R2-M6): the API 29
+                // `acquire(long, WorkSource)` overload would let this wake lock be
+                // attributed in dumpsys batterystats, but it does not resolve
+                // against this build's PowerManager stubs, so the 1-arg form is
+                // retained. The other half of that finding is already correct:
+                // the engine watchdog fires at 12 min, so the 13-min wake lock
+                // is the backstop for a genuinely wedged Dart side, and it
+                // releases 1 min after the watchdog — it is not overrun.
                 wakeLock?.acquire(TASK_WAKELOCK_TIMEOUT_MS)
             } catch (e: Exception) {
                 Log.e(TAG, "Error acquiring wake lock for queued task", e)

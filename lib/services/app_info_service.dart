@@ -37,10 +37,15 @@ class AppInfoService {
   }
 
   /// Launches the Android system package installer to install the APK at [filePath].
-  Future<bool> installApk(String filePath) async {
+  ///
+  /// [sha256] is the expected digest, re-verified natively before the installer
+  /// is invoked. It is required: the platform handler refuses an install with no
+  /// checksum to compare against.
+  Future<bool> installApk(String filePath, {required String sha256}) async {
     try {
       final res = await _channel.invokeMethod<bool>('installApk', {
         'filePath': filePath,
+        'sha256': sha256,
       });
       return res ?? false;
     } catch (_) {

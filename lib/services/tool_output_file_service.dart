@@ -147,9 +147,25 @@ class ToolOutputFileService {
           '${stored.substring(0, kMaxStoredChars)}\n\n[... stored output truncated at $kMaxStoredChars chars of ${output.length} ...]';
     }
     // Atomic write: tmp + rename so concurrent retries never leave torn files.
-    final tmp = File('${file.path}.part');
-    await tmp.writeAsString(stored, flush: true);
-    await tmp.rename(file.path);
+    // The temp name must be unique per call: two concurrent processOutput calls
+    // for the same callId (an LLM retry reusing an id, a stateless batch
+    // duplicating a call, or maybeSpillResult racing a per-tool call) would
+    // otherwise write the same `.part` file, and the loser's rename throws
+    // FileSystemException because its source is gone — failing the whole tool
+    // result rather than just racing.
+    final tmp = File(
+      '${file.path}.${DateTime.now().microsecondsSinceEpoch}.part',
+    );
+    try {
+      await tmp.writeAsString(stored, flush: true);
+      await tmp.rename(file.path);
+    } catch (_) {
+      // Best-effort cleanup so a failed write never leaves debris behind.
+      try {
+        if (await tmp.exists()) await tmp.delete();
+      } catch (_) {}
+      rethrow;
+    }
 
     return generatePreview(output, file);
   }

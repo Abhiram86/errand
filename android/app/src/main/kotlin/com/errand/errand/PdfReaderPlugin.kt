@@ -18,6 +18,13 @@ class PdfReaderPlugin(private val context: Context) : MethodChannel.MethodCallHa
 
     companion object {
         const val CHANNEL = "pdf_reader"
+
+        /** Mirrors the Dart-side 64MB cap; PDDocument.load maps the whole file. */
+        const val MAX_DOCUMENT_BYTES = 64L * 1024 * 1024
+
+        /** Upper bound on simultaneously open PDDocuments before eviction. */
+        const val MAX_OPEN_DOCUMENTS = 8
+
         private var isInitialized = false
 
         fun registerWith(messenger: BinaryMessenger, context: Context): Pair<MethodChannel, PdfReaderPlugin> {
@@ -31,6 +38,23 @@ class PdfReaderPlugin(private val context: Context) : MethodChannel.MethodCallHa
     private val executor = Executors.newCachedThreadPool()
     private val mainHandler = Handler(Looper.getMainLooper())
     private val openDocuments = ConcurrentHashMap<String, PDDocument>()
+
+    /**
+     * Closes open documents when the open set exceeds [MAX_OPEN_DOCUMENTS].
+     * Every `PDDocument` holds a memory-mapped file handle and a full
+     * in-memory parse (up to [MAX_DOCUMENT_BYTES]), so an unbounded set is
+     * an OOM. Eviction order is arbitrary (`ConcurrentHashMap` iteration),
+     * not recency — the bound is the guarantee, not the order.
+     */
+    private fun evictIfOverCapacity() {
+        while (openDocuments.size >= MAX_OPEN_DOCUMENTS) {
+            val oldest = openDocuments.keys.firstOrNull() ?: return
+            val evicted = openDocuments.remove(oldest) ?: return
+            try {
+                evicted.close()
+            } catch (_: Exception) {}
+        }
+    }
 
     private fun ensureInitialized() {
         if (!isInitialized) {
@@ -76,9 +100,24 @@ class PdfReaderPlugin(private val context: Context) : MethodChannel.MethodCallHa
                             replyError(result, "FILE_NOT_FOUND", "File does not exist: $path")
                             return@execute
                         }
+                        // Server-side size guard. The 64MB cap only existed in
+                        // Dart; PDDocument.load maps the whole file, so an
+                        // oversized or hostile document must be refused here too.
+                        if (!file.canRead() || file.length() > MAX_DOCUMENT_BYTES) {
+                            replyError(
+                                result,
+                                "TOO_LARGE",
+                                "PDF exceeds the ${MAX_DOCUMENT_BYTES / (1024 * 1024)}MB limit: ${file.length()} bytes"
+                            )
+                            return@execute
+                        }
                         val doc = PDDocument.load(file)
                         val docId = UUID.randomUUID().toString()
                         val pageCount = doc.numberOfPages
+                        // Bound the open set. A Dart Finalizer cannot rescue a
+                        // leaked PDDocument (it has no BinaryMessenger on the
+                        // finalizer thread), so eviction is the only backstop.
+                        evictIfOverCapacity()
                         openDocuments[docId] = doc
                         replySuccess(
                             result,

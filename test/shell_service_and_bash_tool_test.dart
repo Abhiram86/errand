@@ -339,6 +339,21 @@ void main() {
       expect(check.isSafe, isTrue);
     });
 
+    test('ifconfig dash-flag mutation confirms', () {
+      // `ifconfig eth0 -promisc` looks like a display command to the positional
+      // count (only one non-dash arg), but it enables promiscuous mode.
+      ShellSafetyCheck check;
+      check = ShellSafetyCheck.analyze('ifconfig eth0 -promisc');
+      expect(check.needsConfirmation, isTrue);
+      check = ShellSafetyCheck.analyze('ifconfig eth0 -allmulti');
+      expect(check.needsConfirmation, isTrue);
+      check = ShellSafetyCheck.analyze('ifconfig eth0 -txqueuelen 1000');
+      expect(check.needsConfirmation, isTrue);
+      // Genuine display forms stay safe.
+      check = ShellSafetyCheck.analyze('ifconfig -a');
+      expect(check.isSafe, isTrue);
+    });
+
     test('arithmetic expansion is not a command substitution', () {
       ShellSafetyCheck check;
       check = ShellSafetyCheck.analyze(r'echo $((1+2))');
@@ -365,6 +380,39 @@ void main() {
       // is still analyzed and fails closed.
       check = ShellSafetyCheck.analyze('cat <<EOF\nrm -rf /\n');
       expect(check.isSafe, isFalse);
+    });
+
+    test('commands AFTER a heredoc terminator are still analyzed', () {
+      // Regression: the heredoc skip jumped past the terminator's own newline
+      // without emitting the pending segment, so everything after it was
+      // absorbed into the leading `cat` and the whole line was analysed as a
+      // single display command. `rm -rf /` scored safe.
+      ShellSafetyCheck check;
+      check = ShellSafetyCheck.analyze('cat <<EOF\nbody\nEOF\nrm -rf /');
+      expect(check.isBlocked, isTrue);
+
+      check = ShellSafetyCheck.analyze('cat <<EOF\nbody\nEOF\nrm -rf /tmp/target');
+      expect(check.needsConfirmation, isTrue);
+
+      // A payload one line further down must not slip either.
+      check = ShellSafetyCheck.analyze(
+        'cat <<EOF\nbody\nEOF\necho hi\nrm -rf /tmp/target',
+      );
+      expect(check.needsConfirmation, isTrue);
+
+      // Semicolon-separated payload after the terminator (already worked).
+      check = ShellSafetyCheck.analyze('cat <<EOF\nbody\nEOF; rm -rf /');
+      expect(check.isBlocked, isTrue);
+
+      // Two heredocs in one command, payload after the second terminator.
+      check = ShellSafetyCheck.analyze(
+        'cat <<A\nx\nA\ncat <<B\ny\nB\nrm -rf /tmp/target',
+      );
+      expect(check.needsConfirmation, isTrue);
+
+      // And the legitimate case stays safe: nothing after the terminator.
+      check = ShellSafetyCheck.analyze('cat <<EOF\nbody\nEOF');
+      expect(check.isSafe, isTrue);
     });
 
     test('redirects: outside-scratch writes confirm, sinks/fd-dups/tests stay safe', () {

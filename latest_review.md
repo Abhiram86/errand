@@ -37,28 +37,100 @@ native Android layer and in a handful of concurrency paths — not spread evenly
 
 ---
 
-## Priority order
+## 0. Direction: Lite-only (added 2026-09-30)
 
-Fix in this order. Each row is independently shippable.
+**Decision: the `full` flavor is being deprecated. Errand ships as a single accessibility-free build.**
+
+Nobody wants to grant an accessibility service to a third-party agent — including the
+author. Full's screen reading/automation is a capability most users will never enable and
+every reviewer has to think twice about. The Lite code path is already the only one that
+is fully exercised, so this is a **deletion exercise, not a behaviour change**.
+
+### What Lite-only costs: nothing that currently works
+
+Verified, not assumed:
+
+- **`READ/WRITE_CONTACTS` and `READ/WRITE_CALENDAR`** are declared in `src/full/AndroidManifest.xml`
+  but are **never requested at runtime and never read in Dart**. The intent tool launches
+  calendar/alarm *editors* via `ACTION_VIEW`/`ACTION_INSERT`, which are not permission-gated
+  reads. These four permissions are dead weight even in Full.
+- **`REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` and `SYSTEM_ALERT_WINDOW`** are full-only, and
+  `MainActivity.kt:384-430` already branches: Lite falls back to the app-info battery page.
+  That fallback is the code path that already ships.
+- **The one real loss** is the `screen` / `screen_act` tools (read a screen, tap, type, scroll
+  other apps). That is the intended trade.
+
+### What it deletes
+
+| Target | LOC |
+|---|---|
+| `ErrandAccessibilityService.kt` | 1 581 |
+| a11y channel block in `MainActivity.kt` (`---- Accessibility` … `---- App Info`) | ~209 |
+| `lib/services/a11y_service.dart` | 275 |
+| `lib/tools/screen_tool.dart` | 344 |
+| `lib/tools/act_tool.dart` | 715 |
+| `lib/widgets/a11y_toast_overlay.dart` | 149 |
+| `res/xml/accessibility_service_config.xml` + a11y description string | — |
+| `src/full/` + `src/lite/` manifests, `productFlavors` block | — |
+| **Total Kotlin + Dart** | **~3 273** |
+| `test/act_tool_test.dart`, `test/screen_tool_screenshot_test.dart`, half of `test/flavor_support_test.dart` | ~509 |
+
+### Findings that become MOOT — do not spend time on these
+
+| ID | Why it dies |
+|---|---|
+| `R2-H7` | a11y handlers ran on the platform thread — the channel and its Kotlin are deleted |
+| `R2-M1` | the two `disableSelf()` calls were the a11y bug — service no longer exists |
+| `R2-M8` | `IME_ROLE_MISSING` vs `NO_INPUT_FOCUS` — a11y-only concept |
+| `R2-D5` | duplicate a11y gate + `_splitHeader` between `screen_tool`/`act_tool` — both deleted |
+| `R2-D6` | `act_tool`'s 4×/5× duplicated refusal blocks — file deleted |
+| `R2-P10` (partial) | floating-card duplication is partly `a11y_toast_overlay.dart`; rest still stands |
+
+Everything else in this document **still applies in full**. In particular the background
+execution chain is untouched by this: `TaskExecutionService`, `TaskAlarmManager`,
+`TaskBootReceiver`, `TaskAlarmRestorer` and both foreground services all remain, so
+`R2-H1`, `R2-H2`, `R2-H3`, `R2-H4`, `R2-H5`, `R2-H6`, `R2-M2` and `R2-M3` are exactly as
+urgent as before.
+
+### F-Droid: this decision is the single biggest submission win
+
+Inclusion Policy does not *ban* accessibility services, but a build that declares
+`canRetrieveWindowContent="true"` and `canPerformGestures="true"` invites reviewer scrutiny
+that a build without them never gets. Dropping the service removes the most
+sensitive-permission argument against the app entirely, and it also kills
+`R2-S2`'s `SYSTEM_ALERT_WINDOW` problem. Combined with the Lite-only build this leaves
+Errand as "shell + files + browser + memory + scheduled tasks", which is a much easier
+app to review and to trust.
+
+See [§11](#11-lite-only-deprecation-plan) for the ordered teardown plan.
+
+---
+
+## Priority order (Lite-only scope)
+
+Fix in this order. Each row is independently shippable. `R2-H7` has moved out of scope
+per §0; it is not dropped, it is deleted with the flavor.
 
 | # | ID | Severity | One-line |
 |---|---|---|---|
 | 1 | `R2-C1` | **CRITICAL** | `FileProvider` exposes the whole filesystem; `open_file` takes LLM-controlled paths |
 | 2 | `R2-F1` | **BLOCKER** | In-app OTA updater conflicts with F-Droid Inclusion Policy §5 |
-| 3 | `R2-H1` | HIGH | `dataSync` FGS never handles `onTimeout()` → `RemoteServiceException` |
-| 4 | `R2-H2` | HIGH | `AgentForegroundService` has no self-timeout → burns the shared 6h budget |
-| 5 | `R2-H3` | HIGH | Foreground engine can't post notifications (`app_info` channel gap) |
-| 6 | `R2-H4` | HIGH | Background engine blocks the platform thread up to 8s on geocoding |
-| 7 | `R2-H5` | HIGH | Boot alarm restore reads a credential-encrypted WAL DB in direct boot |
-| 8 | `R2-H6` | HIGH | Inexact-alarm fallback can't legally start an FGS → tasks never run |
-| 9 | `R2-H8` | HIGH | `_runAgentTurn` has no re-entrancy guard → double agent turn |
-| 10 | `R2-H9` | HIGH | `DocumentLruCache` double-inserts → inflated accounting + disposed-PDF use |
-| 11 | `R2-H10` | HIGH | `dispose()` saves outside `CoalescingWriter` → lost final answer |
-| 12 | `R2-H11` | HIGH | Single-task Resume never recomputes `nextRunAt` |
+| 3 | `R2-H6` | HIGH | Inexact-alarm fallback can't legally start an FGS → **tasks never run** |
+| 4 | `R2-H5` | HIGH | Boot alarm restore reads a credential-encrypted WAL DB in direct boot |
+| 5 | `R2-H1` + `R2-H2` | HIGH | FGS `onTimeout()` + self-timeout; one bug, fix together |
+| 6 | `R2-H3` | HIGH | Foreground engine can't post notifications (`app_info` channel gap) |
+| 7 | `R2-H4` | HIGH | Background engine blocks the platform thread up to 8s on geocoding |
+| 8 | `R2-H8` | HIGH | `_runAgentTurn` has no re-entrancy guard → double agent turn |
+| 9 | `R2-H9` | HIGH | `DocumentLruCache` double-inserts → inflated accounting + disposed-PDF use |
+| 10 | `R2-H10` | HIGH | `dispose()` saves outside `CoalescingWriter` → lost final answer |
+| 11 | `R2-H11` | HIGH | Single-task Resume never recomputes `nextRunAt` |
+| 12 | `R2-F2..F7` | BLOCKER* | F-Droid metadata, tags, Flutter pin, cache-mutating Gradle hook |
 | 13 | `R2-R1` | HIGH* | 657-line shell-safety method — unreviewable, and it guards `rm -rf` |
-| 14 | `R2-F2..F7` | BLOCKER* | F-Droid metadata, tags, Flutter pin, cache-mutating Gradle hook |
-| 15 | `R2-H7` | HIGH | All a11y channel handlers run on the platform thread, uncapped |
-| 16 | `R2-D1`, `R2-D2` | MED | Two biggest duplication extractions |
+| 14 | `R2-D1`, `R2-D2` | MED | Two biggest duplication extractions |
+| — | `R2-H7`, `R2-M1`, `R2-M8`, `R2-D5`, `R2-D6` | **MOOT** | Deleted by the Lite-only teardown (§0) |
+
+`R2-H6` and `R2-H5` are promoted above the FGS work on purpose: both make the app's *headline
+feature* silently do nothing, whereas the FGS items degrade an already-running turn.
 
 ---
 
@@ -276,7 +348,8 @@ an FGS. Call `canScheduleExactAlarms()` once before the first `scheduleAlarm` of
 surface the existing `openExactAlarmSettings` prompt — the capability is already implemented on both
 engines but never consulted from the schedule path (see `R2-M3`).
 
-### [ ] R2-H7 — HIGH — Accessibility tree operations run on the UI thread with uncapped walks
+### [~] R2-H7 — HIGH — Accessibility tree operations run on the UI thread with uncapped walks
+> 🚫 **MOOT — deleted by the Lite-only teardown.** Do not spend time on this. See [§0](#0-direction-lite-only-added-2026-09-30).
 
 **Files:** `MainActivity.kt:893-1054` · `ErrandAccessibilityService.kt`
 
@@ -294,7 +367,8 @@ inline. Unlike the geocode path, nothing is offloaded:
 main thread. `PdfReaderPlugin.kt:42-61` already demonstrates the correct pattern. Add explicit
 depth/node caps to `collectMatchingClickable` and `findScrollable`, and yield between scroll repeats.
 
-### [ ] R2-M1 — MEDIUM — Accessibility service is force-disabled on activity finish and task removal
+### [~] R2-M1 — MEDIUM — Accessibility service is force-disabled on activity finish and task removal
+> 🚫 **MOOT — deleted by the Lite-only teardown.** The service no longer exists. See [§0](#0-direction-lite-only-added-2026-09-30).
 
 **Files:** `MainActivity.kt:249-254` · `ErrandAccessibilityService.kt:114-119`
 
@@ -374,7 +448,8 @@ The `try/catch` around `result.error` (`:1334`) masks it.
 
 **Fix:** hold both in fields; `lm.removeUpdates(...)` + `handler.removeCallbacks(...)` in `onDestroy`.
 
-### [ ] R2-M8 — MEDIUM — IME primitives are indistinguishable from "no field focused"
+### [~] R2-M8 — MEDIUM — IME primitives are indistinguishable from "no field focused"
+> 🚫 **MOOT — deleted by the Lite-only teardown.** IME entry points lived only in the a11y service. See [§0](#0-direction-lite-only-added-2026-09-30).
 
 **File:** `ErrandAccessibilityService.kt:1341-1346, 879-891, 1430-1443`
 
@@ -871,7 +946,8 @@ with **byte-identical error strings**, `sortOrder` defaulting, workspace resolut
 **Fix:** `lib/tools/paged_listing.dart` with `PagedListingRequest.fromArgs(Map)` and
 `PagedListingResponse.render(…)`; each handler shrinks to ~40 lines.
 
-### [ ] R2-D5 — A11y gate + screen-outline splitter duplicated
+### [~] R2-D5 — A11y gate + screen-outline splitter duplicated
+> 🚫 **MOOT — deleted by the Lite-only teardown.** Both source files are removed. See [§0](#0-direction-lite-only-added-2026-09-30).
 
 `screen_tool.dart:126-147` and `act_tool.dart:159-180` — identical gate blocks except one string; the
 multi-line guidance strings are **character-identical**. `screen_tool.dart:255-262` and
@@ -879,7 +955,8 @@ multi-line guidance strings are **character-identical**. `screen_tool.dart:255-2
 
 **Fix:** `A11yService.requireEnabled()` returning `String?`; move the splitter to a shared module.
 
-### [ ] R2-D6 — `act_tool` repeats the same two message blocks 4×/5×
+### [~] R2-D6 — `act_tool` repeats the same two message blocks 4×/5×
+> 🚫 **MOOT — deleted by the Lite-only teardown.** `act_tool.dart` is removed. See [§0](#0-direction-lite-only-added-2026-09-30).
 
 `act_tool.dart:225-232, 379-386, 433-440, 492-499` (identical confirmation-modal message);
 `:346-352, 406-411, 457-463, 467-474, 546-553` (`looksLikeCommitAction` guard + refusal);
@@ -1288,9 +1365,9 @@ Not fully diagnosed here — pointers only, so the next agent doesn't re-triage 
 | 1. "composer still disabled after the agent finishes" | Look at `_busy` handling around `R2-H8` (re-entrancy latch) and the `finally` in `_runAgentTurn`. The `…working` placeholder is driven by `_workingMessageId` + `_updateWorkingPlaceholder` (`chat_screen.dart:2126`), which also backs `R2-P5`. |
 | 2. "no spacing between settings tabs/sections" | Pure UI polish, `lib/widgets/settings/`. Not covered here. |
 | 3. "autofocus works, keyboard doesn't" | `chat_screen.dart:381-388` calls `_composerFocusNode.requestFocus()` + `TextInput.show` after 150ms on cold start only. `MainActivity` soft-input handling and `windowSoftInputMode="adjustResize"` are the likely interaction. Not diagnosed. |
-| 4. "reminders set a scheduled task instead of an alarm" | Routing in `system_prompt.dart` / `intent_tool.dart` vs `schedule_task_tool.dart`. The `SET_ALARM` intent is already in the manifest `<queries>` block (`AndroidManifest.xml`), so the capability exists. `R2-R6` notes `intent_tool.dart:251-253` under-documents its supported actions. |
+| 4. "reminders set a scheduled task instead of an alarm" | Routing in `system_prompt.dart` / `intent_tool.dart` vs `schedule_task_tool.dart`. The `SET_ALARM` intent is already in the manifest `<queries>` block (`AndroidManifest.xml`), so the capability exists. `R2-R6` notes `intent_tool.dart:251-253` under-documents its supported actions. **More important under Lite-only** (§0): with no accessibility service, `intent` is the *only* path to a real device alarm, so this routing must be right. Note `R2-H6` means the agent-run path is currently broken on Android 14+ anyway — the two interact. |
 | 5. paragraph-by-paragraph rendering | Already done — `streaming_assistant_service.dart` (see `R2-P5`, `R2-P1` for its perf cost). |
-| 6. prompt editor on task item | Already done — `lib/widgets/tasks/edit_task_model_sheet.dart` (uncommitted changes present in the working tree). |
+| 6. prompt editor on task item | **Done and committed** (`17fa112`) — `lib/widgets/tasks/edit_task_model_sheet.dart`. |
 | 7. "linked files aren't getting deleted" | `R2-D1` (the delete dialog) and `R2-P2` (`getOwnedFilesForTask` scan). Also `task_scheduler_service.dart:177-256` — check `resolveReportPath` before the read passes. |
 
 ---
@@ -1322,6 +1399,7 @@ Checked at `93c8c51`. Listed so these don't get re-audited.
   obtained nodes in `touched`/`candidates` and recycles exactly once per path; `root` is recycled in
   `finally`. Only residual leak is the exception path out of `visitNode` (`:670-671`), which is harmless
   on API 33+ where `recycle()` is a no-op.
+  *(Whole file is deleted by the Lite-only teardown — §11 Step 2. Do not spend review time here.)*
 - **`TaskExecutionService` request queue** (`:97-99, 142-199`) — only touched from the main looper, and
   the `completed` flags on the three `Result` implementations correctly prevent double-advancement when
   a watchdog and a late Dart reply race. Solid.
@@ -1339,20 +1417,217 @@ Checked at `93c8c51`. Listed so these don't get re-audited.
 
 ---
 
+## 12. Confirmed plans (decided 2026-09-30)
+
+Owner decisions from the maintainer. These replace the "suggested fix" text in the
+referenced findings; the findings stay for the failure analysis and acceptance criteria.
+
+### R2-F1 — Keep the in-app OTA updater, behind a consent modal ✅ ALLOWED
+
+**Researched, not assumed.** F-Droid does *not* ban in-app updaters. Inclusion Policy §5
+is conditional and its condition is exactly the modal design:
+
+> *"Applications must not download additional executable binary files (e.g. add-ons,
+> auto-updates, etc.) **without explicit user consent**. Consent means it needs to be
+> opt-in (it must not be harder to decline than to accept or presented in a way users are
+> likely to press accept without reading) and structured in a way that clearly explains to
+> users that they're choosing to bypass F-Droid's checks if they activate it."*
+
+An F-Droid maintainer, on fdroiddata#3113, is more prescriptive still: *"the user should
+have the first choice to: 1) be informed in-app updating exists, and 2) opt in or opt out.
+I would default to opt-out with an option to opt-in at any point in the future."*
+
+**Decision: keep OTA.** Auto-check stays; the modal is the consent gate; no
+`--dart-define` carve-out needed and **no `Tracking` anti-feature** — nothing is reported
+anywhere and the download is explicitly consented.
+
+**Design**
+
+- Auto-check on launch/resume, still throttled to 2h (`update_service.dart:20`). It only
+  ever fetches JSON metadata. **No binary is fetched until the user taps Update.**
+- Instead of the current top banner, show a modal on a new version:
+  - body explains what will happen, **including that the APK is not F-Droid's verified build
+    and they will stop receiving F-Droid updates for this app** (the §5 "clearly explains" clause);
+  - **Cancel** and **Update**, equal prominence — declining must not be harder than accepting;
+  - `Never ask again` checkbox, **unchecked by default**; persisted **before** the download
+    starts, and honoured on both Cancel and Update.
+- Sidebar keeps "Check for updates" and release notes, and is where the toggle can be
+  re-enabled/inspected at any time.
+- Add a one-time "informed first" note on first launch: in-app updating exists, nothing is
+  downloaded unless Update is tapped, and it can be turned off. Satisfies the maintainer's
+  point 1 literally.
+- Progress renders inside the modal; cancelling mid-download must clean up the partial file.
+
+**Punch list:** `R2-S1` hardening is a *prerequisite* here, not optional — the download is
+now a deliberate one-tap action, so it must fail closed.
+
+### R2-H6 + R2-M3 — Prompt once, then JobScheduler ✅ CONFIRMED
+
+**Decision: extend the existing `JobService`, do not add WorkManager.** `TaskAlarmRescheduleJobService`
+already exists, so this adds no dependency, no new AAR, and no extra F-Droid justification
+burden, and keeps the APK lean.
+
+- `R2-M3` (call `canScheduleExactAlarms()`) is straightforward and lands first.
+- On creating the **first** scheduled task of a session, if exact alarms are not permitted,
+  prompt once with a plain explainer. Do not re-prompt per task.
+- Granted → existing exact-alarm path, unchanged.
+- Declined → register the task with `JobScheduler`, run by `TaskAlarmRescheduleJobService`,
+  which then starts `TaskExecutionService`. A running job holds a temporary
+  background-activity-start allowlist, so the FGS start is legal there — unlike the
+  BroadcastReceiver path, which is what makes the current `R2-H6` failure.
+- Re-check `canScheduleExactAlarms()` on resume: the user can revoke it in Settings and
+  Android revokes it on app upgrade. The existing
+  `ACTION_SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED` receiver drives the tasks-screen
+  refresh so the UI reflects the degraded state.
+- Pre-Android-12 devices keep the existing `setAndAllowWhileIdle` path.
+- UI for the degraded state on the tasks screen to be agreed at implementation time.
+
+### R2-H5 — Simpler restore, with three corrections ✅ CONFIRMED
+
+**Decision: the simpler route**, plus the following so it does not trade one silent failure
+for another.
+
+Maintainer's flow:
+
+```
+Phone reboots → don't restore yet → user unlocks / BOOT_COMPLETED → read DB
+  → for each scheduled task:
+      scheduled time >  now  → restore alarm normally
+      scheduled time <= now  → mark "Skipped — device was rebooting"
+```
+
+**Corrections, all required:**
+
+1. **Dropping `directBootAware` does not fix the WAL problem.** After unlock the file is
+   readable, but it is still a WAL database opened `OPEN_READONLY`, and SQLite needs write
+   access to the `-shm`/`-wal` sidecars to recover a hot journal. Both halves are needed:
+   drop `directBootAware` **and** open read-write (SELECT-only is fine in a boot receiver).
+   Without the second half this trades a silent failure for a different silent failure.
+2. **The skip branch must not apply to recurring tasks.** One-off → skip is right. Recurring →
+   compute the next future slot and restore that. A blanket skip marks a daily task dead
+   permanently, which is worse than the bug being fixed. Split on `type == 'recurring'`.
+3. **Add a freshness window** so a task that came due just before boot still runs
+   (e.g. due < 30 min ago → run now, else skip). Record the skip as a *reason* on the log
+   row, not just a status, so the UI can explain it, and use a different reason for
+   `MY_PACKAGE_REPLACED` (missed while updating) than for boot.
+
+**Manifest action list also simplifies:** drop `directBootAware` and `QUICKBOOT_POWERON`
+(redundant with `BOOT_COMPLETED`). Keep `BOOT_COMPLETED`, `MY_PACKAGE_REPLACED`, and
+`SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED`.
+
+### Owner-approved autonomous work
+
+No product decision needed; may be landed without further input: the heredoc
+post-terminator regression, the `ifconfig -promisc` gap, the `_backoffMax` cap test,
+`R2-H1`+`R2-H2`, `R2-S1`, `R2-M2`, `R2-M4`, `R2-M5`, `R2-M6`, `R2-M7`, `R2-M14` (Dart
+half), `R2-M15`, `R2-M16`, `R2-M18`.
+
+---
+
+## 11. Lite-only deprecation plan
+
+Ordered so the tree stays shippable and the package ID never changes. **Do this as its own
+tracked workstream (`P16` in `next_plan.md`), not mixed into a bugfix batch** — it touches
+the manifest, the build, and the release pipeline, and reviewers will want it isolated.
+
+### Step 0 — decide the package ID (blocking, do first)
+
+**Keep `com.errand.errand`. Do not rename, do not adopt the `.lite` suffix.**
+
+The app has never been published anywhere, so there is no migration to worry about. But the
+README download links, the GitHub release assets, and any F-Droid `applicationId` history all
+reference `com.errand.errand`, and F-Droid treats a new app ID with an existing name as a fork
+needing fresh ID + name + icon review. So: delete the flavors, keep the current `applicationId`.
+
+### Step 1 — build layer
+
+- `android/app/build.gradle.kts`: delete the whole `flavorDimensions` + `productFlavors` block
+  (`create("full")`, `create("lite")`). Collapse `manifestPlaceholders["appName"]` to the
+  `application` tag's plain `android:label="Errand"`; drop the `${appName}` indirection.
+- Delete `android/app/src/full/` and `android/app/src/lite/`.
+- `android/app/src/main/AndroidManifest.xml`: delete the `.ErrandAccessibilityService` `<service>`
+  block and the `com.errand.ACTION_VOICE_PROMPT` handling if it is a11y-gated (it is not — keep).
+  Keep `VoiceWidgetProvider`, both FGS, `TaskAlarmReceiver`, `TaskBootReceiver`,
+  `TaskAlarmRescheduleJobService`, `FileProvider`.
+- Delete `res/xml/accessibility_service_config.xml` and the `a11y_service_description` string.
+- **Keep** `SCHEDULE_EXACT_ALARM` in the main manifest (it is already there *and* duplicated in
+  `src/full` — Lite is the flavour that must not lose it, since it gates the whole scheduler).
+
+### Step 2 — Kotlin
+
+- Delete `ErrandAccessibilityService.kt` (1 581 lines).
+- Delete the `---- Accessibility (P2a)` channel block in `MainActivity.kt` (~209 lines), plus
+  `A11Y_CHANNEL`, `ActivityOptions`/`AccessibilityServiceInfo` imports if now unused, and the
+  `_refreshA11yState` / a11y toast plumbing.
+- `MainActivity.kt:384-430`: the battery-exemption branch already has a Lite fallback — delete the
+  Full-only `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` fast path, keep the app-info fallback.
+- Verify no other `MethodChannel` name disappears that Dart still calls (grep
+  `MethodChannel(` on both sides — this is exactly the class of bug `R2-H3` was).
+
+### Step 3 — Dart
+
+- Delete `screen_tool.dart`, `act_tool.dart`, `a11y_service.dart`, `a11y_toast_overlay.dart`.
+- `tool_registry.dart`: remove `enableA11yTools` and the `if (enableA11yTools) …` block; drop the
+  now-unused `screenTool`/`actTool` imports. `ToolRegistry.headless` already excluded them.
+- `chat_screen.dart`: remove `_a11yAvailable` / `_a11yRestricted` / `_a11ySupported` and the
+  `_refreshA11yState` calls in `initState` and `didChangeAppLifecycleState`; drop `screenAccess`
+  and `screenRestricted` from the `systemPromptFor(...)` call.
+- `system_prompt.dart`: the `screenAccess` / `a11ySupported` branches collapse to the
+  not-supported path. Keep the parameter removal for last so intermediate commits still compile.
+- `app_info_service.dart`: `AppPlatformInfo.isLite` / `flavor` exist only to pick the right APK
+  asset name in `update_service.dart:474-505`. With one build these become dead — decide whether
+  to keep matching both `-full-` and `-lite-` assets during the transition (so in-flight users
+  still get updates) or drop the matching entirely.
+
+### Step 4 — tests
+
+- Delete `test/act_tool_test.dart` (321) and `test/screen_tool_screenshot_test.dart`.
+- `test/flavor_support_test.dart` (188): the "supported" branch is now unreachable. Replace with a
+  test asserting the screen/session capability section is **always** absent from `systemPromptFor`.
+- `test/chat_screen_widget_test.dart` and `test/manage_tasks_screen_test.dart`: remove a11y-state
+  setup.
+- Keep the `UnsupportedA11yService` cases — they now describe the only supported configuration.
+
+### Step 5 — docs and release
+
+- `README.md`: the "Two flavors: Full vs. Lite" table and the accessibility bullet in
+  "Permissions, justified" are now wrong. Rewrite as a single-build section; the trust argument
+  gets *stronger* ("there is no code path in this app that can read your screen").
+- `CHANGELOG.md`: state the removal as a breaking change and say why — it is a feature, not a loss.
+- `architecture.md` and `next_plan.md`: strip a11y from the architecture map; the P2/P2a/P2b
+  milestones become historical.
+- Release assets: stop publishing `-full-` APKs. `R2-F3`'s tag work covers this.
+- `R2-F1` (OTA policy) is *easier* to solve now: with one build the updater either exists or
+  it doesn't, instead of needing a per-flavor story.
+
+### Acceptance
+
+- `flutter analyze` clean; `flutter test` green with the reduced suite.
+- `aapt dump permissions` on the release APK lists **no** accessibility service and no
+  `SYSTEM_ALERT_WINDOW`.
+- A fresh install: agent has no `screen`/`screen_act` tool, the system prompt has no screen
+  capability section, and the agent still runs shell, files, browser, memory, location and
+  scheduled tasks.
+
+---
+
 ## Appendix — suggested batching
 
 Nothing here is a new requirement; it's just an ordering that keeps the tree shippable.
 
 1. **Security first** — `R2-C1`, then `R2-S1`. One commit, add the containment tests.
-2. **F-Droid decisions** — resolve `R2-F1` (product call), then `R2-F2`–`R2-F5` + `R2-F7`. Tag `v0.7.5`.
-3. **Android platform** — `R2-H1`+`R2-H2` together (they're one bug), then `R2-H3`, `R2-H4`, `R2-H5`,
-   `R2-H6`, `R2-H7`.
-4. **Dart concurrency** — `R2-H8`, `R2-H9`, `R2-H10`+`R2-M13` (they interact), `R2-H11`.
-5. **Unblock honesty** — §7 first (`R2-X1`, `R2-X2`, `R2-X3`), since two are regressions of "done" work
+2. **Lite-only teardown** — §11 Steps 0-4 as `P16`, on its own branch, after step 1. It is
+   independent of every correctness fix below and removes ~3 800 lines.
+3. **F-Droid decisions** — resolve `R2-F1` (product call), then `R2-F2`–`R2-F5` + `R2-F7`. Tag `v0.7.5`.
+   Doing this *after* the teardown means the metadata describes the shipped build.
+4. **Background execution** — `R2-H6` and `R2-H5` first (both make scheduled tasks silently do
+   nothing), then `R2-H1`+`R2-H2` together, then `R2-H3`, `R2-H4`, `R2-M2`+`R2-M3`.
+5. **Dart concurrency** — `R2-H8`, `R2-H9`, `R2-H10`+`R2-M13` (they interact), `R2-H11`.
+6. **Unblock honesty** — §7 first (`R2-X1`, `R2-X2`, `R2-X3`), since two are regressions of "done" work
    and one may change `P13.6`'s recorded status.
-6. **Duplication** — `R2-D1`, `R2-D2`, `R2-D3`, then `R2-D7` (which also fixes `R2-H11`).
-7. **Structural** — `R2-R1` (safety), then `R2-R2`, `R2-R4`, `R2-R3`, `R2-R5`.
-8. **Performance** — `R2-P4`+`R2-P3`+`R2-P2` in that order (each feeds the next), then `R2-P1`, `R2-P5`.
+7. **Duplication** — `R2-D1`, `R2-D2`, `R2-D3`, then `R2-D7` (which also fixes `R2-H11`).
+8. **Structural** — `R2-R1` (safety), then `R2-R2`, `R2-R4`, `R2-R3`, `R2-R5`.
+9. **Performance** — `R2-P4`+`R2-P3`+`R2-P2` in that order (each feeds the next), then `R2-P1`, `R2-P5`.
 
 When you land anything from this file, tick the box, add the SHA, and update `next_plan.md` with a
 `P13.7` subsection referencing the `R2-*` IDs — do not renumber this file.
