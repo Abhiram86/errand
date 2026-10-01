@@ -16,9 +16,14 @@
 .swiftpm/
 migrate_working_dir/
 diagrams/
+# Demo media lives on GitHub Releases / the README embed, not in the repo.
+# The .gif + .mp4 pair was 58MB of committed binaries that nothing referenced,
+# which every F-Droid clone had to fetch. Kept out; the files remain on disk.
 demo/*
-!demo/errand_demo.mp4
-!demo/errand_demo.gif
+
+# assets/logo.png (4.4MB) was committed but never declared in pubspec.yaml's
+# assets: block and never referenced from Dart. Removed from tracking.
+assets/logo.png
 
 # IntelliJ related
 *.iml

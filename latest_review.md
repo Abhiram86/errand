@@ -137,7 +137,7 @@ feature* silently do nothing, whereas the FGS items degrade an already-running t
 ## 1. Security
 
 ### [~] R2-C1 — CRITICAL — `FileProvider` exposes the entire device filesystem, driven by LLM output
-> Partial: handler-side containment is in, but `<root-path name="root" path="." />` is still in `file_paths.xml` and the `"*/*"` MIME fallthrough (`MainActivity.kt:655`) remains. Fix steps 1 and 3 still open.
+> Partial (correction: the `<root-path>` element is gone — only the explanatory comment mentions it — and handler-side canonical containment is in). Remaining step: the `"*/*"` MIME fallthrough (`MainActivity.kt:655`) instead of an allowlist.
 
 **Files:** `android/app/src/main/res/xml/file_paths.xml:8` · `MainActivity.kt:455-503` · `MainActivity.kt:1094-1118`
 
@@ -715,7 +715,7 @@ the tab badge.
 
 ## 4. Performance
 
-### [ ] R2-P1 — MED-HIGH — `ClampedTableView` lays out the entire table on every streaming frame
+### [x] R2-P1 — MED-HIGH — `ClampedTableView` lays out the entire table on every streaming frame
 
 **File:** `lib/widgets/bubbles/clamped_table_view.dart:234-316`
 
@@ -906,7 +906,8 @@ same `Cancel`/`Delete` action row (`0xFF8B949E` / `kDanger`).
 `showDeleteWithFilesSheet(BuildContext, {title, message, fileLabel, files, confirmLabel})`. Also hoists
 `formatBytes` (see `R2-D3`).
 
-### [ ] R2-D2 — Provider key/model resolution repeated 7× (~180 lines)
+### [~] R2-D2 — Provider key/model resolution repeated 7× (~180 lines)
+> Partial: the provider-key half is done (`providerHasKey`/`resolveApiKey`/`isOpenRouterProvider` are public and all call sites converted). The model-resolution half is open — no `model_resolution.dart`; the `openrouter/free` triple-test is still duplicated in `chat_screen.dart` and `model_picker_dialog.dart`.
 
 **Provider key resolution** — `chat_screen.dart:460-462, 493-501, 1055-1057, 1071-1083, 1968-1970` ·
 `model_picker_dialog.dart:152-158, 189-191, 211-213, 255-265, 327-338` ·
@@ -966,8 +967,7 @@ multi-line guidance strings are **character-identical**. `screen_tool.dart:255-2
 
 **Fix:** one `commitRefusal(res, knownLabel)` helper + a single `_postActionProbe(svc, message)`.
 
-### [~] R2-D7 — Task status transitions hand-rolled in 4 places
-> Partial: `TaskSchedulerService.setPaused` exists, but the hand-rolled versions in `spacey_task_row.dart`, `edit_task_model_sheet.dart`, and `schedule_task_tool.dart` were not deleted or rerouted.
+### [x] R2-D7 — Task status transitions hand-rolled in 4 places
 
 `spacey_task_row.dart:352-372` (`_togglePause`) · `edit_task_model_sheet.dart:291-325` ·
 `schedule_task_tool.dart:358-461` (`update` action) — all three bypass
@@ -1307,7 +1307,7 @@ Flutter SDK to check out.
 **Fix:** add `flutter-version: '3.47.1'` to a `release.yml` (the template reads that file specifically),
 or to `ci.yml` and point `prebuild` at it.
 
-### [ ] R2-F5 — BLOCKER — `settings.gradle.kts` mutates the pub cache at configure time
+### [x] R2-F5 — BLOCKER — `settings.gradle.kts` mutates the pub cache at configure time
 
 **File:** `android/settings.gradle.kts:29-45`
 
@@ -1327,7 +1327,7 @@ infrastructure exists to prevent.
 `proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), …)` for affected subprojects.
 Nothing in the pub cache should ever be written by the build.
 
-### [ ] R2-F6 — 58 MB of committed binaries
+### [x] R2-F6 — 58 MB of committed binaries
 
 Tracked in git:
 - `demo/errand_demo.gif` — **45 MB**

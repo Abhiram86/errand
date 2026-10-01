@@ -25,24 +25,15 @@ plugins {
 
 include(":app")
 
-// Automatically patch third-party plugins with AGP 9.0+ deprecations (e.g. proguard-android.txt)
-val pluginsDependenciesFile = file("../.flutter-plugins-dependencies")
-if (pluginsDependenciesFile.exists()) {
-    try {
-        val content = pluginsDependenciesFile.readText()
-        val regex = Regex(""""path":\s*"([^"]+)"""")
-        regex.findAll(content).forEach { match ->
-            val pluginPath = match.groupValues[1]
-            val buildGradle = File(pluginPath, "android/build.gradle")
-            if (buildGradle.exists()) {
-                val script = buildGradle.readText()
-                if (script.contains("proguard-android.txt")) {
-                    buildGradle.writeText(
-                        script.replace("proguard-android.txt", "proguard-android-optimize.txt")
-                    )
-                }
-            }
-        }
-    } catch (_: Exception) {}
-}
+// NOTE: this file deliberately does NOT modify plugin sources under the pub
+// cache. An earlier version rewrote each plugin's android/build.gradle here,
+// substituting the AGP-9 renamed `proguard-android.txt` for
+// `proguard-android-optimize.txt`. That mutated files outside the repository at
+// configure time, which breaks build reproducibility and is rejected by
+// F-Droid's scanner (the cache is read-only and scanned before the build).
+// No replacement convention was needed: no plugin in the current dependency
+// set references the legacy default (verified against
+// .flutter-plugins-dependencies), so the block was dead code. If a future
+// dependency genuinely needs the substitution, add it as a Gradle convention
+// in android/build.gradle.kts — never as a write to the pub cache.
 

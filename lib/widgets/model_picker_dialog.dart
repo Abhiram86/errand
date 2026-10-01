@@ -153,9 +153,7 @@ class _ModelPickerDialogState extends State<ModelPickerDialog> {
         (provider.id == ProviderPresetType.openRouter.id &&
             AppSettingsService.instance.hasOpenRouterKey);
     final isUnconfiguredOpenRouter =
-        (provider.id == ProviderPresetType.openRouter.id ||
-            provider.baseUrl.contains('openrouter.ai')) &&
-        !hasKey;
+        AppSettingsService.instance.isOpenRouterProvider(provider) && !hasKey;
     if (isUnconfiguredOpenRouter) {
       return opts.firstWhere(
         (m) =>
@@ -252,16 +250,13 @@ class _ModelPickerDialogState extends State<ModelPickerDialog> {
         });
       }
     } else if (needsFetch) {
-      final apiKey = provider.id == ProviderPresetType.openRouter.id
-          ? (provider.apiKey ?? AppSettingsService.instance.openRouterKey ?? '')
-          : (provider.apiKey ?? '');
+      final apiKey = AppSettingsService.instance.resolveApiKey(provider);
       try {
         final models = await ModelCatalogService.fetchAndClose(
           baseUrl: provider.baseUrl.isNotEmpty ? provider.baseUrl : provider.defaultBaseUrl,
           apiKey: apiKey,
           defaultProvider: provider.name,
-          isOpenRouter: provider.id == ProviderPresetType.openRouter.id ||
-              provider.baseUrl.contains('openrouter.ai'),
+          isOpenRouter: AppSettingsService.instance.isOpenRouterProvider(provider),
         );
         if (mounted && _currentProvider?.id == provider.id) {
           setState(() {
@@ -324,16 +319,13 @@ class _ModelPickerDialogState extends State<ModelPickerDialog> {
       if (provider != null) {
         var cached = ModelCatalogService.getCachedModels(provider.baseUrl);
         if ((cached == null || cached.isEmpty) && _currentProviderHasKey) {
-          final apiKey = provider.id == ProviderPresetType.openRouter.id
-              ? (provider.apiKey ?? AppSettingsService.instance.openRouterKey ?? '')
-              : (provider.apiKey ?? '');
+          final apiKey = AppSettingsService.instance.resolveApiKey(provider);
           try {
             cached = await ModelCatalogService.fetchAndClose(
               baseUrl: provider.baseUrl.isNotEmpty ? provider.baseUrl : provider.defaultBaseUrl,
               apiKey: apiKey,
               defaultProvider: provider.name,
-              isOpenRouter: provider.id == ProviderPresetType.openRouter.id ||
-                  provider.baseUrl.contains('openrouter.ai'),
+              isOpenRouter: AppSettingsService.instance.isOpenRouterProvider(provider),
               forceRefresh: true,
             );
           } catch (_) {}

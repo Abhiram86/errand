@@ -1183,9 +1183,7 @@ class TaskSchedulerService {
             ? targetModel
             : settings.selectedModel;
 
-        final apiKey = provider.id == ProviderPresetType.openRouter.id
-            ? (provider.apiKey ?? settings.openRouterKey ?? '')
-            : (provider.apiKey ?? '');
+        final apiKey = settings.resolveApiKey(provider);
         locallyCreatedClient = LlmClient(
           config: LlmConfig(
             baseUrl: provider.baseUrl.isNotEmpty

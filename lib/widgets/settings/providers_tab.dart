@@ -143,10 +143,7 @@ class ProvidersTab extends StatelessWidget {
                   onSettingsChanged();
                   if (hasKey &&
                       !ModelCatalogService.hasCachedModels(provider.baseUrl)) {
-                    final apiKey = provider.id ==
-                            ProviderPresetType.openRouter.id
-                        ? (provider.apiKey ?? settings.openRouterKey ?? '')
-                        : (provider.apiKey ?? '');
+                    final apiKey = settings.resolveApiKey(provider);
                     unawaited(
                       ModelCatalogService.fetchAndClose(
                         baseUrl: provider.baseUrl.isNotEmpty
@@ -154,9 +151,7 @@ class ProvidersTab extends StatelessWidget {
                             : provider.defaultBaseUrl,
                         apiKey: apiKey,
                         defaultProvider: provider.name,
-                        isOpenRouter: provider.id ==
-                                ProviderPresetType.openRouter.id ||
-                            provider.baseUrl.contains('openrouter.ai'),
+                        isOpenRouter: settings.isOpenRouterProvider(provider),
                       ).catchError((_) => <ModelOption>[]),
                     );
                   }

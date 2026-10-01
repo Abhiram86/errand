@@ -193,16 +193,13 @@ class _EditTaskModelSheetState extends State<EditTaskModelSheet> {
         (provider.id == ProviderPresetType.openRouter.id && _settings.hasOpenRouterKey);
 
     if (cached == null && hasKey) {
-      final apiKey = provider.id == ProviderPresetType.openRouter.id
-          ? (provider.apiKey ?? _settings.openRouterKey ?? '')
-          : (provider.apiKey ?? '');
+      final apiKey = _settings.resolveApiKey(provider);
       try {
         final fetched = await ModelCatalogService.fetchAndClose(
           baseUrl: provider.baseUrl.isNotEmpty ? provider.baseUrl : provider.defaultBaseUrl,
           apiKey: apiKey,
           defaultProvider: provider.name,
-          isOpenRouter: provider.id == ProviderPresetType.openRouter.id ||
-              provider.baseUrl.contains('openrouter.ai'),
+          isOpenRouter: _settings.isOpenRouterProvider(provider),
         );
         if (mounted && _selectedProviderId == providerId) {
           final sorted = List<ModelOption>.from(fetched)..sort(ModelOption.compareByReleaseDate);

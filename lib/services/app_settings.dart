@@ -111,11 +111,34 @@ final class AppSettingsService {
     _cacheLoaded = true;
   }
 
-  bool _providerHasKey(LlmProvider p) {
+  /// Whether [p] has a usable API key.
+  ///
+  /// OpenRouter stores its key separately (`_openRouterKey`) and materialises it
+  /// into the resolved provider copy, so a provider read before resolution can
+  /// look keyless. This is the canonical check; it used to be private and was
+  /// re-derived by hand at seven call sites (review R2-D2).
+  bool providerHasKey(LlmProvider p) {
     if (p.hasKey) return true;
     if (p.id == ProviderPresetType.openRouter.id && hasOpenRouterKey) return true;
     return false;
   }
+
+  /// The API key to send for [p], or an empty string when unset.
+  ///
+  /// Mirrors the OpenRouter fallback in [providerHasKey]; use both together
+  /// rather than re-deriving the ternary at the call site.
+  String resolveApiKey(LlmProvider p) {
+    if (p.id == ProviderPresetType.openRouter.id) {
+      return p.apiKey ?? openRouterKey ?? '';
+    }
+    return p.apiKey ?? '';
+  }
+
+  /// True when [p] should be treated as OpenRouter for defaulting and
+  /// fallback purposes — either by preset id or by base URL.
+  bool isOpenRouterProvider(LlmProvider p) =>
+      p.id == ProviderPresetType.openRouter.id ||
+      p.baseUrl.contains('openrouter.ai');
 
   List<LlmProvider> get providers {
     final withKeys = <LlmProvider>[];
@@ -124,7 +147,7 @@ final class AppSettingsService {
       final resolved = (p.id == ProviderPresetType.openRouter.id && !p.hasKey && hasOpenRouterKey)
           ? p.copyWith(apiKey: openRouterKey)
           : p;
-      if (_providerHasKey(resolved)) {
+      if (providerHasKey(resolved)) {
         withKeys.add(resolved);
       } else {
         withoutKeys.add(resolved);
@@ -133,7 +156,7 @@ final class AppSettingsService {
     return List.unmodifiable([...withKeys, ...withoutKeys]);
   }
 
-  bool get hasAnyConfiguredProvider => providers.any(_providerHasKey);
+  bool get hasAnyConfiguredProvider => providers.any(providerHasKey);
 
   /// Provider resolution priority:
   /// 1. last selected provider, when it is still configured (has a key);
@@ -158,9 +181,9 @@ final class AppSettingsService {
     }
 
     final last = byId(_activeProviderId);
-    if (last != null && _providerHasKey(last)) return last;
+    if (last != null && providerHasKey(last)) return last;
     for (final p in providers) {
-      if (_providerHasKey(p)) return p;
+      if (providerHasKey(p)) return p;
     }
     if (last != null) return last;
     for (final p in _providers) {

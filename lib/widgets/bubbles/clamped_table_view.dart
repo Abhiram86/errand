@@ -59,6 +59,15 @@ class _ClampedTableViewState extends State<ClampedTableView> {
   bool _copied = false;
   Timer? _copyResetTimer;
 
+  // Memoized table subtree. Null until the first build; see [_buildTable].
+  // Invalidated by identity comparison, not by didUpdateWidget, because the
+  // caller (the markdown renderer) re-delivers the same parsed row list on
+  // every streaming flush and only a new list means new content.
+  Widget? _memoTable;
+  Object? _memoRows;
+  int? _memoMaxCols;
+  TextStyle? _memoStyle;
+
   /// Upper bound on clipboard payload to avoid UI jank and
   /// TransactionTooLarge binder failures on huge LLM tables.
   static const int _maxCopyChars = 200000;
@@ -225,97 +234,7 @@ class _ClampedTableViewState extends State<ClampedTableView> {
             child: SingleChildScrollView(
               controller: _scrollController,
               scrollDirection: Axis.horizontal,
-              child: Container(
-                decoration: BoxDecoration(
-                  border: Border.all(color: kBorder, width: 0.8),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                clipBehavior: Clip.antiAlias,
-                child: Table(
-                  defaultColumnWidth: const IntrinsicColumnWidth(),
-                  defaultVerticalAlignment: TableCellVerticalAlignment.middle,
-                  border: TableBorder(
-                    horizontalInside: BorderSide(
-                      color: kBorder.withValues(alpha: 0.5),
-                      width: 0.5,
-                    ),
-                    verticalInside: BorderSide(
-                      color: kBorder.withValues(alpha: 0.5),
-                      width: 0.5,
-                    ),
-                  ),
-                  children: widget.tableRows.map((row) {
-                    return TableRow(
-                      decoration: row.isHeader
-                          ? const BoxDecoration(color: kInputBg)
-                          : null,
-                      children: List.generate(maxCols, (colIdx) {
-                        final field =
-                            colIdx < row.fields.length ? row.fields[colIdx] : null;
-                        final text = field?.data.trim() ?? '';
-                        final align = field?.alignment ?? TextAlign.left;
-
-                        final cellStyle = widget.textStyle.copyWith(
-                          fontWeight:
-                              row.isHeader ? FontWeight.w600 : FontWeight.normal,
-                          fontSize: 13,
-                          height: 1.35,
-                          color: row.isHeader
-                              ? kText
-                              : kText.withValues(alpha: 0.9),
-                        );
-
-                        Widget cellContent;
-                        if (text.isEmpty) {
-                          cellContent = const SizedBox(height: 20);
-                        } else if (looksLikeMarkdown(text)) {
-                          // Inline markdown (bold, italic, code, links) renders
-                          // via a nested GptMarkdown only when the cell actually
-                          // contains markup; plain cells stay cheap Text.
-                          cellContent = GptMarkdown(
-                            text,
-                            maxLines: 4,
-                            overflow: TextOverflow.ellipsis,
-                            textAlign: align,
-                            style: cellStyle,
-                          );
-                        } else {
-                          cellContent = Text(
-                            text,
-                            maxLines: 4,
-                            overflow: TextOverflow.ellipsis,
-                            textAlign: align,
-                            style: cellStyle,
-                          );
-                        }
-
-                        final cellWidget = Container(
-                          constraints: const BoxConstraints(
-                            minWidth: 64,
-                            maxWidth: 220,
-                          ),
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 10,
-                            vertical: 8,
-                          ),
-                          child: cellContent,
-                        );
-
-                        if (text.isNotEmpty) {
-                          return Tooltip(
-                            message: text.length > 300
-                                ? '${text.substring(0, 300)}…'
-                                : text,
-                            waitDuration: const Duration(milliseconds: 600),
-                            child: cellWidget,
-                          );
-                        }
-                        return cellWidget;
-                      }),
-                    );
-                  }).toList(),
-                ),
-              ),
+              child: _buildTable(maxCols),
             ),
           ),
           // Viewport-pinned floating copy button: stays in top-right of visible container
@@ -376,5 +295,123 @@ class _ClampedTableViewState extends State<ClampedTableView> {
         ],
       ),
     );
+  }
+
+  /// The horizontally-scrollable table itself, memoized on the parsed row
+  /// list's identity.
+  ///
+  /// This is the `tableBuilder` for [GptMarkdown], so `build` runs on every
+  /// streaming flush (at least every 1200ms) with the SAME rows while the
+  /// surrounding text grows. Previously every flush constructed all rows and
+  /// cells again, and `Table` + `IntrinsicColumnWidth` then re-ran Flutter's
+  /// double-pass intrinsic layout over every cell — O(rows x cols) per flush
+  /// for a large generated table.
+  ///
+  /// Returning an identical widget instance lets Element.updateChild
+  /// short-circuit, skipping the whole subtree including that layout.
+  Widget _buildTable(int maxCols) {
+    final rows = widget.tableRows;
+    if (_memoTable != null &&
+        identical(rows, _memoRows) &&
+        maxCols == _memoMaxCols &&
+        identical(widget.textStyle, _memoStyle)) {
+      return _memoTable!;
+    }
+    final built = Container(
+            decoration: BoxDecoration(
+              border: Border.all(color: kBorder, width: 0.8),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: Table(
+              defaultColumnWidth: const IntrinsicColumnWidth(),
+              defaultVerticalAlignment: TableCellVerticalAlignment.middle,
+              border: TableBorder(
+                horizontalInside: BorderSide(
+                  color: kBorder.withValues(alpha: 0.5),
+                  width: 0.5,
+                ),
+                verticalInside: BorderSide(
+                  color: kBorder.withValues(alpha: 0.5),
+                  width: 0.5,
+                ),
+              ),
+              children: widget.tableRows.map((row) {
+                return TableRow(
+                  decoration: row.isHeader
+                      ? const BoxDecoration(color: kInputBg)
+                      : null,
+                  children: List.generate(maxCols, (colIdx) {
+                    final field =
+                        colIdx < row.fields.length ? row.fields[colIdx] : null;
+                    final text = field?.data.trim() ?? '';
+                    final align = field?.alignment ?? TextAlign.left;
+  
+                    final cellStyle = widget.textStyle.copyWith(
+                      fontWeight:
+                          row.isHeader ? FontWeight.w600 : FontWeight.normal,
+                      fontSize: 13,
+                      height: 1.35,
+                      color: row.isHeader
+                          ? kText
+                          : kText.withValues(alpha: 0.9),
+                    );
+  
+                    Widget cellContent;
+                    if (text.isEmpty) {
+                      cellContent = const SizedBox(height: 20);
+                    } else if (looksLikeMarkdown(text)) {
+                      // Inline markdown (bold, italic, code, links) renders
+                      // via a nested GptMarkdown only when the cell actually
+                      // contains markup; plain cells stay cheap Text.
+                      cellContent = GptMarkdown(
+                        text,
+                        maxLines: 4,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: align,
+                        style: cellStyle,
+                      );
+                    } else {
+                      cellContent = Text(
+                        text,
+                        maxLines: 4,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: align,
+                        style: cellStyle,
+                      );
+                    }
+  
+                    final cellWidget = Container(
+                      constraints: const BoxConstraints(
+                        minWidth: 64,
+                        maxWidth: 220,
+                      ),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 8,
+                      ),
+                      child: cellContent,
+                    );
+  
+                    if (text.isNotEmpty) {
+                      return Tooltip(
+                        message: text.length > 300
+                            ? '${text.substring(0, 300)}…'
+                            : text,
+                        waitDuration: const Duration(milliseconds: 600),
+                        child: cellWidget,
+                      );
+                    }
+                    return cellWidget;
+                  }),
+                );
+              }).toList(),
+            ),
+          );
+    _memoTable = built;
+    _memoRows = rows;
+    _memoMaxCols = maxCols;
+    _memoStyle = widget.textStyle;
+    return built;
   }
 }

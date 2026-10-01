@@ -543,9 +543,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   LlmClient _createLlmClient(String model) {
     final settings = AppSettingsService.instance;
     final provider = settings.activeProvider;
-    final apiKey = provider.id == ProviderPresetType.openRouter.id
-        ? (provider.apiKey ?? settings.openRouterKey ?? '')
-        : (provider.apiKey ?? '');
+    final apiKey = settings.resolveApiKey(provider);
     return LlmClient(
       config: LlmConfig(
         baseUrl: provider.baseUrl.isNotEmpty
@@ -582,9 +580,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             AppSettingsService.instance.hasOpenRouterKey);
 
     final isUnconfiguredOpenRouter =
-        (provider.id == ProviderPresetType.openRouter.id ||
-            provider.baseUrl.contains('openrouter.ai')) &&
-        !hasKey;
+        AppSettingsService.instance.isOpenRouterProvider(provider) && !hasKey;
 
     if (isUnconfiguredOpenRouter) {
       final freeRouter = availableModels.cast<ModelOption?>().firstWhere(
@@ -975,9 +971,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     });
     _persistNow();
 
-    final hasKey = provider.id == ProviderPresetType.openRouter.id
-        ? (provider.hasKey || AppSettingsService.instance.hasOpenRouterKey)
-        : provider.hasKey;
+    final hasKey = AppSettingsService.instance.providerHasKey(provider);
 
     if (hasKey) {
       // Force refresh: the cached list may be the unauthenticated fallback.
@@ -1147,9 +1141,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   Future<void> _loadModelCatalog({bool forceRefresh = false}) async {
     final settings = AppSettingsService.instance;
     final provider = settings.activeProvider;
-    final hasKey = provider.id == ProviderPresetType.openRouter.id
-        ? (provider.hasKey || settings.hasOpenRouterKey)
-        : provider.hasKey;
+    final hasKey = settings.providerHasKey(provider);
 
     if (!hasKey) {
       if (mounted) {
@@ -1163,9 +1155,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
 
     try {
-      final apiKey = provider.id == ProviderPresetType.openRouter.id
-          ? (provider.apiKey ?? settings.openRouterKey ?? '')
-          : (provider.apiKey ?? '');
+      final apiKey = settings.resolveApiKey(provider);
       final models = await _modelCatalog.load(
         baseUrl: provider.baseUrl.isNotEmpty
             ? provider.baseUrl
@@ -1173,8 +1163,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         apiKey: apiKey,
         defaultProvider: provider.name,
         isOpenRouter:
-            provider.id == ProviderPresetType.openRouter.id ||
-            provider.baseUrl.contains('openrouter.ai'),
+            settings.isOpenRouterProvider(provider),
         forceRefresh: forceRefresh,
       );
       if (!mounted) return;
@@ -2066,9 +2055,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _turnInFlight = true;
     final settings = AppSettingsService.instance;
     final provider = settings.activeProvider;
-    final hasKey = provider.id == ProviderPresetType.openRouter.id
-        ? (provider.hasKey || settings.hasOpenRouterKey)
-        : provider.hasKey;
+    final hasKey = settings.providerHasKey(provider);
     if (!hasKey) {
       final pName = provider.name;
       _showToast('Add an API key for $pName in Settings to start chatting.');
