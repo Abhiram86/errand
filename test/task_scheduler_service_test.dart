@@ -2,11 +2,17 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:drift/drift.dart' show Value;
+import 'package:errand/agent/agent_loop.dart';
 import 'package:errand/agent/agent_runner.dart';
 import 'package:errand/agent/tool.dart';
+import 'package:errand/llm/llm_client.dart';
+import 'package:errand/services/browser_service.dart';
 import 'package:errand/services/database.dart';
+import 'package:errand/services/location_service.dart';
+import 'package:errand/services/memory_service.dart';
 import 'package:errand/services/notification_service.dart';
 import 'package:errand/services/task_scheduler_service.dart';
+import 'package:errand/tools/file_tools.dart';
 import 'package:errand/tools/schedule_task_tool.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -65,6 +71,47 @@ class TrackingSchedulerService extends TaskSchedulerService {
   }) async {
     executedTasks.add(taskId);
     return true;
+  }
+}
+
+/// Stub runner that emits a few turn/step events, then succeeds. Exercises
+/// the live-run telemetry path in `executeTask` (heartbeat + current step).
+class _HeartbeatRunner extends AgentRunner {
+  _HeartbeatRunner()
+      : super(
+          llm: LlmClient(
+            config: const LlmConfig(
+              baseUrl: 'https://example.invalid',
+              apiKey: 'test',
+              model: 'test',
+            ),
+          ),
+          workingDirectory: WorkingDirectory(Directory.systemTemp),
+          selectedModel: 'test',
+        );
+
+  @override
+  Future<HeadlessRunResult> runHeadless({
+    required int taskId,
+    required String prompt,
+    String? taskTitle,
+    Directory? scratchDirectory,
+    MemoryService? memoryService,
+    BrowserService? browserService,
+    LocationService? locationService,
+    ErrandDatabase? db,
+    TaskSchedulerService? schedulerService,
+    CancelToken? cancelToken,
+    AgentObserver? onEvent,
+    AgentTextObserver? onTextDelta,
+    AgentReasoningObserver? onReasoningDelta,
+    void Function()? onReset,
+    AgentRetryObserver? onRetry,
+  }) async {
+    onEvent?.call(const AgentThinking(turn: 1));
+    onEvent?.call(const AgentThinking(turn: 2));
+    onEvent?.call(const AgentCompacting());
+    return const HeadlessRunResult(ok: true, output: 'done');
   }
 }
 
@@ -342,6 +389,49 @@ void main() {
         await serviceDb.getSetting('pref.scheduler_inexact_fallback'),
         isNull,
       );
+    });
+
+    test('executeTask writes heartbeat and step while the run is live', () async {
+      // The `running` log row must carry a fresh heartbeat and the runner's
+      // current step: a stale heartbeat on a `running` row is how a dead
+      // isolate is told apart from a slow run, with no trace collection.
+      final nowMillis = DateTime.now().millisecondsSinceEpoch;
+      final taskId = await serviceDb.into(serviceDb.schedulerTasks).insert(
+        SchedulerTasksCompanion.insert(
+          title: 'Heartbeat task',
+          type: 'one_off',
+          status: 'scheduled',
+          payloadJson: '{}',
+          startsAt: nowMillis + 60000,
+          timezone: 'UTC',
+          notify: const Value(false),
+          createdAt: nowMillis,
+          updatedAt: nowMillis,
+        ),
+      );
+
+      final ok = await realService.executeTask(
+        taskId,
+        runner: _HeartbeatRunner(),
+        scratchDirectory: Directory.systemTemp,
+      );
+      expect(ok, isTrue);
+
+      // Heartbeat writes are fire-and-forget; poll briefly for the row.
+      SchedulerTaskLogRow? row;
+      final deadline =
+          DateTime.now().add(const Duration(seconds: 5));
+      while (row?.lastHeartbeatAt == null &&
+          DateTime.now().isBefore(deadline)) {
+        await Future<void>.delayed(const Duration(milliseconds: 25));
+        row = await (serviceDb.select(serviceDb.schedulerTaskLogs)
+              ..where((l) => l.schedulerTaskId.equals(taskId)))
+            .getSingleOrNull();
+      }
+      expect(row, isNotNull);
+      expect(row!.status, 'success');
+      expect(row.lastHeartbeatAt, isNotNull);
+      expect(row.currentStep, contains('compacting context'));
     });
 
     test('concurrent rescheduleAllActiveTasks share a single run', () async {

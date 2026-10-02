@@ -25,6 +25,7 @@ import '../services/location_service.dart';
 import '../services/model_catalog.dart';
 import '../services/models_dev_service.dart';
 import '../services/speech_service.dart';
+import '../services/task_scheduler_service.dart';
 import '../services/update_service.dart';
 import '../services/widget_service.dart';
 import '../services/streaming_assistant_service.dart';
@@ -1028,6 +1029,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     if (state == AppLifecycleState.resumed) {
       _sessionStartTime = DateTime.now();
       _checkStoragePermission(promptIfMissing: true);
+      // Sweep background-run fossils on every foreground return: the user
+      // comes back to check a stuck task far more often than they reboot.
+      unawaited(TaskSchedulerService.instance.recoverStuckTasks());
       // Reconcile cached OTA state after returning from the package installer
       // or another external app. The normal interval still limits network use.
       unawaited(UpdateService.instance.checkUpdate());

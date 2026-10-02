@@ -8,6 +8,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 
+import '../agent/agent_loop.dart';
 import '../agent/agent_runner.dart';
 import '../llm/llm_client.dart';
 import '../models/llm_provider.dart';
@@ -1171,6 +1172,8 @@ class TaskSchedulerService {
           scheduledFor: scheduledFor,
           startedAt: Value(nowMillis),
           status: 'running',
+          lastHeartbeatAt: Value(nowMillis),
+          currentStep: const Value('starting'),
           createdAt: nowMillis,
           updatedAt: nowMillis,
         ),
@@ -1285,6 +1288,34 @@ class TaskSchedulerService {
     HeadlessRunResult result;
     var isTimeout = false;
 
+    // Live-run telemetry for the `running` log row: heartbeat + current step,
+    // throttled so a tool-heavy turn doesn't hammer the database. Written
+    // through the run's own isolate, so a *stale* heartbeat on a `running` row
+    // unambiguously means the runner died without writing its outcome — the
+    // exact fossil that previously needed a manual skip to clear. Step text is
+    // tool names and turn counts only, never prompts or outputs.
+    var lastBeatMillis = nowMillis;
+    String? lastStep;
+    void recordBeat(String step) {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      if (now - lastBeatMillis < 15000 && step == lastStep) return;
+      lastStep = step;
+      lastBeatMillis = now;
+      unawaited(() async {
+        try {
+          await (db.update(db.schedulerTaskLogs)
+                ..where((l) => l.id.equals(logId)))
+              .write(
+            SchedulerTaskLogsCompanion(
+              lastHeartbeatAt: Value(now),
+              currentStep: Value(step),
+              updatedAt: Value(now),
+            ),
+          );
+        } catch (_) {}
+      }());
+    }
+
     try {
       result = await agentRunner
           .runHeadless(
@@ -1295,6 +1326,24 @@ class TaskSchedulerService {
             db: db,
             schedulerService: this,
             cancelToken: effectiveCancelToken,
+            onEvent: (event) {
+              // Heartbeat only: short step text, never prompts or outputs.
+              String step;
+              if (event is AgentThinking) {
+                step = 'turn ${event.turn} · thinking';
+              } else if (event is AgentToolCallStarting) {
+                step = 'turn ${event.turn} · tool ${event.call.name}';
+              } else if (event is AgentToolCall) {
+                step = 'turn ${event.turn} · ${event.call.name} done';
+              } else if (event is AgentCompacting) {
+                step = 'compacting context';
+              } else {
+                step = 'context compacted';
+              }
+              recordBeat(
+                step.length > 120 ? step.substring(0, 120) : step,
+              );
+            },
           )
           .timeout(timeout);
     } on TimeoutException {
@@ -1327,6 +1376,12 @@ class TaskSchedulerService {
         .getSingleOrNull();
     if (freshTask == null) return false;
 
+    // Guard: every write below used to be a bare await, and a single throw
+    // (teardown, locked DB, full disk) froze the row on `running` forever.
+    // The fallback only touches rows still `running`, so correctly written
+    // outcomes are never clobbered.
+    final isSuccess = result.ok;
+    final outcome = await (() async {
     if ((effectiveCancelToken.isCancelled && !isTimeout) ||
         freshTask.status == 'cancelled') {
       // Never overwrite a status someone else already moved to (e.g.
@@ -1348,10 +1403,8 @@ class TaskSchedulerService {
           ),
         );
       }
-      return false;
+      return (proceed: false, summary: '');
     }
-
-    final isSuccess = result.ok;
 
     // The runner guarantees reportPath (save_report tool or final-answer
     // fallback). Verify the file actually exists; prune older reports for
@@ -1490,6 +1543,39 @@ class TaskSchedulerService {
         );
       }
     }
+    return (proceed: true, summary: summary);
+    })().catchError((_) async {
+      // Best-effort terminal write: move the fossil, touch nothing else.
+      final failMillis = DateTime.now().millisecondsSinceEpoch;
+      final failStatus = isTimeout ? 'timeout' : 'failed';
+      try {
+        await (db.update(db.schedulerTaskLogs)
+              ..where((l) => l.id.equals(logId) & l.status.equals('running')))
+            .write(
+          SchedulerTaskLogsCompanion(
+            finishedAt: Value(failMillis),
+            status: Value(failStatus),
+            errorMessage: Value(result.errorMessage ??
+                'Run finished but its outcome could not be recorded.'),
+            updatedAt: Value(failMillis),
+          ),
+        );
+      } catch (_) {}
+      try {
+        await (db.update(db.schedulerTasks)
+              ..where((t) => t.id.equals(taskId) & t.status.equals('running')))
+            .write(
+          SchedulerTasksCompanion(
+            status: const Value('failed'),
+            nextRunAt: const Value(null),
+            updatedAt: Value(failMillis),
+          ),
+        );
+      } catch (_) {}
+      return (proceed: false, summary: '');
+    });
+    if (!outcome.proceed) return false;
+    final summary = outcome.summary;
 
     if (freshTask.notify && !suppressNotification) {
       bool shown = false;

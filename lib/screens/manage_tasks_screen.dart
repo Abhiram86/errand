@@ -133,6 +133,11 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
     _batteryExemptFuture = TaskSchedulerService.instance.isIgnoringBatteryOptimizations();
     _warningsFuture = Future.wait([_exactAlarmsFuture, _batteryExemptFuture]);
     unawaited(_loadStorageSummary());
+    // Reconcile fossils on open: a run killed without writing its outcome
+    // (dead isolate, crash, teardown throw) sits on `running` until something
+    // moves it. Previously only the boot reschedule did; opening this screen
+    // is the other moment the user stares at a stuck row.
+    unawaited(TaskSchedulerService.instance.recoverStuckTasks());
     WidgetsBinding.instance.addPostFrameCallback(
       (_) => AppProfile.mark(
         'manage_tasks_first_frame screen=$_p10ScreenId tab=${widget.initialTabIndex}',
@@ -274,6 +279,9 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
       try {
         _db.markTablesUpdated([_db.schedulerTasks, _db.schedulerTaskLogs]);
       } catch (_) {}
+      // Same fossil sweep as on open (see initState): a foreground return is
+      // the moment a dead background run would otherwise sit `running`.
+      unawaited(TaskSchedulerService.instance.recoverStuckTasks());
       setState(() {
         _exactAlarmsFuture = TaskSchedulerService.instance.canScheduleExactAlarms();
         _batteryExemptFuture = TaskSchedulerService.instance.isIgnoringBatteryOptimizations();

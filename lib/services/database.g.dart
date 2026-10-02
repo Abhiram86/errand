@@ -3468,6 +3468,28 @@ class $SchedulerTaskLogsTable extends SchedulerTaskLogs
     type: DriftSqlType.int,
     requiredDuringInsert: true,
   );
+  static const VerificationMeta _lastHeartbeatAtMeta = const VerificationMeta(
+    'lastHeartbeatAt',
+  );
+  @override
+  late final GeneratedColumn<int> lastHeartbeatAt = GeneratedColumn<int>(
+    'last_heartbeat_at',
+    aliasedName,
+    true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _currentStepMeta = const VerificationMeta(
+    'currentStep',
+  );
+  @override
+  late final GeneratedColumn<String> currentStep = GeneratedColumn<String>(
+    'current_step',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
   @override
   List<GeneratedColumn> get $columns => [
     id,
@@ -3485,6 +3507,8 @@ class $SchedulerTaskLogsTable extends SchedulerTaskLogs
     notificationSeen,
     createdAt,
     updatedAt,
+    lastHeartbeatAt,
+    currentStep,
   ];
   @override
   String get aliasedName => _alias ?? actualTableName;
@@ -3616,6 +3640,24 @@ class $SchedulerTaskLogsTable extends SchedulerTaskLogs
     } else if (isInserting) {
       context.missing(_updatedAtMeta);
     }
+    if (data.containsKey('last_heartbeat_at')) {
+      context.handle(
+        _lastHeartbeatAtMeta,
+        lastHeartbeatAt.isAcceptableOrUnknown(
+          data['last_heartbeat_at']!,
+          _lastHeartbeatAtMeta,
+        ),
+      );
+    }
+    if (data.containsKey('current_step')) {
+      context.handle(
+        _currentStepMeta,
+        currentStep.isAcceptableOrUnknown(
+          data['current_step']!,
+          _currentStepMeta,
+        ),
+      );
+    }
     return context;
   }
 
@@ -3685,6 +3727,14 @@ class $SchedulerTaskLogsTable extends SchedulerTaskLogs
         DriftSqlType.int,
         data['${effectivePrefix}updated_at'],
       )!,
+      lastHeartbeatAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}last_heartbeat_at'],
+      ),
+      currentStep: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}current_step'],
+      ),
     );
   }
 
@@ -3711,6 +3761,8 @@ class SchedulerTaskLogRow extends DataClass
   final int notificationSeen;
   final int createdAt;
   final int updatedAt;
+  final int? lastHeartbeatAt;
+  final String? currentStep;
   const SchedulerTaskLogRow({
     required this.id,
     required this.schedulerTaskId,
@@ -3727,6 +3779,8 @@ class SchedulerTaskLogRow extends DataClass
     required this.notificationSeen,
     required this.createdAt,
     required this.updatedAt,
+    this.lastHeartbeatAt,
+    this.currentStep,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
@@ -3756,6 +3810,12 @@ class SchedulerTaskLogRow extends DataClass
     map['notification_seen'] = Variable<int>(notificationSeen);
     map['created_at'] = Variable<int>(createdAt);
     map['updated_at'] = Variable<int>(updatedAt);
+    if (!nullToAbsent || lastHeartbeatAt != null) {
+      map['last_heartbeat_at'] = Variable<int>(lastHeartbeatAt);
+    }
+    if (!nullToAbsent || currentStep != null) {
+      map['current_step'] = Variable<String>(currentStep);
+    }
     return map;
   }
 
@@ -3786,6 +3846,12 @@ class SchedulerTaskLogRow extends DataClass
       notificationSeen: Value(notificationSeen),
       createdAt: Value(createdAt),
       updatedAt: Value(updatedAt),
+      lastHeartbeatAt: lastHeartbeatAt == null && nullToAbsent
+          ? const Value.absent()
+          : Value(lastHeartbeatAt),
+      currentStep: currentStep == null && nullToAbsent
+          ? const Value.absent()
+          : Value(currentStep),
     );
   }
 
@@ -3810,6 +3876,8 @@ class SchedulerTaskLogRow extends DataClass
       notificationSeen: serializer.fromJson<int>(json['notificationSeen']),
       createdAt: serializer.fromJson<int>(json['createdAt']),
       updatedAt: serializer.fromJson<int>(json['updatedAt']),
+      lastHeartbeatAt: serializer.fromJson<int?>(json['lastHeartbeatAt']),
+      currentStep: serializer.fromJson<String?>(json['currentStep']),
     );
   }
   @override
@@ -3831,6 +3899,8 @@ class SchedulerTaskLogRow extends DataClass
       'notificationSeen': serializer.toJson<int>(notificationSeen),
       'createdAt': serializer.toJson<int>(createdAt),
       'updatedAt': serializer.toJson<int>(updatedAt),
+      'lastHeartbeatAt': serializer.toJson<int?>(lastHeartbeatAt),
+      'currentStep': serializer.toJson<String?>(currentStep),
     };
   }
 
@@ -3850,6 +3920,8 @@ class SchedulerTaskLogRow extends DataClass
     int? notificationSeen,
     int? createdAt,
     int? updatedAt,
+    Value<int?> lastHeartbeatAt = const Value.absent(),
+    Value<String?> currentStep = const Value.absent(),
   }) => SchedulerTaskLogRow(
     id: id ?? this.id,
     schedulerTaskId: schedulerTaskId ?? this.schedulerTaskId,
@@ -3868,6 +3940,10 @@ class SchedulerTaskLogRow extends DataClass
     notificationSeen: notificationSeen ?? this.notificationSeen,
     createdAt: createdAt ?? this.createdAt,
     updatedAt: updatedAt ?? this.updatedAt,
+    lastHeartbeatAt: lastHeartbeatAt.present
+        ? lastHeartbeatAt.value
+        : this.lastHeartbeatAt,
+    currentStep: currentStep.present ? currentStep.value : this.currentStep,
   );
   SchedulerTaskLogRow copyWithCompanion(SchedulerTaskLogsCompanion data) {
     return SchedulerTaskLogRow(
@@ -3904,6 +3980,12 @@ class SchedulerTaskLogRow extends DataClass
           : this.notificationSeen,
       createdAt: data.createdAt.present ? data.createdAt.value : this.createdAt,
       updatedAt: data.updatedAt.present ? data.updatedAt.value : this.updatedAt,
+      lastHeartbeatAt: data.lastHeartbeatAt.present
+          ? data.lastHeartbeatAt.value
+          : this.lastHeartbeatAt,
+      currentStep: data.currentStep.present
+          ? data.currentStep.value
+          : this.currentStep,
     );
   }
 
@@ -3924,7 +4006,9 @@ class SchedulerTaskLogRow extends DataClass
           ..write('notificationSent: $notificationSent, ')
           ..write('notificationSeen: $notificationSeen, ')
           ..write('createdAt: $createdAt, ')
-          ..write('updatedAt: $updatedAt')
+          ..write('updatedAt: $updatedAt, ')
+          ..write('lastHeartbeatAt: $lastHeartbeatAt, ')
+          ..write('currentStep: $currentStep')
           ..write(')'))
         .toString();
   }
@@ -3946,6 +4030,8 @@ class SchedulerTaskLogRow extends DataClass
     notificationSeen,
     createdAt,
     updatedAt,
+    lastHeartbeatAt,
+    currentStep,
   );
   @override
   bool operator ==(Object other) =>
@@ -3965,7 +4051,9 @@ class SchedulerTaskLogRow extends DataClass
           other.notificationSent == this.notificationSent &&
           other.notificationSeen == this.notificationSeen &&
           other.createdAt == this.createdAt &&
-          other.updatedAt == this.updatedAt);
+          other.updatedAt == this.updatedAt &&
+          other.lastHeartbeatAt == this.lastHeartbeatAt &&
+          other.currentStep == this.currentStep);
 }
 
 class SchedulerTaskLogsCompanion extends UpdateCompanion<SchedulerTaskLogRow> {
@@ -3984,6 +4072,8 @@ class SchedulerTaskLogsCompanion extends UpdateCompanion<SchedulerTaskLogRow> {
   final Value<int> notificationSeen;
   final Value<int> createdAt;
   final Value<int> updatedAt;
+  final Value<int?> lastHeartbeatAt;
+  final Value<String?> currentStep;
   const SchedulerTaskLogsCompanion({
     this.id = const Value.absent(),
     this.schedulerTaskId = const Value.absent(),
@@ -4000,6 +4090,8 @@ class SchedulerTaskLogsCompanion extends UpdateCompanion<SchedulerTaskLogRow> {
     this.notificationSeen = const Value.absent(),
     this.createdAt = const Value.absent(),
     this.updatedAt = const Value.absent(),
+    this.lastHeartbeatAt = const Value.absent(),
+    this.currentStep = const Value.absent(),
   });
   SchedulerTaskLogsCompanion.insert({
     this.id = const Value.absent(),
@@ -4017,6 +4109,8 @@ class SchedulerTaskLogsCompanion extends UpdateCompanion<SchedulerTaskLogRow> {
     this.notificationSeen = const Value.absent(),
     required int createdAt,
     required int updatedAt,
+    this.lastHeartbeatAt = const Value.absent(),
+    this.currentStep = const Value.absent(),
   }) : schedulerTaskId = Value(schedulerTaskId),
        scheduledFor = Value(scheduledFor),
        status = Value(status),
@@ -4038,6 +4132,8 @@ class SchedulerTaskLogsCompanion extends UpdateCompanion<SchedulerTaskLogRow> {
     Expression<int>? notificationSeen,
     Expression<int>? createdAt,
     Expression<int>? updatedAt,
+    Expression<int>? lastHeartbeatAt,
+    Expression<String>? currentStep,
   }) {
     return RawValuesInsertable({
       if (id != null) 'id': id,
@@ -4055,6 +4151,8 @@ class SchedulerTaskLogsCompanion extends UpdateCompanion<SchedulerTaskLogRow> {
       if (notificationSeen != null) 'notification_seen': notificationSeen,
       if (createdAt != null) 'created_at': createdAt,
       if (updatedAt != null) 'updated_at': updatedAt,
+      if (lastHeartbeatAt != null) 'last_heartbeat_at': lastHeartbeatAt,
+      if (currentStep != null) 'current_step': currentStep,
     });
   }
 
@@ -4074,6 +4172,8 @@ class SchedulerTaskLogsCompanion extends UpdateCompanion<SchedulerTaskLogRow> {
     Value<int>? notificationSeen,
     Value<int>? createdAt,
     Value<int>? updatedAt,
+    Value<int?>? lastHeartbeatAt,
+    Value<String?>? currentStep,
   }) {
     return SchedulerTaskLogsCompanion(
       id: id ?? this.id,
@@ -4091,6 +4191,8 @@ class SchedulerTaskLogsCompanion extends UpdateCompanion<SchedulerTaskLogRow> {
       notificationSeen: notificationSeen ?? this.notificationSeen,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
+      lastHeartbeatAt: lastHeartbeatAt ?? this.lastHeartbeatAt,
+      currentStep: currentStep ?? this.currentStep,
     );
   }
 
@@ -4142,6 +4244,12 @@ class SchedulerTaskLogsCompanion extends UpdateCompanion<SchedulerTaskLogRow> {
     if (updatedAt.present) {
       map['updated_at'] = Variable<int>(updatedAt.value);
     }
+    if (lastHeartbeatAt.present) {
+      map['last_heartbeat_at'] = Variable<int>(lastHeartbeatAt.value);
+    }
+    if (currentStep.present) {
+      map['current_step'] = Variable<String>(currentStep.value);
+    }
     return map;
   }
 
@@ -4162,7 +4270,9 @@ class SchedulerTaskLogsCompanion extends UpdateCompanion<SchedulerTaskLogRow> {
           ..write('notificationSent: $notificationSent, ')
           ..write('notificationSeen: $notificationSeen, ')
           ..write('createdAt: $createdAt, ')
-          ..write('updatedAt: $updatedAt')
+          ..write('updatedAt: $updatedAt, ')
+          ..write('lastHeartbeatAt: $lastHeartbeatAt, ')
+          ..write('currentStep: $currentStep')
           ..write(')'))
         .toString();
   }
@@ -6447,6 +6557,8 @@ typedef $$SchedulerTaskLogsTableCreateCompanionBuilder =
       Value<int> notificationSeen,
       required int createdAt,
       required int updatedAt,
+      Value<int?> lastHeartbeatAt,
+      Value<String?> currentStep,
     });
 typedef $$SchedulerTaskLogsTableUpdateCompanionBuilder =
     SchedulerTaskLogsCompanion Function({
@@ -6465,6 +6577,8 @@ typedef $$SchedulerTaskLogsTableUpdateCompanionBuilder =
       Value<int> notificationSeen,
       Value<int> createdAt,
       Value<int> updatedAt,
+      Value<int?> lastHeartbeatAt,
+      Value<String?> currentStep,
     });
 
 final class $$SchedulerTaskLogsTableReferences
@@ -6578,6 +6692,16 @@ class $$SchedulerTaskLogsTableFilterComposer
     builder: (column) => ColumnFilters(column),
   );
 
+  ColumnFilters<int> get lastHeartbeatAt => $composableBuilder(
+    column: $table.lastHeartbeatAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get currentStep => $composableBuilder(
+    column: $table.currentStep,
+    builder: (column) => ColumnFilters(column),
+  );
+
   $$SchedulerTasksTableFilterComposer get schedulerTaskId {
     final $$SchedulerTasksTableFilterComposer composer = $composerBuilder(
       composer: this,
@@ -6681,6 +6805,16 @@ class $$SchedulerTaskLogsTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<int> get lastHeartbeatAt => $composableBuilder(
+    column: $table.lastHeartbeatAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get currentStep => $composableBuilder(
+    column: $table.currentStep,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   $$SchedulerTasksTableOrderingComposer get schedulerTaskId {
     final $$SchedulerTasksTableOrderingComposer composer = $composerBuilder(
       composer: this,
@@ -6772,6 +6906,16 @@ class $$SchedulerTaskLogsTableAnnotationComposer
   GeneratedColumn<int> get updatedAt =>
       $composableBuilder(column: $table.updatedAt, builder: (column) => column);
 
+  GeneratedColumn<int> get lastHeartbeatAt => $composableBuilder(
+    column: $table.lastHeartbeatAt,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get currentStep => $composableBuilder(
+    column: $table.currentStep,
+    builder: (column) => column,
+  );
+
   $$SchedulerTasksTableAnnotationComposer get schedulerTaskId {
     final $$SchedulerTasksTableAnnotationComposer composer = $composerBuilder(
       composer: this,
@@ -6844,6 +6988,8 @@ class $$SchedulerTaskLogsTableTableManager
                 Value<int> notificationSeen = const Value.absent(),
                 Value<int> createdAt = const Value.absent(),
                 Value<int> updatedAt = const Value.absent(),
+                Value<int?> lastHeartbeatAt = const Value.absent(),
+                Value<String?> currentStep = const Value.absent(),
               }) => SchedulerTaskLogsCompanion(
                 id: id,
                 schedulerTaskId: schedulerTaskId,
@@ -6860,6 +7006,8 @@ class $$SchedulerTaskLogsTableTableManager
                 notificationSeen: notificationSeen,
                 createdAt: createdAt,
                 updatedAt: updatedAt,
+                lastHeartbeatAt: lastHeartbeatAt,
+                currentStep: currentStep,
               ),
           createCompanionCallback:
               ({
@@ -6878,6 +7026,8 @@ class $$SchedulerTaskLogsTableTableManager
                 Value<int> notificationSeen = const Value.absent(),
                 required int createdAt,
                 required int updatedAt,
+                Value<int?> lastHeartbeatAt = const Value.absent(),
+                Value<String?> currentStep = const Value.absent(),
               }) => SchedulerTaskLogsCompanion.insert(
                 id: id,
                 schedulerTaskId: schedulerTaskId,
@@ -6894,6 +7044,8 @@ class $$SchedulerTaskLogsTableTableManager
                 notificationSeen: notificationSeen,
                 createdAt: createdAt,
                 updatedAt: updatedAt,
+                lastHeartbeatAt: lastHeartbeatAt,
+                currentStep: currentStep,
               ),
           withReferenceMapper: (p0) => p0
               .map(

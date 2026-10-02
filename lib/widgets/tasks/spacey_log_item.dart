@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 
 import '../../screens/task_file_preview_screen.dart';
@@ -68,6 +69,11 @@ class _SpaceyLogItemState extends State<SpaceyLogItem> {
           });
         }
       },
+      // Deliberately undiscoverable: long-press a RUNNING row to copy its
+      // live trace (status, heartbeat age, current step). No icon, no menu —
+      // this is a debug affordance, not user-facing UI.
+      onLongPress:
+          widget.log.status == 'running' ? _copyLiveTrace : null,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         child: Column(
@@ -318,7 +324,7 @@ class _SpaceyLogItemState extends State<SpaceyLogItem> {
 
   Widget _buildStatusIndicator(String status) {
     final Color color;
-    final String label;
+    String label;
     switch (status) {
       case 'success':
         color = const Color(0xFF4ADE80);
@@ -341,6 +347,20 @@ class _SpaceyLogItemState extends State<SpaceyLogItem> {
         color = const Color(0xFFF87171);
         label = 'FAILED';
         break;
+    }
+
+    // Heartbeat age on the running chip: fresh means the runner is alive and
+    // writing; stale means the isolate died without an outcome (see
+    // _copyLiveTrace). Small and inline — the only visible part of this.
+    if (status == 'running') {
+      final beat = widget.log.lastHeartbeatAt;
+      if (beat != null) {
+        final age =
+            DateTime.now().millisecondsSinceEpoch - beat;
+        label = age > 5 * 60 * 1000
+            ? 'RUNNING · STALE ${_formatAge(age)}'
+            : 'RUNNING · ${_formatAge(age)}';
+      }
     }
 
     return Row(
@@ -375,6 +395,53 @@ class _SpaceyLogItemState extends State<SpaceyLogItem> {
         ),
       ],
     );
+  }
+
+  /// Copies a live diagnostic snapshot of a RUNNING row: status, start age,
+  /// heartbeat age (alive vs stale), and the runner's current step. Reached
+  /// only via long-press (see build); values come from the log row, so this
+  /// works across isolates — a dead background runner simply shows a stale
+  /// heartbeat, which is itself the diagnosis. Nothing is stored for this:
+  /// the step is overwritten in place and dies with the row's lifecycle.
+  void _copyLiveTrace() {
+    final log = widget.log;
+    if (log.status != 'running') return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final started = log.startedAt ?? log.createdAt;
+    final beat = log.lastHeartbeatAt;
+    final String beatLine;
+    if (beat == null) {
+      beatLine = 'Last heartbeat: none recorded';
+    } else {
+      final age = now - beat;
+      beatLine = age > 5 * 60 * 1000
+          ? 'Last heartbeat: ${_formatAge(age)} ago — STALE (runner may be dead)'
+          : 'Last heartbeat: ${_formatAge(age)} ago — alive';
+    }
+    final step = (log.currentStep?.isNotEmpty ?? false) ? log.currentStep! : '—';
+    final text = [
+      'Task #${log.schedulerTaskId} "${widget.task?.title ?? ''}" — RUNNING (log #${log.id})',
+      'Started: ${_formatTime(started)} (${_formatAge(now - started)} ago)',
+      beatLine,
+      'Current step: $step',
+    ].join('\n');
+    Clipboard.setData(ClipboardData(text: text));
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Live trace copied'),
+        duration: Duration(seconds: 2),
+      ),
+    );
+  }
+
+  static String _formatAge(int millis) {
+    final s = millis ~/ 1000;
+    if (s < 60) return '${s}s';
+    final m = s ~/ 60;
+    if (m < 60) return '${m}m';
+    final h = m ~/ 60;
+    if (h < 48) return '${h}h';
+    return '${h ~/ 24}d';
   }
 
   String _formatTime(int millis) {

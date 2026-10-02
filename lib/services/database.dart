@@ -169,6 +169,16 @@ class SchedulerTaskLogs extends Table {
   IntColumn get notificationSeen => integer().withDefault(const Constant(0))();
   IntColumn get createdAt => integer()();
   IntColumn get updatedAt => integer()();
+  // Live-run telemetry, written while status == 'running' and never pruned
+  // separately from the row itself:
+  // - lastHeartbeatAt: epoch millis of the last turn/tool event (throttled to
+  //   ~15s). A `running` row with a fresh heartbeat is alive; a stale one is
+  //   a dead isolate/process that never wrote its outcome.
+  // - currentStep: short human snapshot of what the run was last doing
+  //   ('turn 12 · tool webfetch'), overwritten in place. Ephemeral by design:
+  //   no history is kept, and the final outcome write leaves the last value.
+  IntColumn get lastHeartbeatAt => integer().nullable()();
+  TextColumn get currentStep => text().nullable()();
 }
 
 @DriftDatabase(
@@ -250,7 +260,7 @@ final class ErrandDatabase extends _$ErrandDatabase {
       ErrandDatabase._(NativeDatabase.memory());
 
   @override
-  int get schemaVersion => 9;
+  int get schemaVersion => 10;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -301,6 +311,11 @@ final class ErrandDatabase extends _$ErrandDatabase {
       }
       if (from < 9) {
         await m.addColumn(schedulerTaskLogs, schedulerTaskLogs.linkedFiles);
+      }
+      if (from < 10) {
+        // v10 adds live-run telemetry to the execution log (heartbeat + step).
+        await m.addColumn(schedulerTaskLogs, schedulerTaskLogs.lastHeartbeatAt);
+        await m.addColumn(schedulerTaskLogs, schedulerTaskLogs.currentStep);
       }
     },
   );

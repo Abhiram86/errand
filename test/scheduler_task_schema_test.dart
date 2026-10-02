@@ -13,8 +13,8 @@ void main() {
     await db.close();
   });
 
-  test('ErrandDatabase schemaVersion is 9', () {
-    expect(db.schemaVersion, equals(9));
+  test('ErrandDatabase schemaVersion is 10', () {
+    expect(db.schemaVersion, equals(10));
   });
 
   test('scheduler_task and scheduler_task_log table insertion and cascade delete', () async {
