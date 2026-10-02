@@ -394,6 +394,16 @@ class ShellSafetyCheck {
     return -1;
   }
 
+  /// True when [text] contains a real command separator (`;`, a pipe, or `&`).
+  ///
+  /// `>&` / `&>` file-descriptor duplications and `>|` noclobber are
+  /// redirections, not separators: `2>&1` must stay attached to its command.
+  /// Used by the heredoc trailer rule so `cat <<EOF 2>&1` keeps its benign
+  /// verdict while `cat <<EOF; rm` is split and scored per command.
+  static bool _hasCommandSeparator(String text) => RegExp(
+        r';|(?<!>)\||(?<!>)[&](?![=>])',
+      ).hasMatch(text);
+
   static List<String> _splitCommands(String command) {
     final result = <String>[];
     var start = 0;
@@ -483,6 +493,30 @@ class ShellSafetyCheck {
             // single `cat` display command and scored safe.
             final head = command.substring(start, i).trim();
             if (head.isNotEmpty) result.add(head);
+            // The header line can carry its own payload AFTER the delimiter:
+            // `cat <<EOF > /system/build.prop` writes the body there, and
+            // `cat <<EOF; rm -rf /` runs rm. Both were jumped over with the
+            // body and never analysed. Retain the header remainder (delimiter
+            // end to end-of-line) using the same rule normal commands get:
+            // pure redirect/argument tails stay attached to the owning command
+            // (so `cat <<EOF 2>&1` scores exactly like `cat 2>&1`: safe, and
+            // `cat <<EOF > /protected` like `cat > /protected`: blocked),
+            // while chained payloads are re-split so each command scores
+            // on its own (`; rm`, `| sh`, `> /f; rm`).
+            final headerEnd = command.indexOf('\n', j);
+            final trailer = (headerEnd == -1
+                    ? command.substring(j)
+                    : command.substring(j, headerEnd))
+                .trim();
+            if (trailer.isEmpty) {
+              if (head.isNotEmpty) result.add(head);
+            } else if (!_hasCommandSeparator(trailer)) {
+              final combined = head.isEmpty ? trailer : '$head $trailer';
+              result.add(combined);
+            } else {
+              if (head.isNotEmpty) result.add(head);
+              result.addAll(_splitCommands(trailer));
+            }
             start = closeIdx;
             // -1: the for-loop increment lands exactly on closeIdx.
             i = closeIdx - 1;
@@ -728,7 +762,17 @@ class ShellSafetyCheck {
       if (cIndex >= 0 && cIndex + 1 < words.length) {
         // Full re-analysis: the nested string gets substitution scanning,
         // splitting, and worst-of treatment exactly like a top-level command.
-        return analyze(words[cIndex + 1],
+        //
+        // All words after `-c` are joined, not just the first. Wrapper
+        // dispatch (`timeout`, `nice`, …) re-joins with `sublist(i).join(' ')`,
+        // which destroys the quoting that kept the payload a single token;
+        // re-tokenization then splits `"rm -rf /protected"` and only the first
+        // word was analysed, downgrading a protected wipe from blocked to
+        // confirm. Joining is conservative: strictly more payload text is
+        // analysed, so verdicts can only stay or escalate, never soften.
+        // (`$0`-style extra args after the payload just ride along as
+        // additional words of the analysed string.)
+        return analyze(words.sublist(cIndex + 1).join(' '),
             scratchPath: scratchPath, workingDirectory: workingDirectory);
       }
 

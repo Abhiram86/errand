@@ -78,14 +78,15 @@ object TaskAlarmRestorer {
             database.query(
                 SCHEDULER_TABLE,
                 arrayOf("id", "title", "status", "starts_at", "next_run_at"),
-                "status = ?",
-                arrayOf("scheduled"),
+                "status IN (?, ?)",
+                arrayOf("scheduled", "failed"),
                 null,
                 null,
                 "id ASC",
             ).use { cursor ->
                 val idIndex = cursor.getColumnIndexOrThrow("id")
                 val titleIndex = cursor.getColumnIndexOrThrow("title")
+                val statusIndex = cursor.getColumnIndexOrThrow("status")
                 val startsAtIndex = cursor.getColumnIndexOrThrow("starts_at")
                 val nextRunAtIndex = cursor.getColumnIndexOrThrow("next_run_at")
 
@@ -93,14 +94,28 @@ object TaskAlarmRestorer {
                     val taskId = cursor.getInt(idIndex)
                     if (taskId <= 0) continue
 
-                    taskCount++
-                    val title = cursor.getString(titleIndex)?.ifBlank { "Scheduled Task" }
-                        ?: "Scheduled Task"
                     val storedTrigger = if (cursor.isNull(nextRunAtIndex)) {
                         cursor.getLong(startsAtIndex)
                     } else {
                         cursor.getLong(nextRunAtIndex)
                     }
+                    // A `failed` row carries no retry intent of its own: only
+                    // restore it when its stored trigger is still in the
+                    // future, i.e. a live alarm died with the reboot. A
+                    // past-due failed row is left alone — clamping it to
+                    // now+1s would re-fire a dead one-off on every boot.
+                    // (`running` rows are deliberately NOT selected here:
+                    // executeTask rejects them, and Dart's recoverStuckTasks
+                    // reconciles them — rescheduling recurring runs and
+                    // failing one-offs — on the next Flutter start.)
+                    if (cursor.getString(statusIndex) == "failed" &&
+                        storedTrigger <= System.currentTimeMillis()) {
+                        continue
+                    }
+
+                    taskCount++
+                    val title = cursor.getString(titleIndex)?.ifBlank { "Scheduled Task" }
+                        ?: "Scheduled Task"
                     val triggerAt = maxOf(storedTrigger, System.currentTimeMillis() + 1_000L)
 
                     // Broadcast receivers get roughly a 10s window before the

@@ -51,6 +51,19 @@ class TaskSchedulerService {
 
   static const MethodChannel _channel = MethodChannel('task_scheduler');
 
+  static const String _kInexactFallbackKey = 'pref.scheduler_inexact_fallback';
+
+  /// Sticky record that a schedule fell back to inexact timing.
+  ///
+  /// `scheduleAlarm` returning false was previously only a debugPrint —
+  /// invisible in release builds. The Manage Tasks banner already reflects the
+  /// permission state, but it cannot see a fallback that happened while
+  /// permission *appears* granted (transient denial) or before the screen ever
+  /// checked. Set on an explicit `false`, cleared on an explicit `true` or
+  /// when the screen observes permission granted. Persisted so it survives
+  /// restarts; the banner listens to this notifier.
+  final ValueNotifier<bool> inexactFallbackActive = ValueNotifier(false);
+
   final Map<int, CancelToken> _runningTokens = {};
   /// Checks if a task is currently executing in-process.
   bool isTaskRunning(int taskId) => _runningTokens.containsKey(taskId);
@@ -620,6 +633,32 @@ class TaskSchedulerService {
     }
   }
 
+  Future<void> _loadInexactFallback() async {
+    try {
+      inexactFallbackActive.value =
+          await db.getSetting(_kInexactFallbackKey) == 'true';
+    } catch (_) {
+      inexactFallbackActive.value = false;
+    }
+  }
+
+  /// Records or clears the sticky inexact-fallback flag, in memory and in the
+  /// settings table. Failures here must never break scheduling itself.
+  Future<void> _setInexactFallback(bool value) async {
+    inexactFallbackActive.value = value;
+    try {
+      if (value) {
+        await db.setSetting(_kInexactFallbackKey, 'true');
+      } else {
+        await db.deleteSetting(_kInexactFallbackKey);
+      }
+    } catch (_) {}
+  }
+
+  /// Clears the sticky inexact-fallback flag (e.g. after the user grants exact
+  /// alarms from the Manage Tasks banner).
+  Future<void> clearInexactFallback() => _setInexactFallback(false);
+
   /// Clears the cached pending notification future after consumption.
   void clearPendingNotificationClick() {
     _pendingNotificationFuture = null;
@@ -630,6 +669,8 @@ class TaskSchedulerService {
   void initialize() {
     // Start pending notification lookup non-blocking before runApp()
     _pendingNotificationFuture ??= _fetchPendingNotificationClick();
+    // Restore the sticky inexact-fallback flag (see [inexactFallbackActive]).
+    unawaited(_loadInexactFallback());
 
     _channel.setMethodCallHandler((call) async {
       switch (call.method) {
@@ -683,6 +724,12 @@ class TaskSchedulerService {
           '[TaskSchedulerService] Exact alarm denied for task $taskId; '
           'falling back to inexact timing. Ask the user to grant exact alarms.',
         );
+        // Sticky + visible: a debugPrint is stripped in release, so without
+        // this the fallback is silent. The Manage Tasks banner listens to
+        // [inexactFallbackActive].
+        unawaited(_setInexactFallback(true));
+      } else if (scheduled == true && inexactFallbackActive.value) {
+        unawaited(_setInexactFallback(false));
       }
     } catch (_) {}
   }

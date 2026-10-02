@@ -575,16 +575,31 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
   Widget _buildExactAlarmWarning({required bool hasActiveTasks}) {
     if (!hasActiveTasks) return const SizedBox.shrink();
 
-    return FutureBuilder<List<bool>>(
-      future: _warningsFuture,
-      builder: (context, snapshot) {
-        if (!snapshot.hasData) return const SizedBox.shrink();
-        final exactPermitted = snapshot.data![0];
-        final batteryExempt = snapshot.data![1];
+    // Also listens to the sticky inexact-fallback flag: the permission check
+    // alone cannot see a fallback that happened while permission *appeared*
+    // granted (transient denial) or before this screen ever checked.
+    return ValueListenableBuilder<bool>(
+      valueListenable: TaskSchedulerService.instance.inexactFallbackActive,
+      builder: (context, fallback, _) {
+        return FutureBuilder<List<bool>>(
+          future: _warningsFuture,
+          builder: (context, snapshot) {
+            if (!snapshot.hasData) return const SizedBox.shrink();
+            final exactPermitted = snapshot.data![0];
+            final batteryExempt = snapshot.data![1];
 
-        final banners = <Widget>[];
+            // Auto-heal: permission is granted now, so a stale fallback record
+            // has served its purpose. Post-frame — flipping the notifier
+            // mid-build would re-enter this builder.
+            if (exactPermitted && fallback) {
+              WidgetsBinding.instance.addPostFrameCallback(
+                (_) => TaskSchedulerService.instance.clearInexactFallback(),
+              );
+            }
 
-        if (!exactPermitted) {
+            final banners = <Widget>[];
+
+            if (!exactPermitted || fallback) {
           banners.add(
             Container(
               margin: const EdgeInsets.fromLTRB(16, 6, 16, 2),
@@ -597,12 +612,14 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
                 children: [
                   const Icon(Icons.warning_amber_rounded, color: Colors.amber, size: 16),
                   const SizedBox(width: 8),
-                  const Expanded(
+                  Expanded(
                     child: Text(
-                      'Exact alarms disabled. Tasks may be delayed.',
+                      exactPermitted
+                          ? 'Last schedule fell back to inexact timing. Tasks may be delayed.'
+                          : 'Exact alarms disabled. Tasks may be delayed.',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: TextStyle(color: Colors.amber, fontSize: 11),
+                      style: const TextStyle(color: Colors.amber, fontSize: 11),
                     ),
                   ),
                   const SizedBox(width: 6),
@@ -688,6 +705,8 @@ class _ManageTasksScreenState extends State<ManageTasksScreen>
         return Column(
           mainAxisSize: MainAxisSize.min,
           children: banners,
+        );
+          },
         );
       },
     );

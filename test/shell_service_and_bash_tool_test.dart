@@ -382,8 +382,7 @@ void main() {
       expect(check.isSafe, isFalse);
     });
 
-    test('commands AFTER a heredoc terminator are still analyzed', () {
-      // Regression: the heredoc skip jumped past the terminator's own newline
+    test('commands AFTER a heredoc terminator are still analyzed', () {      // Regression: the heredoc skip jumped past the terminator's own newline
       // without emitting the pending segment, so everything after it was
       // absorbed into the leading `cat` and the whole line was analysed as a
       // single display command. `rm -rf /` scored safe.
@@ -412,6 +411,61 @@ void main() {
 
       // And the legitimate case stays safe: nothing after the terminator.
       check = ShellSafetyCheck.analyze('cat <<EOF\nbody\nEOF');
+      expect(check.isSafe, isTrue);
+    });
+
+    test('heredoc header payloads after the delimiter are still analyzed', () {
+      // Regression: the heredoc skip jumped from `<<` to past the terminator,
+      // dropping the header remainder. `cat <<EOF > /system/x` scored safe.
+      ShellSafetyCheck check;
+      check = ShellSafetyCheck.analyze(
+        'cat <<EOF > /system/build.prop\nbody\nEOF',
+      );
+      expect(check.isBlocked, isTrue);
+      check = ShellSafetyCheck.analyze(
+        'cat <<EOF >> /system/build.prop\nbody\nEOF',
+      );
+      expect(check.isBlocked, isTrue);
+      check = ShellSafetyCheck.analyze(
+        'cat <<EOF > /tmp/x\nbody\nEOF',
+      );
+      expect(check.needsConfirmation, isTrue);
+      // Chained payloads on the header line split and score per command.
+      check = ShellSafetyCheck.analyze(
+        'cat <<EOF; rm -rf /tmp/target\nbody\nEOF',
+      );
+      expect(check.needsConfirmation, isTrue);
+      check = ShellSafetyCheck.analyze('cat <<EOF | sh\nbody\nEOF');
+      expect(check.needsConfirmation, isTrue);
+      check = ShellSafetyCheck.analyze(
+        'cat <<EOF > /tmp/x; rm -rf /tmp/target\nbody\nEOF',
+      );
+      expect(check.needsConfirmation, isTrue);
+      // Benign header tails keep their verdicts: fd-dups stay safe, pipes to
+      // filters stay safe, backgrounding stays safe.
+      check = ShellSafetyCheck.analyze('cat <<EOF 2>&1\nbody\nEOF');
+      expect(check.isSafe, isTrue);
+      check = ShellSafetyCheck.analyze('cat <<EOF | grep x\nbody\nEOF');
+      expect(check.isSafe, isTrue);
+      check = ShellSafetyCheck.analyze('cat <<EOF &\nbody\nEOF');
+      expect(check.isSafe, isTrue);
+    });
+
+    test('wrapper + sh -c analyzes the whole payload, not the first word', () {
+      // Regression: wrapper dispatch re-joined tokens, destroying the quoting
+      // around the -c payload, so only its first word was analysed and
+      // `timeout 5 sh -c "rm -rf /protected"` downgraded to confirm.
+      ShellSafetyCheck check;
+      check = ShellSafetyCheck.analyze('timeout 5 sh -c "rm -rf /sdcard/DCIM"');
+      expect(check.isBlocked, isTrue);
+      check = ShellSafetyCheck.analyze('nice sh -c "rm -rf /sdcard/DCIM"');
+      expect(check.isBlocked, isTrue);
+      check = ShellSafetyCheck.analyze('env FOO=bar sh -c "rm -rf /sdcard/DCIM"');
+      expect(check.isBlocked, isTrue);
+      check = ShellSafetyCheck.analyze('sh -c "rm -rf /sdcard/DCIM"');
+      expect(check.isBlocked, isTrue);
+      // Extra $0-style args after the payload ride along harmlessly.
+      check = ShellSafetyCheck.analyze('sh -c "echo hi" myscript');
       expect(check.isSafe, isTrue);
     });
 

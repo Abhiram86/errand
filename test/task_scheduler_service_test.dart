@@ -297,6 +297,53 @@ void main() {
       expect(trigger, lessThanOrEqualTo(after + 1000));
     });
 
+    test('scheduleTask records a sticky inexact-fallback flag on denial', () async {
+      // A `scheduleAlarm -> false` fallback was previously only a debugPrint
+      // (stripped in release). It must set a sticky, persisted flag the
+      // Manage Tasks banner listens to — and an exact schedule must clear it.
+      final nowMillis = DateTime.now().millisecondsSinceEpoch;
+      final taskId = await serviceDb.into(serviceDb.schedulerTasks).insert(
+        SchedulerTasksCompanion.insert(
+          title: 'Fallback task',
+          type: 'one_off',
+          status: 'scheduled',
+          payloadJson: '{}',
+          startsAt: nowMillis + 60000,
+          timezone: 'UTC',
+          createdAt: nowMillis,
+          updatedAt: nowMillis,
+        ),
+      );
+
+      Future<void> mockScheduleAlarm(bool? result) async {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(
+          const MethodChannel('task_scheduler'),
+          (call) async {
+            channelCalls.add(call);
+            if (call.method == 'scheduleAlarm') return result;
+            return null;
+          },
+        );
+      }
+
+      await mockScheduleAlarm(false);
+      await realService.scheduleTask(taskId);
+      expect(realService.inexactFallbackActive.value, isTrue);
+      expect(
+        await serviceDb.getSetting('pref.scheduler_inexact_fallback'),
+        'true',
+      );
+
+      await mockScheduleAlarm(true);
+      await realService.scheduleTask(taskId);
+      expect(realService.inexactFallbackActive.value, isFalse);
+      expect(
+        await serviceDb.getSetting('pref.scheduler_inexact_fallback'),
+        isNull,
+      );
+    });
+
     test('concurrent rescheduleAllActiveTasks share a single run', () async {
       final nowMillis = DateTime.now().millisecondsSinceEpoch;
 
