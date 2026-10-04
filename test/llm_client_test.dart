@@ -1200,5 +1200,22 @@ void main() {
     expect(message.content, equals('Final answer'));
     expect(deltas, equals(['Final answer']));
   });
+
+  test('LlmClient respects custom streamInactivityTimeout and timeout configurations', () {
+    final client = LlmClient(
+      config: const LlmConfig(
+        baseUrl: 'https://example.test/v1',
+        apiKey: 'test-key',
+        model: 'test-model',
+      ),
+      timeout: const Duration(seconds: 120),
+      streamTimeout: const Duration(seconds: 90),
+      streamInactivityTimeout: const Duration(seconds: 180),
+    );
+
+    expect(client.timeout, equals(const Duration(seconds: 120)));
+    expect(client.streamTimeout, equals(const Duration(seconds: 90)));
+    expect(client.streamInactivityTimeout, equals(const Duration(seconds: 180)));
+  });
 }
 

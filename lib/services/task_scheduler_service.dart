@@ -130,6 +130,41 @@ class TaskSchedulerService {
     return inScratch;
   }
 
+  /// Probes network connectivity before starting an autonomous background turn.
+  /// Gives the cellular radio up to [timeout] to transition from dormant RRC_IDLE
+  /// to an active connected state.
+  static Future<bool> probeNetworkReadiness({
+    String host = 'openrouter.ai',
+    Duration timeout = const Duration(seconds: 15),
+    Future<List<InternetAddress>> Function(String host)? lookupFn,
+  }) async {
+    final cleanHost = host.trim();
+    if (cleanHost.isEmpty ||
+        cleanHost == 'localhost' ||
+        cleanHost == '127.0.0.1') {
+      return true;
+    }
+    if (InternetAddress.tryParse(cleanHost) != null) {
+      return true;
+    }
+    final deadline = DateTime.now().add(timeout);
+    final lookup = lookupFn ?? InternetAddress.lookup;
+    while (DateTime.now().isBefore(deadline)) {
+      try {
+        final addresses = await lookup(cleanHost).timeout(
+          const Duration(seconds: 3),
+        );
+        if (addresses.isNotEmpty) {
+          return true;
+        }
+      } catch (_) {
+        // Cellular radio still negotiating or DNS not yet resolved
+      }
+      await Future<void>.delayed(const Duration(seconds: 2));
+    }
+    return false;
+  }
+
   /// Containment guard for destructive paths: true only when [absPath]
   /// normalizes to a location inside [scratchDir]. Delete/prune/owned-file
   /// enumeration must refuse anything else — stored rows can hold legacy
@@ -1242,9 +1277,16 @@ class TaskSchedulerService {
             apiKey: apiKey,
             model: model,
           ),
-          // Autonomous runs get a larger retry budget: no human is around
-          // to tap retry when a transient failure exhausts the budget.
+          // Autonomous background runs use cellular-aware backoff (2s, 4s, 8s, 16s, 32s)
+          // and a relaxed 120s inactivity watchdog so thinking models and mobile radio
+          // latency do not trigger premature resets.
           maxAttempts: 5,
+          streamInactivityTimeout: const Duration(seconds: 120),
+          streamTimeout: const Duration(seconds: 90),
+          timeout: const Duration(seconds: 120),
+          backoffDuration: (attempt) => Duration(
+            seconds: 2 * (1 << (attempt - 1 >= 4 ? 4 : attempt - 1)),
+          ),
         );
         agentRunner = AgentRunner(
           llm: locallyCreatedClient,
@@ -1281,6 +1323,43 @@ class TaskSchedulerService {
         } catch (_) {}
       }
       return false;
+    }
+
+    // Pre-flight check: give dormant cellular radio up to 15s to transition
+    // from RRC_IDLE and resolve DNS before starting the agent loop.
+    if (runner == null && locallyCreatedClient != null) {
+      final host = Uri.tryParse(locallyCreatedClient.config.baseUrl)?.host;
+      final networkReady = await probeNetworkReadiness(
+        host: host != null && host.isNotEmpty ? host : 'openrouter.ai',
+      );
+      if (!networkReady) {
+        final finishMillis = DateTime.now().millisecondsSinceEpoch;
+        await (db.update(db.schedulerTaskLogs)..where((l) => l.id.equals(logId))).write(
+          SchedulerTaskLogsCompanion(
+            finishedAt: Value(finishMillis),
+            status: const Value('failed'),
+            errorMessage: const Value('Network unreachable (cellular radio did not connect within 15s).'),
+            updatedAt: Value(finishMillis),
+          ),
+        );
+        await (db.update(db.schedulerTasks)..where((t) => t.id.equals(taskId))).write(
+          SchedulerTasksCompanion(
+            status: const Value('failed'),
+            failures: Value(task.failures + 1),
+            updatedAt: Value(finishMillis),
+          ),
+        );
+        if (task.notify) {
+          try {
+            await notificationService.showNotification(
+              id: taskId,
+              title: 'Task Failed: ${task.title}',
+              body: 'Network unreachable (cellular radio did not connect).',
+            );
+          } catch (_) {}
+        }
+        return false;
+      }
     }
 
     final effectiveCancelToken = cancelToken ?? CancelToken();

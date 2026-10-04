@@ -1,6 +1,7 @@
 package com.errand.errand
 
 import android.Manifest
+import android.app.KeyguardManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -234,6 +235,7 @@ class TaskExecutionService : Service() {
                 // is the backstop for a genuinely wedged Dart side, and it
                 // releases 1 min after the watchdog — it is not overrun.
                 wakeLock?.acquire(TASK_WAKELOCK_TIMEOUT_MS)
+                TaskAlarmReceiver.releaseWakeLock()
             } catch (e: Exception) {
                 Log.e(TAG, "Error acquiring wake lock for queued task", e)
             }
@@ -242,14 +244,28 @@ class TaskExecutionService : Service() {
             val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             notificationManager.notify(NOTIFICATION_ID, buildForegroundNotification(request.taskTitle))
 
-            // Check if active foreground UI engine is available
+            // Route to MainActivity engine ONLY when the UI is resumed and the user
+            // is actively interacting with the device. If the screen is off, the
+            // phone is locked, or MainActivity is stopped/paused in the background,
+            // always use the isolated background engine to avoid background throttling freezes.
             val mainChannel = MainActivity.schedulerChannel
-            if (mainChannel != null) {
+            if (mainChannel != null && isMainActivityActive()) {
                 dispatchToMainEngine(request, mainChannel)
             } else {
                 dispatchToBackgroundEngine(request)
             }
         }
+    }
+
+    private fun isMainActivityActive(): Boolean {
+        if (!MainActivity.isResumed || MainActivity.schedulerChannel == null) {
+            return false
+        }
+        val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
+        val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
+        val isInteractive = powerManager?.isInteractive ?: false
+        val isLocked = keyguardManager?.isDeviceLocked ?: false
+        return isInteractive && !isLocked
     }
 
     private fun dispatchToMainEngine(
@@ -825,6 +841,7 @@ class TaskExecutionService : Service() {
     }
 
     override fun onDestroy() {
+        TaskAlarmReceiver.releaseWakeLock()
         destroyBackgroundEngine()
         releaseWakeLockQuietly()
         geocodeExecutor.shutdownNow()

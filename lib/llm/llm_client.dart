@@ -128,14 +128,17 @@ class LlmClient {
   /// because no human is around to tap retry.
   final int maxAttempts;
 
-  static const _timeout = Duration(seconds: 30);
-  static const _streamTimeout = Duration(seconds: 60);
-  static const _streamInactivityTimeout = Duration(seconds: 30);
-  static const _streamTotalTimeout = Duration(minutes: 5);
+  static const _defaultTimeout = Duration(seconds: 30);
+  static const _defaultStreamTimeout = Duration(seconds: 60);
+  static const _defaultStreamInactivityTimeout = Duration(seconds: 30);
+  static const _defaultStreamTotalTimeout = Duration(minutes: 5);
   static const int kMaxStreamAccumulatedBytes = 10 * 1024 * 1024; // 10 MB
   static const _defaultMaxAttempts = 3;
   static const _maxTotalAttempts = 10;
 
+  final Duration timeout;
+  final Duration streamTimeout;
+  final Duration streamInactivityTimeout;
   final Duration streamTotalTimeout;
   final int maxStreamAccumulatedBytes;
 
@@ -144,11 +147,18 @@ class LlmClient {
     http.Client? client,
     this.backoffDuration,
     this.maxAttempts = _defaultMaxAttempts,
+    Duration? timeout,
+    Duration? streamTimeout,
+    Duration? streamInactivityTimeout,
     Duration? streamTotalTimeout,
     int? maxStreamAccumulatedBytes,
   })  : _injectedClient = client,
         _ownsClient = client == null,
-        streamTotalTimeout = streamTotalTimeout ?? _streamTotalTimeout,
+        timeout = timeout ?? _defaultTimeout,
+        streamTimeout = streamTimeout ?? _defaultStreamTimeout,
+        streamInactivityTimeout =
+            streamInactivityTimeout ?? _defaultStreamInactivityTimeout,
+        streamTotalTimeout = streamTotalTimeout ?? _defaultStreamTotalTimeout,
         maxStreamAccumulatedBytes =
             maxStreamAccumulatedBytes ?? kMaxStreamAccumulatedBytes {
     assert(maxAttempts >= 1, 'maxAttempts must be at least 1');
@@ -254,7 +264,7 @@ class LlmClient {
       try {
         final res = await client
             .post(uri, headers: headers, body: body)
-            .timeout(_timeout);
+            .timeout(timeout);
         final transient = res.statusCode == 429 || res.statusCode >= 500;
         if (!transient || attempt >= maxAttempts) return res;
         await _backoff(attempt, res.headers['retry-after'], cancelToken);
@@ -264,7 +274,7 @@ class LlmClient {
         _rethrowIfCancelled(cancelToken);
         if (attempt >= maxAttempts) {
           throw LlmException(
-            'Request timed out after ${_timeout.inSeconds}s',
+            'Request timed out after ${timeout.inSeconds}s',
             transport: true,
           );
         }
@@ -438,7 +448,7 @@ class LlmClient {
           ..body = streamBody;
 
         final response =
-            await client.send(request).timeout(_streamTimeout);
+            await client.send(request).timeout(streamTimeout);
 
         final isTransient =
             response.statusCode == 429 || response.statusCode >= 500;
@@ -500,7 +510,7 @@ class LlmClient {
         recordFailure();
         if (consecutiveFailures >= maxAttempts) {
           throw LlmException(
-            'Request timed out after ${_streamTimeout.inSeconds}s',
+            'Request timed out after ${streamTimeout.inSeconds}s',
             transport: true,
           );
         }
@@ -626,7 +636,7 @@ class LlmClient {
 
     await for (final event in _sseDataEvents(
       response.stream,
-      inactivityTimeout: _streamInactivityTimeout,
+      inactivityTimeout: streamInactivityTimeout,
     )) {
       if (cancelToken?.isCancelled ?? false) {
         throw const LlmStoppedException();

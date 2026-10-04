@@ -1236,4 +1236,40 @@ void main() {
       expect(t.status, equals('running'));
     });
   });
+
+  group('probeNetworkReadiness', () {
+    test('bypasses lookup for localhost and IP addresses', () async {
+      expect(await TaskSchedulerService.probeNetworkReadiness(host: 'localhost'), isTrue);
+      expect(await TaskSchedulerService.probeNetworkReadiness(host: '127.0.0.1'), isTrue);
+      expect(await TaskSchedulerService.probeNetworkReadiness(host: '192.168.1.1'), isTrue);
+      expect(await TaskSchedulerService.probeNetworkReadiness(host: ''), isTrue);
+    });
+
+    test('returns true when lookup succeeds', () async {
+      var calls = 0;
+      final ready = await TaskSchedulerService.probeNetworkReadiness(
+        host: 'openrouter.ai',
+        lookupFn: (host) async {
+          calls++;
+          return [InternetAddress('93.184.216.34')];
+        },
+      );
+      expect(ready, isTrue);
+      expect(calls, equals(1));
+    });
+
+    test('retries on failure and returns false when timeout expires', () async {
+      var calls = 0;
+      final ready = await TaskSchedulerService.probeNetworkReadiness(
+        host: 'unreachable.domain.test',
+        timeout: const Duration(milliseconds: 50),
+        lookupFn: (host) async {
+          calls++;
+          throw const SocketException('Failed host lookup');
+        },
+      );
+      expect(ready, isFalse);
+      expect(calls, greaterThanOrEqualTo(1));
+    });
+  });
 }

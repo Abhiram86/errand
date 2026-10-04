@@ -41,6 +41,8 @@ class MainActivity : FlutterActivity() {
 
     companion object {
         var schedulerChannel: MethodChannel? = null
+        @Volatile
+        var isResumed: Boolean = false
     }
 
     private val geocodeExecutor = Executors.newCachedThreadPool()
@@ -388,7 +390,18 @@ class MainActivity : FlutterActivity() {
         // request is fire-and-forget with no pending result to complete.
     }
 
+    override fun onResume() {
+        super.onResume()
+        isResumed = true
+    }
+
+    override fun onPause() {
+        isResumed = false
+        super.onPause()
+    }
+
     override fun onDestroy() {
+        isResumed = false
         // Deliberately does NOT disable the accessibility service here. Pressing
         // Back (isFinishing) must not revoke a grant the user made in Settings;
         // that silently broke screen reading until the user re-enabled it, and it
