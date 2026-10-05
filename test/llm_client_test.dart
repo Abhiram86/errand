@@ -1201,21 +1201,62 @@ void main() {
     expect(deltas, equals(['Final answer']));
   });
 
-  test('LlmClient respects custom streamInactivityTimeout and timeout configurations', () {
+  test('stream stalls surface at the custom inactivity timeout without redial', () async {
+    // Behavioral: a stream that emits one chunk then hangs must raise at
+    // ~streamInactivityTimeout (not the 30s default, not instantly), and with
+    // maxAttempts 1 it must not redial. Uses short real-time durations:
+    // Stream.timeout does not advance under fakeAsync, so a fake clock can
+    // never observe the stall. Margins are 3x to stay CI-safe.
+    final controller = StreamController<List<int>>();
+    var attempts = 0;
     final client = LlmClient(
       config: const LlmConfig(
         baseUrl: 'https://example.test/v1',
         apiKey: 'test-key',
         model: 'test-model',
       ),
-      timeout: const Duration(seconds: 120),
-      streamTimeout: const Duration(seconds: 90),
-      streamInactivityTimeout: const Duration(seconds: 180),
+      maxAttempts: 1,
+      streamInactivityTimeout: const Duration(milliseconds: 300),
+      client: _StreamingClient((request) async {
+        attempts++;
+        controller.add(
+          utf8.encode(_sseEvent({
+            'choices': [
+              {
+                'delta': {'content': 'hi'},
+              },
+            ],
+          })),
+        );
+        return http.StreamedResponse(controller.stream, 200);
+      }),
     );
 
-    expect(client.timeout, equals(const Duration(seconds: 120)));
-    expect(client.streamTimeout, equals(const Duration(seconds: 90)));
-    expect(client.streamInactivityTimeout, equals(const Duration(seconds: 180)));
-  });
+    Object? error;
+    unawaited(
+      client
+          .chatStream(
+            messages: const [
+              {'role': 'user', 'content': 'Hi'},
+            ],
+            onTextDelta: (_) {},
+          )
+          .then<void>((_) {}, onError: (Object e) {
+        error = e;
+      }),
+    );
+
+    // Well under the custom 300ms: still waiting, no error, no redial.
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    expect(error, isNull);
+    expect(attempts, 1);
+
+    // Past the custom timeout (far under the 30s default): stall surfaces.
+    await Future<void>.delayed(const Duration(milliseconds: 600));
+    expect(error, isA<LlmException>());
+    expect(attempts, 1, reason: 'maxAttempts 1: stall must not redial');
+    client.close();
+    await controller.close();
+  }, timeout: const Timeout(Duration(seconds: 30)));
 }
 

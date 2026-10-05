@@ -74,6 +74,15 @@ class TrackingSchedulerService extends TaskSchedulerService {
   }
 }
 
+/// Stub socket so probe tests never touch the real network.
+class _FakeSocket implements Socket {
+  @override
+  dynamic noSuchMethod(Invocation invocation) {
+    if (invocation.memberName == #destroy) return null;
+    return super.noSuchMethod(invocation);
+  }
+}
+
 /// Stub runner that emits a few turn/step events, then succeeds. Exercises
 /// the live-run telemetry path in `executeTask` (heartbeat + current step).
 class _HeartbeatRunner extends AgentRunner {
@@ -1247,15 +1256,39 @@ void main() {
 
     test('returns true when lookup succeeds', () async {
       var calls = 0;
+      var connects = 0;
       final ready = await TaskSchedulerService.probeNetworkReadiness(
         host: 'openrouter.ai',
         lookupFn: (host) async {
           calls++;
           return [InternetAddress('93.184.216.34')];
         },
+        // Never touch the real network from tests: the TCP step is stubbed.
+        connectFn: (host, port) async {
+          connects++;
+          expect(port, equals(443));
+          return _FakeSocket();
+        },
       );
       expect(ready, isTrue);
       expect(calls, equals(1));
+      expect(connects, equals(1));
+    });
+
+    test('resolving DNS is not enough when TCP refuses', () async {
+      // Captive portals and half-up radios resolve fine and die at TCP.
+      var connects = 0;
+      final ready = await TaskSchedulerService.probeNetworkReadiness(
+        host: 'openrouter.ai',
+        timeout: const Duration(milliseconds: 50),
+        lookupFn: (host) async => [InternetAddress('93.184.216.34')],
+        connectFn: (host, port) async {
+          connects++;
+          throw const SocketException('Connection refused');
+        },
+      );
+      expect(ready, isFalse);
+      expect(connects, greaterThanOrEqualTo(1));
     });
 
     test('retries on failure and returns false when timeout expires', () async {

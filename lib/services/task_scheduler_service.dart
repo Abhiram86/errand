@@ -133,10 +133,17 @@ class TaskSchedulerService {
   /// Probes network connectivity before starting an autonomous background turn.
   /// Gives the cellular radio up to [timeout] to transition from dormant RRC_IDLE
   /// to an active connected state.
+  ///
+  /// DNS alone is not enough: captive portals, firewall blocks, and half-up
+  /// radios all resolve fine and fail later at TCP/TLS, burning the run's
+  /// retry budget anyway. So a successful lookup is followed by a TCP connect
+  /// to [port] (443: every LLM baseUrl is HTTPS except bypassed local hosts).
   static Future<bool> probeNetworkReadiness({
     String host = 'openrouter.ai',
+    int port = 443,
     Duration timeout = const Duration(seconds: 15),
     Future<List<InternetAddress>> Function(String host)? lookupFn,
+    Future<Socket> Function(String host, int port)? connectFn,
   }) async {
     final cleanHost = host.trim();
     if (cleanHost.isEmpty ||
@@ -149,16 +156,23 @@ class TaskSchedulerService {
     }
     final deadline = DateTime.now().add(timeout);
     final lookup = lookupFn ?? InternetAddress.lookup;
+    final connect = connectFn ??
+        (h, p) => Socket.connect(h, p, timeout: const Duration(seconds: 3));
     while (DateTime.now().isBefore(deadline)) {
       try {
         final addresses = await lookup(cleanHost).timeout(
           const Duration(seconds: 3),
         );
         if (addresses.isNotEmpty) {
+          // DNS resolves but the path may still be dead: prove TCP works.
+          final socket = await connect(cleanHost, port).timeout(
+            const Duration(seconds: 3),
+          );
+          socket.destroy();
           return true;
         }
       } catch (_) {
-        // Cellular radio still negotiating or DNS not yet resolved
+        // Cellular radio still negotiating, DNS unresolved, or TCP refused.
       }
       await Future<void>.delayed(const Duration(seconds: 2));
     }
@@ -1325,6 +1339,12 @@ class TaskSchedulerService {
       return false;
     }
 
+    // Registered before the pre-flight probe (not after it) so a user skip
+    // during the ~15s probe window actually cancels something instead of
+    // hitting a null-safe no-op while the run proceeds anyway.
+    final effectiveCancelToken = cancelToken ?? CancelToken();
+    _runningTokens[taskId] = effectiveCancelToken;
+
     // Pre-flight check: give dormant cellular radio up to 15s to transition
     // from RRC_IDLE and resolve DNS before starting the agent loop.
     if (runner == null && locallyCreatedClient != null) {
@@ -1342,13 +1362,40 @@ class TaskSchedulerService {
             updatedAt: Value(finishMillis),
           ),
         );
-        await (db.update(db.schedulerTasks)..where((t) => t.id.equals(taskId))).write(
-          SchedulerTasksCompanion(
-            status: const Value('failed'),
-            failures: Value(task.failures + 1),
-            updatedAt: Value(finishMillis),
-          ),
-        );
+        // Mirror the normal failure transition: a transient radio blip must
+        // not kill a recurring series. Reschedule unless retries are
+        // exhausted, exactly like a mid-run network failure does.
+        final probeFailures = task.failures + 1;
+        final probeMaxRetries = task.retriesPerTurn;
+        final probeExceeded =
+            probeMaxRetries > 0 && probeFailures >= probeMaxRetries;
+        if (task.type == 'recurring' &&
+            task.repeatAfter != null &&
+            task.repeatAfter! > 0 &&
+            !probeExceeded) {
+          final nextRun = calculateNextRunAt(
+            startsAt: task.startsAt,
+            repeatAfter: task.repeatAfter!,
+            nowMillis: finishMillis,
+          );
+          await (db.update(db.schedulerTasks)..where((t) => t.id.equals(taskId))).write(
+            SchedulerTasksCompanion(
+              status: const Value('scheduled'),
+              nextRunAt: Value(nextRun),
+              failures: Value(probeFailures),
+              updatedAt: Value(finishMillis),
+            ),
+          );
+          await scheduleTask(taskId);
+        } else {
+          await (db.update(db.schedulerTasks)..where((t) => t.id.equals(taskId))).write(
+            SchedulerTasksCompanion(
+              status: const Value('failed'),
+              failures: Value(probeFailures),
+              updatedAt: Value(finishMillis),
+            ),
+          );
+        }
         if (task.notify) {
           try {
             await notificationService.showNotification(
@@ -1362,8 +1409,6 @@ class TaskSchedulerService {
       }
     }
 
-    final effectiveCancelToken = cancelToken ?? CancelToken();
-    _runningTokens[taskId] = effectiveCancelToken;
     HeadlessRunResult result;
     var isTimeout = false;
 
