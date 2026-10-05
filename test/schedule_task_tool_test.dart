@@ -394,6 +394,64 @@ void main() {
       expect(jsonDecode(editRes.output)['task']['status'], equals('cancelled'));
     });
 
+    test('enable_browser round-trips through create and edit payloads', () async {
+      // No arg means absent (headless default: browser excluded); explicit
+      // true/false is stored verbatim for runHeadless to honor.
+      final tool = scheduleTaskTool(db: db);
+
+      final createRes = await tool.handler(
+        const ToolCall(
+          id: 'c-1',
+          name: 'schedule_task',
+          arguments: {
+            'action': 'create',
+            'title': 'Browse task',
+            'prompt': 'Check a site',
+            'schedule_type': 'one_off',
+            'enable_browser': true,
+          },
+        ),
+      );
+      expect(createRes.ok, isTrue);
+      var task = jsonDecode(createRes.output)['task'];
+      expect(task['payload']['enableBrowser'], isTrue);
+
+      final plainRes = await tool.handler(
+        const ToolCall(
+          id: 'c-2',
+          name: 'schedule_task',
+          arguments: {
+            'action': 'create',
+            'title': 'Plain task',
+            'prompt': 'No browser',
+            'schedule_type': 'one_off',
+          },
+        ),
+      );
+      task = jsonDecode(plainRes.output)['task'];
+      expect(
+        (task['payload'] as Map<String, dynamic>).containsKey('enableBrowser'),
+        isFalse,
+      );
+
+      final editRes = await tool.handler(
+        ToolCall(
+          id: 'e-1',
+          name: 'schedule_task',
+          arguments: {
+            'action': 'edit',
+            'id': task['id'],
+            'enable_browser': false,
+          },
+        ),
+      );
+      expect(editRes.ok, isTrue);
+      expect(
+        jsonDecode(editRes.output)['task']['payload']['enableBrowser'],
+        isFalse,
+      );
+    });
+
     test('edit recurring task with past start advances next_run_at by repeat_after interval', () async {
       final tool = scheduleTaskTool(db: db);
       final now = DateTime.now().millisecondsSinceEpoch;

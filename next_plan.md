@@ -15,11 +15,11 @@
 ## Now
 
 **Background resilience (phase 2 of the bigger-model plan; phase 1 shipped):**
-- [ ] Per-turn checkpoint/resume (survive SIGKILL mid-run instead of restarting).
-- [ ] Reaper — partly covered by heartbeat + foreground recovery; decide if a WorkManager periodic job is still wanted.
-- [ ] `getHistoricalProcessExitReasons` on launch → log the kill reason into the task row.
-- [ ] Battery/onboarding screens (exact alarm, exemption, OEM autostart deep links).
-- [ ] Headless-browser policy (disable `browser` tool in headless by default?).
+- [x] Per-turn checkpoint/resume (`TaskCheckpoint` atomically written to scratch, resumed in `runHeadless` / `AgentLoop`, max 2 resumes per task, cleaned up on completion/cancellation).
+- [x] Reaper + stale heartbeat detection — `recoverStuckTasks` sweeps tasks with stale heartbeats (> 150s), auto-reschedules if checkpoint exists, and logs recovery diagnostics.
+- [x] `getHistoricalProcessExitReasons` (API 30+) on `task_scheduler` channel → maps OS termination causes (`LOW_MEMORY`, `SIGNALED`, `CRASH`, `ANR`, `USER_REQUESTED`) into task execution logs.
+- [x] Battery/onboarding deep links — OEM autostart settings (`openOemBatterySettings` for Xiaomi/MIUI, Huawei, Oppo, Vivo, Samsung).
+- [x] Headless-browser policy — `browser` tool disabled by default in headless execution (`enableBrowser: false` in `runHeadless`, overridden via `payload['enableBrowser'] == true`), preventing 100MB-200MB+ Chromium WebView allocation that triggers LMK.
 
 **Scheduler/native:**
 - [x] H6 + M3 — JobScheduler fallback (`TaskExecutionJobService`, `scheduleJob` on both engines, receiver reroute on FGS-start failure, `cancelAlarm` tears down jobs; Dart routes when exact denied). CI-gated + needs device check.
@@ -29,7 +29,6 @@
 - [x] C1 remainder — MIME allowlist (audio/video/image/text + pdf/json; caller `type` validated too) + shared `FileContainment.kt` used by open_file/installApk/**openPdf**. CI-gated.
 - [x] `bringToFront` PI code + cancel (mirrors launch path). CI-gated.
 - [x] `putExtraValue` divergence — unified (background engine now throws like foreground).
-- [ ] Tool-edit parity with `computeEditTransition`.
 - [x] Tool-edit parity — terminal rows gaining a fresh schedule without an explicit status arg resurrect to `scheduled` (mirrors `computeEditTransition`); title-only edits never resurrect. Pinned.
 - [x] R8 — verified intentionally OFF (`proguardFiles` declared, no `isMinifyEnabled`): avoids obfuscation-crash risk without device validation. Revisit only for APK-size reasons.
 - [ ] L1 residue.

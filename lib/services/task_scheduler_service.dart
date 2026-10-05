@@ -10,6 +10,7 @@ import 'package:path/path.dart' as p;
 
 import '../agent/agent_loop.dart';
 import '../agent/agent_runner.dart';
+import '../agent/task_checkpoint.dart';
 import '../llm/llm_client.dart';
 import '../models/llm_provider.dart';
 import '../services/app_settings.dart';
@@ -398,6 +399,14 @@ class TaskSchedulerService {
       for (final path in candidates) {
         final rel = p.relative(path, from: scratch.path);
         final base = p.basename(path);
+        // Ephemeral runtime state, not abandoned output: in-flight temp
+        // files and task checkpoints/resume counters. Clearing one mid-run
+        // would silently downgrade the next recovery to a fresh start.
+        if (base.endsWith('-checkpoint.json') ||
+            base.endsWith('-resumecount') ||
+            base.endsWith('.tmp')) {
+          continue;
+        }
         if (!referencedNames.contains(rel) && !referencedNames.contains(base)) {
           orphans.add(File(path));
         }
@@ -593,6 +602,9 @@ class TaskSchedulerService {
         updatedAt: Value(nowMillis),
       ),
     );
+    try {
+      await TaskCheckpoint.delete(taskId, Workspace.instance.scratchDir);
+    } catch (_) {}
   }
 
   /// Skips the current run of a recurring task without killing the series:
@@ -614,6 +626,9 @@ class TaskSchedulerService {
     }
     if (task.status == 'paused') {
       _runningTokens[taskId]?.cancel();
+      try {
+        await TaskCheckpoint.delete(taskId, Workspace.instance.scratchDir);
+      } catch (_) {}
       return true;
     }
     if (task.type != 'recurring' ||
@@ -624,6 +639,9 @@ class TaskSchedulerService {
     }
 
     _runningTokens[taskId]?.cancel();
+    try {
+      await TaskCheckpoint.delete(taskId, Workspace.instance.scratchDir);
+    } catch (_) {}
 
     final nowMillis = DateTime.now().millisecondsSinceEpoch;
     final nextRun = calculateNextRunAt(
@@ -1010,7 +1028,34 @@ class TaskSchedulerService {
     }
   }
 
-  /// Outcome of editing a task's schedule type/interval in settings sheets.
+  /// Queries historical process termination reasons from Android ActivityManager
+  /// (API 30+). Returns list of exit info maps containing reason, reasonName,
+  /// timestamp, status, description, and importance.
+  Future<List<Map<String, dynamic>>> getHistoricalExitReasons({int maxNum = 5}) async {
+    try {
+      final list = await _channel.invokeListMethod<dynamic>(
+        'getHistoricalExitReasons',
+        {'maxNum': maxNum},
+      );
+      if (list == null) return const [];
+      return list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// Attempts to launch OEM-specific autostart or background protection settings
+  /// (Xiaomi/MIUI, Huawei, Oppo/Realme, Vivo, Samsung).
+  /// Returns true if an OEM activity was found and started.
+  Future<bool> openOemBatterySettings() async {
+    try {
+      final result = await _channel.invokeMethod<bool>('openOemBatterySettings');
+      return result ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// Outcome of editing a task's schedule type/interval in settings sheets.
   /// Pure and unit-tested: the sheet must apply exactly this, so status and
   /// alarm transitions can't drift between UI and logic.
@@ -1099,66 +1144,180 @@ class TaskSchedulerService {
 
   /// Sweeps tasks that were left in `running` status due to process crashes or kills.
   ///
-  /// Tasks running longer than [maxRunningDuration] are considered abandoned.
+  /// Tasks running longer than [maxRunningDuration] OR with stale heartbeats
+  /// older than [staleHeartbeatDuration] are considered abandoned.
   /// If [task.notify] is true and the task was interrupted recently (within [freshKillWindow]),
   /// dispatches a failure notification to alert the user of the killed run.
   Future<int> recoverStuckTasks({
     Duration maxRunningDuration = const Duration(minutes: 15),
     Duration freshKillWindow = const Duration(hours: 4),
+    Duration staleHeartbeatDuration = const Duration(seconds: 150),
   }) async {
     final nowMillis = DateTime.now().millisecondsSinceEpoch;
-    final cutoff =
-        nowMillis - maxRunningDuration.inMilliseconds;
+    final cutoff = nowMillis - maxRunningDuration.inMilliseconds;
     final freshCutoff = nowMillis - freshKillWindow.inMilliseconds;
 
-    final stuckTasks = await (db.select(db.schedulerTasks)
-          ..where((t) =>
-              t.status.equals('running') &
-              t.updatedAt.isSmallerThanValue(cutoff)))
+    // Find all tasks marked running
+    final runningTasks = await (db.select(db.schedulerTasks)
+          ..where((t) => t.status.equals('running')))
         .get();
 
+    if (runningTasks.isEmpty) return 0;
+
+    final stuckTasks = <SchedulerTaskRow>[];
+    final runningLogsByTask = <int, SchedulerTaskLogRow>{};
+
+    for (final task in runningTasks) {
+      // If currently active in this isolate's memory, it's alive — skip
+      if (_runningTokens.containsKey(task.id)) continue;
+
+      final latestLog = await (db.select(db.schedulerTaskLogs)
+            ..where((l) =>
+                l.schedulerTaskId.equals(task.id) & l.status.equals('running'))
+            ..orderBy([(l) => OrderingTerm.desc(l.id)])
+            ..limit(1))
+          .getSingleOrNull();
+
+      if (latestLog != null) {
+        runningLogsByTask[task.id] = latestLog;
+      }
+
+      final isStaleHeartbeat = latestLog != null &&
+          latestLog.lastHeartbeatAt != null &&
+          (nowMillis - latestLog.lastHeartbeatAt!) >
+              staleHeartbeatDuration.inMilliseconds;
+
+      final isPastMaxDuration = task.updatedAt < cutoff;
+
+      if (isPastMaxDuration || isStaleHeartbeat) {
+        stuckTasks.add(task);
+      }
+    }
+
+    if (stuckTasks.isEmpty) return 0;
+
+    // Query historical OS exit reasons to diagnose why the process was killed
+    final exitReasons = await getHistoricalExitReasons(maxNum: 5);
+
     for (final task in stuckTasks) {
-      if (task.type == 'recurring' &&
-          task.repeatAfter != null &&
-          task.repeatAfter! > 0) {
-        final nextRun = calculateNextRunAt(
-          startsAt: task.startsAt,
-          repeatAfter: task.repeatAfter!,
-          nowMillis: nowMillis,
+      final log = runningLogsByTask[task.id];
+      final taskActivityTime =
+          log?.lastHeartbeatAt ?? task.lastRunAt ?? task.updatedAt;
+
+      Map<String, dynamic>? matchedExit;
+      for (final exit in exitReasons) {
+        final exitTs = exit['timestamp'] as int? ?? 0;
+        if (exitTs > 0 &&
+            (exitTs - taskActivityTime).abs() <
+                const Duration(minutes: 10).inMilliseconds) {
+          matchedExit = exit;
+          break;
+        }
+      }
+
+      final String reasonDiagnostic;
+      if (matchedExit != null) {
+        final rName = matchedExit['reasonName'] as String? ?? 'SYSTEM_KILL';
+        final desc = (matchedExit['description'] as String?)?.trim();
+        reasonDiagnostic =
+            'Task execution interrupted or killed by system ($rName${desc != null && desc.isNotEmpty ? ': $desc' : ''}).';
+      } else {
+        reasonDiagnostic = 'Task execution interrupted or killed by system.';
+      }
+
+      // Check for resumable checkpoint. Resume attempts are counted in a
+      // sidecar file (not the checkpoint itself) so the cap survives the
+      // fresh starts that delete checkpoints — otherwise an always-crashing
+      // task would resume-cycle forever across recoveries.
+      final checkpoint = await TaskCheckpoint.load(
+        task.id,
+        Workspace.instance.scratchDir,
+      );
+      var canResume = false;
+      if (checkpoint != null) {
+        final attempts = await TaskCheckpoint.noteResumeAttempt(
+          task.id,
+          Workspace.instance.scratchDir,
         );
-        await (db.update(db.schedulerTasks)
-              ..where((t) => t.id.equals(task.id)))
+        if (attempts <= TaskCheckpoint.maxResumes) {
+          canResume = true;
+        } else {
+          // Cap exhausted: drop the checkpoint so this and future recoveries
+          // take the normal path instead of cycling.
+          await TaskCheckpoint.delete(task.id, Workspace.instance.scratchDir);
+        }
+      }
+
+      if (canResume && checkpoint != null) {
+        // Auto-resume from checkpoint (+30s delay)
+        final resumeRunAt = nowMillis + 30000;
+        await (db.update(db.schedulerTasks)..where((t) => t.id.equals(task.id)))
             .write(
           SchedulerTasksCompanion(
             status: const Value('scheduled'),
-            nextRunAt: Value(nextRun),
+            nextRunAt: Value(resumeRunAt),
             updatedAt: Value(nowMillis),
           ),
         );
         await scheduleTask(task.id);
-      } else {
-        await (db.update(db.schedulerTasks)
-              ..where((t) => t.id.equals(task.id)))
+
+        await (db.update(db.schedulerTaskLogs)
+              ..where((l) =>
+                  l.schedulerTaskId.equals(task.id) &
+                  l.status.equals('running')))
             .write(
-          SchedulerTasksCompanion(
-            status: const Value('failed'),
+          SchedulerTaskLogsCompanion(
+            status: const Value('timeout'),
+            finishedAt: Value(nowMillis),
+            errorMessage: Value(
+              '$reasonDiagnostic Resuming from checkpoint (turn ${checkpoint.turn}).',
+            ),
+            updatedAt: Value(nowMillis),
+          ),
+        );
+      } else {
+        if (task.type == 'recurring' &&
+            task.repeatAfter != null &&
+            task.repeatAfter! > 0) {
+          final nextRun = calculateNextRunAt(
+            startsAt: task.startsAt,
+            repeatAfter: task.repeatAfter!,
+            nowMillis: nowMillis,
+          );
+          await (db.update(db.schedulerTasks)
+                ..where((t) => t.id.equals(task.id)))
+              .write(
+            SchedulerTasksCompanion(
+              status: const Value('scheduled'),
+              nextRunAt: Value(nextRun),
+              updatedAt: Value(nowMillis),
+            ),
+          );
+          await scheduleTask(task.id);
+        } else {
+          await (db.update(db.schedulerTasks)
+                ..where((t) => t.id.equals(task.id)))
+              .write(
+            SchedulerTasksCompanion(
+              status: const Value('failed'),
+              updatedAt: Value(nowMillis),
+            ),
+          );
+        }
+
+        await (db.update(db.schedulerTaskLogs)
+              ..where((l) =>
+                  l.schedulerTaskId.equals(task.id) &
+                  l.status.equals('running')))
+            .write(
+          SchedulerTaskLogsCompanion(
+            status: const Value('timeout'),
+            finishedAt: Value(nowMillis),
+            errorMessage: Value(reasonDiagnostic),
             updatedAt: Value(nowMillis),
           ),
         );
       }
-
-      await (db.update(db.schedulerTaskLogs)
-            ..where((l) =>
-                l.schedulerTaskId.equals(task.id) & l.status.equals('running')))
-          .write(
-        SchedulerTaskLogsCompanion(
-          status: const Value('timeout'),
-          finishedAt: Value(nowMillis),
-          errorMessage:
-              const Value('Task execution interrupted or killed by system.'),
-          updatedAt: Value(nowMillis),
-        ),
-      );
 
       // Notify on fresh kill if notifications are enabled for the task.
       // Stale boot recoveries beyond the freshKillWindow are recovered silently.
@@ -1166,10 +1325,13 @@ class TaskSchedulerService {
           (task.lastRunAt != null && task.lastRunAt! >= freshCutoff);
       if (task.notify && isFreshKill) {
         try {
+          final notifBody = (canResume && checkpoint != null)
+              ? 'Task interrupted. Resuming from checkpoint (turn ${checkpoint.turn})...'
+              : 'Task execution was killed or interrupted by the system.';
           await notificationService.showNotification(
             id: task.id,
             title: 'Task Interrupted: ${task.title}',
-            body: 'Task execution was killed or interrupted by the system.',
+            body: notifBody,
             isSuccess: false,
           );
         } catch (_) {}
@@ -1474,6 +1636,7 @@ class TaskSchedulerService {
             db: db,
             schedulerService: this,
             cancelToken: effectiveCancelToken,
+            enableBrowser: payload['enableBrowser'] == true,
             onEvent: (event) {
               // Heartbeat only: short step text, never prompts or outputs.
               String step;
@@ -1535,7 +1698,7 @@ class TaskSchedulerService {
       // Never overwrite a status someone else already moved to (e.g.
       // skipCurrentRun rescheduled the series while this run aborted).
       if (freshTask.status == 'running') {
-        await (db.update(db.schedulerTasks)..where((t) => t.id.equals(taskId))).write(
+        await (db.update(db.schedulerTasks)..where((t) => t.id.equals(taskId) & t.updatedAt.equals(nowMillis))).write(
           SchedulerTasksCompanion(
             status: const Value('cancelled'),
             nextRunAt: const Value(null),
@@ -1618,7 +1781,7 @@ class TaskSchedulerService {
           repeatAfter: freshTask.repeatAfter!,
           nowMillis: finishMillis,
         );
-        await (db.update(db.schedulerTasks)..where((t) => t.id.equals(taskId))).write(
+        await (db.update(db.schedulerTasks)..where((t) => t.id.equals(taskId) & t.updatedAt.equals(nowMillis))).write(
           SchedulerTasksCompanion(
             status: const Value('scheduled'),
             nextRunAt: Value(nextRun),
@@ -1628,7 +1791,7 @@ class TaskSchedulerService {
         );
         await scheduleTask(taskId);
       } else {
-        await (db.update(db.schedulerTasks)..where((t) => t.id.equals(taskId))).write(
+        await (db.update(db.schedulerTasks)..where((t) => t.id.equals(taskId) & t.updatedAt.equals(nowMillis))).write(
           SchedulerTasksCompanion(
             status: const Value('completed'),
             nextRunAt: const Value(null),
@@ -1655,7 +1818,7 @@ class TaskSchedulerService {
       if (freshTask.type == 'recurring' && freshTask.repeatAfter != null && freshTask.repeatAfter! > 0) {
         if (hasExceededRetries) {
           // Exceeded max consecutive retries; mark as failed until user intervenes
-          await (db.update(db.schedulerTasks)..where((t) => t.id.equals(taskId))).write(
+          await (db.update(db.schedulerTasks)..where((t) => t.id.equals(taskId) & t.updatedAt.equals(nowMillis))).write(
             SchedulerTasksCompanion(
               status: const Value('failed'),
               nextRunAt: const Value(null),
@@ -1670,7 +1833,7 @@ class TaskSchedulerService {
             repeatAfter: freshTask.repeatAfter!,
             nowMillis: finishMillis,
           );
-          await (db.update(db.schedulerTasks)..where((t) => t.id.equals(taskId))).write(
+          await (db.update(db.schedulerTasks)..where((t) => t.id.equals(taskId) & t.updatedAt.equals(nowMillis))).write(
             SchedulerTasksCompanion(
               status: const Value('scheduled'),
               nextRunAt: Value(nextRun),
@@ -1681,7 +1844,7 @@ class TaskSchedulerService {
           await scheduleTask(taskId);
         }
       } else {
-        await (db.update(db.schedulerTasks)..where((t) => t.id.equals(taskId))).write(
+        await (db.update(db.schedulerTasks)..where((t) => t.id.equals(taskId) & t.updatedAt.equals(nowMillis))).write(
           SchedulerTasksCompanion(
             status: const Value('failed'),
             nextRunAt: const Value(null),

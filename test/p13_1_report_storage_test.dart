@@ -611,6 +611,34 @@ void main() {
       expect(orphan2.existsSync(), isFalse);
     });
 
+    test('orphan sweep spares ephemeral runtime files', () async {
+      // Checkpoint, resume-counter, and tmp files are live runtime state,
+      // not abandoned output. Clearing one mid-run would silently downgrade
+      // the next recovery to a fresh start.
+      final cp = File(p.join(scratchDir.path, 'task-9-checkpoint.json'))
+        ..writeAsStringSync('{}');
+      final counter = File(p.join(scratchDir.path, 'task-9-resumecount'))
+        ..writeAsStringSync('1');
+      final tmp = File(p.join(scratchDir.path, 'task-9-checkpoint.json.tmp'))
+        ..writeAsStringSync('partial');
+      final realOrphan = File(p.join(scratchDir.path, 'abandoned.txt'))
+        ..writeAsStringSync('gone');
+
+      final orphans = await service.getOrphanedFiles(scratchDir);
+      final orphanPaths = orphans.map((f) => p.basename(f.path)).toSet();
+
+      expect(orphanPaths, contains('abandoned.txt'));
+      expect(orphanPaths, isNot(contains('task-9-checkpoint.json')));
+      expect(orphanPaths, isNot(contains('task-9-resumecount')));
+      expect(orphanPaths, isNot(contains('task-9-checkpoint.json.tmp')));
+
+      await service.sweepOrphanFiles(scratchDir);
+      expect(cp.existsSync(), isTrue);
+      expect(counter.existsSync(), isTrue);
+      expect(tmp.existsSync(), isTrue);
+      expect(realOrphan.existsSync(), isFalse);
+    });
+
     test('keep-newest-10 prunes linked files with their report', () async {
       final now = DateTime.now().millisecondsSinceEpoch;
       final taskId = await db.into(db.schedulerTasks).insert(
@@ -909,6 +937,7 @@ class MockRunner extends AgentRunner {
     AgentReasoningObserver? onReasoningDelta,
     void Function()? onReset,
     AgentRetryObserver? onRetry,
+    bool? enableBrowser,
   }) async {
     runs++;
     return onRun(runs);

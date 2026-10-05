@@ -82,6 +82,10 @@ Tool scheduleTaskTool({
           'type': 'string',
           'description': 'Provider override id for background runs. Defaults to the active provider. Optional on create and edit.',
         },
+        'enable_browser': {
+          'type': 'boolean',
+          'description': 'Allow the headless browser tool on background runs that genuinely need DOM interaction (default false: browser is excluded to avoid 100MB+ WebView allocation killing the run; webfetch/websearch cover reading). Optional on create and edit.',
+        },
         'status': {
           'type': 'string',
           'enum': ['paused', 'scheduled', 'cancelled'],
@@ -198,11 +202,18 @@ Tool scheduleTaskTool({
           final modelOverride = _parseStringArg(args['model'])?.trim() ?? '';
           final providerOverride =
               _parseStringArg(args['provider_id'] ?? args['providerId'])?.trim() ?? '';
-          final payloadJson = jsonEncode({
+          final browserOverride = _parseBoolArg(args['enable_browser']);
+          final payloadMap = <String, Object>{
             'prompt': prompt,
             if (modelOverride.isNotEmpty) 'model': modelOverride,
             if (providerOverride.isNotEmpty) 'providerId': providerOverride,
-          });
+          };
+          // Stored only when explicitly set; absent means headless default
+          // (browser excluded).
+          if (browserOverride != null) {
+            payloadMap['enableBrowser'] = browserOverride;
+          }
+          final payloadJson = jsonEncode(payloadMap);
 
           final taskId = await database.into(database.schedulerTasks).insert(
             SchedulerTasksCompanion.insert(
@@ -345,8 +356,12 @@ Tool scheduleTaskTool({
           final providerArg = (args.containsKey('provider_id') || args.containsKey('providerId'))
               ? (_parseStringArg(args['provider_id'] ?? args['providerId'])?.trim() ?? '')
               : null;
-          if (promptArg.isNotEmpty || modelArg != null || providerArg != null) {
-            Map<String, dynamic> payloadMap;
+          final browserArg =
+              args.containsKey('enable_browser') ? _parseBoolArg(args['enable_browser']) : null;
+          if (promptArg.isNotEmpty ||
+              modelArg != null ||
+              providerArg != null ||
+              browserArg != null) {            Map<String, dynamic> payloadMap;
             try {
               payloadMap = jsonDecode(existing.payloadJson) as Map<String, dynamic>;
             } catch (_) {
@@ -368,6 +383,9 @@ Tool scheduleTaskTool({
               } else {
                 payloadMap.remove('providerId');
               }
+            }
+            if (browserArg != null) {
+              payloadMap['enableBrowser'] = browserArg;
             }
             newPayloadJson = jsonEncode(payloadMap);
           }

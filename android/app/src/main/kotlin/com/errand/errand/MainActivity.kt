@@ -2,12 +2,15 @@ package com.errand.errand
 
 import android.Manifest
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.app.ActivityManager
 import android.app.ActivityOptions
+import android.app.ApplicationExitInfo
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.ClipData
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
@@ -184,6 +187,36 @@ class MainActivity : FlutterActivity() {
         // while "-1" would skew the same-task tap dedup.
         val query = if (taskId > 0) "?taskId=$taskId" else ""
         return "/manage_tasks_unread$query"
+    }
+
+    private fun tryOpenOemAutostartSettings(): Boolean {
+        val oemIntents = listOf(
+            // Xiaomi / MIUI / HyperOS
+            Intent().setComponent(ComponentName("com.miui.securitycenter", "com.miui.permcenter.autostart.AutoStartManagementActivity")),
+            // Huawei
+            Intent().setComponent(ComponentName("com.huawei.systemmanager", "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity")),
+            Intent().setComponent(ComponentName("com.huawei.systemmanager", "com.huawei.systemmanager.optimize.process.ProtectActivity")),
+            // Oppo / Realme (ColorOS)
+            Intent().setComponent(ComponentName("com.coloros.safecenter", "com.coloros.safecenter.permission.startup.StartupAppListActivity")),
+            Intent().setComponent(ComponentName("com.coloros.safecenter", "com.coloros.safecenter.startupapp.StartupAppListActivity")),
+            Intent().setComponent(ComponentName("com.oppo.safe", "com.oppo.safe.permission.startup.StartupAppListActivity")),
+            // Vivo
+            Intent().setComponent(ComponentName("com.iqoo.secure", "com.iqoo.secure.ui.phoneoptimize.AddWhiteListActivity")),
+            Intent().setComponent(ComponentName("com.vivo.permissionmanager", "com.vivo.permissionmanager.activity.BgStartUpManagerActivity")),
+            // Samsung
+            Intent().setComponent(ComponentName("com.samsung.android.lool", "com.samsung.android.sm.ui.battery.BatteryActivity"))
+        )
+
+        for (targetIntent in oemIntents) {
+            try {
+                targetIntent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                if (packageManager.resolveActivity(targetIntent, PackageManager.MATCH_DEFAULT_ONLY) != null) {
+                    startActivity(targetIntent)
+                    return true
+                }
+            } catch (_: Exception) {}
+        }
+        return false
     }
 
     override fun getInitialRoute(): String {
@@ -538,6 +571,52 @@ class MainActivity : FlutterActivity() {
                             "taskId=${pending?.get("taskId")}"
                     )
                     result.success(pending)
+                }
+                "getHistoricalExitReasons" -> {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        try {
+                            val maxNum = call.argument<Int>("maxNum") ?: 5
+                            val am = getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+                            val reasons = am?.getHistoricalProcessExitReasons(packageName, 0, maxNum) ?: emptyList()
+                            val list = reasons.map { info ->
+                                val reasonName = when (info.reason) {
+                                    ApplicationExitInfo.REASON_EXIT_SELF -> "EXIT_SELF"
+                                    ApplicationExitInfo.REASON_SIGNALED -> "SIGNALED"
+                                    ApplicationExitInfo.REASON_LOW_MEMORY -> "LOW_MEMORY"
+                                    ApplicationExitInfo.REASON_CRASH -> "CRASH"
+                                    ApplicationExitInfo.REASON_CRASH_NATIVE -> "CRASH_NATIVE"
+                                    ApplicationExitInfo.REASON_ANR -> "ANR"
+                                    ApplicationExitInfo.REASON_INITIALIZATION_FAILURE -> "INITIALIZATION_FAILURE"
+                                    ApplicationExitInfo.REASON_PERMISSION_CHANGE -> "PERMISSION_CHANGE"
+                                    ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE -> "EXCESSIVE_RESOURCE_USAGE"
+                                    ApplicationExitInfo.REASON_USER_REQUESTED -> "USER_REQUESTED"
+                                    ApplicationExitInfo.REASON_USER_STOPPED -> "USER_STOPPED"
+                                    ApplicationExitInfo.REASON_DEPENDENCY_DIED -> "DEPENDENCY_DIED"
+                                    ApplicationExitInfo.REASON_OTHER -> "OTHER"
+                                    14 -> "FREEZER"
+                                    else -> "UNKNOWN_${info.reason}"
+                                }
+                                mapOf(
+                                    "reason" to info.reason,
+                                    "reasonName" to reasonName,
+                                    "status" to info.status,
+                                    "timestamp" to info.timestamp,
+                                    "description" to (info.description ?: ""),
+                                    "importance" to info.importance
+                                )
+                            }
+                            result.success(list)
+                        } catch (e: Exception) {
+                            Log.e("MainActivity", "Failed to query historical exit reasons", e)
+                            result.success(emptyList<Map<String, Any>>())
+                        }
+                    } else {
+                        result.success(emptyList<Map<String, Any>>())
+                    }
+                }
+                "openOemBatterySettings" -> {
+                    val opened = tryOpenOemAutostartSettings()
+                    result.success(opened)
                 }
                 else -> result.notImplemented()
             }

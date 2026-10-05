@@ -19,6 +19,7 @@ import '../types/message.dart';
 import 'agent_loop.dart';
 import 'context_budget.dart';
 import 'system_prompt.dart';
+import 'task_checkpoint.dart';
 import 'tool_registry.dart';
 
 /// Single source of truth for executing an [AgentLoop].
@@ -164,12 +165,39 @@ class AgentRunner {
     AgentReasoningObserver? onReasoningDelta,
     void Function()? onReset,
     AgentRetryObserver? onRetry,
+    bool? enableBrowser,
   }) async {
     final scratch = scratchDirectory ?? Workspace.instance.scratchDir;
     final token = cancelToken ?? this.cancelToken;
     final baseUrl = effectiveBaseUrl ?? llm.config.baseUrl;
     final runStartMillis = DateTime.now().millisecondsSinceEpoch;
     final reportCollector = HeadlessReportCollector();
+    final bool effectiveEnableBrowser = enableBrowser ?? false;
+
+    // Check for a previous checkpoint to resume from after an unexpected process death / LMK.
+    final previousCheckpoint = await TaskCheckpoint.load(taskId, scratch);
+    var resumeCount = 0;
+    int initialTurn = 0;
+    List<Map<String, dynamic>>? initialLlmHistory;
+    var lastCheckpointMillis = 0;
+
+    if (previousCheckpoint != null) {
+      if (previousCheckpoint.resumeCount >= 2) {
+        // Exceeded maximum 2 resumes for this run to avoid infinite crash loops
+        await TaskCheckpoint.delete(taskId, scratch);
+      } else {
+        resumeCount = previousCheckpoint.resumeCount + 1;
+        initialTurn = previousCheckpoint.turn;
+        initialLlmHistory = previousCheckpoint.messages;
+        if (previousCheckpoint.collectedReportPath != null) {
+          reportCollector.reportPath = previousCheckpoint.collectedReportPath;
+        }
+        for (final f in previousCheckpoint.linkedFiles) {
+          reportCollector.linkedFiles.add(f);
+        }
+      }
+    }
+
     // Route headless turns through the streaming path even when nobody
     // observes deltas: it carries the longer timeout, stall watchdog, and
     // progress-based retries that the single-shot path lacks.
@@ -195,6 +223,7 @@ class AgentRunner {
       scratchDirectory: scratch,
       reportCollector: reportCollector,
       runStartedAtMillis: runStartMillis,
+      enableBrowser: effectiveEnableBrowser,
     );
 
     final activeBudget = budget ??
@@ -270,6 +299,7 @@ class AgentRunner {
         taskTitle: taskTitle,
         locationSummary: locationService?.lastKnown?.toCoarseSummary() ??
             LocationService.instance.lastKnown?.toCoarseSummary(),
+        enableBrowser: effectiveEnableBrowser,
       ),
       cancelToken: token,
       isCancelled: db != null
@@ -298,6 +328,29 @@ class AgentRunner {
       onReasoningDelta: onReasoningDelta,
       onReset: onReset,
       onRetry: onRetry,
+      initialMessages: initialLlmHistory,
+      initialTurn: initialTurn,
+      onCheckpoint: (nextTurn, currentMessages) async {
+        // Throttle: the payload is the full history so far, which grows
+        // every turn — writing it per turn is O(turns²) flash I/O on
+        // battery. First turn always persists (a kill before turn 3 would
+        // otherwise leave nothing to resume); afterwards at most every 30s.
+        // A kill between writes only replays a few turns (tools are
+        // expected idempotent-ish; see plan).
+        final now = DateTime.now().millisecondsSinceEpoch;
+        if (nextTurn != 1 && now - lastCheckpointMillis < 30000) return;
+        lastCheckpointMillis = now;
+        final cp = TaskCheckpoint(
+          taskId: taskId,
+          turn: nextTurn,
+          resumeCount: resumeCount,
+          updatedAt: now,
+          messages: currentMessages,
+          collectedReportPath: reportCollector.reportPath,
+          linkedFiles: List<String>.from(reportCollector.linkedFiles),
+        );
+        await cp.save(scratch);
+      },
     );
 
     final nowIso = DateTime.now().toIso8601String().replaceAll(':', '-');
@@ -317,6 +370,8 @@ class AgentRunner {
 
     try {
       final output = await loop.run(conversation);
+      // Clean up checkpoint on normal completion
+      await TaskCheckpoint.delete(taskId, scratch);
       String? reportPath;
       try {
         // Primary: the save_report tool saved a file during the turn.
@@ -344,6 +399,9 @@ class AgentRunner {
         linkedFiles: List<String>.unmodifiable(reportCollector.linkedFiles),
       );
     } catch (e) {
+      if (token?.isCancelled == true) {
+        await TaskCheckpoint.delete(taskId, scratch);
+      }
       return HeadlessRunResult(
         ok: false,
         output: '',

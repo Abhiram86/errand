@@ -116,10 +116,71 @@ class _HeartbeatRunner extends AgentRunner {
     AgentReasoningObserver? onReasoningDelta,
     void Function()? onReset,
     AgentRetryObserver? onRetry,
+    bool? enableBrowser,
   }) async {
     onEvent?.call(const AgentThinking(turn: 1));
     onEvent?.call(const AgentThinking(turn: 2));
     onEvent?.call(const AgentCompacting());
+    return const HeadlessRunResult(ok: true, output: 'done');
+  }
+}
+
+/// Stub runner that simulates a superseding transition landing mid-run
+/// (e.g. skipCurrentRun rescheduling the series while the zombie still
+/// executes): it hands ownership to a new epoch, then returns success.
+/// Pins ownership fencing — the zombie's outcome must match zero rows.
+class _SupersedingRunner extends AgentRunner {
+  final ErrandDatabase db;
+  final int taskId;
+  final int newNextRunAt;
+
+  _SupersedingRunner({
+    required this.db,
+    required this.taskId,
+    required this.newNextRunAt,
+  }) : super(
+          llm: LlmClient(
+            config: const LlmConfig(
+              baseUrl: 'https://example.invalid',
+              apiKey: 'test',
+              model: 'test',
+            ),
+          ),
+          workingDirectory: WorkingDirectory(Directory.systemTemp),
+          selectedModel: 'test',
+        );
+
+  @override
+  Future<HeadlessRunResult> runHeadless({
+    required int taskId,
+    required String prompt,
+    String? taskTitle,
+    Directory? scratchDirectory,
+    MemoryService? memoryService,
+    BrowserService? browserService,
+    LocationService? locationService,
+    ErrandDatabase? db,
+    TaskSchedulerService? schedulerService,
+    CancelToken? cancelToken,
+    AgentObserver? onEvent,
+    AgentTextObserver? onTextDelta,
+    AgentReasoningObserver? onReasoningDelta,
+    void Function()? onReset,
+    AgentRetryObserver? onRetry,
+    bool? enableBrowser,
+  }) async {
+    final row = await (this.db.select(this.db.schedulerTasks)
+          ..where((t) => t.id.equals(this.taskId)))
+        .getSingle();
+    await (this.db.update(this.db.schedulerTasks)
+          ..where((t) => t.id.equals(this.taskId)))
+        .write(
+      SchedulerTasksCompanion(
+        status: const Value('scheduled'),
+        nextRunAt: Value(newNextRunAt),
+        updatedAt: Value(row.updatedAt + 5000),
+      ),
+    );
     return const HeadlessRunResult(ok: true, output: 'done');
   }
 }
@@ -489,6 +550,43 @@ void main() {
       expect(row!.status, 'success');
       expect(row.lastHeartbeatAt, isNotNull);
       expect(row.currentStep, contains('compacting context'));
+    });
+
+    test('zombie finish cannot overwrite a superseding transition', () async {
+      // A skip landing mid-run bumps updatedAt (new epoch). The zombie's
+      // post-run writes are fenced on the claim epoch and must match zero
+      // rows: the new owner's scheduled slot survives.
+      final nowMillis = DateTime.now().millisecondsSinceEpoch;
+      final taskId = await serviceDb.into(serviceDb.schedulerTasks).insert(
+        SchedulerTasksCompanion.insert(
+          title: 'Fenced task',
+          type: 'one_off',
+          status: 'scheduled',
+          payloadJson: '{}',
+          startsAt: nowMillis + 60000,
+          timezone: 'UTC',
+          notify: const Value(false),
+          createdAt: nowMillis,
+          updatedAt: nowMillis,
+        ),
+      );
+      final newNextRunAt = nowMillis + 3600000;
+
+      await realService.executeTask(
+        taskId,
+        runner: _SupersedingRunner(
+          db: serviceDb,
+          taskId: taskId,
+          newNextRunAt: newNextRunAt,
+        ),
+        scratchDirectory: Directory.systemTemp,
+      );
+
+      final task = await (serviceDb.select(serviceDb.schedulerTasks)
+            ..where((t) => t.id.equals(taskId)))
+          .getSingle();
+      expect(task.status, equals('scheduled'));
+      expect(task.nextRunAt, equals(newNextRunAt));
     });
 
     test('concurrent rescheduleAllActiveTasks share a single run', () async {

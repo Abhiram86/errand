@@ -117,6 +117,7 @@ class ToolRegistry {
     Directory? scratchDirectory,
     HeadlessReportCollector? reportCollector,
     int? runStartedAtMillis,
+    bool enableBrowser = true,
   }) {
     final directory = workingDirectory ?? WorkingDirectory(currentDir);
     final scratch = scratchDirectory ?? Directory(p.join(currentDir.path, '.scratch'));
@@ -139,11 +140,12 @@ class ToolRegistry {
         memoryService: memoryService,
         isHeadless: true,
       ),
-      browserTool(
-        browserService: browserService,
-        supportsInput: supportsInput,
-        isHeadless: true,
-      ),
+      if (enableBrowser)
+        browserTool(
+          browserService: browserService,
+          supportsInput: supportsInput,
+          isHeadless: true,
+        ),
       scheduleTaskTool(
         db: db,
         schedulerService: schedulerService,

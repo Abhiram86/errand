@@ -12,6 +12,10 @@ typedef AgentObserver = void Function(AgentEvent event);
 typedef AgentTextObserver = void Function(String delta);
 typedef AgentReasoningObserver = void Function();
 typedef AgentRetryObserver = void Function(int attempt, String reason);
+typedef AgentCheckpointCallback = Future<void> Function(
+  int nextTurn,
+  List<Map<String, dynamic>> messages,
+);
 
 sealed class AgentEvent {
   const AgentEvent();
@@ -105,6 +109,9 @@ class AgentLoop {
   final void Function()? onReset;
   final AgentRetryObserver? onRetry;
   final void Function(String summary)? onCompacted;
+  final List<Map<String, dynamic>>? initialMessages;
+  final int initialTurn;
+  final AgentCheckpointCallback? onCheckpoint;
 
   AgentLoop({
     required this._llm,
@@ -125,6 +132,9 @@ class AgentLoop {
     this.onReset,
     this.onRetry,
     this.onCompacted,
+    this.initialMessages,
+    this.initialTurn = 0,
+    this.onCheckpoint,
   })  : budget = budget ??
             (modelContextSize != null
                 ? ContextBudget(contextSize: modelContextSize)
@@ -138,15 +148,20 @@ class AgentLoop {
   final Future<bool> Function()? isCancelled;
 
   Future<String> run(Conversation conversation) async {
-    // OPT-07: individual tool results are head-clamped at the boundary.
-    final history = clampToolResults(conversation.messages);
-    final systemPrompt =
-        conversation.localSystemPrompt ?? systemPromptBuilder?.call();
-    final messages = <Map<String, dynamic>>[
-      if (systemPrompt != null)
-        {'role': 'system', 'content': systemPrompt},
-      ..._toLlmHistory(history),
-    ];
+    final List<Map<String, dynamic>> messages;
+    if (initialMessages != null && initialMessages!.isNotEmpty) {
+      messages = List<Map<String, dynamic>>.from(initialMessages!);
+    } else {
+      // OPT-07: individual tool results are head-clamped at the boundary.
+      final history = clampToolResults(conversation.messages);
+      final systemPrompt =
+          conversation.localSystemPrompt ?? systemPromptBuilder?.call();
+      messages = <Map<String, dynamic>>[
+        if (systemPrompt != null)
+          {'role': 'system', 'content': systemPrompt},
+        ..._toLlmHistory(history),
+      ];
+    }
 
     // Check context budget immediately if incoming history exceeds threshold
     await _compactIfNeeded(messages);
@@ -154,7 +169,7 @@ class AgentLoop {
     ToolCall? lastFailedCall;
     var consecutiveSameErrorCount = 0;
 
-    for (var turn = 0; turn < maxTurnCount; turn++) {
+    for (var turn = initialTurn; turn < maxTurnCount; turn++) {
       if (cancelToken?.isCancelled ?? false) throw const LlmStoppedException();
       if (isCancelled != null && await isCancelled!()) {
         cancelToken?.cancel();
@@ -322,6 +337,10 @@ class AgentLoop {
       // Mid-chat/mid-step compaction: if tool results + model thinking crossed
       // the context budget, compact immediately before the next thinking/tool step.
       await _compactIfNeeded(messages);
+
+      if (onCheckpoint != null) {
+        await onCheckpoint!(turn + 1, List<Map<String, dynamic>>.from(messages));
+      }
     }
 
     return 'Reached $maxTurnCount tool-call turns without a final answer.';

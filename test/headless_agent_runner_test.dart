@@ -115,6 +115,7 @@ class _BlockingRunner extends AgentRunner {
     AgentReasoningObserver? onReasoningDelta,
     void Function()? onReset,
     AgentRetryObserver? onRetry,
+    bool? enableBrowser,
   }) async {
     started.complete();
     await proceed.future;

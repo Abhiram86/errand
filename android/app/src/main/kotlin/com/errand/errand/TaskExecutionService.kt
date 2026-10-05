@@ -1,6 +1,8 @@
 package com.errand.errand
 
 import android.Manifest
+import android.app.ActivityManager
+import android.app.ApplicationExitInfo
 import android.app.KeyguardManager
 import android.app.Notification
 import android.app.NotificationChannel
@@ -543,6 +545,48 @@ class TaskExecutionService : Service() {
                     val id = call.argument<Int>("id") ?: -1
                     val ok = if (id > 0) NotificationHelper.cancelNotification(applicationContext, id) else false
                     result.success(ok)
+                }
+                "getHistoricalExitReasons" -> {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        try {
+                            val maxNum = call.argument<Int>("maxNum") ?: 5
+                            val am = getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+                            val reasons = am?.getHistoricalProcessExitReasons(packageName, 0, maxNum) ?: emptyList()
+                            val list = reasons.map { info ->
+                                val reasonName = when (info.reason) {
+                                    ApplicationExitInfo.REASON_EXIT_SELF -> "EXIT_SELF"
+                                    ApplicationExitInfo.REASON_SIGNALED -> "SIGNALED"
+                                    ApplicationExitInfo.REASON_LOW_MEMORY -> "LOW_MEMORY"
+                                    ApplicationExitInfo.REASON_CRASH -> "CRASH"
+                                    ApplicationExitInfo.REASON_CRASH_NATIVE -> "CRASH_NATIVE"
+                                    ApplicationExitInfo.REASON_ANR -> "ANR"
+                                    ApplicationExitInfo.REASON_INITIALIZATION_FAILURE -> "INITIALIZATION_FAILURE"
+                                    ApplicationExitInfo.REASON_PERMISSION_CHANGE -> "PERMISSION_CHANGE"
+                                    ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE -> "EXCESSIVE_RESOURCE_USAGE"
+                                    ApplicationExitInfo.REASON_USER_REQUESTED -> "USER_REQUESTED"
+                                    ApplicationExitInfo.REASON_USER_STOPPED -> "USER_STOPPED"
+                                    ApplicationExitInfo.REASON_DEPENDENCY_DIED -> "DEPENDENCY_DIED"
+                                    ApplicationExitInfo.REASON_OTHER -> "OTHER"
+                                    14 -> "FREEZER"
+                                    else -> "UNKNOWN_${info.reason}"
+                                }
+                                mapOf(
+                                    "reason" to info.reason,
+                                    "reasonName" to reasonName,
+                                    "status" to info.status,
+                                    "timestamp" to info.timestamp,
+                                    "description" to (info.description ?: ""),
+                                    "importance" to info.importance
+                                )
+                            }
+                            result.success(list)
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to query historical exit reasons", e)
+                            result.success(emptyList<Map<String, Any>>())
+                        }
+                    } else {
+                        result.success(emptyList<Map<String, Any>>())
+                    }
                 }
                 else -> result.notImplemented()
             }

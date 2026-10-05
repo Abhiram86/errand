@@ -211,11 +211,19 @@ String headlessSystemPromptFor({
   String? locationSummary,
   DateTime? now,
   bool? isDebug,
+  bool enableBrowser = true,
 }) {
   final debug = isDebug ?? kDebugMode;
   final currentTime = now ?? DateTime.now();
   final dateSummary = _formatCurrentDate(currentTime);
-  var prompt = '$kHeadlessSystemPrompt\n'
+  var base = kHeadlessSystemPrompt;
+  if (!enableBrowser) {
+    base = base.replaceFirst(
+      RegExp(r'- browser:[\s\S]*?Always call browser with action:"close" when finished to cleanly release resources\.\n'),
+      '- webfetch & websearch: Use webfetch to read web pages and articles (converted cleanly to Markdown). Use websearch to look up information. Prefer these lightweight tools for all network queries.\n',
+    );
+  }
+  var prompt = '$base\n'
       'Active Execution Context:\n'
       '- Current Task ID: $taskId${taskTitle != null && taskTitle.trim().isNotEmpty ? ' ("$taskTitle")' : ''}\n'
       '- Current Date & Time: $dateSummary\n'
