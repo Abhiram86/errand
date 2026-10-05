@@ -339,6 +339,40 @@ void main() {
       expect(check.isSafe, isTrue);
     });
 
+    test('fork bombs block in multiline form too', () {
+      // The classic and recursive patterns required `;` separators and `.`
+      // without dotAll, so multiline definitions downgraded to confirm.
+      ShellSafetyCheck check;
+      check = ShellSafetyCheck.analyze('bomb() {\n bomb | bomb &\n}; bomb');
+      expect(check.isBlocked, isTrue);
+      check = ShellSafetyCheck.analyze(':()\n{\n:|:&\n}\n:');
+      expect(check.isBlocked, isTrue);
+      check = ShellSafetyCheck.analyze(':(){ :|:& };:');
+      expect(check.isBlocked, isTrue);
+    });
+
+    test('exec fd-redirects stay usable, exec payloads stay blocked', () {
+      ShellSafetyCheck check;
+      check = ShellSafetyCheck.analyze('exec 2>&1');
+      expect(check.isSafe, isTrue);
+      check = ShellSafetyCheck.analyze('exec');
+      expect(check.isSafe, isTrue);
+      check = ShellSafetyCheck.analyze('exec sh');
+      expect(check.isBlocked, isTrue);
+      check = ShellSafetyCheck.analyze('exec rm -rf /tmp/target');
+      expect(check.isBlocked, isTrue);
+      check = ShellSafetyCheck.analyze('echo hi; exec sh');
+      expect(check.isBlocked, isTrue);
+    });
+
+    test('command skips its own flags', () {
+      ShellSafetyCheck check;
+      check = ShellSafetyCheck.analyze('command -v ls');
+      expect(check.isSafe, isTrue);
+      check = ShellSafetyCheck.analyze('command rm -rf /tmp/target');
+      expect(check.needsConfirmation, isTrue);
+    });
+
     test('ifconfig dash-flag mutation confirms', () {
       // `ifconfig eth0 -promisc` looks like a display command to the positional
       // count (only one non-dash arg), but it enables promiscuous mode.
@@ -352,6 +386,9 @@ void main() {
       // Genuine display forms stay safe.
       check = ShellSafetyCheck.analyze('ifconfig -a');
       expect(check.isSafe, isTrue);
+      // Bare mutating keywords must not score safe either.
+      check = ShellSafetyCheck.analyze('ifconfig promisc');
+      expect(check.needsConfirmation, isTrue);
     });
 
     test('arithmetic expansion is not a command substitution', () {

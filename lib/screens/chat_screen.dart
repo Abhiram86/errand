@@ -417,15 +417,18 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     });
   }
 
-  /// One-time disclosure that in-app updating exists, shown before the app
+  /// One-time opt-in for in-app update prompts, shown before the app
   /// ever surfaces an update prompt.
   ///
-  /// F-Droid's Inclusion Policy §5 permits an in-app updater provided the
+  /// F-Droid's Inclusion Policy \u00a75 permits an in-app updater provided the
   /// download is an explicit opt-in act, and an F-Droid maintainer asks
   /// (fdroiddata#3113) that the user additionally be *informed* that in-app
   /// updating exists before it acts, defaulting to declining. This dialog is
-  /// that disclosure. It is informational only — declining here does not opt
-  /// out of future prompts, and it never triggers a download.
+  /// both: bullet points, no paragraphs, and two buttons. Approve keeps
+  /// prompts on; Deny (or dismissing) permanently opts out via
+  /// `neverAskAgain` \u2014 re-enable anytime from Settings, or check manually
+  /// with the sidebar's Check-for-updates icon. Nothing is ever downloaded
+  /// unless Update is tapped.
   ///
   /// Only shown once ever; the pref lives in the database alongside the rest of
   /// the update state so it survives reinstalls-without-data-clear.
@@ -434,8 +437,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     if (service.hasBeenInformed) return;
     // Never stack on top of the storage or release-notes dialogs.
     if (!mounted) return;
+    bool approved = false;
     try {
-      await showDialog<void>(
+      final choice = await showDialog<bool>(
         context: context,
         builder: (dialogCtx) => AlertDialog(
           backgroundColor: const Color(0xFF1E222B),
@@ -448,36 +452,66 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
               fontWeight: FontWeight.w600,
             ),
           ),
-          content: const Text(
-            'Errand can check GitHub for new releases. When one is found you '
-            'choose whether to install it.\n\n'
-            'Errand never downloads anything on its own, and it never sends '
-            'your conversations, keys or usage anywhere to do so.\n\n'
-            'If you install an update yourself, Errand will stop receiving '
-            'updates from your app store or F-Droid for that install. You can '
-            'always check manually from the sidebar.',
-            style: TextStyle(color: Color(0xFFC9D1D9), fontSize: 13.5),
+          content: const Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _UpdateDisclosurePoint(
+                text: 'Errand checks GitHub for new releases.',
+              ),
+              _UpdateDisclosurePoint(
+                text: 'Nothing is ever downloaded unless you tap Update.',
+              ),
+              _UpdateDisclosurePoint(
+                text:
+                    'No conversations, keys, or usage are ever sent anywhere for this.',
+              ),
+              _UpdateDisclosurePoint(
+                text:
+                    'Installing it yourself means leaving your app store or F-Droid updates for this install.',
+              ),
+              _UpdateDisclosurePoint(
+                text:
+                    'You can always check manually with the Check-for-updates icon in the sidebar.',
+              ),
+            ],
           ),
           actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogCtx).pop(),
+            OutlinedButton(
+              onPressed: () => Navigator.of(dialogCtx).pop(false),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: kMuted,
+                side: const BorderSide(color: kMuted),
+              ),
               child: const Text(
-                'Got it',
-                style: TextStyle(
-                  color: kMuted,
-                  fontWeight: FontWeight.w600,
-                ),
+                'Deny',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogCtx).pop(true),
+              child: const Text(
+                'Approve',
+                style: TextStyle(fontWeight: FontWeight.w600),
               ),
             ),
           ],
         ),
       );
+      // Dismissing (back button / tap-outside) counts as declining: the
+      // F-Droid guidance defaults to opt-out, and approval must be explicit.
+      approved = choice ?? false;
     } catch (_) {
       // A dialog during teardown is not worth surfacing to the user.
+      return;
     }
     // Marked after the dialog, not before: if teardown wins the race and the
     // dialog never displays, the user was never actually informed.
-    if (mounted) await service.markInformed();
+    if (!mounted) return;
+    await service.markInformed();
+    if (!approved) {
+      await service.setNeverAskAgain(true);
+    }
   }
 
   Future<void> _checkReleaseNotes({bool force = false}) async {
@@ -1879,9 +1913,16 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   Future<void> _send() async {
     final text = _controller.text.trim();
-    if (text.isEmpty || _busy) return;
-    await _ensureSettingsReady();
-    if (!mounted || _busy) return;
+    if (text.isEmpty || _busy || _turnInFlight) return;
+    // Synchronous busy-latch before the first await below: two rapid taps
+    // must not both sail through the guard and append duplicate bubbles.
+    // `_runAgentTurn` owns the turn itself; this only covers send's own
+    // pre-turn awaits (settings, speech stop, edit truncate). Plain field
+    // write (no setState): the message append rebuilds right after.
+    _busy = true;
+    try {
+      await _ensureSettingsReady();
+      if (!mounted) return;
     _controller.clear();
 
     // A live dictation session would keep writing its next partials into
@@ -1941,25 +1982,37 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       }
     });
     await _runAgentTurn();
+    } finally {
+      // The turn clears `_busy` itself on completion; this covers the early
+      // exits above. Re-setting an already-false flag is harmless.
+      _busy = false;
+    }
   }
 
   /// Regenerate: drops everything after [userMessageId] (same truncation
   /// semantics as edit-resend) and re-runs the loop for that turn.
   Future<void> _regenerate(String userMessageId) async {
-    if (_busy) return;
-    await _ensureSettingsReady();
-    if (!mounted || _busy) return;
-    // A pending edit (banner + loaded composer text) is superseded by an
-    // explicit regenerate — drop it instead of leaving stale state around.
-    if (_editingMessageId != null) _cancelEditing();
-    final index = _messages.indexWhere((m) => m.id == userMessageId);
-    if (index == -1) return;
+    if (_busy || _turnInFlight) return;
+    // Same synchronous latch as `_send`: the truncate below awaits, and a
+    // second tap must not enter a parallel truncate+turn.
+    _busy = true;
+    try {
+      await _ensureSettingsReady();
+      if (!mounted) return;
+      // A pending edit (banner + loaded composer text) is superseded by an
+      // explicit regenerate — drop it instead of leaving stale state around.
+      if (_editingMessageId != null) _cancelEditing();
+      final index = _messages.indexWhere((m) => m.id == userMessageId);
+      if (index == -1) return;
 
-    // Nothing after it (e.g. the previous turn failed) → nothing to drop.
-    if (index + 1 < _messages.length) {
-      await _truncateFrom(_messages[index + 1].id);
+      // Nothing after it (e.g. the previous turn failed) → nothing to drop.
+      if (index + 1 < _messages.length) {
+        await _truncateFrom(_messages[index + 1].id);
+      }
+      await _runAgentTurn();
+    } finally {
+      _busy = false;
     }
-    await _runAgentTurn();
   }
 
 
@@ -2055,7 +2108,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   /// bubble and runs the agent loop over the current history.
   Future<void> _runAgentTurn() async {
     // Synchronous latch: see [_turnInFlight]. Must precede every await below.
-    if (_turnInFlight || _busy) return;
+    // Only the in-flight flag gates here — `_busy` is set synchronously by
+    // `_send`/`_regenerate` before their first await, so testing it here
+    // would make every normal send bail out immediately.
+    if (_turnInFlight) return;
     _turnInFlight = true;
     final settings = AppSettingsService.instance;
     final provider = settings.activeProvider;
@@ -3157,6 +3213,38 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// One bullet row in the update opt-in dialog: dot + text, no paragraphs.
+class _UpdateDisclosurePoint extends StatelessWidget {
+  final String text;
+
+  const _UpdateDisclosurePoint({required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            '•  ',
+            style: TextStyle(color: Color(0xFFC9D1D9), fontSize: 13.5),
+          ),
+          Expanded(
+            child: Text(
+              text,
+              style: const TextStyle(
+                color: Color(0xFFC9D1D9),
+                fontSize: 13.5,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

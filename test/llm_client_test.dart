@@ -254,6 +254,56 @@ void main() {
     });
   });
 
+  test('first retry waits one backoff unit, not zero', () {
+    // The old ternary compared the shifted value against 30, so attempt 1
+    // multiplied the base by 0 and redialed a struggling endpoint instantly.
+    // No Retry-After header here, so the default 800ms-unit path applies.
+    fakeAsync((async) {
+      var attempts = 0;
+      final client = LlmClient(
+        config: const LlmConfig(
+          baseUrl: 'https://example.test/v1/',
+          apiKey: 'test-key',
+          model: 'test-model',
+        ),
+        client: _StreamingClient((request) async {
+          attempts++;
+          return http.StreamedResponse(
+            Stream.value(utf8.encode('Too many requests')),
+            429,
+          );
+        }),
+      );
+
+      unawaited(
+        client
+            .chatStream(
+              messages: const [
+                {'role': 'user', 'content': 'Hi'},
+              ],
+              onTextDelta: (_) {},
+            )
+            .then<void>((_) {}, onError: (Object _) {}),
+      );
+      async.flushMicrotasks();
+      async.elapse(const Duration(milliseconds: 10));
+      async.flushMicrotasks();
+      expect(attempts, 1);
+
+      // 799ms: the 800ms first backoff has not fired.
+      async.elapse(const Duration(milliseconds: 789));
+      async.flushMicrotasks();
+      expect(attempts, 1, reason: 'first retry must wait the 800ms base unit');
+
+      // Past it: the retry goes out (further attempts keep doubling).
+      async.elapse(const Duration(milliseconds: 5));
+      async.flushMicrotasks();
+      expect(attempts, greaterThanOrEqualTo(2));
+      client.close();
+      async.flushTimers();
+    });
+  });
+
   test('chatStream retries on 429 and succeeds on subsequent attempt', () async {
     var attempts = 0;
     final successChunks = [
@@ -1201,8 +1251,7 @@ void main() {
     expect(deltas, equals(['Final answer']));
   });
 
-  test('stream stalls surface at the custom inactivity timeout without redial', () async {
-    // Behavioral: a stream that emits one chunk then hangs must raise at
+  test('stream stalls surface at the custom inactivity timeout without redial', () async {    // Behavioral: a stream that emits one chunk then hangs must raise at
     // ~streamInactivityTimeout (not the 30s default, not instantly), and with
     // maxAttempts 1 it must not redial. Uses short real-time durations:
     // Stream.timeout does not advance under fakeAsync, so a fake clock can

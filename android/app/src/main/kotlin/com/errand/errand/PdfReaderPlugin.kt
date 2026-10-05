@@ -95,7 +95,14 @@ class PdfReaderPlugin(private val context: Context) : MethodChannel.MethodCallHa
                 executor.execute {
                     try {
                         ensureInitialized()
-                        val file = File(path)
+                        // Same containment as open_file/installApk (R2-C1):
+                        // the path is LLM-influenced and must not become an
+                        // arbitrary read + exfiltration primitive.
+                        val file = context.resolveContainedFile(path)
+                        if (file == null) {
+                            replyError(result, "PATH_NOT_ALLOWED", "Path is outside the allowed storage roots: $path")
+                            return@execute
+                        }
                         if (!file.exists()) {
                             replyError(result, "FILE_NOT_FOUND", "File does not exist: $path")
                             return@execute

@@ -239,10 +239,13 @@ final class ErrandDatabase extends _$ErrandDatabase {
           ) =>
             Object.hash(
               tool.name,
-              tool.args.length,
+              // Full args content, not just length: same id + same arg count
+              // with different values (e.g. a regenerated path) must not
+              // compare equal, or the row keeps stale arguments.
+              jsonEncode(tool.args),
               result,
               reasoning,
-              reasoningDetails.length,
+              jsonEncode(reasoningDetails),
             ),
           ErrorMessage(:final error) => Object.hashAll([error]),
           CompactedNoticeMessage(
@@ -518,6 +521,9 @@ final class ErrandDatabase extends _$ErrandDatabase {
 
   /// Deletes a conversation together with its messages and attachments.
   Future<void> deleteConversation(String id) async {
+    // Drop fingerprints with the rows: a resurrected/reused id must never
+    // inherit skips, and the cache must not grow per deleted conversation.
+    _invalidateFingerprints(id);
     await transaction(() async {
       await (delete(
         conversationMessages,

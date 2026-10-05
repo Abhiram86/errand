@@ -347,26 +347,32 @@ class ShellSafetyCheck {
       return true;
     }
 
-    // eval/source/exec/. can hide arbitrary commands when invoked in command position.
+    // eval/source/. in command position can hide arbitrary commands when invoked.
+    // `exec` is deliberately NOT in this set: `exec 2>&1` and bare `exec`
+    // are benign, and the per-segment `exec` branch below scores the rest
+    // (anything but fd-dups still blocks).
     if (RegExp(
-      r'(?:^|[;&|\n])\s*(?:eval|source|exec|\.)(?:\s+|$)',
+      r'(?:^|[;&|\n])\s*(?:eval|source|\.)(?:\s+|$)',
       caseSensitive: false,
     ).hasMatch(cmd)) {
       return true;
     }
 
-    // Classic fork bombs :(){ :|:& };:
+    // Classic fork bombs :(){ :|:& };: — the trailing `;` is optional
+    // (multiline definitions often omit it), so both forms must block.
     if (RegExp(
-      r':\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:',
+      r':\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;?\s*:',
       caseSensitive: false,
     ).hasMatch(cmd)) {
       return true;
     }
 
     // Recursive function self-piping fork patterns: bomb() { bomb | bomb & }; bomb
+    // dotAll: the definition frequently spans lines, and `.` must see them.
     final recursiveFunctionFork = RegExp(
       r'([a-zA-Z_0-9]+)\s*\(\s*\)\s*\{\s*.*\b\1\s*\|\s*\1\b.*\}',
       caseSensitive: false,
+      dotAll: true,
     );
     if (recursiveFunctionFork.hasMatch(cmd)) {
       return true;
@@ -789,9 +795,26 @@ class ShellSafetyCheck {
       }
     }
 
-    // command rm ...
+    // command rm ... (flags skipped: `command -v ls` is the standard POSIX
+    // lookup idiom, not a command named "-v").
     if (executable == 'command' && words.length > 1) {
-      return _analyzeCommand(words.sublist(1).join(' '), scratchPath: scratchPath, workingDirectory: workingDirectory);
+      var idx = 1;
+      while (idx < words.length &&
+          words[idx].startsWith('-') &&
+          words[idx] != '-') {
+        if (words[idx] == '--') {
+          idx++;
+          break;
+        }
+        idx++;
+      }
+      if (idx < words.length) {
+        return _analyzeCommand(words.sublist(idx).join(' '), scratchPath: scratchPath, workingDirectory: workingDirectory);
+      }
+      return const ShellSafetyCheck(
+        ShellSafetyLevel.safe,
+        'command with flags only',
+      );
     }
 
     // xargs can turn a harmless-looking command into bulk deletion.
@@ -903,13 +926,38 @@ class ShellSafetyCheck {
       );
     }
 
-    // eval/exec/source/. in any reachable command position (e.g. after
+    // eval/source/. in any reachable command position (e.g. after
     // do/then via keyword recursion) hide arbitrary commands — block outright.
-    if (const {'eval', 'exec', 'source', '.'}.contains(command)) {
+    // `exec` is handled just below (fd-redirect forms are benign).
+    if (const {'eval', 'source', '.'}.contains(command)) {
       return ShellSafetyCheck(
         ShellSafetyLevel.blocked,
         '$command is not allowed',
         command,
+      );
+    }
+
+    // `exec` with only file-descriptor redirections (`exec 2>&1`) merely
+    // repoints fds for the rest of the session — no new command runs. Bare
+    // `exec` is a no-op. Anything else (`exec sh`, `exec > /file`) keeps the
+    // hard block: replacing the shell or redirecting all later output is
+    // never implicitly safe.
+    if (command == 'exec') {
+      final rest = args;
+      final onlyFdDups = rest.isEmpty ||
+          rest.every((a) =>
+              RegExp(r'^(\d+)?>&\d*$').hasMatch(a) ||
+              RegExp(r'^(\d+)?>/dev/null$').hasMatch(a));
+      if (onlyFdDups) {
+        return const ShellSafetyCheck(
+          ShellSafetyLevel.safe,
+          'exec with file-descriptor redirection only',
+        );
+      }
+      return const ShellSafetyCheck(
+        ShellSafetyLevel.blocked,
+        'exec is not allowed',
+        'exec',
       );
     }
 
@@ -1515,6 +1563,14 @@ class ShellSafetyCheck {
                         '-hw',
                         '-ether',
                         '-netmask',
+                      }.contains(a)) ||
+                  // Bare mutating keywords with no interface (`ifconfig
+                  // promisc`) are almost certainly a no-op in real ifconfig,
+                  // but they read as mutations and must not score safe.
+                  args.any((a) => const {
+                        'promisc',
+                        'allmulti',
+                        'multicast',
                       }.contains(a))));
       if (reconfigures) {
         return ShellSafetyCheck(

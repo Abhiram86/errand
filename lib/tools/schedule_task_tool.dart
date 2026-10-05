@@ -168,6 +168,14 @@ Tool scheduleTaskTool({
           int startsAtMillis;
           final delaySeconds = _parseIntArg(args['delay_seconds']);
           final startsAtRaw = args['starts_at'];
+          if (delaySeconds != null && !_isDelaySecondsSane(delaySeconds)) {
+            return ToolCallResult.failure(
+              call.id,
+              'Invalid "delay_seconds": $delaySeconds. Must be a positive '
+              'value no greater than $_maxDelaySeconds s (1 year); '
+              'negative values are rejected, not ignored.',
+            );
+          }
 
           if (delaySeconds != null && delaySeconds > 0) {
             startsAtMillis = nowMillis + (delaySeconds * 1000);
@@ -311,6 +319,13 @@ Tool scheduleTaskTool({
           int newStartsAt = existing.startsAt;
           final editDelaySeconds = _parseIntArg(args['delay_seconds']);
           bool timingChanged = false;
+          if (editDelaySeconds != null && !_isDelaySecondsSane(editDelaySeconds)) {
+            return ToolCallResult.failure(
+              call.id,
+              'Invalid "delay_seconds": $editDelaySeconds. Must be a positive '
+              'value no greater than $_maxDelaySeconds s (1 year).',
+            );
+          }
           if (editDelaySeconds != null && editDelaySeconds > 0) {
             newStartsAt = nowMillis + (editDelaySeconds * 1000);
             timingChanged = true;
@@ -668,6 +683,13 @@ int? _parseId(dynamic raw) {
 const int _maxRepeatAfterMs = 366 * 24 * 60 * 60 * 1000; // 1 year
 
 bool _isRepeatAfterSane(int ms) => ms > 0 && ms <= _maxRepeatAfterMs;
+
+/// Upper bound on `delay_seconds`, mirroring the interval cap: an unbounded
+/// `nowMillis + delaySeconds * 1000` wraps int64 to a negative epoch and the
+/// task fires ~1s later instead of erroring.
+const int _maxDelaySeconds = _maxRepeatAfterMs ~/ 1000;
+
+bool _isDelaySecondsSane(int s) => s > 0 && s <= _maxDelaySeconds;
 
 /// Lenient int coercion for LLM arguments (accepts doubles and numeric strings).
 int? _parseIntArg(dynamic raw) {

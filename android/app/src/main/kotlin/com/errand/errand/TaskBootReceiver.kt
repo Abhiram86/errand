@@ -31,7 +31,12 @@ class TaskBootReceiver : BroadcastReceiver() {
             val pendingResult = goAsync()
             Thread({
                 try {
-                    val result = TaskAlarmRestorer.restoreOnce(context.applicationContext)
+                    val missedReason = when (action) {
+                        Intent.ACTION_MY_PACKAGE_REPLACED -> "app was updating"
+                        AlarmManager.ACTION_SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED -> "alarms were unavailable"
+                        else -> "device was rebooting"
+                    }
+                    val result = TaskAlarmRestorer.restoreOnce(context.applicationContext, missedReason)
                     if (result == null) return@Thread
                     if (result.retryable) {
                         TaskAlarmRestorer.scheduleRetry(context.applicationContext, action)

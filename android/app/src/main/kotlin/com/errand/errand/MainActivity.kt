@@ -107,37 +107,6 @@ class MainActivity : FlutterActivity() {
      *
      * @return the canonical File, or null when the path escapes every allowed root.
      */
-    private fun resolveContainedFile(rawPath: String): File? {
-        val candidate = try {
-            File(rawPath).canonicalFile
-        } catch (_: Exception) {
-            return null
-        }
-        val roots = mutableListOf<File>()
-        // Shared user storage: the user-facing workspace, Documents, Downloads, etc.
-        @Suppress("DEPRECATION")
-        Environment.getExternalStorageDirectory()?.let { roots.add(it) }
-        // App-private dirs. Required for the OTA installer, which hands over a file
-        // downloaded into the app's own cache directory. The external variants are
-        // nullable on newer SDKs; a null there is simply skipped, since guessing a
-        // substitute would widen the allowed set.
-        roots.add(filesDir)
-        roots.add(cacheDir)
-        externalCacheDir?.let { roots.add(it) }
-        getExternalFilesDir(null)?.let { roots.add(it) }
-        for (root in roots) {
-            val canonicalRoot = try {
-                root.canonicalFile
-            } catch (_: Exception) {
-                continue
-            }
-            // Compare path segments, not string prefixes: "/data/data/com.app-evil"
-            // must not pass a check against "/data/data/com.app".
-            if (candidate.path == canonicalRoot.path) return candidate
-            if (candidate.path.startsWith(canonicalRoot.path + File.separator)) return candidate
-        }
-        return null
-    }
 
     /** Streams [file] through SHA-256, or null if it cannot be read. */
     private fun sha256Of(file: File): String? = try {
@@ -459,6 +428,20 @@ class MainActivity : FlutterActivity() {
                     }
                     result.success(true)
                 }
+                // R2-H6: JobScheduler fallback for when exact alarms are
+                // unavailable. Mirrors scheduleAlarm; returns true only when
+                // the job was accepted.
+                "scheduleJob" -> {
+                    val taskId = call.argument<Int>("taskId") ?: -1
+                    val trigger = call.argument<Number>("triggerAtMillis")?.toLong() ?: 0L
+                    val title = call.argument<String>("title") ?: "Scheduled Task"
+                    if (taskId > 0 && trigger > 0) {
+                        val ok = TaskAlarmManager.scheduleJobFallback(this, taskId, trigger, title)
+                        result.success(ok)
+                    } else {
+                        result.success(false)
+                    }
+                }
                 "canScheduleExactAlarms" -> {
                     result.success(TaskAlarmManager.canScheduleExactAlarms(this))
                 }
@@ -665,7 +648,29 @@ class MainActivity : FlutterActivity() {
                                     "txt" -> "text/plain"
                                     "json" -> "application/json"
                                     "html" -> "text/html"
-                                    else -> "*/*"
+                                    else -> null
+                                }
+
+                                // MIME allowlist (R2-C1 step 3): the `type`
+                                // argument above is caller-supplied, so the
+                                // final type is validated, not just the
+                                // extension-derived one. Unknown or executable
+                                // types fail closed instead of launching a
+                                // generic handler via "*/*".
+                                val typeAllowed = resolvedType != null &&
+                                    (resolvedType.startsWith("audio/") ||
+                                        resolvedType.startsWith("video/") ||
+                                        resolvedType.startsWith("image/") ||
+                                        resolvedType.startsWith("text/") ||
+                                        resolvedType == "application/pdf" ||
+                                        resolvedType == "application/json")
+                                if (!typeAllowed) {
+                                    result.error(
+                                        "UNSUPPORTED_TYPE",
+                                        "No viewer mapping for .$extension; refusing generic handler",
+                                        null,
+                                    )
+                                    return@setMethodCallHandler
                                 }
 
                                 Intent(Intent.ACTION_VIEW).apply {
@@ -860,11 +865,17 @@ class MainActivity : FlutterActivity() {
                             )
                             val pi = PendingIntent.getActivity(
                                 ctx,
-                                0,
+                                launchRequestCodes.incrementAndGet(),
                                 intent,
                                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
                             )
-                            pi.send(ctx, 0, null, null, null, null, options.toBundle())
+                            try {
+                                pi.send(ctx, 0, null, null, null, null, options.toBundle())
+                            } finally {
+                                // Same release as the launch path: each call
+                                // otherwise leaks a system-side PendingIntent.
+                                pi.cancel()
+                            }
                         } else {
                             ctx.startActivity(intent)
                         }

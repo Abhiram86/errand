@@ -66,6 +66,18 @@ class TaskAlarmReceiver : BroadcastReceiver() {
         }
 
         Log.d(TAG, "Alarm triggered for task $taskId ($taskTitle)")
-        TaskExecutionService.startForTask(context, taskId, taskTitle)
+        // Exact alarms start the service directly. An inexact alarm firing
+        // here cannot legally start an FGS on Android 12+ (R2-H6) — on that
+        // failure, hand to JobScheduler: the running job's temporary
+        // allowlist makes the same start legal from TaskExecutionJobService.
+        if (!TaskExecutionService.startForTask(context, taskId, taskTitle)) {
+            Log.w(TAG, "Direct start failed for task $taskId; routing to job fallback")
+            TaskAlarmManager.scheduleJobFallback(
+                context,
+                taskId,
+                System.currentTimeMillis(),
+                taskTitle
+            )
+        }
     }
 }

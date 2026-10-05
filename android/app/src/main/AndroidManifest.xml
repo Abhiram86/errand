@@ -1,12 +1,20 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Storage: the agent workspace lives in shared Documents/Errand and tasks
+         read/write user files across shared storage, which scoped storage alone
+         cannot cover without a full Storage Access Framework migration. Kept
+         deliberately; F-Droid justification lives in the metadata (R2-S2). -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"/>
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
-    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
-        tools:ignore="QueryAllPackagesPermission"/>
+    <!-- QUERY_ALL_PACKAGES removed (R2-S2): app discovery uses ACTION_MAIN /
+         CATEGORY_LAUNCHER, which is covered by the <queries> entry below, and
+         explicit-package intents resolve without it. DEVICE CHECK NEEDED: verify
+         open_app disambiguation ("choose app if prompted") still lists handlers
+         for generic VIEW/SEND intents; if the handler list comes back empty,
+         this needs revisiting per intent class instead of a blanket restore. -->
     <!-- Foreground service while an agent turn runs: keeps the process out
          of the cached state (and its socket-killing freezer) when an intent
          tool sends Errand to the background. -->
@@ -102,18 +110,30 @@
 
         <receiver
             android:name=".TaskBootReceiver"
-            android:exported="true"
-            android:directBootAware="true">
+            android:exported="true">
+            <!-- No directBootAware: the restore reads a credential-encrypted
+                 WAL database that is unreadable before unlock, and a read-only
+                 open cannot recover a hot journal either. BOOT_COMPLETED fires
+                 after unlock, which is when restoration can actually succeed.
+                 QUICKBOOT_POWERON removed as redundant with BOOT_COMPLETED. -->
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED"/>
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>
-                <action android:name="android.intent.action.QUICKBOOT_POWERON"/>
                 <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED"/>
             </intent-filter>
         </receiver>
 
         <service
             android:name=".TaskAlarmRescheduleJobService"
+            android:permission="android.permission.BIND_JOB_SERVICE"
+            android:exported="true"/>
+
+        <!-- R2-H6 fallback: runs a task when exact alarms are unavailable.
+             The running job holds the temporary allowlist that makes the
+             foreground-service start legal where a receiver-direct start
+             would throw. -->
+        <service
+            android:name=".TaskExecutionJobService"
             android:permission="android.permission.BIND_JOB_SERVICE"
             android:exported="true"/>
 

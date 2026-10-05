@@ -763,6 +763,30 @@ class TaskSchedulerService {
     // Schedule for at least 1s into the future
     final triggerAt = targetTime > nowMillis ? targetTime : nowMillis + 1000;
 
+    // R2-H6 + R2-M3: consult exact-alarm permission before scheduling. When
+    // denied, register with JobScheduler instead of an inexact alarm — an
+    // inexact alarm firing into the receiver cannot legally start the
+    // foreground service on Android 12+, so the task would silently never
+    // run. The job path is inexact timing by design; the banner listens to
+    // [inexactFallbackActive]. Pre-S devices always permit exact alarms.
+    try {
+      if (!await canScheduleExactAlarms()) {
+        final jobOk = await _channel.invokeMethod<bool>('scheduleJob', {
+          'taskId': taskId,
+          'triggerAtMillis': triggerAt,
+          'title': task.title,
+        });
+        if (jobOk == true) {
+          unawaited(_setInexactFallback(true));
+          return;
+        }
+        // JobScheduler refused (rare): fall through to the alarm path, whose
+        // receiver routes to a job at fire time if the direct start fails.
+      }
+    } catch (_) {
+      // Permission check or job scheduling threw: fall through to alarms.
+    }
+
     try {
       final scheduled = await _channel.invokeMethod<bool>('scheduleAlarm', {
         'taskId': taskId,

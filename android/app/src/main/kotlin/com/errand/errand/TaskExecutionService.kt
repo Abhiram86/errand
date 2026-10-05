@@ -61,22 +61,24 @@ class TaskExecutionService : Service() {
         const val ACTION_EXECUTE_TASK = "com.errand.ACTION_EXECUTE_TASK"
         const val ACTION_RESCHEDULE_ALL = "com.errand.ACTION_RESCHEDULE_ALL"
 
-        fun startForTask(context: Context, taskId: Int, taskTitle: String) {
+        fun startForTask(context: Context, taskId: Int, taskTitle: String): Boolean {
             val intent = Intent(context, TaskExecutionService::class.java).apply {
                 action = ACTION_EXECUTE_TASK
                 putExtra(TaskAlarmManager.EXTRA_TASK_ID, taskId)
                 putExtra(TaskAlarmManager.EXTRA_TASK_TITLE, taskTitle)
             }
-            try {
+            return try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     context.startForegroundService(intent)
                 } else {
                     context.startService(intent)
                 }
+                true
             } catch (e: Exception) {
-                // Android 12+ background-start restriction (or dead process):
-                // nothing further we can do here; the alarm is logged below.
+                // Android 12+ background-start restriction (or dead process).
+                // The caller routes to the JobScheduler fallback (R2-H6).
                 Log.e(TAG, "Failed to start TaskExecutionService for task $taskId", e)
+                false
             }
         }
 
@@ -510,6 +512,20 @@ class TaskExecutionService : Service() {
                     }
                     result.success(true)
                 }
+                // R2-H6: JobScheduler fallback for when exact alarms are
+                // unavailable. Mirrors scheduleAlarm; returns true only when
+                // the job was accepted.
+                "scheduleJob" -> {
+                    val id = call.argument<Int>("taskId") ?: -1
+                    val trigger = call.argument<Number>("triggerAtMillis")?.toLong() ?: 0L
+                    val title = call.argument<String>("title") ?: ""
+                    if (id > 0 && trigger > 0) {
+                        val scheduled = TaskAlarmManager.scheduleJobFallback(applicationContext, id, trigger, title)
+                        result.success(scheduled)
+                    } else {
+                        result.success(false)
+                    }
+                }
                 "canScheduleExactAlarms" -> {
                     result.success(TaskAlarmManager.canScheduleExactAlarms(applicationContext))
                 }
@@ -816,7 +832,16 @@ class TaskExecutionService : Service() {
                         key,
                         ArrayList(value.filterIsInstance<Number>().map { it.toInt() })
                     )
+                } else {
+                    throw IllegalArgumentException(
+                        "Unsupported list extra '$key': only string or integer lists are supported"
+                    )
                 }
+            }
+            else -> {
+                throw IllegalArgumentException(
+                    "Unsupported extra '$key' value type: ${value.javaClass.name}"
+                )
             }
         }
     }

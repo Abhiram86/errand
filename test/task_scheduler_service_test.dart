@@ -302,6 +302,50 @@ void main() {
       await serviceDb.close();
     });
 
+    test('scheduleTask routes to scheduleJob when exact alarms are denied', () async {
+      // R2-H6: without exact-alarm permission an inexact alarm can never
+      // legally start the service, so the task must go through JobScheduler.
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+        const MethodChannel('task_scheduler'),
+        (call) async {
+          channelCalls.add(call);
+          if (call.method == 'canScheduleExactAlarms') return false;
+          if (call.method == 'scheduleJob') return true;
+          if (call.method == 'scheduleAlarm') return true;
+          return null;
+        },
+      );
+      final nowMillis = DateTime.now().millisecondsSinceEpoch;
+      final taskId = await serviceDb.into(serviceDb.schedulerTasks).insert(
+        SchedulerTasksCompanion.insert(
+          title: 'Job-routed task',
+          type: 'one_off',
+          status: 'scheduled',
+          payloadJson: '{}',
+          startsAt: nowMillis + 60000,
+          timezone: 'UTC',
+          notify: const Value(false),
+          createdAt: nowMillis,
+          updatedAt: nowMillis,
+        ),
+      );
+
+      await realService.scheduleTask(taskId);
+
+      expect(
+        channelCalls.any((c) => c.method == 'scheduleJob'),
+        isTrue,
+        reason: 'denied exact alarms must route to JobScheduler',
+      );
+      expect(
+        channelCalls.any((c) => c.method == 'scheduleAlarm'),
+        isFalse,
+        reason: 'no inexact alarm when the job path was taken',
+      );
+      expect(realService.inexactFallbackActive.value, isTrue);
+    });
+
     test('scheduleTask invokes scheduleAlarm method on task_scheduler channel', () async {
       final nowMillis = DateTime.now().millisecondsSinceEpoch;
       final taskId = await serviceDb.into(serviceDb.schedulerTasks).insert(
@@ -319,9 +363,11 @@ void main() {
 
       await realService.scheduleTask(taskId);
 
-      expect(channelCalls.length, equals(1));
-      expect(channelCalls.first.method, equals('scheduleAlarm'));
-      final args = channelCalls.first.arguments as Map;
+      // One permission check plus one alarm registration.
+      final alarms =
+          channelCalls.where((c) => c.method == 'scheduleAlarm').toList();
+      expect(alarms.length, equals(1));
+      final args = alarms.first.arguments as Map;
       expect(args['taskId'], equals(taskId));
       expect(args['title'], equals('Daily Backup'));
       expect(args['triggerAtMillis'], equals(nowMillis + 60000));
@@ -345,8 +391,10 @@ void main() {
 
       await realService.scheduleTask(taskId);
 
-      expect(channelCalls.length, equals(1));
-      final args = channelCalls.first.arguments as Map;
+      final alarms =
+          channelCalls.where((c) => c.method == 'scheduleAlarm').toList();
+      expect(alarms.length, equals(1));
+      final args = alarms.first.arguments as Map;
       final trigger = args['triggerAtMillis'] as int;
       final after = DateTime.now().millisecondsSinceEpoch;
       expect(trigger, greaterThanOrEqualTo(before + 1000));

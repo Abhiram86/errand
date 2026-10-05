@@ -2,9 +2,13 @@ package com.errand.errand
 
 import android.app.AlarmManager
 import android.app.PendingIntent
+import android.app.job.JobInfo
+import android.app.job.JobScheduler
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.PersistableBundle
 import android.util.Log
 
 /**
@@ -104,6 +108,57 @@ object TaskAlarmManager {
     }
 
     /**
+     * Fallback scheduler for when exact alarms are unavailable (R2-H6).
+     *
+     * An inexact alarm firing into [TaskAlarmReceiver] cannot legally start a
+     * foreground service on Android 12+ (`ForegroundServiceStartNotAllowed-
+     * Exception`, previously only logged). A [JobScheduler] job can: the
+     * running job puts the app on the temporary allowlist, so the FGS start
+     * from [TaskExecutionJobService] is legal. Timing is inexact by design —
+     * Dart surfaces that via the inexact-fallback flag.
+     *
+     * The job id IS the task id, mirroring alarm PendingIntent identity:
+     * rescheduling overwrites, cancelling removes. Requires API 21+ (minSdk
+     * is 24). Persisted across reboots; the boot restore re-registers alarms
+     * from the database, which supersede stale jobs.
+     */
+    fun scheduleJobFallback(
+        context: Context,
+        taskId: Int,
+        triggerAtMillis: Long,
+        title: String
+    ): Boolean {
+        if (taskId <= 0 || triggerAtMillis <= 0) return false
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) return false
+        return try {
+            val scheduler =
+                context.getSystemService(Context.JOB_SCHEDULER_SERVICE) as JobScheduler
+            val extras = PersistableBundle().apply {
+                putInt(TaskExecutionJobService.EXTRA_TASK_ID, taskId)
+                putString(TaskExecutionJobService.EXTRA_TASK_TITLE, title)
+            }
+            val delay = maxOf(0L, triggerAtMillis - System.currentTimeMillis())
+            val job = JobInfo.Builder(
+                taskId,
+                ComponentName(context, TaskExecutionJobService::class.java)
+            )
+                .setMinimumLatency(delay)
+                .setOverrideDeadline(delay + JOB_GRACE_MS)
+                .setRequiredNetworkType(JobInfo.NETWORK_TYPE_NONE)
+                .setPersisted(true)
+                .setExtras(extras)
+                .build()
+            val scheduled =
+                scheduler.schedule(job) == JobScheduler.RESULT_SUCCESS
+            Log.d(TAG, "Scheduled job fallback for task $taskId (delay=${delay}ms): $scheduled")
+            scheduled
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to schedule job fallback for task $taskId", e)
+            false
+        }
+    }
+
+    /**
      * Cancels any pending alarm for [taskId]. Uses FLAG_NO_CREATE so no
      * PendingIntent is resurrected just to cancel it.
      */
@@ -128,6 +183,27 @@ object TaskAlarmManager {
 
         alarmManager.cancel(pendingIntent)
         pendingIntent.cancel()
+        cancelJobFallback(context, taskId)
         Log.d(TAG, "Cancelled alarm for task $taskId")
+    }
+
+    /**
+     * Cancels a pending job-fallback registration for [taskId], if any.
+     * Called from [cancelAlarm] so one entry point tears down both paths;
+     * cancelling a non-existent job is a no-op.
+     */
+    fun cancelJobFallback(context: Context, taskId: Int) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) return
+        try {
+            val scheduler =
+                context.getSystemService(Context.JOB_SCHEDULER_SERVICE) as JobScheduler
+            scheduler.cancel(taskId)
+        } catch (e: Exception) {
+            Log.w(TAG, "Error cancelling job fallback for task $taskId", e)
+        }
+    }
+
+    companion object {
+        private const val JOB_GRACE_MS = 10 * 60 * 1000L
     }
 }

@@ -228,8 +228,9 @@ class LlmClient {
       throw LlmException('Invalid message: expected JSON object');
     }
 
+    final rawToolCallsArg = message['tool_calls'];
     final toolCalls = _parseToolCalls(
-      message['tool_calls'] as List<dynamic>? ?? const [],
+      rawToolCallsArg is List ? rawToolCallsArg : const [],
     );
 
     final text = message['content'] as String?;
@@ -345,10 +346,15 @@ class LlmClient {
     if (cancelToken?.isCancelled ?? false) throw const LlmStoppedException();
     final seconds =
         int.tryParse(retryAfter ?? '') ?? _parseHttpDateRetryAfter(retryAfter);
+    // True 2^(attempt-1), exponent clamped: attempt 1 waits one base unit,
+    // not zero (the old ternary compared the shifted value against 30, so
+    // the first retry redialed instantly). Custom per-call durations
+    // (e.g. the scheduler's 2/4/8/16/32s) bypass this entirely.
+    final backoffStep = (attempt - 1).clamp(0, 5);
     final delay = backoffDuration?.call(attempt) ??
         (seconds != null && seconds >= 0
             ? Duration(seconds: seconds)
-            : _backoffBase * (1 << (attempt - 1) >= 30 ? 30 : attempt - 1));
+            : _backoffBase * (1 << backoffStep));
     // Clamp rather than trust: honour a short server hint, cap a hostile one.
     final bounded = delay > _backoffMax ? _backoffMax : delay;
     // Single cancellable sleep registered on the CancelToken: a stop wakes
@@ -607,8 +613,9 @@ class LlmClient {
               if (reasoningText != null && reasoningText.isNotEmpty) {
                 onReasoningDelta?.call();
               }
+              final rawToolCallsArg = message['tool_calls'];
               final toolCalls = _parseToolCalls(
-                message['tool_calls'] as List<dynamic>? ?? const [],
+                rawToolCallsArg is List ? rawToolCallsArg : const [],
               );
               if ((text == null || text.isEmpty) && toolCalls.isEmpty) {
                 throw LlmException('Model returned an empty response', transport: true);
@@ -710,7 +717,10 @@ class LlmClient {
         throw LlmException('Generation stopped by content filter');
       }
 
-      final delta = choice['delta'] as Map<String, dynamic>? ?? const {};
+      final rawDelta = choice['delta'];
+      final delta = rawDelta is Map<String, dynamic>
+          ? rawDelta
+          : const <String, dynamic>{};
 
       final reasoningDelta = _readReasoning(delta);
       final reasoningDetailDelta = _parseReasoningDetails(
@@ -734,7 +744,9 @@ class LlmClient {
         onTextDelta(text);
       }
 
-      final rawToolCalls = delta['tool_calls'] as List<dynamic>? ?? const [];
+      final rawToolCallsValue = delta['tool_calls'];
+      final rawToolCalls =
+          rawToolCallsValue is List ? rawToolCallsValue : const [];
       for (final raw in rawToolCalls) {
         if (raw is! Map<String, dynamic>) continue;
         final toolCall = raw;
