@@ -25,11 +25,14 @@
 - [x] H6 + M3 — JobScheduler fallback (`TaskExecutionJobService`, `scheduleJob` on both engines, receiver reroute on FGS-start failure, `cancelAlarm` tears down jobs; Dart routes when exact denied). CI-gated + needs device check.
 - [x] H5 — boot-restore corrections (RW open, recurring grid-slot jump + persist, 30-min freshness run-now, skip-with-reason log rows, per-action reasons, manifest drops directBootAware/QUICKBOOT). CI-gated.
 - [x] S2 — `QUERY_ALL_PACKAGES` dropped (launcher discovery covered by `<queries>`); `MANAGE_EXTERNAL_STORAGE` kept with manifest justification. Device check needed for chooser disambiguation.
+- [x] P9 — `watchPinnedConversations` capped (limit 50).
 - [x] C1 remainder — MIME allowlist (audio/video/image/text + pdf/json; caller `type` validated too) + shared `FileContainment.kt` used by open_file/installApk/**openPdf**. CI-gated.
 - [x] `bringToFront` PI code + cancel (mirrors launch path). CI-gated.
 - [x] `putExtraValue` divergence — unified (background engine now throws like foreground).
 - [ ] Tool-edit parity with `computeEditTransition`.
-- [ ] R8 verify, L1 residue.
+- [x] Tool-edit parity — terminal rows gaining a fresh schedule without an explicit status arg resurrect to `scheduled` (mirrors `computeEditTransition`); title-only edits never resurrect. Pinned.
+- [x] R8 — verified intentionally OFF (`proguardFiles` declared, no `isMinifyEnabled`): avoids obfuscation-crash risk without device validation. Revisit only for APK-size reasons.
+- [ ] L1 residue.
 
 **Shell leftovers:** fork-bomb multiline + `exec`-firewall exemption (done, pinned), `command -v` flag skip (done), bare `ifconfig promisc` (done). Remaining: none — shell list clear.
 

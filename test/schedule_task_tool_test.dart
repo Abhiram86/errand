@@ -325,6 +325,75 @@ void main() {
       expect(nextRunAt, greaterThan(DateTime.now().millisecondsSinceEpoch + 500000));
     });
 
+    test('edit resurrects terminal task given a fresh future schedule', () async {
+      // Parity with computeEditTransition: flipping completed→recurring
+      // without a status arg must yield a live `scheduled` row, not a
+      // future nextRunAt on a status that never fires.
+      final tool = scheduleTaskTool(db: db);
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final id = await db.into(db.schedulerTasks).insert(
+            SchedulerTasksCompanion.insert(
+              title: 'Done task',
+              type: 'one_off',
+              status: 'completed',
+              payloadJson: '{"prompt": "x"}',
+              startsAt: now - 3600000,
+              timezone: 'UTC',
+              createdAt: now - 3600000,
+              updatedAt: now - 3600000,
+            ),
+          );
+
+      final editRes = await tool.handler(
+        ToolCall(
+          id: 'e-res',
+          name: 'schedule_task',
+          arguments: {
+            'action': 'edit',
+            'id': id,
+            'schedule_type': 'recurring',
+            'repeat_after': 3600000,
+          },
+        ),
+      );
+
+      expect(editRes.ok, isTrue);
+      final updated = jsonDecode(editRes.output)['task'];
+      expect(updated['status'], equals('scheduled'));
+      expect(
+        updated['next_run_at'] as int,
+        greaterThan(DateTime.now().millisecondsSinceEpoch),
+      );
+    });
+
+    test('title-only edit leaves a cancelled task cancelled', () async {
+      final tool = scheduleTaskTool(db: db);
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final id = await db.into(db.schedulerTasks).insert(
+            SchedulerTasksCompanion.insert(
+              title: 'Cancelled task',
+              type: 'one_off',
+              status: 'cancelled',
+              payloadJson: '{"prompt": "x"}',
+              startsAt: now + 3600000,
+              timezone: 'UTC',
+              createdAt: now,
+              updatedAt: now,
+            ),
+          );
+
+      final editRes = await tool.handler(
+        ToolCall(
+          id: 'e-title',
+          name: 'schedule_task',
+          arguments: {'action': 'edit', 'id': id, 'title': 'Renamed'},
+        ),
+      );
+
+      expect(editRes.ok, isTrue);
+      expect(jsonDecode(editRes.output)['task']['status'], equals('cancelled'));
+    });
+
     test('edit recurring task with past start advances next_run_at by repeat_after interval', () async {
       final tool = scheduleTaskTool(db: db);
       final now = DateTime.now().millisecondsSinceEpoch;

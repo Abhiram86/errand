@@ -400,10 +400,25 @@ Tool scheduleTaskTool({
           }
 
           int? newNextRunAt = existing.nextRunAt;
+          // Parity with computeEditTransition: a terminal task gaining a fresh
+          // schedule without an explicit status arg is resurrected FIRST, so
+          // the timing branches below actually run for it. Without this,
+          // flipping completed→recurring leaves the old status on a row whose
+          // future nextRunAt will never fire (scheduleTask early-returns on
+          // terminal statuses). Title/prompt-only edits (no timing touch)
+          // never resurrect.
+          if (!statusChanged &&
+              (newStatus == 'failed' ||
+                  newStatus == 'cancelled' ||
+                  newStatus == 'completed') &&
+              (timingChanged ||
+                  repeatChanged ||
+                  newType != existing.type)) {
+            newStatus = 'scheduled';
+          }
           if (newStatus == 'paused' || newStatus == 'cancelled') {
             newNextRunAt = null;
-          } else if (newStatus == 'scheduled') {
-            if (timingChanged) {
+          } else if (newStatus == 'scheduled') {            if (timingChanged) {
               if (newType == 'recurring') {
                 if (newStartsAt > nowMillis) {
                   newNextRunAt = newStartsAt;

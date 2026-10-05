@@ -844,10 +844,11 @@ final class ErrandDatabase extends _$ErrandDatabase {
     ];
   }
 
-  Stream<List<Conversation>> watchPinnedConversations() {
+  Stream<List<Conversation>> watchPinnedConversations({int limit = 50}) {
     final query = select(conversations)
       ..where((conversation) => conversation.isPinned.equals(true))
-      ..orderBy(_summaryOrdering());
+      ..orderBy(_summaryOrdering())
+      ..limit(limit);
     return query.watch().map(
       (rows) => [
         for (final row in rows) _rowToConversation(row, const [], const []),
