@@ -47,4 +47,15 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('ChatScreen unmounts cleanly without setState-after-dispose errors', (tester) async {
+    await tester.pumpWidget(const ErrandApp());
+    expect(find.byType(ChatScreen), findsOneWidget);
+    await tester.pump(const Duration(seconds: 2));
+
+    // Trigger unmount
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump(const Duration(seconds: 2));
+    expect(tester.takeException(), isNull);
+  });
 }

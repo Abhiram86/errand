@@ -97,9 +97,7 @@ class _ModelPickerDialogState extends State<ModelPickerDialog> {
     // post-fetch check heal it if genuinely dead.
     final hasLiveList = cached != null && cached.isNotEmpty;
     final isFreeWithKey = _currentProviderHasKey &&
-        (_currentSelectedModel == 'openrouter/free' ||
-            _currentSelectedModel == 'openrouter/auto' ||
-            _currentSelectedModel == kDefaultModelId);
+        AppSettingsService.isFreeRouterId(_currentSelectedModel);
     final isStaleOrFallback = (provider != null) &&
         (isFreeWithKey ||
             (hasLiveList &&
@@ -133,47 +131,11 @@ class _ModelPickerDialogState extends State<ModelPickerDialog> {
 
   bool get _currentProviderHasKey {
     if (_currentProvider == null) return true;
-    if (_currentProvider!.hasKey) return true;
-    if (_currentProvider!.id == ProviderPresetType.openRouter.id &&
-        AppSettingsService.instance.hasOpenRouterKey) {
-      return true;
-    }
-    return false;
+    return AppSettingsService.instance.providerHasKey(_currentProvider!);
   }
 
-  String _pickInitialModel(LlmProvider provider, List<ModelOption> opts) {
-    // Fresh default priority (no stored pick): first model in the sorted
-    // list > hardcoded preset fallback.
-    if (opts.isEmpty) {
-      return provider.defaultModels.isNotEmpty
-          ? provider.defaultModels.first.id
-          : kDefaultModelId;
-    }
-    final hasKey = provider.hasKey ||
-        (provider.id == ProviderPresetType.openRouter.id &&
-            AppSettingsService.instance.hasOpenRouterKey);
-    final isUnconfiguredOpenRouter =
-        AppSettingsService.instance.isOpenRouterProvider(provider) && !hasKey;
-    if (isUnconfiguredOpenRouter) {
-      return opts.firstWhere(
-        (m) =>
-            m.id == 'openrouter/free' ||
-            m.id.toLowerCase().contains('openrouter/free') ||
-            m.name.toLowerCase().contains('free models router'),
-        orElse: () => opts.first,
-      ).id;
-    }
-    for (final m in opts) {
-      if (hasKey &&
-          (m.id == 'openrouter/free' ||
-              m.id == 'openrouter/auto' ||
-              m.id == kDefaultModelId)) {
-        continue;
-      }
-      return m.id;
-    }
-    return opts.first.id;
-  }
+  String _pickInitialModel(LlmProvider provider, List<ModelOption> opts) =>
+      AppSettingsService.instance.pickDefaultModelForProvider(provider, opts);
 
   /// Full per-provider priority for display: that provider's last pick
   /// > list head > hardcoded preset. The stored pick is shown optimistically
@@ -184,13 +146,8 @@ class _ModelPickerDialogState extends State<ModelPickerDialog> {
   String _resolveDisplayModel(LlmProvider provider, List<ModelOption> opts) {
     final stored = AppSettingsService.instance.selectedModelFor(provider.id);
     if (AppSettingsService.instance.hasSelectedModelFor(provider.id)) {
-      final hasKey = provider.hasKey ||
-          (provider.id == ProviderPresetType.openRouter.id &&
-              AppSettingsService.instance.hasOpenRouterKey);
-      final isFreeWithKey = hasKey &&
-          (stored == 'openrouter/free' ||
-              stored == 'openrouter/auto' ||
-              stored == kDefaultModelId);
+      final hasKey = AppSettingsService.instance.providerHasKey(provider);
+      final isFreeWithKey = hasKey && AppSettingsService.isFreeRouterId(stored);
       if (!isFreeWithKey) return stored;
     }
     return _pickInitialModel(provider, opts);
@@ -234,9 +191,7 @@ class _ModelPickerDialogState extends State<ModelPickerDialog> {
                 ModelCatalogService.getCachedModels(provider.baseUrl);
             final hasLiveNow = liveNow != null && liveNow.isNotEmpty;
             final isFreeWithKey = hasKey &&
-                (_currentSelectedModel == 'openrouter/free' ||
-                    _currentSelectedModel == 'openrouter/auto' ||
-                    _currentSelectedModel == kDefaultModelId);
+                AppSettingsService.isFreeRouterId(_currentSelectedModel);
             final isStale = isFreeWithKey ||
                 (hasLiveNow &&
                     !_currentOptions.any(
@@ -265,9 +220,7 @@ class _ModelPickerDialogState extends State<ModelPickerDialog> {
             _currentOptions = sorted;
             final isStale = !_currentOptions.any((m) => m.id == _currentSelectedModel) ||
                 (hasKey &&
-                    (_currentSelectedModel == 'openrouter/free' ||
-                        _currentSelectedModel == 'openrouter/auto' ||
-                        _currentSelectedModel == kDefaultModelId));
+                    AppSettingsService.isFreeRouterId(_currentSelectedModel));
             if (isStale) {
               _currentSelectedModel = _pickInitialModel(provider, sorted);
             }

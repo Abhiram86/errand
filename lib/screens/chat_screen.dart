@@ -332,7 +332,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
-    _composerFocusNode.addListener(_onComposerFocusChange);
     final bootSettings = AppSettingsService.instance;
     _selectedModel = bootSettings.selectedModelFor(
       bootSettings.activeProviderId,
@@ -590,107 +589,27 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     );
   }
 
-  static bool _isFreeRouterId(String id) {
-    final lower = id.toLowerCase();
-    return id == 'openrouter/free' ||
-        id == 'openrouter/auto' ||
-        id == kDefaultModelId ||
-        lower.contains('openrouter/free');
-  }
+  static bool _isFreeRouterId(String id) => AppSettingsService.isFreeRouterId(id);
 
-  String _pickDefaultModelForProvider(
-    LlmProvider provider,
-    List<ModelOption> availableModels,
-  ) {
-    // Fresh default priority (no stored pick): first model in the sorted
-    // live list > hardcoded preset fallback. The free-router special case
-    // below only applies to unconfigured OpenRouter endpoints.
-    if (availableModels.isEmpty) {
-      return provider.defaultModels.firstOrNull?.id ?? kDefaultModelId;
-    }
-
-    final hasKey =
-        provider.hasKey ||
-        (provider.id == ProviderPresetType.openRouter.id &&
-            AppSettingsService.instance.hasOpenRouterKey);
-
-    final isUnconfiguredOpenRouter =
-        AppSettingsService.instance.isOpenRouterProvider(provider) && !hasKey;
-
-    if (isUnconfiguredOpenRouter) {
-      final freeRouter = availableModels.cast<ModelOption?>().firstWhere(
-        (m) =>
-            m != null &&
-            (m.id == 'openrouter/free' ||
-                m.id == 'openrouter/auto' ||
-                m.id.toLowerCase().contains('openrouter/free') ||
-                m.name.toLowerCase().contains('free models router')),
-        orElse: () => null,
-      );
-      if (freeRouter != null) return freeRouter.id;
-    }
-
-    // Live catalog, newest first — skip free router entries when keyed.
-    for (final m in availableModels) {
-      if (hasKey && _isFreeRouterId(m.id)) continue;
-      return m.id;
-    }
-
-    if (provider.defaultModels.isNotEmpty) {
-      final firstNonFree = provider.defaultModels
-          .cast<ModelOption?>()
-          .firstWhere(
-            (m) => m != null && !(hasKey && _isFreeRouterId(m.id)),
-            orElse: () => null,
-          );
-      if (firstNonFree != null) return firstNonFree.id;
-    }
-
-    return availableModels.first.id;
-  }
-
-  /// Full per-provider resolution priority:
-  /// last selected model (for this provider) > first model in the sorted
-  /// list > hardcoded preset model.
   String _resolveModelForProvider(
     LlmProvider provider,
     List<ModelOption> availableModels,
-  ) {
-    final stored = AppSettingsService.instance.selectedModelFor(provider.id);
-    final hasStored =
-        AppSettingsService.instance.hasSelectedModelFor(provider.id);
-    if (hasStored &&
-        availableModels.any((m) => m.id == stored) &&
-        !_isFallbackOrStaleModel(stored, provider, availableModels)) {
-      return stored;
-    }
-    return _pickDefaultModelForProvider(provider, availableModels);
-  }
+  ) =>
+      AppSettingsService.instance.resolveModelForProvider(
+        provider,
+        availableModels,
+      );
 
   bool _isFallbackOrStaleModel(
     String modelId,
     LlmProvider provider,
     List<ModelOption> liveModels,
-  ) {
-    final hasKey =
-        provider.hasKey ||
-        (provider.id == ProviderPresetType.openRouter.id &&
-            AppSettingsService.instance.hasOpenRouterKey);
-
-    // Stuck on the unconfigured free router despite having a key.
-    if (hasKey && _isFreeRouterId(modelId)) {
-      return true;
-    }
-
-    // Model vanished from the live catalog (deprecated/renamed):
-    // self-heal by re-picking instead of 404ing forever.
-    if (liveModels.isNotEmpty &&
-        !liveModels.any((m) => m.id == modelId)) {
-      return true;
-    }
-
-    return false;
-  }
+  ) =>
+      AppSettingsService.instance.isFallbackOrStaleModel(
+        modelId,
+        provider,
+        liveModels,
+      );
 
   /// Ensures that decrypted runtime settings, API keys, and model configurations
   /// are fully hydrated before executing actions that depend on them.
@@ -1015,18 +934,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     return _models;
   }
 
-  void _onComposerFocusChange() {
-    if (!mounted) return;
-    setState(() {});
-  }
-
   @override
   void dispose() {
-    if (_busy) {
+    if (_busy || _turnInFlight) {
       _stopGeneration();
     }
     WidgetsBinding.instance.removeObserver(this);
-    _composerFocusNode.removeListener(_onComposerFocusChange);
     _composerFocusNode.dispose();
     _streamingService.dispose();
     _a11yToastTimer?.cancel();
@@ -1947,6 +1860,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       }
       await _truncateFrom(_editingMessageId!);
       _editingMessageId = null;
+      if (!mounted) return;
     }
 
     // Attached files are per-message structured data (card + LLM context).
@@ -2009,6 +1923,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       if (index + 1 < _messages.length) {
         await _truncateFrom(_messages[index + 1].id);
       }
+      if (!mounted) return;
       await _runAgentTurn();
     } finally {
       _busy = false;
@@ -2120,6 +2035,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       final pName = provider.name;
       _showToast('Add an API key for $pName in Settings to start chatting.');
       await _openSettings();
+      _turnInFlight = false;
+      return;
+    }
+
+    if (!mounted) {
       _turnInFlight = false;
       return;
     }
@@ -2301,7 +2221,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       unawaited(_intentService.bringToFront());
     }
     final id = _workingMessageId;
-    if (!mounted) return;
+    if (!mounted) {
+      final conversationId = _activeConversation.id;
+      if (conversationId != null && id != null) {
+        unawaited(database.deleteMessage(conversationId, id));
+      }
+      return;
+    }
     setState(() {
       final index = id == null
           ? -1
@@ -2520,7 +2446,20 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
     final id = _workingMessageId;
     _streamingService.reset();
-    if (!mounted) return;
+    if (!mounted) {
+      final conversationId = _activeConversation.id;
+      if (trimmed.isNotEmpty && id != null && conversationId != null) {
+        final message = AssistantMessage(
+          id: id,
+          text: trimmed,
+          model: _selectedModel,
+          provider: _activeConversation.provider ??
+              AppSettingsService.instance.activeProvider.name,
+        );
+        unawaited(_persistWriter.run(() => database.insertMessage(conversationId, message)));
+      }
+      return;
+    }
     // Some models return an empty/whitespace final answer (content-only
     // tool turns, stray "\n"). Trim it; if nothing is left, drop the
     // bubble instead of rendering an empty one.
@@ -2567,7 +2506,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   /// [LlmStoppedException] at the next safe boundary (between SSE events,
   /// or at the next turn boundary if a native tool call is in flight).
   void _stopGeneration() {
-    if (!_busy) return;
+    if (!_busy && !_turnInFlight) return;
     _cancelToken.cancel();
     if (_pendingConfirmation != null &&
         !_pendingConfirmation!.completer.isCompleted) {
@@ -2744,8 +2683,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    final isComposerFocused = _composerFocusNode.hasFocus;
-
     return PopScope(
       canPop: !_sidebarOpen && !_busy,
       onPopInvokedWithResult: (didPop, _) {
@@ -2781,20 +2718,28 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                       if (_pendingAttachments.isNotEmpty)
                         _buildPendingAttachments(),
                       if (_editingMessageId != null) _buildEditingBanner(),
-                      BrowserDockSpacer(isComposerFocused: isComposerFocused),
+                      ListenableBuilder(
+                        listenable: _composerFocusNode,
+                        builder: (context, _) => BrowserDockSpacer(
+                          isComposerFocused: _composerFocusNode.hasFocus,
+                        ),
+                      ),
                       KeyedSubtree(key: _composerKey, child: _buildComposer()),
                     ],
                   ),
                 ),
                 _buildA11yToastOverlay(),
-                BrowserWidget(
-                  composerKey: _composerKey,
-                  isComposerFocused: isComposerFocused,
-                  onUnfocusComposer: () {
-                    if (_composerFocusNode.hasFocus) {
-                      _composerFocusNode.unfocus();
-                    }
-                  },
+                ListenableBuilder(
+                  listenable: _composerFocusNode,
+                  builder: (context, _) => BrowserWidget(
+                    composerKey: _composerKey,
+                    isComposerFocused: _composerFocusNode.hasFocus,
+                    onUnfocusComposer: () {
+                      if (_composerFocusNode.hasFocus) {
+                        _composerFocusNode.unfocus();
+                      }
+                    },
+                  ),
                 ),
                 if (_pendingConfirmation != null)
                   Positioned.fill(

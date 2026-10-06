@@ -31,13 +31,13 @@
 - [x] `putExtraValue` divergence — unified (background engine now throws like foreground).
 - [x] Tool-edit parity — terminal rows gaining a fresh schedule without an explicit status arg resurrect to `scheduled` (mirrors `computeEditTransition`); title-only edits never resurrect. Pinned.
 - [x] R8 — verified intentionally OFF (`proguardFiles` declared, no `isMinifyEnabled`): avoids obfuscation-crash risk without device validation. Revisit only for APK-size reasons.
-- [ ] L1 residue.
+- [x] L1 residue (Focus listener full-screen setState replaced with ListenableBuilder on FocusNode for browser widgets).
 
 **Shell leftovers:** fork-bomb multiline + `exec`-firewall exemption (done, pinned), `command -v` flag skip (done), bare `ifconfig promisc` (done). Remaining: none — shell list clear.
 
-**Chat/LLM:** double-send latch (done: `_busy` sync gate + latch narrowed to `_turnInFlight`), first-backoff-zero (done: true 2^n, pinned), fingerprint content hash (done), `deleteConversation` invalidation (done), 4 `as` casts (done), `delay_seconds` bounds (done). Remaining: dispose-during-turn guard.
+**Chat/LLM:** double-send latch (done: `_busy` sync gate + latch narrowed to `_turnInFlight`), first-backoff-zero (done: true 2^n, pinned), fingerprint content hash (done), `deleteConversation` invalidation (done), 4 `as` casts (done), `delay_seconds` bounds (done), dispose teardown hardened (!mounted guards, unmounted persist/cleanup paths; residual native-doc race accepted, not closable from Dart). Remaining: none.
 
-**Perf/dup:** P6–P10, D4/D8, D2 model-resolution half (key half done).
+**Perf/dup:** P6–P10, D4/D8, D2 model-resolution half (done: canonical resolution on `AppSettingsService`, shared across `ChatScreen` and `ModelPickerDialog`, pinned by unit tests).
 
 **Structural (deferrable):** R1 (shell-safety split), R2 (`executeTask`), R3 (chat screen), R4 (channel-per-file), R5 (tasks screen build); R6–R10 small.
 

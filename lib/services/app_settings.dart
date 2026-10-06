@@ -534,6 +534,99 @@ final class AppSettingsService {
     return _selectedModel;
   }
 
+  /// True when [id] matches known free-router models or fallbacks.
+  static bool isFreeRouterId(String id) {
+    final lower = id.toLowerCase();
+    return id == 'openrouter/free' ||
+        id == 'openrouter/auto' ||
+        id == kDefaultModelId ||
+        lower.contains('openrouter/free');
+  }
+
+  /// Fresh default priority (no stored pick): first model in the sorted
+  /// live list > hardcoded preset fallback. The free-router special case
+  /// only applies to unconfigured OpenRouter endpoints.
+  String pickDefaultModelForProvider(
+    LlmProvider provider,
+    List<ModelOption> availableModels,
+  ) {
+    if (availableModels.isEmpty) {
+      return provider.defaultModels.firstOrNull?.id ?? kDefaultModelId;
+    }
+
+    final hasKey = providerHasKey(provider);
+    final isUnconfiguredOpenRouter = isOpenRouterProvider(provider) && !hasKey;
+
+    if (isUnconfiguredOpenRouter) {
+      final freeRouter = availableModels.cast<ModelOption?>().firstWhere(
+        (m) =>
+            m != null &&
+            (isFreeRouterId(m.id) ||
+                m.name.toLowerCase().contains('free models router')),
+        orElse: () => null,
+      );
+      if (freeRouter != null) return freeRouter.id;
+    }
+
+    // Live catalog, newest first — skip free router entries when keyed.
+    for (final m in availableModels) {
+      if (hasKey && isFreeRouterId(m.id)) continue;
+      return m.id;
+    }
+
+    if (provider.defaultModels.isNotEmpty) {
+      final firstNonFree = provider.defaultModels
+          .cast<ModelOption?>()
+          .firstWhere(
+            (m) => m != null && !(hasKey && isFreeRouterId(m.id)),
+            orElse: () => null,
+          );
+      if (firstNonFree != null) return firstNonFree.id;
+    }
+
+    return availableModels.first.id;
+  }
+
+  /// Checks whether [modelId] is an invalid fallback (e.g. free router when keyed)
+  /// or has vanished from [liveModels].
+  bool isFallbackOrStaleModel(
+    String modelId,
+    LlmProvider provider,
+    List<ModelOption> liveModels,
+  ) {
+    final hasKey = providerHasKey(provider);
+
+    // Stuck on the unconfigured free router despite having a key.
+    if (hasKey && isFreeRouterId(modelId)) {
+      return true;
+    }
+
+    // Model vanished from the live catalog (deprecated/renamed):
+    // self-heal by re-picking instead of 404ing forever.
+    if (liveModels.isNotEmpty && !liveModels.any((m) => m.id == modelId)) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /// Full per-provider resolution priority:
+  /// last selected model (for this provider) > first model in the sorted
+  /// list > hardcoded preset model.
+  String resolveModelForProvider(
+    LlmProvider provider,
+    List<ModelOption> availableModels,
+  ) {
+    final stored = selectedModelFor(provider.id);
+    final hasStored = hasSelectedModelFor(provider.id);
+    if (hasStored &&
+        availableModels.any((m) => m.id == stored) &&
+        !isFallbackOrStaleModel(stored, provider, availableModels)) {
+      return stored;
+    }
+    return pickDefaultModelForProvider(provider, availableModels);
+  }
+
   /// Loads the persisted per-provider pick into memory (null when never set).
   Future<String?> loadSelectedModelFor(String providerId) async {
     final stored = await _db.getSetting('$_kSelectedModelPrefix$providerId');

@@ -224,4 +224,69 @@ void main() {
       ModelCatalogService.clearCache();
     }
   });
+
+  group('Model resolution (R2-D2)', () {
+    test('isFreeRouterId matches free router variants', () {
+      expect(AppSettingsService.isFreeRouterId('openrouter/free'), isTrue);
+      expect(AppSettingsService.isFreeRouterId('openrouter/auto'), isTrue);
+      expect(AppSettingsService.isFreeRouterId('meta-llama/llama-3-8b-instruct:free'), isFalse);
+      expect(AppSettingsService.isFreeRouterId('some/openrouter/free/variant'), isTrue);
+      expect(AppSettingsService.isFreeRouterId('anthropic/claude-3-haiku'), isFalse);
+    });
+
+    test('pickDefaultModelForProvider prioritizes free router for unconfigured openrouter', () {
+      final openRouter = ProviderPresetType.openRouter.createProvider();
+      final models = <ModelOption>[
+        const ModelOption(id: 'anthropic/claude-3-sonnet', name: 'Claude 3 Sonnet', provider: 'OpenRouter'),
+        const ModelOption(id: 'openrouter/free', name: 'OpenRouter Free', provider: 'OpenRouter'),
+      ];
+      // Keyless: should pick openrouter/free
+      final picked = settings.pickDefaultModelForProvider(openRouter, models);
+      expect(picked, 'openrouter/free');
+    });
+
+    test('pickDefaultModelForProvider skips free router when provider has key', () {
+      final openRouterWithKey = ProviderPresetType.openRouter.createProvider().copyWith(
+        apiKey: 'sk-or-real-key',
+      );
+      final models = <ModelOption>[
+        const ModelOption(id: 'openrouter/free', name: 'OpenRouter Free', provider: 'OpenRouter'),
+        const ModelOption(id: 'anthropic/claude-3-sonnet', name: 'Claude 3 Sonnet', provider: 'OpenRouter'),
+      ];
+      final picked = settings.pickDefaultModelForProvider(openRouterWithKey, models);
+      expect(picked, 'anthropic/claude-3-sonnet');
+    });
+
+    test('resolveModelForProvider restores stored pick and heals stale free router', () async {
+      final now = DateTime.now();
+      final provider = LlmProvider(
+        id: 'test-p',
+        name: 'Test Provider',
+        baseUrl: 'https://api.test.com/v1',
+        apiKey: 'test-key',
+        createdAt: now,
+        updatedAt: now,
+      );
+
+      final models = <ModelOption>[
+        const ModelOption(id: 'test-p/gpt-4', name: 'GPT-4', provider: 'Test Provider'),
+        const ModelOption(id: 'test-p/gpt-3.5', name: 'GPT-3.5', provider: 'Test Provider'),
+      ];
+
+      // Initially no stored pick: should pick head
+      expect(settings.resolveModelForProvider(provider, models), 'test-p/gpt-4');
+
+      // Set stored pick
+      await settings.setSelectedModelFor(provider.id, 'test-p/gpt-3.5');
+      expect(settings.resolveModelForProvider(provider, models), 'test-p/gpt-3.5');
+
+      // Stale stored pick (vanished from live models): heals to default
+      await settings.setSelectedModelFor(provider.id, 'test-p/deprecated-model');
+      expect(settings.resolveModelForProvider(provider, models), 'test-p/gpt-4');
+
+      // Keyed provider with stored free router: heals away from free router
+      await settings.setSelectedModelFor(provider.id, 'openrouter/free');
+      expect(settings.resolveModelForProvider(provider, models), 'test-p/gpt-4');
+    });
+  });
 }
